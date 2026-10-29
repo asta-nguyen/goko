@@ -1,0 +1,316 @@
+crates/protocol/Cargo.toml
+  s_872c84a92cdb3d::t_3719f58a440e48 5-9
+  s_872c84a92cdb3d::t_6206fffcf5b2c9 1-4
+docs/agent-devkit/changes/s1-06-pty-streaming/design.md
+  s_ac80824a3bf218::t_df3853f973fc77 1-47
+crates/daemon/tests/handshake.rs
+  s_03a0edaff23636::t_797858cdceabd0 1-94
+apps/desktop/src-tauri/src/main.rs
+  s_872c84a92cdb3d::t_ae124033101d45 1-3
+docs/agent-devkit/changes/archive/s1-03-protocol/design.md
+  s_03a0edaff23636::t_791993021719ee 1-55
+docs/agent-devkit/changes/s1-08-daemon-ipc/tasks.md
+  s_ac80824a3bf218::t_0dd3c7881f2b68 1-74
+apps/desktop/src-tauri/build.rs
+  s_872c84a92cdb3d::t_ae124033101d45 1-3
+apps/desktop/src/main.tsx
+  s_872c84a92cdb3d::t_ae124033101d45 1-11
+apps/desktop/src/styles/tokens.css
+  s_872c84a92cdb3d::t_ae124033101d45 1-25
+apps/desktop/src-tauri/src/lib.rs
+  s_872c84a92cdb3d::t_ae124033101d45 1-5
+crates/daemon/tests/lifecycle.rs
+  s_03a0edaff23636::t_81463244a5ecce 85-88,105-108,122-125
+  s_03a0edaff23636::t_bbd0105d892f26 52-53,55-56
+  s_03a0edaff23636::t_02f58ac56112bf 8
+  s_03a0edaff23636::t_7fd757561fa1f0 1-7,9-51,54,57-84,89-104,109-121,126-153
+crates/daemon/tests/pty_io.rs
+  s_872c84a92cdb3d::t_d8920c7da16a46 1-18,21-53,64-75,81-84,89
+  s_872c84a92cdb3d::t_8b4727e988444a 19-20,76-80,85-88
+  s_872c84a92cdb3d::t_ca8d0ec0358ba2 54-63
+pnpm-workspace.yaml
+  s_872c84a92cdb3d::t_3071d2e8f4d6a0 1-2
+docs/agent-devkit/roadmap.md
+  s_ac80824a3bf218::t_923f9726a70d05 19-26,30,32-35,37-43
+  s_03a0edaff23636::t_e2f02886db5da5 31
+  s_872c84a92cdb3d::t_80b274683ba90c 27
+  s_ac80824a3bf218::t_b3c54fa4d46cdb 1,8
+  s_03a0edaff23636::t_45432d48c851d7 28
+  s_03a0edaff23636::t_791993021719ee 29
+  s_ac80824a3bf218::t_d795f6fc68f243 2-7,9-11,13-18,44-52
+  s_ac80824a3bf218::t_1ef6eb9318d85d 36,53
+  s_ac80824a3bf218::t_638429b9f5e23d 12
+docs/agent-devkit/changes/s1-07-sessions/design.md
+  s_ac80824a3bf218::t_52bfb848077298 1-54
+crates/protocol/src/lib.rs
+  s_872c84a92cdb3d::t_ccded5fea85a5a 2-3
+  s_872c84a92cdb3d::t_6206fffcf5b2c9 1
+  s_872c84a92cdb3d::t_6c1269389627c5 4-5
+apps/desktop/src-tauri/tauri.conf.json
+  s_872c84a92cdb3d::t_4c8004adb80f91 7
+  s_872c84a92cdb3d::t_ae124033101d45 1-5,9-26,29-31
+  s_872c84a92cdb3d::t_470e4acb148055 27-28
+  s_872c84a92cdb3d::t_29a93a33cce7e2 6,8
+docs/agent-devkit/changes/s1-12-ui-session/design.md
+  s_ac80824a3bf218::t_e5b4dbeb3db480 1-30,32-50,52-56
+  s_ac80824a3bf218::t_1ef6eb9318d85d 31,51
+CLAUDE.md
+  s_872c84a92cdb3d::t_9499a5604b66ed 1-3
+apps/desktop/src/styles/index.css
+  s_03a0edaff23636::t_cbc55f47ed168c 1-13
+  s_872c84a92cdb3d::t_ae124033101d45 14-26
+crates/daemon/src/pty.rs
+  s_872c84a92cdb3d::t_25ebd760ac7325 198
+  s_872c84a92cdb3d::t_0edcf0db3b6ba1 71
+  s_03a0edaff23636::t_41e0c3a11c404d 61,106-115,119-120,129,146,160,176,181,186,209,213-216,218,299-304
+  s_872c84a92cdb3d::t_82e2da59acf56c 1,3-60,62-70,72-100,104-105,117-118,121-128,130-145,147-159,161-175,177-180,182-185,187-197,199-208,210-212,217,219-293,297-298,305-306
+  s_872c84a92cdb3d::t_8b4727e988444a 101-103,294-296
+  s_872c84a92cdb3d::t_e2850f13d0d7cb 2
+  s_872c84a92cdb3d::t_ca8d0ec0358ba2 116
+crates/daemon/tests/pty_signal.rs
+  s_872c84a92cdb3d::t_d8920c7da16a46 2-15,18-47,52-74,80-83,88-96
+  s_872c84a92cdb3d::t_25ebd760ac7325 1
+  s_872c84a92cdb3d::t_8b4727e988444a 16-17,48-51,75-79,84-87
+docs/agent-devkit/changes/s1-07-sessions/tasks.md
+  s_ac80824a3bf218::t_dabf7cca1aea9a 1-65
+crates/daemon/src/auth.rs
+  s_03a0edaff23636::t_ca596d46738efb 55-58
+  s_03a0edaff23636::t_ddab5b6a6bbdde 1-54,59-94
+docs/agent-devkit/changes/s1-06-pty-streaming/tasks.md
+  s_03a0edaff23636::t_877f0438604ffe 51
+  s_ac80824a3bf218::t_28bef4230db076 1-50,52-55
+docs/agent-devkit/changes/s1-09-tauri-bridge/tasks.md
+  s_ac80824a3bf218::t_e5db3a28823533 1-84
+apps/desktop/src-tauri/Cargo.toml
+  s_03a0edaff23636::t_f6ec200f9232be 8,11
+  s_872c84a92cdb3d::t_ae124033101d45 1-7,9-10
+.gitignore
+  s_872c84a92cdb3d::t_9499a5604b66ed 1-9
+  s_03a0edaff23636::t_5aaef8f5b905ca 10
+crates/daemon/src/lib.rs
+  s_872c84a92cdb3d::t_0f7dc44500c769 2,4,7
+  s_03a0edaff23636::t_1d8e4d82514fa3 8
+  s_872c84a92cdb3d::t_9144c56a103e93 1
+  s_03a0edaff23636::t_6e8660101e4033 5-6,9-11
+  s_03a0edaff23636::t_934b2f1f000a2f 3
+crates/protocol/src/session.rs
+  s_872c84a92cdb3d::t_3719f58a440e48 1-120
+apps/desktop/src/App.tsx
+  s_872c84a92cdb3d::t_ae124033101d45 1-12
+docs/agent-devkit/changes/s1-04-daemon-server/tasks.md
+  s_03a0edaff23636::t_877f0438604ffe 79
+  s_ac80824a3bf218::t_a25dfaddebe1a9 1-78,80-83
+crates/daemon/tests/dispatch.rs
+  s_03a0edaff23636::t_ab001549db9ee9 1-79,83-99,103-109
+  s_03a0edaff23636::t_d6340222c3571f 80-82,100-102
+docs/agent-devkit/changes/s1-12-ui-session/tasks.md
+  s_ac80824a3bf218::t_1ef6eb9318d85d 18,21,31-32,40,48-51
+  s_ac80824a3bf218::t_77474ea1737b9a 1-17,19-20,22-30,33-39,41-47,52-65
+apps/desktop/package.json
+  s_872c84a92cdb3d::t_ae124033101d45 1-16,18-21,23-26
+  s_03a0edaff23636::t_c2edbcbd0821bf 17,22
+docs/agent-devkit/changes/s1-11-ui-terminal/tasks.md
+  s_ac80824a3bf218::t_0d7e20d4e5a3fa 1-8,10-39,41-56
+  s_ac80824a3bf218::t_1ef6eb9318d85d 9,40
+crates/daemon/Cargo.toml
+  s_872c84a92cdb3d::t_6206fffcf5b2c9 1-5,16-18
+  s_872c84a92cdb3d::t_0f7dc44500c769 6-8,15
+  s_03a0edaff23636::t_b27ec954ce0675 9,11-14
+  s_03a0edaff23636::t_1d8e4d82514fa3 10
+package.json
+  s_872c84a92cdb3d::t_3071d2e8f4d6a0 1-9
+apps/desktop/index.html
+  s_872c84a92cdb3d::t_ae124033101d45 1-13
+apps/desktop/src-tauri/icons/icon.svg
+  s_872c84a92cdb3d::t_4c8004adb80f91 1-5
+docs/agent-devkit/changes/s1-10-ui-state/tasks.md
+  s_ac80824a3bf218::t_f66ad59ce599a5 1,5,9-11,13,18-20,22,32-34,38,40-43,47-64,75
+  s_ac80824a3bf218::t_a77b755bd885f8 2-4,6-8,12,14-17,21,23-31,35-37,39,44-46,65-74
+docs/agent-devkit/changes/s1-09-tauri-bridge/design.md
+  s_ac80824a3bf218::t_64407c677593c4 1-71
+docs/agent-devkit/changes/s1-10-ui-state/design.md
+  s_ac80824a3bf218::t_abbecd14034339 1,5-8,12-14,20-22,26-45,49-53,58-62,66-67
+  s_ac80824a3bf218::t_7b801be2783423 2-4,9-11,15-19,23-25,46-48,54-57,63-65,68-71
+Cargo.toml
+  s_872c84a92cdb3d::t_6206fffcf5b2c9 1,3-7
+  s_872c84a92cdb3d::t_ae124033101d45 2
+docs/agent-devkit/changes/archive/s1-01-repo-init/design.md
+  s_872c84a92cdb3d::t_80b274683ba90c 1-43
+docs/agent-devkit/changes/archive/s1-02-ui-shell/tasks.md
+  s_03a0edaff23636::t_8c20daf43b0e0e 48
+  s_03a0edaff23636::t_01bc89fff9b4c3 45-47
+  s_03a0edaff23636::t_32c1fb052b42ab 49-51
+docs/agent-devkit/changes/archive/s1-05-pty-core/design.md
+  s_03a0edaff23636::t_e2f02886db5da5 1-56
+crates/daemon/tests/pty_spawn.rs
+  s_872c84a92cdb3d::t_25ebd760ac7325 31,42,50,53,61,64,104-110
+  s_872c84a92cdb3d::t_0edcf0db3b6ba1 66
+  s_872c84a92cdb3d::t_d8920c7da16a46 1-30,32-41,43-49,51-52,54-60,62-63,65,67-69,79-90,96-99,111-117,120-133
+  s_872c84a92cdb3d::t_ca8d0ec0358ba2 70-71,73-78
+  s_872c84a92cdb3d::t_7a8a35c7ab421f 72
+  s_872c84a92cdb3d::t_8b4727e988444a 91-95,100-103,118-119
+crates/daemon/src/server.rs
+  s_03a0edaff23636::t_1d8e4d82514fa3 10-12,129-133
+  s_03a0edaff23636::t_cc6882eaf7e118 1-9,13-128,134-232
+crates/daemon/tests/common/mod.rs
+  s_03a0edaff23636::t_688f118b500d09 1-160
+crates/protocol/src/message.rs
+  s_872c84a92cdb3d::t_3719f58a440e48 3-71,73-76,127-165,167-219,221-236,239-275,285-309,318-319
+  s_872c84a92cdb3d::t_f2e53bf83dc865 1-2,72,77-126,166,220,237-238,276-284,310-317
+docs/agent-devkit/changes/s1-11-ui-terminal/design.md
+  s_ac80824a3bf218::t_68267496886ff9 28
+  s_ac80824a3bf218::t_1ef6eb9318d85d 29,31
+  s_ac80824a3bf218::t_ff38a7d967c4ba 1-27,30,32-55
+docs/agent-devkit/changes/s1-13-acceptance/tasks.md
+  s_ac80824a3bf218::t_f111db3ee83124 1-46
+AGENTS.md
+  s_03a0edaff23636::t_f2690a8b472c40 18
+  s_872c84a92cdb3d::t_80b274683ba90c 16
+  s_03a0edaff23636::t_9b28a46778b5c1 9
+  s_872c84a92cdb3d::t_bb5ca98f887140 13-15,17
+  s_872c84a92cdb3d::t_9499a5604b66ed 1-8,10-12,19-45
+docs/agent-devkit/changes/archive/s1-02-ui-shell/design.md
+  s_03a0edaff23636::t_45432d48c851d7 1-50
+docs/agent-devkit/changes/s1-04-daemon-server/design.md
+  s_ac80824a3bf218::t_0f7f5506bc2a13 1-53
+crates/daemon/src/main.rs
+  s_03a0edaff23636::t_ff0d143a653b3d 1,3,5-7,9-10,12-13,15-25,29,32-72,75-76
+  s_03a0edaff23636::t_5aaef8f5b905ca 2,73-74
+  s_872c84a92cdb3d::t_6206fffcf5b2c9 4,8,11,14,26-28,30-31,77
+docs/agent-devkit/INDEX.md
+  s_872c84a92cdb3d::t_c9d304db42b07c 5-13
+  s_872c84a92cdb3d::t_14ee38a49d2db0 1-4
+  s_03a0edaff23636::t_e2f02886db5da5 20
+  s_03a0edaff23636::t_45432d48c851d7 18
+  s_03a0edaff23636::t_791993021719ee 19
+  s_872c84a92cdb3d::t_80b274683ba90c 14-17
+crates/protocol/src/frame.rs
+  s_872c84a92cdb3d::t_73a22a7e98beca 151-157,159-160
+  s_872c84a92cdb3d::t_006ee948bedf46 101,115-117,170-173
+  s_872c84a92cdb3d::t_ccded5fea85a5a 1-100,102-114,118-132,134-150,158,161-169,174-199
+  s_872c84a92cdb3d::t_f2e53bf83dc865 133
+docs/agent-devkit/changes/s1-13-acceptance/design.md
+  s_ac80824a3bf218::t_9bc647c1cb44e0 1-61
+apps/desktop/tsconfig.json
+  s_872c84a92cdb3d::t_ae124033101d45 1-22
+crates/daemon/src/paths.rs
+  s_03a0edaff23636::t_1c45775b22d6b6 61,96-99
+  s_03a0edaff23636::t_3de6f1c42dfdc2 1-60,62-95,100-107
+apps/desktop/src-tauri/capabilities/default.json
+  s_872c84a92cdb3d::t_ae124033101d45 1-7
+crates/daemon/src/test_support.rs
+  s_03a0edaff23636::t_f381a4f6389e47 1-27
+docs/agent-devkit/s1-contract.md
+  s_ac80824a3bf218::t_1ef6eb9318d85d 65
+  s_ac80824a3bf218::t_c11d6b7fcc7d10 1-43,47-64,66-114
+  s_872c84a92cdb3d::t_c7de0699c06f51 44-46
+crates/daemon/src/buffer.rs
+  s_872c84a92cdb3d::t_25ebd760ac7325 84-86
+  s_872c84a92cdb3d::t_0f7dc44500c769 1-43,45-83,87-127
+  s_872c84a92cdb3d::t_dca6215659292b 44
+crates/daemon/src/lock.rs
+  s_03a0edaff23636::t_416baa68d1ae3e 1-67
+docs/agent-devkit/changes/s1-08-daemon-ipc/design.md
+  s_ac80824a3bf218::t_adf2e00b2fd234 1-53
+apps/desktop/vite.config.ts
+  s_872c84a92cdb3d::t_ae124033101d45 2-5,7-11
+  s_03a0edaff23636::t_6e1898a12e764a 1,6
+.agents/skills/brainstorm-feature/SKILL.md
+  s_d6e8f4feab323b::t_b5809e07bba2f9 1-192
+.agents/skills/brainstorm-feature/references/delta-format.md
+  s_d6e8f4feab323b::t_f7bd893db868ff 1-111
+.agents/skills/brainstorm-feature/references/spec-self-review.md
+  s_d6e8f4feab323b::t_2bc9fdc52a838f 1-40
+.agents/skills/context-handoff/SKILL.md
+  s_d6e8f4feab323b::t_7fde19a257e102 1-91
+.agents/skills/document-wiki/SKILL.md
+  s_d6e8f4feab323b::t_e9946da05ae13e 1-185
+.agents/skills/document-wiki/references/evidence-matrix-and-page-template.md
+  s_d6e8f4feab323b::t_ecce9903e07c51 1-144
+.agents/skills/document-wiki/references/inventory-and-report.md
+  s_d6e8f4feab323b::t_47bf75ff586034 1-61
+.agents/skills/document-wiki/references/legacy-conversion.md
+  s_d6e8f4feab323b::t_7d91fa59544628 1-18
+.agents/skills/document-wiki/references/merge-task-delta.md
+  s_d6e8f4feab323b::t_692e86e8e95237 1-79
+.agents/skills/document-wiki/scripts/validate-llm-wiki.mjs
+  s_d6e8f4feab323b::t_86039478921358 1-513
+.agents/skills/estimate-feature/SKILL.md
+  s_d6e8f4feab323b::t_2d60d26815573b 1-107
+.agents/skills/implement-task/SKILL.md
+  s_d6e8f4feab323b::t_d7ff9bcf69b595 1-193
+.agents/skills/lean-audit/SKILL.md
+  s_d6e8f4feab323b::t_70e13f3561f503 1-77
+.agents/skills/plan-feature/SKILL.md
+  s_d6e8f4feab323b::t_540d0959913b36 1-131
+.agents/skills/plan-feature/references/tasks-template.md
+  s_d6e8f4feab323b::t_35eb2883a778f8 1-98
+.agents/skills/read-codebase-context/SKILL.md
+  s_d6e8f4feab323b::t_4dd74b034e15aa 1-115
+.agents/skills/review-and-verify/SKILL.md
+  s_d6e8f4feab323b::t_03235a969847fe 1-226
+.agents/skills/review-and-verify/references/receiving-code-review.md
+  s_d6e8f4feab323b::t_3201015d73cbea 1-17
+.agents/skills/setup-codebase/SKILL.md
+  s_d6e8f4feab323b::t_284d7b4e0b535a 1-146
+.agents/skills/setup-codebase/references/convention-capture.md
+  s_d6e8f4feab323b::t_165dde69dec3dc 1-42
+.agents/skills/setup-openez/SKILL.md
+  s_d6e8f4feab323b::t_a0c70a91219bb2 1-137
+.agents/skills/systematic-debugging/SKILL.md
+  s_d6e8f4feab323b::t_075271584f8854 1-165
+.agents/skills/using-devkit/SKILL.md
+  s_d6e8f4feab323b::t_700ea75ff32738 1-102
+.agents/skills/using-devkit/references/legacy.md
+  s_d6e8f4feab323b::t_adacdc32d6a436 1-59
+Cargo.lock
+  s_03a0edaff23636::t_9040de677f2221 1-4488
+docs/agent-devkit/changes/archive/s1-03-protocol/tasks.md
+  s_03a0edaff23636::t_23d0c85241c69d 1-65
+docs/agent-devkit/changes/archive/s1-05-pty-core/tasks.md
+  s_03a0edaff23636::t_0091156703d32f 1-75
+pnpm-lock.yaml
+  s_03a0edaff23636::t_4f5af125ef9cb2 1-1200
+skills-lock.json
+  s_d6e8f4feab323b::t_56fbb74180497b 1-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "014a6f40f2c5d4e9692c32e1652b4782c50b02cb",
+  "prompts": {},
+  "sessions": {
+    "s_03a0edaff23636": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d66e2188-40c8-4e05-bb9c-b4593115b43b",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_872c84a92cdb3d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18857-3c44-7d82-873a-5fc8dd85efd3",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_ac80824a3bf218": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5c8f6fe2-745a-4c60-aaba-eaac0c734834",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d6e8f4feab323b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a187fb-cba4-7193-8069-a7180d69fb70",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
