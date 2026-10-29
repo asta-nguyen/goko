@@ -1,0 +1,25 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0f14;
+  --panel: #151b23;
+  --text: #e7edf5;
+  --muted: #8b99a8;
+  --accent: #6dd3c2;
+  --success: #6dd3a4;
+  --warning: #e8b86a;
+  --danger: #e87575;
+  --border: #2a3440;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --text: #1a2430;
+  --muted: #6c7a89;
+  --accent: #116c6b;
+  --success: #29784a;
+  --warning: #976a13;
+  --danger: #b84245;
+  --border: #dce2e8;
+}

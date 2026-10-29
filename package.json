@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -C apps/desktop dev",
+    "build": "pnpm -C apps/desktop build",
+    "typecheck": "pnpm -C apps/desktop typecheck",
+    "test": "pnpm -C apps/desktop test"
+  }
+}
