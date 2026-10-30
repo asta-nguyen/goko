@@ -1,0 +1,279 @@
+apps/desktop/src-tauri/capabilities/default.json
+  s_03a0edaff23636::t_1fec4045ed4ef5 6
+apps/desktop/src-tauri/src/commands/tests.rs
+  s_03a0edaff23636::t_f6ec3d1eab69c6 4
+  s_03a0edaff23636::t_35948a6ea871fd 1-3,5,7-162
+  s_03a0edaff23636::t_fb48351c91b295 6
+apps/desktop/src-tauri/src/wiring_tests.rs
+  s_03a0edaff23636::t_964869d77034aa 1-38,40-105,112-140
+  s_03a0edaff23636::t_50c8c595a2310b 106-111
+  s_03a0edaff23636::t_f93f269ecfb240 39
+apps/desktop/src/App.tsx
+  s_03a0edaff23636::t_1bc5349551a9da 1-10,12-17,19-20,22-26,28-29,31-44
+  s_03a0edaff23636::t_41c6ec17c84ec5 30
+crates/daemon/tests/subscribe_ipc.rs
+  s_03a0edaff23636::t_b3effa9596a232 3-4,7,23-24,27-32,36-131,136-182,187-236,238,240-249
+  s_03a0edaff23636::t_9679a18e0ce7c6 251-285
+  s_03a0edaff23636::t_8d0ddd61987e8c 1-2,5-6,8-22,25-26,237,239,250
+  s_03a0edaff23636::t_46d09e98eed6f8 33-35,132-135,183-186
+crates/daemon/tests/lagged.rs
+  s_03a0edaff23636::t_a4faa300c5263f 1-34,36-85
+  s_03a0edaff23636::t_c45f11eda2c3a5 35
+apps/desktop/src-tauri/src/error.rs
+  s_03a0edaff23636::t_5bc92e200bc3db 1-50,59-87
+  s_03a0edaff23636::t_1f110829430db1 51-58
+docs/agent-devkit/changes/archive/s1-08-daemon-ipc/design.md
+  s_03a0edaff23636::t_e4a6eb5a9ed1a6 1-53
+AGENTS.md
+  s_03a0edaff23636::t_59183aebcf32c4 15-16
+docs/agent-devkit/changes/archive/s1-06-pty-streaming/tasks.md
+  s_03a0edaff23636::t_c299a9a165654e 16-17,33-34,42-43,47
+docs/agent-devkit/changes/archive/s1-09-tauri-bridge/design.md
+  s_03a0edaff23636::t_6719338b14f12c 1-71
+apps/desktop/src/features/sessions/SessionControls.tsx
+  s_03a0edaff23636::t_bd27f4459fb633 1-75
+crates/daemon/tests/subscribe.rs
+  s_03a0edaff23636::t_5c38e6dbc16318 16-28,84-91
+  s_03a0edaff23636::t_1c81438b0c161f 1-3,12-15,32-34,36-46,49-54,58,60,75-77,79-82,93-99,103-115,117-129,134-151,153-156,158-170
+  s_03a0edaff23636::t_a91c66573d5880 67-74,78
+  s_03a0edaff23636::t_6436df42e9e8ce 4-11,29-31,35,47-48,55-57,59,61-66,83,92,100-102,116,130-133,152,157
+crates/daemon/src/paths.rs
+  s_03a0edaff23636::t_eb1cfafb8f1f13 72-73,75,77-80
+apps/desktop/src/stores/ui.ts
+  s_03a0edaff23636::t_d0e383a5f069ee 1-20
+crates/daemon/tests/handshake.rs
+  s_03a0edaff23636::t_2e9535585245fe 49-50,52
+apps/desktop/src/services/types.ts
+  s_03a0edaff23636::t_8ffa1f28ace965 1-33
+crates/daemon/src/session.rs
+  s_03a0edaff23636::t_6ac3625e20e326 1-111,113-114,116-117,124-126,377-379
+  s_03a0edaff23636::t_1fd35f87287b73 235
+  s_03a0edaff23636::t_dee1a513b1284c 112,115,118-123,127-234,236-376
+apps/desktop/src-tauri/src/lib.rs
+  s_03a0edaff23636::t_5bc92e200bc3db 3-4,7-9,12
+  s_03a0edaff23636::t_1f110829430db1 1-2,5-6,13-16,34-45
+  s_03a0edaff23636::t_1fec4045ed4ef5 33
+  s_03a0edaff23636::t_964869d77034aa 10-11,17-30,46
+crates/daemon/tests/common/mod.rs
+  s_03a0edaff23636::t_eac8c2d0a0374b 4,12,28,54-62,66
+  s_03a0edaff23636::t_1fd676a06e8422 8,17,81-100,104-121,147-168,173-176,179-186,188-204,206-223
+  s_03a0edaff23636::t_72ce57a0ef6b44 11,13,205,233-284
+  s_03a0edaff23636::t_eb1cfafb8f1f13 20-22
+  s_03a0edaff23636::t_4bc1e4e9541a7d 10
+  s_03a0edaff23636::t_8d0ddd61987e8c 33-41
+  s_03a0edaff23636::t_8ba35606b3d57d 285-290
+  s_03a0edaff23636::t_b3106ab899f70c 15
+apps/desktop/src-tauri/src/daemon_client.rs
+  s_03a0edaff23636::t_927eed339eec93 198-202
+  s_03a0edaff23636::t_7895d27b377a58 1-188,190-197,203-215,217-269,271-371,373-413
+  s_03a0edaff23636::t_fb48351c91b295 372
+  s_03a0edaff23636::t_e11edc1a3e0b66 189,216,270
+apps/desktop/src/services/session.test.ts
+  s_03a0edaff23636::t_a88eca380ca1d1 1-80
+crates/daemon/src/server.rs
+  s_03a0edaff23636::t_083a495f54642a 3-19,23-26,29,31,35,42-43,45-46,49-53,57,69-70,74,80,102-103,113-116,122-123,127-128,135-136,138-166,168-173,177-362,364-391,393-404,406-477,479-485,487-494,502,507-516,520,522-523,529-533,536-540,542-543,547,552-553,555,560,563,567,569,573-584
+  s_03a0edaff23636::t_eac8c2d0a0374b 363,559
+  s_03a0edaff23636::t_4f1d092cc6c7e3 392
+crates/daemon/Cargo.toml
+  s_03a0edaff23636::t_eac8c2d0a0374b 10
+crates/daemon/tests/session_ipc.rs
+  s_03a0edaff23636::t_d934b64bd3d794 1-164
+apps/desktop/src/services/session.ts
+  s_03a0edaff23636::t_8ffa1f28ace965 1-48
+apps/desktop/src/features/sessions/SessionList.test.tsx
+  s_03a0edaff23636::t_41c6ec17c84ec5 1-59
+apps/desktop/src-tauri/src/terminal.rs
+  s_03a0edaff23636::t_fb48351c91b295 46-50,63-66,102-106,120-122
+  s_03a0edaff23636::t_07c5e11c2d19c2 210
+  s_03a0edaff23636::t_f6f4acbd49dac6 90-93,173-176
+  s_03a0edaff23636::t_bfe904540afc34 1-45,51-62,67-89,94-101,107-119,123-172,177-209,211-269
+apps/desktop/src-tauri/src/terminal/tests.rs
+  s_03a0edaff23636::t_fb48351c91b295 8
+  s_03a0edaff23636::t_cb225a7a305556 98-99
+  s_03a0edaff23636::t_f6ec3d1eab69c6 1-7,9-85,87-97,100-345
+  s_03a0edaff23636::t_58f010752f646c 86
+apps/desktop/tsconfig.json
+  s_03a0edaff23636::t_8ffa1f28ace965 19
+apps/desktop/src-tauri/Cargo.toml
+  s_03a0edaff23636::t_927eed339eec93 11,16
+  s_03a0edaff23636::t_5bc92e200bc3db 12-15,19
+  s_03a0edaff23636::t_1fec4045ed4ef5 18
+  s_03a0edaff23636::t_964869d77034aa 20-22
+docs/agent-devkit/changes/archive/s1-06-pty-streaming/design.md
+  s_03a0edaff23636::t_1d0aba0aa2ba09 1-47
+apps/desktop/src-tauri/tauri.conf.json
+  s_03a0edaff23636::t_d0c2ff15daf137 10
+docs/agent-devkit/changes/s1-13-acceptance/tasks.md
+  s_01cc1ed4670040::t_26bbc99eab4569 34,36,39-61,63-65
+  s_01cc1ed4670040::t_d429814b978144 16-22,70-82
+  s_01cc1ed4670040::t_cd78934b1ada74 38,62
+  s_01cc1ed4670040::t_6837eb35caab84 68,83-87
+  s_01cc1ed4670040::t_33f36bce8837ee 33,66
+  s_03a0edaff23636::t_75ef9852b9dfd5 91-93
+  s_01cc1ed4670040::t_a93c6350db749f 67
+  s_01cc1ed4670040::t_0d186d9b22e91c 69
+apps/desktop/src/features/sessions/StateBadge.tsx
+  s_03a0edaff23636::t_c55f2b498eec3b 1-17
+apps/desktop/src/features/sessions/SessionList.tsx
+  s_03a0edaff23636::t_1bc5349551a9da 1-48
+apps/desktop/src/features/sessions/NewSessionForm.test.tsx
+  s_03a0edaff23636::t_35dda12db7c5d0 1-71,73-94,96-99,103-126
+  s_03a0edaff23636::t_af6805262e64dc 72,95
+  s_03a0edaff23636::t_45d85017a49671 100-102
+crates/daemon/tests/session_manager.rs
+  s_03a0edaff23636::t_47936819c22474 1-287
+apps/desktop/src/features/terminal/TerminalView.tsx
+  s_03a0edaff23636::t_1b13a771cda1f5 1-44
+docs/agent-devkit/roadmap.md
+  s_03a0edaff23636::t_8fd44a73c26bc1 30
+  s_03a0edaff23636::t_e4a6eb5a9ed1a6 34
+  s_03a0edaff23636::t_6719338b14f12c 35-38
+  s_03a0edaff23636::t_1d0aba0aa2ba09 32
+  s_03a0edaff23636::t_d30ad0f3362a16 33
+apps/desktop/src/main.tsx
+  s_03a0edaff23636::t_1bc5349551a9da 1,5,11-13
+crates/daemon/tests/terminal_io_ipc.rs
+  s_03a0edaff23636::t_8ba35606b3d57d 1-146
+apps/desktop/src/services/sync.ts
+  s_03a0edaff23636::t_034938f6eb32ff 28-36,38
+  s_03a0edaff23636::t_5589c71a853196 1-27,37,39-45
+apps/desktop/src-tauri/src/commands.rs
+  s_03a0edaff23636::t_2e76ec12036bd0 1-51,57-74,80-116,121-140,144-185
+  s_03a0edaff23636::t_fb48351c91b295 52-56,75-79,117-120,141-143
+apps/desktop/vite.config.ts
+  s_03a0edaff23636::t_8ffa1f28ace965 3,11-13
+  s_03a0edaff23636::t_8f3acbbe4ca34d 14
+apps/desktop/src/features/sessions/queries.test.tsx
+  s_03a0edaff23636::t_767cb01ff94711 57-59,62-63,66
+  s_03a0edaff23636::t_fd9888f6fff23b 1-56,60-61,64-65,67-133
+crates/daemon/tests/lifecycle.rs
+  s_03a0edaff23636::t_72ce57a0ef6b44 3,6-7
+ARCHITECTURE.md
+  s_01cc1ed4670040::t_363a65367b4c49 16,84-85,131-138,147
+  s_01cc1ed4670040::t_d708a7555a6f0b 141,148-150
+  s_01cc1ed4670040::t_cd78934b1ada74 17-20,143-146
+  s_03a0edaff23636::t_95cc56a9875fe6 1-15,21-83,86-130,139-140,142,151-157
+docs/agent-devkit/INDEX.md
+  s_03a0edaff23636::t_e4a6eb5a9ed1a6 16
+  s_03a0edaff23636::t_6719338b14f12c 17-20
+  s_03a0edaff23636::t_d30ad0f3362a16 15
+  s_03a0edaff23636::t_1d0aba0aa2ba09 14
+  s_03a0edaff23636::t_8fd44a73c26bc1 12
+docs/agent-devkit/changes/archive/s1-08-daemon-ipc/tasks.md
+  s_03a0edaff23636::t_e4a6eb5a9ed1a6 17-18,20-21,34-35,43-44,52-53,61-62,66,70-72
+apps/desktop/src/features/sessions/NewSessionForm.tsx
+  s_03a0edaff23636::t_35dda12db7c5d0 33
+  s_03a0edaff23636::t_c55f2b498eec3b 1-32,34-90
+apps/desktop/src-tauri/src/bridge.rs
+  s_03a0edaff23636::t_927eed339eec93 1-21,23-36,41-67
+  s_03a0edaff23636::t_2e76ec12036bd0 22,37-40
+apps/desktop/src-tauri/src/events.rs
+  s_03a0edaff23636::t_bfe904540afc34 1-76
+crates/daemon/src/lib.rs
+  s_03a0edaff23636::t_dee1a513b1284c 9
+apps/desktop/src/services/errors.test.ts
+  s_03a0edaff23636::t_a88eca380ca1d1 1-33
+apps/desktop/src/features/terminal/TerminalController.ts
+  s_03a0edaff23636::t_049423a0fd5307 1-88
+apps/desktop/src/services/sync.test.tsx
+  s_03a0edaff23636::t_5589c71a853196 1-111,128-146
+  s_03a0edaff23636::t_034938f6eb32ff 112-127
+apps/desktop/src/features/sessions/SessionControls.test.tsx
+  s_03a0edaff23636::t_656ee4c880da60 25-33,116
+  s_03a0edaff23636::t_bd27f4459fb633 1-24,34-115,117-135
+docs/agent-devkit/changes/archive/s1-07-sessions/design.md
+  s_03a0edaff23636::t_d30ad0f3362a16 1-54
+apps/desktop/src-tauri/src/events/tests.rs
+  s_03a0edaff23636::t_35948a6ea871fd 1-6,8-131
+  s_03a0edaff23636::t_fb48351c91b295 7
+docs/agent-devkit/changes/archive/s1-12-ui-session/design.md
+  s_03a0edaff23636::t_6719338b14f12c 1-56
+apps/desktop/src-tauri/src/daemon_client/connect.rs
+  s_03a0edaff23636::t_fb48351c91b295 2-207
+  s_03a0edaff23636::t_63ffd6d81b6459 1,208-232
+docs/agent-devkit/changes/archive/s1-11-ui-terminal/design.md
+  s_03a0edaff23636::t_6719338b14f12c 1-55
+apps/desktop/src/features/sessions/queries.ts
+  s_03a0edaff23636::t_e5a5d0e0b18217 1-43
+docs/agent-devkit/changes/archive/s1-04-daemon-server/design.md
+  s_03a0edaff23636::t_8fd44a73c26bc1 1-53
+crates/daemon/src/pty.rs
+  s_03a0edaff23636::t_dee1a513b1284c 327
+  s_03a0edaff23636::t_a6549409629a26 10,13-14,58-115,124,178-183,203,255-282,338,347,350
+apps/desktop/src/services/errors.ts
+  s_03a0edaff23636::t_8ffa1f28ace965 1-41
+apps/desktop/src/queryClient.ts
+  s_03a0edaff23636::t_e5a5d0e0b18217 1-31
+apps/desktop/package.json
+  s_03a0edaff23636::t_3f6791d92bb057 17-18
+  s_03a0edaff23636::t_ec31889e100bac 15,26-27,31,34-35
+  s_03a0edaff23636::t_d0e383a5f069ee 20-21
+  s_03a0edaff23636::t_c01b43e80e2046 16
+  s_03a0edaff23636::t_e5a5d0e0b18217 14
+  s_03a0edaff23636::t_8ffa1f28ace965 10
+apps/desktop/src/stores/ui.test.tsx
+  s_03a0edaff23636::t_d0e383a5f069ee 1-60
+apps/desktop/src/features/terminal/TerminalController.test.ts
+  s_03a0edaff23636::t_049423a0fd5307 1-240
+crates/daemon/tests/dispatch.rs
+  s_03a0edaff23636::t_2e9535585245fe 68-69
+  s_03a0edaff23636::t_827d1aedcf1d64 36,41-45
+apps/desktop/src/features/terminal/TerminalView.test.tsx
+  s_03a0edaff23636::t_1b13a771cda1f5 1-90
+crates/daemon/tests/e2e.rs
+  s_03a0edaff23636::t_43bb75995b209c 106-109
+  s_03a0edaff23636::t_8ba35606b3d57d 1-105,110-133
+apps/desktop/src-tauri/src/test_support.rs
+  s_03a0edaff23636::t_221017d3af09c3 1-2,7,9-14,17-49,53-65,67-72,75-120,136-137,196
+  s_03a0edaff23636::t_6cf599e2227a75 66,73-74
+  s_03a0edaff23636::t_01cb9a9ae7375b 121-133
+  s_03a0edaff23636::t_fb48351c91b295 3-6,8,15-16,50-52,134-135,138-195
+crates/daemon/src/main.rs
+  s_03a0edaff23636::t_eac8c2d0a0374b 3,10,66-67,75-76
+apps/desktop/src/App.test.tsx
+  s_03a0edaff23636::t_41c6ec17c84ec5 1-124
+docs/agent-devkit/changes/archive/s1-10-ui-state/design.md
+  s_03a0edaff23636::t_6719338b14f12c 1-71
+Cargo.lock
+  s_03a0edaff23636::t_43cf29a77a8805 467,588-593,596-597,2085,2581-2606,3317-3374
+apps/desktop/src-tauri/src/daemon_client/spawn.rs
+  s_03a0edaff23636::t_75a542f99576e5 1-122
+docs/agent-devkit/changes/archive/s1-04-daemon-server/tasks.md
+  s_03a0edaff23636::t_cf004397b53771 17-21,34-35,43-44,52-53,61-62,70-71,75-76
+docs/agent-devkit/changes/archive/s1-07-sessions/tasks.md
+  s_03a0edaff23636::t_a6bcc29ce5a6d9 17-18,20-21,34-35,43-44,52-53,57-58,62-64
+docs/agent-devkit/changes/archive/s1-09-tauri-bridge/tasks.md
+  s_03a0edaff23636::t_bb17bcac1191b5 18-19,21,35-36,44-45,53-54,62-63,71-72,76,80-82
+docs/agent-devkit/changes/archive/s1-10-ui-state/tasks.md
+  s_03a0edaff23636::t_c1c1e83126dd2d 18-19,21,35-36,44-45,53-54,62-63,67,71-73
+docs/agent-devkit/changes/archive/s1-11-ui-terminal/tasks.md
+  s_03a0edaff23636::t_7af0296cb0e394 17-18,20,34-35,43-44,48,52-54
+docs/agent-devkit/changes/archive/s1-12-ui-session/tasks.md
+  s_03a0edaff23636::t_c6d21c9c814a40 17-18,20,34-35,43-44,52-53,57,61-63
+pnpm-lock.yaml
+  s_03a0edaff23636::t_ec84f1b57f7ff6 13-27,34-36,44-49,59-61,71-73,77-145,348-362,434-467,612-657,661-671,676-678,683-696,714-720,725-736,877-884,888-893,899-905,917-924,930-932,937-940,946-949,957-959,967-974,979-993,999-1002,1046-1132,1135-1189,1326-1336,1384-1419,1493-1528,1531-1541,1544-1545,1551-1560,1570-1577,1580-1606,1705-1708,1713-1718,1721-1726,1737-1744,1750-1751,1754-1755,1777-1780,1785-1786,1791-1794,1800-1813,1837-1838,1849-1896
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e075f405648ab0600627e7c8efb721c7efeec359",
+  "prompts": {},
+  "sessions": {
+    "s_01cc1ed4670040": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18a39-1e32-7fa1-9f8b-defc30897400",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_03a0edaff23636": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d66e2188-40c8-4e05-bb9c-b4593115b43b",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
