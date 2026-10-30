@@ -24,10 +24,6 @@ impl Paths {
         Ok(Self { dir })
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     pub fn lock(&self) -> PathBuf {
         self.dir.join("daemon.lock")
     }
@@ -73,14 +69,15 @@ mod tests {
     #[test]
     fn at_creates_a_0700_directory_and_names_the_four_files() {
         let temp = TempDir::new("paths");
-        let paths = Paths::at(temp.path().join("nested/goko")).expect("create paths");
+        let dir = temp.path().join("nested/goko");
+        let paths = Paths::at(&dir).expect("create paths");
 
-        let mode = std::fs::metadata(paths.dir()).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
-        assert_eq!(paths.lock(), paths.dir().join("daemon.lock"));
-        assert_eq!(paths.socket(), paths.dir().join("daemon.sock"));
-        assert_eq!(paths.token(), paths.dir().join("daemon.token"));
-        assert_eq!(paths.log(), paths.dir().join("daemon.log"));
+        assert_eq!(paths.lock(), dir.join("daemon.lock"));
+        assert_eq!(paths.socket(), dir.join("daemon.sock"));
+        assert_eq!(paths.token(), dir.join("daemon.token"));
+        assert_eq!(paths.log(), dir.join("daemon.log"));
     }
 
     #[test]

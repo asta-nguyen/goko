@@ -7,7 +7,7 @@
     "icon": ["icons/icon.png"]
   },
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "cargo build -p daemon --bin gokod && pnpm dev",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

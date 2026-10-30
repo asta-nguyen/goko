@@ -46,9 +46,10 @@ async fn nothing_is_served_before_the_hello() {
     let server = TestServer::start();
     let mut client = server.connect().await;
 
-    let reply = client
-        .request(json!({"type": "system.health", "id": 1}))
+    client
+        .send(&json!({"type": "system.health", "id": 1}))
         .await;
+    let reply = client.recv().await.expect("error response");
 
     assert_eq!(reply["error"]["code"], "malformed");
     assert!(reply.get("result").is_none());

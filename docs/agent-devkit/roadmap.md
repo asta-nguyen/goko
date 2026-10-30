@@ -27,15 +27,15 @@ starts only after its dependencies are archived.
 | [s1-01-repo-init](changes/archive/s1-01-repo-init/design.md) | git, pnpm and Cargo workspaces, crate skeletons | none | 2 |
 | [s1-02-ui-shell](changes/archive/s1-02-ui-shell/design.md) | Vite/React/Tailwind scaffold, theme tokens, Tauri window | 01 | 3 |
 | [s1-03-protocol](changes/archive/s1-03-protocol/design.md) | frame codec, session types, messages | 01 | 3 |
-| [s1-04-daemon-server](changes/s1-04-daemon-server/design.md) | paths, single-instance lock, token, authed socket server, `gokod` main | 01, 03 | 5 |
+| [s1-04-daemon-server](changes/archive/s1-04-daemon-server/design.md) | paths, single-instance lock, token, authed socket server, `gokod` main | 01, 03 | 5 |
 | [s1-05-pty-core](changes/archive/s1-05-pty-core/design.md) | ring buffer, PTY spawn/write/resize, process-group signals | 01 | 4 |
-| [s1-06-pty-streaming](changes/s1-06-pty-streaming/design.md) | gap-free subscribe, slow-consumer drop | 05 | 2 |
-| [s1-07-sessions](changes/s1-07-sessions/design.md) | state machine, `SessionManager`, shutdown | 03, 05, 06 | 3 |
-| [s1-08-daemon-ipc](changes/s1-08-daemon-ipc/design.md) | `session.*` / `terminal.*` over the socket, daemon e2e test | 04, 06, 07 | 4 |
-| [s1-09-tauri-bridge](changes/s1-09-tauri-bridge/design.md) | daemon client, spawn + reconnect, commands, events, terminal Channel | 02, 03, 08 | 5 |
-| [s1-10-ui-state](changes/s1-10-ui-state/design.md) | Vitest, typed service, TanStack Query cache with event sync, UI store | 02, 09 | 4 |
-| [s1-11-ui-terminal](changes/s1-11-ui-terminal/design.md) | `TerminalController`, `TerminalView` | 10 | 2 |
-| [s1-12-ui-session](changes/s1-12-ui-session/design.md) | new-session form, controls, session list, app composition | 09, 10, 11 | 3 |
+| [s1-06-pty-streaming](changes/archive/s1-06-pty-streaming/design.md) | gap-free subscribe, slow-consumer drop | 05 | 2 |
+| [s1-07-sessions](changes/archive/s1-07-sessions/design.md) | state machine, `SessionManager`, shutdown | 03, 05, 06 | 3 |
+| [s1-08-daemon-ipc](changes/archive/s1-08-daemon-ipc/design.md) | `session.*` / `terminal.*` over the socket, daemon e2e test | 04, 06, 07 | 4 |
+| [s1-09-tauri-bridge](changes/archive/s1-09-tauri-bridge/design.md) | daemon client, spawn + reconnect, commands, events, terminal Channel | 02, 03, 08 | 5 |
+| [s1-10-ui-state](changes/archive/s1-10-ui-state/design.md) | Vitest, typed service, TanStack Query cache with event sync, UI store | 02, 09 | 4 |
+| [s1-11-ui-terminal](changes/archive/s1-11-ui-terminal/design.md) | `TerminalController`, `TerminalView` | 10 | 2 |
+| [s1-12-ui-session](changes/archive/s1-12-ui-session/design.md) | new-session form, controls, session list, app composition | 09, 10, 11 | 3 |
 | [s1-13-acceptance](changes/s1-13-acceptance/design.md) | manual checklist, `ARCHITECTURE.md` | all | 1 |
 
 Parallel tracks once s1-01 is done: protocol → daemon (03 → 04, and 05 → 06 → 07 → 08)

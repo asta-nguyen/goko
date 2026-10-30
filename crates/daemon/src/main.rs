@@ -1,12 +1,13 @@
 use daemon::lock::{InstanceLock, LockError};
 use daemon::paths::Paths;
+use daemon::session::SessionManager;
 use daemon::{auth, server};
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::process::ExitCode;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
@@ -62,7 +63,8 @@ async fn run() -> io::Result<ExitCode> {
         paths.socket().display()
     );
 
-    server::serve(listener, token, async {
+    let sessions = Arc::new(SessionManager::new());
+    server::serve(listener, token, Arc::clone(&sessions), async {
         tokio::select! {
             _ = terminate.recv() => {}
             _ = interrupt.recv() => {}
@@ -70,6 +72,8 @@ async fn run() -> io::Result<ExitCode> {
     })
     .await?;
 
+    tracing::info!("shutting down");
+    sessions.shutdown().await;
     // Best effort: the daemon is exiting either way.
     let _ = std::fs::remove_file(paths.socket());
     tracing::info!("gokod stopped");

@@ -1,64 +1,10 @@
 mod common;
 
-use common::{Client, TempDir};
+use common::{connect, Daemon, TempDir, GOKOD};
 use daemon::paths::Paths;
 use serde_json::json;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
-use tokio::net::UnixStream;
-
-const GOKOD: &str = env!("CARGO_BIN_EXE_gokod");
-
-/// A running `gokod` that is killed when dropped, so a failed test leaves nothing behind.
-struct Daemon(Child);
-
-impl Daemon {
-    fn start(home: &TempDir) -> Self {
-        let child = Command::new(GOKOD)
-            .env("GOKO_HOME", home.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start gokod");
-        Self(child)
-    }
-
-    fn pid(&self) -> libc::pid_t {
-        self.0.id() as libc::pid_t
-    }
-
-    /// Wait for the process to exit, returning whether it did within `limit`.
-    async fn exited_within(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
-        let deadline = Instant::now() + limit;
-        while Instant::now() < deadline {
-            if let Some(status) = self.0.try_wait().expect("poll gokod") {
-                return Some(status);
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        None
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-async fn connect(paths: &Paths) -> Client {
-    // A successful connect proves a live daemon bound the socket, and the daemon writes
-    // the token before binding, so the file read below is current even after a crash.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while UnixStream::connect(paths.socket()).await.is_err() {
-        assert!(Instant::now() < deadline, "gokod did not start serving");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let token = std::fs::read_to_string(paths.token()).expect("read the token file");
-    Client::authenticated(&paths.socket(), &token).await
-}
+use std::process::Command;
+use std::time::Duration;
 
 #[tokio::test]
 async fn gokod_serves_health_and_a_second_instance_exits_cleanly() {

@@ -7,9 +7,11 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 const MAX_DIMENSION: u16 = 1000;
+/// Chunks a subscriber may have queued before it is dropped as lagging.
+const SUBSCRIBER_QUEUE: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum PtyError {
@@ -53,6 +55,64 @@ pub struct SpawnSpec {
     pub rows: u16,
 }
 
+/// The replay window at the moment of subscribing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub replay_from: u64,
+    pub bytes: Vec<u8>,
+    pub next_seq: u64,
+}
+
+/// What a subscriber receives after its snapshot. `Lagged` and `Closed` are final.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamItem {
+    /// Output starting at byte offset `seq`.
+    Chunk { seq: u64, bytes: Arc<[u8]> },
+    /// The subscriber's queue filled up and it was removed; subscribe again.
+    Lagged,
+    /// The process's output ended.
+    Closed,
+}
+
+/// The replay buffer and its subscribers behind one lock, so a snapshot and a
+/// registration are atomic with respect to the reader's append and fan-out.
+struct Shared {
+    buffer: RingBuffer,
+    subscribers: Vec<mpsc::Sender<StreamItem>>,
+    closed: bool,
+}
+
+impl Shared {
+    fn publish(&mut self, bytes: &[u8]) {
+        let seq = self.buffer.append(bytes);
+        if self.subscribers.is_empty() {
+            return;
+        }
+
+        let bytes: Arc<[u8]> = Arc::from(bytes);
+        self.subscribers.retain(|subscriber| {
+            // Each queue has one slot beyond SUBSCRIBER_QUEUE, kept for the final item.
+            if subscriber.capacity() <= 1 {
+                let _ = subscriber.try_send(StreamItem::Lagged);
+                return false;
+            }
+            subscriber
+                .try_send(StreamItem::Chunk {
+                    seq,
+                    bytes: Arc::clone(&bytes),
+                })
+                .is_ok()
+        });
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+        for subscriber in self.subscribers.drain(..) {
+            let _ = subscriber.try_send(StreamItem::Closed);
+        }
+    }
+}
+
 type ExitState = Option<Result<ExitStatus, PtyError>>;
 type PtyReader = Box<dyn Read + Send>;
 type PtyWriter = Box<dyn Write + Send>;
@@ -61,7 +121,7 @@ pub struct PtyProcess {
     pid: libc::pid_t,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     writer: Mutex<PtyWriter>,
-    buffer: Arc<Mutex<RingBuffer>>,
+    shared: Arc<Mutex<Shared>>,
     exit_state: watch::Receiver<ExitState>,
 }
 
@@ -115,8 +175,12 @@ impl PtyProcess {
             ));
         };
 
-        let buffer = Arc::new(Mutex::new(RingBuffer::new()));
-        if let Err(error) = spawn_reader(reader, Arc::clone(&buffer)) {
+        let shared = Arc::new(Mutex::new(Shared {
+            buffer: RingBuffer::new(),
+            subscribers: Vec::new(),
+            closed: false,
+        }));
+        if let Err(error) = spawn_reader(reader, Arc::clone(&shared)) {
             let _ = signal_group(pid, libc::SIGKILL);
             let _ = child.wait();
             return Err(PtyError::Io(format!(
@@ -136,7 +200,7 @@ impl PtyProcess {
             pid,
             master: Mutex::new(master),
             writer: Mutex::new(writer),
-            buffer,
+            shared,
             exit_state,
         })
     }
@@ -188,7 +252,34 @@ impl PtyProcess {
 
     /// Return the current replay window as (oldest offset, bytes, next offset).
     pub fn buffer(&self) -> (u64, Vec<u8>, u64) {
-        lock_unpoisoned(&self.buffer).snapshot()
+        lock_unpoisoned(&self.shared).buffer.snapshot()
+    }
+
+    /// Attach a subscriber. The snapshot and the registration happen under the lock the
+    /// reader appends under, so every byte is either in the snapshot or delivered live
+    /// as a `Chunk` whose `seq` continues from `snapshot.next_seq`. After the output has
+    /// ended the receiver yields `Closed` straight away.
+    pub fn subscribe(&self) -> (Snapshot, mpsc::Receiver<StreamItem>) {
+        let mut shared = lock_unpoisoned(&self.shared);
+        let (replay_from, bytes, next_seq) = shared.buffer.snapshot();
+        let (sender, receiver) = mpsc::channel(SUBSCRIBER_QUEUE + 1);
+        if shared.closed {
+            let _ = sender.try_send(StreamItem::Closed);
+        } else {
+            shared.subscribers.push(sender);
+        }
+        let snapshot = Snapshot {
+            replay_from,
+            bytes,
+            next_seq,
+        };
+        (snapshot, receiver)
+    }
+
+    /// Number of attached subscribers; one whose receiver was dropped leaves on the next
+    /// output.
+    pub fn subscriber_count(&self) -> usize {
+        lock_unpoisoned(&self.shared).subscribers.len()
     }
 
     /// Wait for the child process to exit. Multiple callers can await the same status.
@@ -233,7 +324,7 @@ fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
     }
 }
 
-fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
+pub(crate) fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
     if !(1..=MAX_DIMENSION).contains(&cols) || !(1..=MAX_DIMENSION).contains(&rows) {
         return Err(PtyError::InvalidArgument(format!(
             "PTY dimensions must be between 1 and {MAX_DIMENSION} columns and rows"
@@ -244,7 +335,7 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
 
 fn spawn_reader(
     mut reader: PtyReader,
-    buffer: Arc<Mutex<RingBuffer>>,
+    shared: Arc<Mutex<Shared>>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("gokod-pty-reader".to_owned())
@@ -253,11 +344,10 @@ fn spawn_reader(
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
-                    Ok(count) => {
-                        lock_unpoisoned(&buffer).append(&chunk[..count]);
-                    }
+                    Ok(count) => lock_unpoisoned(&shared).publish(&chunk[..count]),
                 }
             }
+            lock_unpoisoned(&shared).close();
         })
 }
 

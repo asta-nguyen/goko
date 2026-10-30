@@ -1,49 +1,42 @@
 #![allow(dead_code)]
 
 use daemon::paths::Paths;
+use daemon::session::SessionManager;
 use daemon::{auth, server};
 use protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::fs;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-
-/// A unique temporary directory removed on drop.
-pub struct TempDir(PathBuf);
-
-impl TempDir {
-    pub fn new(label: &str) -> Self {
-        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("gokod-{label}-{}-{id}", std::process::id()));
-        fs::create_dir_all(&path).expect("create temporary directory");
-        Self(path)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "../../src/test_support.rs"]
+mod temp_dir;
+pub use temp_dir::TempDir;
 
 /// A daemon server running in this process, stopped when dropped.
 pub struct TestServer {
     pub paths: Paths,
     pub token: String,
+    pub sessions: Arc<SessionManager>,
     _shutdown: oneshot::Sender<()>,
     _home: TempDir,
+}
+
+impl Drop for TestServer {
+    /// Leave no session process behind, even when a test fails.
+    fn drop(&mut self) {
+        for info in self.sessions.list() {
+            let _ = self.sessions.stop(info.id, true);
+        }
+    }
 }
 
 impl TestServer {
@@ -58,12 +51,19 @@ impl TestServer {
         let listener = server::bind(&paths).expect("bind daemon socket");
         let token_text = fs::read_to_string(paths.token()).expect("read token file");
         let (shutdown, stop) = oneshot::channel::<()>();
-        tokio::spawn(server::serve(listener, token, async {
-            let _ = stop.await;
-        }));
+        let sessions = Arc::new(SessionManager::new());
+        tokio::spawn(server::serve(
+            listener,
+            token,
+            Arc::clone(&sessions),
+            async {
+                let _ = stop.await;
+            },
+        ));
         Self {
             paths,
             token: token_text,
+            sessions,
             _shutdown: shutdown,
             _home: home,
         }
@@ -78,16 +78,47 @@ impl TestServer {
     }
 }
 
-/// A test client speaking the framed protocol over the daemon socket.
-pub struct Client(UnixStream);
+/// A frame received from the daemon.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Incoming {
+    Control(Value),
+    Output {
+        session_id: [u8; 16],
+        seq: u64,
+        bytes: Vec<u8>,
+    },
+}
+
+/// A test client speaking the framed protocol over the daemon socket. A reader task
+/// parses frames into a channel, so waiting with a timeout never loses part of a frame.
+pub struct Client {
+    writer: OwnedWriteHalf,
+    incoming: mpsc::UnboundedReceiver<Incoming>,
+    /// Frames read past while waiting for a response, in arrival order.
+    pending: VecDeque<Incoming>,
+    next_id: u64,
+}
 
 impl Client {
     pub async fn connect(socket: &Path) -> Self {
-        Self(
-            UnixStream::connect(socket)
-                .await
-                .expect("connect to the daemon socket"),
-        )
+        let stream = UnixStream::connect(socket)
+            .await
+            .expect("connect to the daemon socket");
+        let (mut reader, writer) = stream.into_split();
+        let (sender, incoming) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(frame) = read_incoming(&mut reader).await {
+                if sender.send(frame).is_err() {
+                    return;
+                }
+            }
+        });
+        Self {
+            writer,
+            incoming,
+            pending: VecDeque::new(),
+            next_id: 1,
+        }
     }
 
     pub async fn authenticated(socket: &Path, token: &str) -> Self {
@@ -113,42 +144,83 @@ impl Client {
     }
 
     pub async fn send_raw(&mut self, bytes: &[u8]) {
-        self.0.write_all(bytes).await.expect("write to the daemon");
+        self.writer
+            .write_all(bytes)
+            .await
+            .expect("write to the daemon");
+    }
+
+    /// The next frame, or `None` once the daemon closed the connection.
+    pub async fn next(&mut self) -> Option<Incoming> {
+        if let Some(frame) = self.pending.pop_front() {
+            return Some(frame);
+        }
+        timeout(Duration::from_secs(5), self.incoming.recv())
+            .await
+            .expect("timed out waiting for the daemon")
+    }
+
+    /// The next frame if one arrives within `wait`; `None` on silence or close.
+    pub async fn next_within(&mut self, wait: Duration) -> Option<Incoming> {
+        if let Some(frame) = self.pending.pop_front() {
+            return Some(frame);
+        }
+        timeout(wait, self.incoming.recv()).await.ok().flatten()
     }
 
     /// The next control message, or `None` once the daemon closed the connection.
     pub async fn recv(&mut self) -> Option<Value> {
-        timeout(Duration::from_secs(5), async {
-            let mut header = [0_u8; 5];
-            match self.0.read_exact(&mut header).await {
-                Ok(_) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset
-                    ) =>
-                {
-                    return None;
-                }
-                Err(error) => panic!("read from the daemon: {error}"),
-            }
-            assert_eq!(header[4], 0, "the daemon sends control frames");
-            let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
-            let mut payload = vec![0_u8; length as usize];
-            self.0
-                .read_exact(&mut payload)
-                .await
-                .expect("read the frame payload");
-            Some(serde_json::from_slice(&payload).expect("the daemon sends JSON"))
-        })
-        .await
-        .expect("timed out waiting for the daemon")
+        match self.next().await? {
+            Incoming::Control(value) => Some(value),
+            other => panic!("expected a control message, got {other:?}"),
+        }
     }
 
-    /// Send a request and return the daemon's reply.
-    pub async fn request(&mut self, message: Value) -> Value {
+    /// Send a request and return its response. Events and output frames that arrive first
+    /// are kept for later `next` calls. Requests without an `id` are sent as written.
+    pub async fn request(&mut self, mut message: Value) -> Value {
+        if message.get("id").is_none() {
+            message["id"] = json!(self.next_id);
+            self.next_id += 1;
+        }
+        let id = message["id"].clone();
         self.send(&message).await;
-        self.recv().await.expect("a reply to the request")
+
+        let mut skipped = Vec::new();
+        let response = loop {
+            let frame = timeout(Duration::from_secs(5), self.incoming.recv())
+                .await
+                .expect("timed out waiting for the response")
+                .expect("the daemon closed the connection before responding");
+            match &frame {
+                Incoming::Control(value) if value.get("id") == Some(&id) => break value.clone(),
+                _ => skipped.push(frame),
+            }
+        };
+        self.pending.extend(skipped);
+        response
+    }
+}
+
+pub async fn read_incoming(reader: &mut (impl AsyncReadExt + Unpin)) -> Option<Incoming> {
+    let mut header = [0_u8; 5];
+    reader.read_exact(&mut header).await.ok()?;
+    let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    let mut payload = vec![0_u8; length];
+    reader.read_exact(&mut payload).await.ok()?;
+    match header[4] {
+        0 => Some(Incoming::Control(
+            serde_json::from_slice(&payload).expect("the daemon sends JSON"),
+        )),
+        1 => {
+            assert!(payload.len() >= 24, "output frame shorter than its header");
+            Some(Incoming::Output {
+                session_id: payload[..16].try_into().unwrap(),
+                seq: u64::from_be_bytes(payload[16..24].try_into().unwrap()),
+                bytes: payload[24..].to_vec(),
+            })
+        }
+        kind => panic!("the daemon sent an unknown frame kind {kind}"),
     }
 }
 
@@ -157,4 +229,62 @@ pub fn frame_bytes(kind: u8, payload: &[u8]) -> Vec<u8> {
     bytes.push(kind);
     bytes.extend_from_slice(payload);
     bytes
+}
+
+pub const GOKOD: &str = env!("CARGO_BIN_EXE_gokod");
+
+/// A running `gokod` that is killed when dropped, so a failed test leaves nothing behind.
+pub struct Daemon(pub Child);
+
+impl Daemon {
+    pub fn start(home: &TempDir) -> Self {
+        let child = Command::new(GOKOD)
+            .env("GOKO_HOME", home.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start gokod");
+        Self(child)
+    }
+
+    pub fn pid(&self) -> libc::pid_t {
+        self.0.id() as libc::pid_t
+    }
+
+    /// Wait for the process to exit, returning whether it did within `limit`.
+    pub async fn exited_within(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if let Some(status) = self.0.try_wait().expect("poll gokod") {
+                return Some(status);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+pub async fn connect(paths: &Paths) -> Client {
+    // A successful connect proves a live daemon bound the socket, and the daemon writes
+    // the token before binding, so the file read below is current even after a crash.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while UnixStream::connect(paths.socket()).await.is_err() {
+        assert!(Instant::now() < deadline, "gokod did not start serving");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let token = std::fs::read_to_string(paths.token()).expect("read the token file");
+    Client::authenticated(&paths.socket(), &token).await
+}
+
+pub fn process_exists(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }

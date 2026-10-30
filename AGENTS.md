@@ -12,7 +12,8 @@ The approved S1 plan places the Rust protocol and daemon in `crates/protocol/` a
 
 - `pnpm install` — passed with the empty `apps/*` workspace.
 - `cargo build --workspace`, `cargo fmt --check`, and `cargo clippy --workspace -- -D warnings` — passed.
-- `cargo run -q -p daemon --bin gokod -- --version` prints `gokod 0.1.0`; no args or an unsupported arg prints the usage and exits 2.
+- `cargo test --workspace` runs the protocol and daemon tests (the daemon integration tests start the real `gokod` in a temp `GOKO_HOME`).
+- `gokod --version` prints `gokod 0.1.0`; an unsupported arg prints the usage and exits 2; no args runs the daemon: it holds `daemon.lock` in `GOKO_HOME` (default `~/Library/Application Support/Goko`), serves `daemon.sock`, writes `daemon.token` and `daemon.log`, and exits cleanly on SIGTERM/SIGINT. A second `gokod` prints `gokod: already running` and exits 0.
 - The observed checks are recorded in [s1-01 task results](docs/agent-devkit/changes/archive/s1-01-repo-init/tasks.md).
 
 Root `dev`, `build`, and `typecheck` scripts target `apps/desktop`. `pnpm tauri dev` runs from `apps/desktop` (use `pnpm -C apps/desktop tauri dev`); Vite uses port 5173 with `strictPort`, so a stale dev server fails the launch. The root `test` script has no target until Vitest arrives in s1-10.
@@ -43,3 +44,6 @@ multi-pattern grep (fallback: `rg`). Use OpenEZ `code_outline` before
 reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
+
+
+You are responsible for managing the final outcomes of tasks. Use the Devin CLI—specifically the `swe-2-max` model with full permissions—to execute these tasks. Your role is to oversee the results; if any issues arise, instruct the `swe-2-max` model to fix them until the task is complete. Stick closely to the plan, and if you are unsure about anything or wish to propose an approach, ask for clarification. Since the `swe-2-max` model is free to use, leverage it for as much work as possible to conserve your own quota. Can add multi subagent `swe-2-max` to implement parallel tasks.

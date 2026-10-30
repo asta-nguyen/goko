@@ -6,6 +6,7 @@ pub mod lock;
 pub mod paths;
 pub mod pty;
 pub mod server;
+pub mod session;
 
 #[cfg(test)]
 mod test_support;

@@ -33,12 +33,16 @@ async fn version_reports_daemon_and_protocol_versions() {
 }
 
 #[tokio::test]
-async fn unimplemented_request_is_not_found_and_echoes_its_id() {
+async fn an_unknown_session_is_not_found_and_echoes_the_request_id() {
     let server = TestServer::start();
     let mut client = server.authenticated().await;
 
     let reply = client
-        .request(json!({"type": "session.list", "id": 9}))
+        .request(json!({
+            "type": "session.get",
+            "id": 9,
+            "session_id": "00000000-0000-4000-8000-000000000000",
+        }))
         .await;
 
     assert_eq!(reply["id"], 9);
@@ -61,7 +65,8 @@ async fn malformed_requests_get_an_error_and_the_connection_keeps_working() {
     assert_eq!(reply["id"], 4);
     assert_eq!(reply["error"]["code"], "malformed");
 
-    let reply = client.request(json!({"type": "system.health"})).await;
+    client.send(&json!({"type": "system.health"})).await;
+    let reply = client.recv().await.expect("error for a missing id");
     assert_eq!(reply["error"]["code"], "malformed");
 
     let reply = client
