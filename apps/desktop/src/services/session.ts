@@ -1,28 +1,23 @@
-import { Channel, invoke } from '@tauri-apps/api/core'
-import { toBridgeError } from './errors'
-import type { DaemonStatus, SessionInfo } from './types'
+import { Channel } from '@tauri-apps/api/core'
+import { call } from './call'
+import type { DaemonStatus, SessionInfo, SessionMeta } from './types'
 
+/** Exactly one of `command`/`agent`, and exactly one of `cwd`/`projectId`, is sent. */
 export interface CreateSessionInput {
-  command: string
-  cwd: string
+  command?: string
+  agent?: string
+  cwd?: string
+  projectId?: string
   cols: number
   rows: number
   title?: string
-}
-
-/** Every rejection leaves this module as a `BridgeError`. */
-async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  try {
-    return await invoke<T>(cmd, args)
-  } catch (e) {
-    throw toBridgeError(e)
-  }
 }
 
 export const sessionService = {
   create: (input: CreateSessionInput) => call<SessionInfo>('session_create', { ...input }),
   stop: (id: string, force: boolean) => call<void>('session_stop', { id, force }),
   list: () => call<SessionInfo[]>('session_list'),
+  meta: () => call<SessionMeta[]>('session_meta_list'),
   write: (id: string, data: string) => call<void>('terminal_write', { id, data }),
   resize: (id: string, cols: number, rows: number) => call<void>('terminal_resize', { id, cols, rows }),
   status: () => call<DaemonStatus>('daemon_status'),

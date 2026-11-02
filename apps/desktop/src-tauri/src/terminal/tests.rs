@@ -1,5 +1,8 @@
 use super::*;
-use crate::test_support::{fake_daemon, read_request, reply, send_json, send_output, Home};
+use crate::store::Storage;
+use crate::test_support::{
+    create_args, fake_daemon, read_request, reply, send_json, send_output, Home,
+};
 use protocol::session::SessionState;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,9 +46,9 @@ fn joined(chunks: &[(u64, Vec<u8>)], start: u64) -> Vec<u8> {
     bytes
 }
 
-async fn cat(bridge: &Bridge) -> SessionId {
+async fn cat(home: &Home, bridge: &Bridge) -> SessionId {
     let session = bridge
-        .session_create("cat", "/tmp".into(), 80, 24, None)
+        .session_create(&Storage::open(home.path()), create_args("cat", "/tmp"))
         .await
         .unwrap();
     assert_ne!(session.state, SessionState::Failed);
@@ -61,7 +64,7 @@ fn echoed(line: &str) -> Vec<u8> {
 async fn a_running_session_delivers_replay_then_live_bytes_contiguously() {
     let home = Home::new("term-live");
     let bridge = Bridge::new(home.path().to_owned());
-    let id = cat(&bridge).await;
+    let id = cat(&home, &bridge).await;
     bridge.terminal_write(id, "one\n").await.unwrap();
     // Let the output exist before subscribing, so it is replayed rather than live.
     let (first, mut seen) = sink();
@@ -82,7 +85,7 @@ async fn a_running_session_delivers_replay_then_live_bytes_contiguously() {
 async fn unsubscribe_then_subscribe_in_quick_succession_keeps_exactly_one_live_stream() {
     let home = Home::new("term-order");
     let bridge = Bridge::new(home.path().to_owned());
-    let id = cat(&bridge).await;
+    let id = cat(&home, &bridge).await;
     let (first, first_frames) = sink();
     bridge.terminal_subscribe(id, first).await.unwrap();
 
@@ -114,7 +117,7 @@ async fn unsubscribe_then_subscribe_in_quick_succession_keeps_exactly_one_live_s
 async fn a_closed_sink_makes_the_bridge_unsubscribe_from_the_daemon() {
     let home = Home::new("term-close");
     let bridge = Bridge::new(home.path().to_owned());
-    let id = cat(&bridge).await;
+    let id = cat(&home, &bridge).await;
     let (stream, mut frames) = sink();
     bridge.terminal_subscribe(id, stream).await.unwrap();
     bridge.terminal_write(id, "a\n").await.unwrap();

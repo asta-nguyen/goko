@@ -1,5 +1,6 @@
 use super::*;
-use crate::test_support::Home;
+use crate::store::Storage;
+use crate::test_support::{create_args, Home};
 use protocol::session::SessionId;
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -65,7 +66,7 @@ async fn a_state_change_arrives_as_updated_and_an_exit_also_as_exited() {
 
     let session = pump
         .bridge
-        .session_create("sleep 30", "/tmp".into(), 80, 24, None)
+        .session_create(&Storage::open(home.path()), create_args("sleep 30", "/tmp"))
         .await
         .unwrap();
     let updated = pump
@@ -99,7 +100,7 @@ async fn losing_the_daemon_reports_it_then_restarts_it_and_events_resume() {
 
     let session = pump
         .bridge
-        .session_create("sleep 30", "/tmp".into(), 80, 24, None)
+        .session_create(&Storage::open(home.path()), create_args("sleep 30", "/tmp"))
         .await
         .unwrap();
     pump.next("session://updated", is(session.id, "running"))
@@ -114,7 +115,7 @@ async fn a_daemons_own_exited_event_is_not_forwarded_twice() {
 
     let session = pump
         .bridge
-        .session_create("true", "/tmp".into(), 80, 24, None)
+        .session_create(&Storage::open(home.path()), create_args("true", "/tmp"))
         .await
         .unwrap();
     pump.next("session://exited", is(session.id, "exited"))

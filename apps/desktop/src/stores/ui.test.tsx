@@ -5,9 +5,10 @@ import { makeQueryClient, queryKeys } from '../queryClient'
 import type { SessionInfo } from '../services/types'
 import { useSelectedId, useUi } from './ui'
 
-vi.mock('../services/session', () => ({ sessionService: { list: vi.fn() } }))
+const { session } = vi.hoisted(() => ({ session: { list: vi.fn() } }))
+vi.mock('../services/session', () => ({ sessionService: session }))
 
-const session = (id: string): SessionInfo => ({
+const makeSession = (id: string): SessionInfo => ({
   id,
   title: id,
   argv: ['sh'],
@@ -24,7 +25,7 @@ const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider 
 
 beforeEach(() => {
   qc = makeQueryClient()
-  qc.setQueryData(queryKeys.sessions, [session('a'), session('b')])
+  qc.setQueryData(queryKeys.sessions, [makeSession('a'), makeSession('b')])
   useUi.setState({ selectedId: null })
 })
 
@@ -41,7 +42,7 @@ describe('useSelectedId', () => {
     act(() => useUi.getState().select('a'))
     expect(result.current).toBe('a')
 
-    act(() => void qc.setQueryData(queryKeys.sessions, [session('b')]))
+    act(() => void qc.setQueryData(queryKeys.sessions, [makeSession('b')]))
     await waitFor(() => expect(result.current).toBeNull())
     expect(useUi.getState().selectedId).toBe('a')
   })

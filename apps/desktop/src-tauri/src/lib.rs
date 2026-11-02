@@ -1,8 +1,10 @@
+pub mod agents;
 pub mod bridge;
 pub mod commands;
 pub mod daemon_client;
 pub mod error;
 pub mod events;
+pub mod store;
 pub mod terminal;
 
 #[cfg(test)]
@@ -23,6 +25,13 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::terminal_write,
         commands::terminal_resize,
         commands::daemon_status,
+        commands::project_add,
+        commands::project_list,
+        commands::project_remove,
+        commands::agent_list,
+        commands::session_meta_list,
+        commands::settings_get,
+        commands::settings_set,
         terminal::terminal_subscribe,
         terminal::terminal_unsubscribe,
     ]
@@ -32,8 +41,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let bridge = Bridge::new(daemon_client::home_dir()?);
+            let home = daemon_client::home_dir()?;
+            let bridge = Bridge::new(home.clone());
             app.manage(bridge.clone());
+            app.manage(store::Storage::open(&home));
             let app = app.handle().clone();
             events::spawn_pump(
                 bridge,

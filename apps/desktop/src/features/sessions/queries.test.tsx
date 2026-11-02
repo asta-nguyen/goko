@@ -3,12 +3,22 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { makeQueryClient, queryKeys, upsertSession } from '../../queryClient'
 import type { SessionInfo } from '../../services/types'
-import { useCreateSession, useDaemonStatus, useSession, useSessionList, useStopSession } from './queries'
+import {
+  useAgentList,
+  useCreateSession,
+  useDaemonStatus,
+  useSession,
+  useSessionList,
+  useSessionMetaList,
+  useStopSession,
+} from './queries'
 
-const { service } = vi.hoisted(() => ({
-  service: { list: vi.fn(), create: vi.fn(), stop: vi.fn(), status: vi.fn() },
+const { service, agents } = vi.hoisted(() => ({
+  service: { list: vi.fn(), create: vi.fn(), stop: vi.fn(), status: vi.fn(), meta: vi.fn() },
+  agents: { list: vi.fn() },
 }))
 vi.mock('../../services/session', () => ({ sessionService: service }))
+vi.mock('../../services/agents', () => ({ agentService: agents }))
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo => ({
   id,
@@ -29,6 +39,7 @@ const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider 
 beforeEach(() => {
   qc = makeQueryClient()
   Object.values(service).forEach((f) => f.mockReset())
+  Object.values(agents).forEach((f) => f.mockReset())
 })
 
 describe('query client', () => {
@@ -84,6 +95,22 @@ describe('useDaemonStatus', () => {
   })
 })
 
+describe('useAgentList / useSessionMetaList', () => {
+  it('loads through their query keys', async () => {
+    agents.list.mockResolvedValue([{ id: 'shell', label: 'Shell', available: true, path: '/bin/zsh' }])
+    service.meta.mockResolvedValue([
+      { session_id: 'a', project_id: 'p1', agent: 'claude', argv: ['claude'], cwd: '/w', title: '', created_at: 1 },
+    ])
+    const { result } = renderHook(() => ({ agents: useAgentList(), meta: useSessionMetaList() }), { wrapper })
+    await waitFor(() => expect(result.current.agents.data).toHaveLength(1))
+    await waitFor(() => expect(result.current.meta.data).toHaveLength(1))
+    expect(result.current.agents.data?.[0].id).toBe('shell')
+    expect(result.current.meta.data?.[0].session_id).toBe('a')
+    expect(qc.getQueryData(queryKeys.agents)).toHaveLength(1)
+    expect(qc.getQueryData(queryKeys.sessionMeta)).toHaveLength(1)
+  })
+})
+
 describe('useCreateSession', () => {
   const input = { command: 'sh', cwd: '/tmp', cols: 80, rows: 24 }
 
@@ -100,6 +127,22 @@ describe('useCreateSession', () => {
     await act(async () => resolve(session('b')))
     await waitFor(() => expect(result.current.create.isSuccess).toBe(true))
     expect(result.current.list.data?.map((s) => s.id)).toEqual(['a', 'b'])
+  })
+
+  it('invalidates sessionMeta so a preloaded result cannot hide the new session', async () => {
+    service.meta.mockResolvedValue([])
+    const { result } = renderHook(
+      () => ({ meta: useSessionMetaList(), create: useCreateSession() }),
+      { wrapper },
+    )
+    await waitFor(() => expect(result.current.meta.data).toEqual([]))
+
+    service.meta.mockResolvedValue([
+      { session_id: 'b', project_id: null, agent: 'custom', argv: ['cat'], cwd: '/tmp', title: '', created_at: 2 },
+    ])
+    service.create.mockResolvedValue(session('b'))
+    await act(async () => result.current.create.mutateAsync(input))
+    await waitFor(() => expect(result.current.meta.data?.[0]?.session_id).toBe('b'))
   })
 
   it('exposes a rejected create as a BridgeError', async () => {

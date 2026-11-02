@@ -31,3 +31,37 @@ export interface DaemonStatus {
   default_shell: string
   home: string
 }
+
+// Hand-mirrored from src-tauri `ProjectView`: the stored row plus `missing` at read time.
+export interface Project {
+  id: string
+  name: string
+  root: string
+  /** Unix epoch milliseconds. */
+  created_at: number
+  /** The root is gone from disk. */
+  missing: boolean
+}
+
+// Hand-mirrored from src-tauri `AgentInfo` (`agent_list`).
+export interface AgentInfo {
+  id: string
+  label: string
+  available: boolean
+  /** Resolved on PATH; `null` when the agent is not installed. */
+  path: string | null
+}
+
+// Hand-mirrored from src-tauri `SessionMeta` (`session_meta_list`); app-owned, joins
+// daemon `SessionInfo.id` to `session_id`. A daemon session with no row is unassigned.
+export interface SessionMeta {
+  session_id: string
+  project_id: string | null
+  /** The adapter id, or `custom` for a free-form command. */
+  agent: string
+  argv: string[]
+  cwd: string
+  title: string
+  /** Unix epoch milliseconds. */
+  created_at: number
+}

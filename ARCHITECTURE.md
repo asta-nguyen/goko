@@ -1,4 +1,4 @@
-# Goko architecture (S1 vertical slice)
+# Goko architecture (S1 and S2)
 
 This describes what is built, taken from the code, not from the plans. The plans and
 their results are in [docs/agent-devkit](docs/agent-devkit/INDEX.md).
@@ -23,7 +23,36 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
 - **The UI** never sees the socket. It calls Tauri commands, listens for Tauri events, and
   receives terminal bytes on a Tauri `Channel`.
 - Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
-  holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), and `daemon.log`.
+  holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
+  and the app-owned `goko.db` (0600).
+
+## App-owned project metadata (S2)
+
+The Tauri process opens `goko.db` in the support directory. SQLite `user_version` controls
+schema migrations; schema v1 contains `projects`, `sessions`, and `settings`. This database
+stores project registration and session metadata, not PTY state or terminal output. The app
+continues to call `gokod` for process creation and session state, and the protocol and daemon
+remain unchanged.
+
+Schema v1 is `projects(id, name, root UNIQUE, created_at)`,
+`sessions(id, project_id REFERENCES projects ON DELETE SET NULL, agent, argv JSON, cwd,
+title, created_at)`, and `settings(key, value)`.
+
+- A project is a registered, canonical local directory. Adding or removing its row never
+  changes files in that directory. Duplicate canonical roots return the existing project;
+  removing a project sets its session metadata's `project_id` to `NULL` and does not stop
+  those sessions.
+- `sessions` is keyed by the daemon session UUID and stores the optional project, agent id,
+  argv JSON, cwd, title, and creation time. The row is written best-effort after the daemon
+  successfully starts a session. A storage error leaves the process running and the session
+  unassigned in the UI.
+- `settings` stores `active_project_id` and `last_agent`. Per-project last-session selection
+  remains in UI memory for the current app run; it is not persisted.
+- Agent adapters (`shell`, `claude`, `codex`, `opencode`) are discovered from `PATH` by the
+  app. Launch resolves the executable again and sends an argv array through the bridge; the
+  daemon remains the only PTY and child-process authority.
+- On daemon restart, live sessions are gone while metadata rows remain in SQLite. The app
+  hides metadata for sessions absent from `session.list`; S2 does not reattach them.
 
 ## Daemon lifecycle
 
@@ -141,17 +170,17 @@ end-to-end output backpressure is not implemented in S1.
 Observed against the real `gokod` (see the [agent-devkit change index](docs/agent-devkit/INDEX.md)):
 
 - **App quit:** In a direct-binary `.app` run, Cmd-Q closed the app and left `gokod` holding
-  its lock with the live shell still running. A temporary launcher-wrapper run instead
-  logged daemon shutdown and lost the session. The different outcomes leave normally
-  packaged app behavior unverified.
+  its lock with the live shell still running. Relaunching restored the `zsh running` session
+  row. A temporary launcher-wrapper run instead logged daemon shutdown and lost the session.
+  The different outcomes leave normally packaged app behavior unverified.
 - **`kill -9` of the daemon:** the app reconnected to a fresh daemon with an empty session
-  list. The first UI read already showed `Daemon connected`, so the disconnected banner was
-  not captured. The previous live shell PID was absent after restart, consistent with the
-  daemon's PTY master closing; reattaching to survivors is S4.
+  list, and the previous shell PID was absent. The first UI read already showed
+  `Daemon connected`, so the disconnected banner was not captured. Reattaching to survivors
+  is S4.
 - **SIGTERM of the daemon:** every session process is gone before it exits.
 
-## What S1 does not do
+## What S2 does not do
 
-SQLite, agent adapters, projects and the sidebar, Git, reattach after the app restarts,
-terminal-emulator snapshots, a command palette, settings, packaging, and benchmarks are
-later sub-projects (see [the roadmap](docs/agent-devkit/roadmap.md)).
+Git/worktrees, GUI reattach, terminal-emulator snapshots, interrupted-session reconciliation,
+a command palette, settings screens, packaging, and benchmarks are later sub-projects (see
+[the roadmap](docs/agent-devkit/roadmap.md)).

@@ -24,15 +24,19 @@ beforeEach(() => {
 describe('sessionService commands', () => {
   it('calls each command with its payload', async () => {
     await sessionService.create({ command: 'sh -l', cwd: '/tmp', cols: 80, rows: 24, title: 't' })
+    await sessionService.create({ agent: 'claude', projectId: 'p1', cols: 80, rows: 24 })
     await sessionService.stop('a', true)
     await sessionService.list()
+    await sessionService.meta()
     await sessionService.write('a', 'ls\r')
     await sessionService.resize('a', 100, 30)
     await sessionService.status()
     expect(invoke.mock.calls).toEqual([
       ['session_create', { command: 'sh -l', cwd: '/tmp', cols: 80, rows: 24, title: 't' }],
+      ['session_create', { agent: 'claude', projectId: 'p1', cols: 80, rows: 24 }],
       ['session_stop', { id: 'a', force: true }],
       ['session_list', undefined],
+      ['session_meta_list', undefined],
       ['terminal_write', { id: 'a', data: 'ls\r' }],
       ['terminal_resize', { id: 'a', cols: 100, rows: 30 }],
       ['daemon_status', undefined],

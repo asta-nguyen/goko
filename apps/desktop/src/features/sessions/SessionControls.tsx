@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { useProjectList } from '../projects/queries'
 import { StateBadge } from './StateBadge'
-import { useDaemonStatus, useSession, useStopSession } from './queries'
+import { agentLabel, useAgentList, useDaemonStatus, useSession, useSessionMetaList, useStopSession } from './queries'
 
 const FORCE_KILL_AFTER_MS = 5000
 
@@ -15,6 +17,9 @@ export function SessionControls({ sessionId }: { sessionId: string }) {
   const { data: session } = useSession(sessionId)
   const { data: status } = useDaemonStatus()
   const stop = useStopSession()
+  const { data: metas } = useSessionMetaList()
+  const { data: projects } = useProjectList()
+  const { data: agents = [] } = useAgentList()
 
   const state = session?.state
   const live = state === 'created' || state === 'starting' || state === 'running' || state === 'stopping'
@@ -43,11 +48,16 @@ export function SessionControls({ sessionId }: { sessionId: string }) {
 
   const disabled = !live || status?.connected === false
   const elapsed = (live ? now : (session.ended_at ?? now)) - session.started_at
-  const btn = 'rounded border border-border px-2 py-1 text-sm hover:bg-panel disabled:opacity-50'
+  const meta = metas?.find((m) => m.session_id === sessionId)
+  const projectName = projects?.find((p) => p.id === meta?.project_id)?.name
 
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-border bg-panel px-4 py-2">
-      <span className="min-w-0 truncate text-sm font-medium">{session.title || session.argv.join(' ')}</span>
+      <span className="min-w-0 truncate text-sm">
+        {projectName && <span className="text-muted">{projectName} › </span>}
+        {meta && <span className="text-muted">{agentLabel(agents, meta.agent)} · </span>}
+        <span className="font-medium">{session.title || session.argv.join(' ')}</span>
+      </span>
       <StateBadge state={session.state} />
       <span className="text-xs tabular-nums text-muted">{format(elapsed)}</span>
       <div className="ml-auto flex items-center gap-2">
@@ -56,18 +66,13 @@ export function SessionControls({ sessionId }: { sessionId: string }) {
             {stop.error.message}
           </span>
         )}
-        <button type="button" className={btn} disabled={disabled} onClick={() => stop.mutate({ id: sessionId, force: false })}>
+        <Button variant="outline" size="sm" disabled={disabled} onClick={() => stop.mutate({ id: sessionId, force: false })}>
           Stop
-        </button>
+        </Button>
         {forceReady && (
-          <button
-            type="button"
-            className={`${btn} text-danger`}
-            disabled={disabled}
-            onClick={() => stop.mutate({ id: sessionId, force: true })}
-          >
+          <Button variant="destructive" size="sm" disabled={disabled} onClick={() => stop.mutate({ id: sessionId, force: true })}>
             Force kill
-          </button>
+          </Button>
         )}
       </div>
     </div>

@@ -10,6 +10,7 @@ pub enum Code {
     DaemonStartFailed,
     Timeout,
     Disconnected,
+    Storage,
     Daemon(ErrorCode),
 }
 
@@ -20,6 +21,7 @@ impl Serialize for Code {
             Self::DaemonStartFailed => serializer.serialize_str("daemon_start_failed"),
             Self::Timeout => serializer.serialize_str("timeout"),
             Self::Disconnected => serializer.serialize_str("disconnected"),
+            Self::Storage => serializer.serialize_str("storage"),
             Self::Daemon(code) => code.serialize(serializer),
         }
     }

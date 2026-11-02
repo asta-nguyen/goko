@@ -12,6 +12,8 @@ const CODES = [
   'not_found',
   'spawn_failed',
   'internal',
+  // app-owned SQLite store
+  'storage',
   'unknown',
 ] as const
 

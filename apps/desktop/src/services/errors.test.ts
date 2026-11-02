@@ -7,6 +7,14 @@ describe('toBridgeError', () => {
     expect(isBridgeError(e)).toBe(true)
   })
 
+  it('keeps a storage code', () => {
+    expect(toBridgeError({ code: 'storage', message: 'cannot open goko.db', hint: null })).toEqual({
+      code: 'storage',
+      message: 'cannot open goko.db',
+      hint: null,
+    })
+  })
+
   it('fills a missing hint with null', () => {
     expect(toBridgeError({ code: 'timeout', message: 'slow' })).toEqual({ code: 'timeout', message: 'slow', hint: null })
   })

@@ -37,6 +37,12 @@
       "skillPath": "skills/lean-audit/SKILL.md",
       "computedHash": "4a4bbfe7383358063fff3200d03e523f86980d4a0556c8fb94535ab20c71589d"
     },
+    "migrate-radix-to-base": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "skillPath": "skills/migrate-radix-to-base/SKILL.md",
+      "computedHash": "e1f2030ee5059be3dff0812ca0e4b995ee9fa3132176f049ebe6c90346a6755e"
+    },
     "plan-feature": {
       "source": "asta-nguyen/agent-devkit",
       "sourceType": "github",
@@ -66,6 +72,12 @@
       "sourceType": "github",
       "skillPath": "skills/setup-openez/SKILL.md",
       "computedHash": "d8a113ed5835f5cc4e4e06c794b0b7b220fcb7d97207b263af91091f227e8103"
+    },
+    "shadcn": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "skillPath": "skills/shadcn/SKILL.md",
+      "computedHash": "b864a958765563321f485a96f4d59c0bb6539f4286ab6d8b8b66895b7ebd302d"
     },
     "systematic-debugging": {
       "source": "asta-nguyen/agent-devkit",

@@ -3,6 +3,10 @@ import type { SessionInfo } from './services/types'
 
 export const queryKeys = {
   sessions: ['sessions'],
+  sessionMeta: ['session-meta'],
+  projects: ['projects'],
+  agents: ['agents'],
+  lastAgent: ['settings', 'last-agent'],
   daemonStatus: ['daemon-status'],
 } as const
 

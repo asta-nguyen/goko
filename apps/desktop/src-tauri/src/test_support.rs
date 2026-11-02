@@ -1,5 +1,6 @@
 //! Shared test fixtures: a temporary `GOKO_HOME` and the built `gokod`.
 
+use crate::commands::CreateArgs;
 use crate::daemon_client::read_frame;
 use protocol::frame::{self, Frame, FrameKind};
 use protocol::session::SessionId;
@@ -19,15 +20,19 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A unique temporary directory removed on drop. Keep labels short: a unix socket path
 /// must fit in about 100 bytes.
-struct TempDir(PathBuf);
+pub struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(label: &str) -> Self {
+    pub fn new(label: &str) -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("goko-br-{label}-{}-{id}", std::process::id()));
         fs::create_dir_all(&path).expect("create temporary directory");
         Self(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
     }
 }
 
@@ -135,6 +140,19 @@ pub fn gokod() -> &'static Path {
         std::env::set_var("GOKO_DAEMON_BIN", &script);
         script
     })
+}
+
+/// `CreateArgs` for a free-form `command` launched in `cwd` at 80x24.
+pub fn create_args(command: &str, cwd: &str) -> CreateArgs {
+    CreateArgs {
+        command: Some(command.into()),
+        agent: None,
+        project_id: None,
+        cwd: Some(cwd.into()),
+        title: None,
+        cols: 80,
+        rows: 24,
+    }
 }
 
 /// Stand-in daemon for what the real one cannot be made to do on demand (lag notices,

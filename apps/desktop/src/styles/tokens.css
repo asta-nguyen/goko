@@ -9,6 +9,7 @@
   --warning: #e8b86a;
   --danger: #e87575;
   --border: #2a3440;
+  --radius: 0.625rem;
 }
 
 html[data-theme='light'] {
