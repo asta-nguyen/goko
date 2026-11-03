@@ -1,15 +1,17 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ChevronRightIcon, FileIcon, FileWarningIcon, FolderIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
 import type { GitDiffRequest } from '../../services/git-view'
 import type { GitViewDiffLayer } from '../../services/types'
-import { CodeView, EmptyPane, ErrorPane, LoadingPane, RefreshButton, SplitPane, StaleNotice } from './panes'
-import { useGitChanges, useGitFile, useGitTree } from './queries'
+import { CodeView, EmptyPane, ErrorPane, FilterInput, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice } from './panes'
+import { MarkdownView, isMarkdownPath } from './MarkdownView'
+import { useGitChanges, useGitFile, useGitFileList, useGitTree } from './queries'
 
 const sizeLabel = (size: number) => (size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.round(size / 1024))} KiB`)
 
@@ -61,6 +63,7 @@ function TreeRows({
               <li key={entry.path}>
                 <button
                   type="button"
+                  data-nav-item
                   aria-expanded={isOpen}
                   onClick={() => onToggle(entry.path)}
                   style={indent}
@@ -90,6 +93,7 @@ function TreeRows({
             <li key={entry.path}>
               <button
                 type="button"
+                data-nav-item
                 aria-pressed={selected === entry.path}
                 onClick={() => onSelect(entry.path)}
                 style={{ paddingLeft: depth * 12 + 18 }}
@@ -123,12 +127,23 @@ export function EditorFiles({
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [path, setPath] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  const [mdView, setMdView] = useState<'preview' | 'raw'>('preview')
   const file = useGitFile(projectId, checkoutPath, path, active)
   // No polling here — one fresh status read powers the "show changes" link.
   const changes = useGitChanges(projectId, checkoutPath, active, false)
+  const fileList = useGitFileList(projectId, checkoutPath, active && filter.trim().length > 0)
+  const filtered = useMemo(
+    () =>
+      filter.trim()
+        ? (fileList.data ?? []).filter((item) => matchesQuery(item, filter)).slice(0, 200)
+        : null,
+    [fileList.data, filter],
+  )
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['git-tree', projectId, checkoutPath] })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.gitFileList(projectId, checkoutPath) })
     if (path !== null) void queryClient.invalidateQueries({ queryKey: queryKeys.gitFile(projectId, checkoutPath, path) })
   }
 
@@ -142,6 +157,8 @@ export function EditorFiles({
     return null
   }
   const changedLayer = path !== null ? layerFor(path) : null
+  const text = file.data?.kind === 'text' ? file.data.text : null
+  const markdown = text !== null && isMarkdownPath(file.data?.path)
 
   return (
     <SplitPane
@@ -151,19 +168,49 @@ export function EditorFiles({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Files</span>
             <RefreshButton label="Refresh file tree" isFetching={file.isFetching} onClick={refresh} />
           </header>
+          <div className="shrink-0 border-b border-border px-2 py-1">
+            <FilterInput label="Filter files" value={filter} onChange={setFilter} />
+          </div>
           <ScrollArea className="min-h-0 flex-1">
             <div className="p-1.5">
-              <TreeRows
-                projectId={projectId}
-                checkoutPath={checkoutPath}
-                directory=""
-                depth={0}
-                expanded={expanded}
-                onToggle={(directory) => setExpanded((current) => ({ ...current, [directory]: !current[directory] }))}
-                selected={path}
-                onSelect={setPath}
-                active={active}
-              />
+              {filtered === null ? (
+                <TreeRows
+                  projectId={projectId}
+                  checkoutPath={checkoutPath}
+                  directory=""
+                  depth={0}
+                  expanded={expanded}
+                  onToggle={(directory) => setExpanded((current) => ({ ...current, [directory]: !current[directory] }))}
+                  selected={path}
+                  onSelect={setPath}
+                  active={active}
+                />
+              ) : (
+                <ul className="m-0 list-none p-0">
+                  {filtered.map((item) => (
+                    <li key={item}>
+                      <button
+                        type="button"
+                        data-nav-item
+                        aria-pressed={path === item}
+                        onClick={() => setPath(item)}
+                        className={cn(
+                          'flex w-full items-center gap-1.5 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
+                          path === item && 'bg-secondary/70',
+                        )}
+                      >
+                        <FileIcon className="size-3.5 shrink-0 text-muted" aria-hidden />
+                        <span className="truncate font-mono text-xs" title={item}>{item}</span>
+                      </button>
+                    </li>
+                  ))}
+                  {filtered.length === 0 && (
+                    <li className="px-1 py-1 text-xs text-muted">
+                      {fileList.isPending ? 'Loading…' : fileList.isError ? 'Could not list files.' : 'No files match.'}
+                    </li>
+                  )}
+                </ul>
+              )}
             </div>
           </ScrollArea>
         </>
@@ -182,14 +229,32 @@ export function EditorFiles({
             <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium" title={file.data.path}>{file.data.path}</span>
             <Badge variant="secondary">{sizeLabel(file.data.size)}</Badge>
             {file.data.truncated && <Badge variant="warning">truncated</Badge>}
+            {markdown && (
+              <ToggleGroup
+                type="single"
+                size="sm"
+                value={mdView}
+                aria-label="Markdown view"
+                onValueChange={(value) => {
+                  if (value === 'preview' || value === 'raw') setMdView(value)
+                }}
+              >
+                <ToggleGroupItem value="preview">Preview</ToggleGroupItem>
+                <ToggleGroupItem value="raw">Raw</ToggleGroupItem>
+              </ToggleGroup>
+            )}
             {changedLayer && (
               <Button variant="outline" size="sm" onClick={() => onShowChanges({ layer: changedLayer, path })}>
                 Show changes
               </Button>
             )}
           </header>
-          {file.data.kind === 'text' && file.data.text !== null ? (
-            <CodeView text={file.data.text} />
+          {text !== null ? (
+            markdown && mdView === 'preview' ? (
+              <MarkdownView text={text} />
+            ) : (
+              <CodeView text={text} path={file.data.path} />
+            )
           ) : (
             <EmptyPane icon={<FileWarningIcon className="size-4" />} title={
               file.data.kind === 'binary'

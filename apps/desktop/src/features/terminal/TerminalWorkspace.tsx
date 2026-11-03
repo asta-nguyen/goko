@@ -288,11 +288,11 @@ export function TerminalWorkspace({
         }).finally(() => deleting.current.delete(pane.sessionId))
         continue
       }
-      if (starting(session) || session.state === 'stopping' || pane.stopRequestedAt !== null || stopped.current.has(pane.sessionId)) continue
+      if (starting(session) || pane.stopRequestedAt !== null || stopped.current.has(pane.sessionId)) continue
 
       stopped.current.add(pane.sessionId)
       markStopRequested(pane.sessionId, Date.now())
-      void sessionService.stop(pane.sessionId, false).then(async () => {
+      void sessionService.stop(pane.sessionId, true).then(async () => {
         await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
       }).catch((error: unknown) => {
         setCloseError(pane.sessionId, errorMessage(error))

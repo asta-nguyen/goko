@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { PlusIcon } from 'lucide-react'
+import { MoreHorizontalIcon, PlusIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -49,6 +49,28 @@ export function NewSessionMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={disabled} onSelect={onCustom}>Custom command…</DropdownMenuItem>
       </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+export function RowActionsMenu({
+  label,
+  children,
+  ...props
+}: { label: string; children: React.ReactNode } & React.ComponentProps<typeof Button>) {
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={label} className="text-muted hover:text-text" {...props}>
+              <MoreHorizontalIcon />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="end" className="w-56">{children}</DropdownMenuContent>
     </DropdownMenu>
   )
 }

@@ -7,7 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
 import type { GitViewCommit } from '../../services/types'
-import { ChangedFiles, DiffPatch, EmptyPane, ErrorPane, formatTime, LoadingPane, RefreshButton, SplitPane, StaleNotice } from './panes'
+import { ChangedFiles, DiffPatch, DiffViewToggle, EmptyPane, ErrorPane, FilterInput, formatTime, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice } from './panes'
 import { useGitDiff, useGitHistory } from './queries'
 
 const ROW_H = 44
@@ -103,6 +103,14 @@ export function EditorHistory({
   const commits = useMemo(() => history.data?.pages.flatMap((page) => page.commits) ?? [], [history.data])
   const rows = useMemo(() => laneLayout(commits), [commits])
   const [selected, setSelected] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  const visible = useMemo(
+    () =>
+      filter.trim()
+        ? commits.filter((commit) => matchesQuery(`${commit.id} ${commit.subject} ${commit.author}`, filter))
+        : commits,
+    [commits, filter],
+  )
 
   useEffect(() => {
     if (selected === null && commits.length > 0) {
@@ -140,14 +148,21 @@ export function EditorHistory({
               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">History</span>
               <RefreshButton label="Refresh history" isFetching={history.isFetching} onClick={refresh} />
             </header>
+            <div className="shrink-0 border-b border-border px-2 py-1">
+              <FilterInput label="Filter commits" value={filter} onChange={setFilter} />
+            </div>
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex">
-                <Graph rows={rows} />
+                {filter.trim() === '' && <Graph rows={rows} />}
                 <ul className="m-0 min-w-0 flex-1 list-none p-0">
-                  {commits.map((item) => (
+                  {visible.length === 0 && (
+                    <li className="px-2 py-2 text-xs text-muted">No commits match.</li>
+                  )}
+                  {visible.map((item) => (
                     <li key={item.id}>
                       <button
                         type="button"
+                        data-nav-item
                         aria-pressed={selected === item.id}
                         onClick={() => setSelected(item.id)}
                         className={cn(
@@ -210,6 +225,7 @@ export function EditorHistory({
                 <span className="font-mono">{commit.id.slice(0, 8)}</span> {commit.subject}
               </span>
               <span className="shrink-0 text-xs text-muted">{commit.author} · {formatTime(commit.time)}</span>
+              <DiffViewToggle />
             </header>
             <ChangedFiles files={diff.data.files} />
             <DiffPatch patch={diff.data.patch} truncated={diff.data.truncated} />

@@ -111,8 +111,8 @@ Change: Closing a pane or tab requests force-stop for every live session as soon
 
 Verify: `pnpm -C apps/desktop test TerminalWorkspace SessionControls` — closing a running or stopping pane calls stop with `force=true` immediately without the five-second delay; a created/starting pane remains visible until stop is accepted; natural exit skips stop; `session_delete` is not called until exit is confirmed; multi-pane tab close force-stops every live session and removes each pane only after its own exit and delete; failed force-stop and delete preserve a retryable closing item; retry repeats forced stop when needed; the separate Stop control remains graceful with Force kill offered after five seconds.
 
-Progress: todo
-Result: none
+Progress: done
+Result: `pnpm -C apps/desktop test TerminalWorkspace SessionControls` passed and fresh `pnpm -C apps/desktop test` and `pnpm -C apps/desktop typecheck` passed; close now sends `force=true` immediately for running and stopping sessions, created/starting panes stay visibly Closing until stoppable or naturally finished, exit-confirmed deletion and retryable force-stop/delete failures are covered, and SessionControls keeps graceful Stop with delayed Force kill.
 
 ### Task 7 — Resize ProjectTree and Editor panels
 
@@ -124,8 +124,8 @@ Change: Add pointer-drag and keyboard-adjustable separators with visible focus, 
 
 Verify: `pnpm -C apps/desktop test ResizableSplit App EditorWorkspace` — initial widths match 320/288 px; pointer drag and keyboard arrows change the right width; Home/End and drag clamp to the same minimum/maximum while preserving a 320 px main/detail area; a narrow window reduces the maximum and scrolls without shrinking either minimum; the ProjectTree width survives Terminal/Editor switches; the Editor list width is shared across section and view switches. Existing terminal separator pointer/keyboard tests continue to pass.
 
-Progress: todo
-Result: none
+Progress: done
+Result: `pnpm -C apps/desktop test ResizableSplit App EditorWorkspace` passed and fresh `pnpm -C apps/desktop test` (19 files, 185 tests) and `pnpm -C apps/desktop typecheck` passed; the shared `ResizableSplit` keeps the 320/288 px defaults, clamps pointer and keyboard input to bounds that shrink to preserve each 320 px sibling minimum, keeps minimums and scrolls on narrow rows, and holds both widths in `UiState` across view and Editor-section switches while resetting on restart.
 
 ### Task 8 — Architecture handoff and manual desktop acceptance
 
@@ -138,7 +138,7 @@ Change: Update the architecture document to describe UTF-8 child locale handling
 Verify: Run `cargo test --workspace`, `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `pnpm -C apps/desktop test`, `pnpm -C apps/desktop typecheck`, and `pnpm -C apps/desktop build`. Manually run the listed macOS Tauri acceptance cases; confirm that opening a Codex session fills the available terminal workspace, a split layout keeps every pane visible and fills that workspace, the app shell remains visible, each terminal fits its own cell, all ProjectTree/Editor/terminal separators respond to pointer and keyboard input within bounds, shared panel widths survive view switches, and workspace resizing preserves split ratios; confirm closing a live session force-kills immediately and its record disappears only after exit; record each pass/fail/not-run result. IME behavior cannot be verified in jsdom.
 
 Progress: in progress
-Result: Fresh automated checks passed: `cargo test --workspace` — 204 passed, `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `pnpm -C apps/desktop test` — 173 passed, `pnpm -C apps/desktop typecheck`, `pnpm -C apps/desktop build`, and `git diff --check HEAD`. Earlier isolated macOS acceptance passed for a single Shell pane filling the terminal area, two Shell tabs, nested left/right and top/bottom splits, selecting an existing session without duplication, and closing a split tab after process cleanup. Remaining manual checks were not run: Codex CLI launch, Telex/VNI composition and Vietnamese paste/output, child `locale charmap`, pointer/keyboard/window resizing, closing an already-exited session, retry after daemon disconnect, and project removal with a running pane. The current attempt could not expose the isolated window because `cua_repl` returned `Sky Computer Use native pipe startup failed`; the Codex CLI and native input method are not configured for this check.
+Result: Fresh final checks passed: `cargo test --workspace` (204 passed), `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo build --workspace`, `pnpm -C apps/desktop test` (19 files, 185 passed), `pnpm -C apps/desktop typecheck`, `pnpm -C apps/desktop build`, and `git diff --check HEAD`. Earlier isolated macOS acceptance passed for one Shell pane filling the terminal area, two tabs, nested left/right and top/bottom splits, selecting an existing session without duplication, and closing a split tab after cleanup. Manual acceptance of the new resizers and force-kill-on-close remains not run: CUA exposed only the existing `dev.goko.app` window, which contained active user sessions, so no controls were changed; the isolated dev server and its temporary daemon were stopped and its temporary home removed. Still not run: Telex/VNI input and Vietnamese paste/output, child `locale charmap`, launching Codex from the project tree, pointer/keyboard/window resizing in the native app, closing an already-exited session, retry after daemon disconnect, and project removal with a running pane. The Codex CLI and native input-method behavior were unavailable in this check.
 
 ## Files inspected, no change
 
@@ -155,7 +155,7 @@ Result: Fresh automated checks passed: `cargo test --workspace` — 204 passed, 
 
 ## Approval Gate
 
-Status: pending
+Status: approved
 
 ## Decision Log
 
@@ -174,13 +174,13 @@ Decision: When opening/selecting a Codex session, activate its tab and focus its
 ### D4 — Force-kill sessions when closing a pane or tab
 
 Question: What should Close do to a live terminal session?
-Decision: The user requested that closing a terminal panel force-kill its session and delete it immediately. The plan requests force-stop as soon as the daemon accepts it, waits for confirmed exit before using the existing delete path, and keeps failed cleanup visible and retryable. This material revision is pending joint approval.
+Decision: The user requested that closing a terminal panel force-kill its session and delete it immediately. The approved plan requests force-stop as soon as the daemon accepts it, waits for confirmed exit before using the existing delete path, and keeps failed cleanup visible and retryable.
 Impact: Supersedes D1 and Task 3's graceful-stop-on-close behavior; adds Task 6 and updates architecture/manual acceptance. The daemon's existing refusal to delete live sessions remains unchanged.
-Confirmed by user: 2026-11-03
+Confirmed by user: 2026-11-03 — approved with the revised design and task plan.
 
 ### D5 — Resize existing app and Editor panel boundaries
 
 Question: Which current panels need resize handles?
-Decision: The user requested resizing between screens and menu panels. This plan applies that to the fixed ProjectTree sidebar and the shared Editor list/detail boundary; terminal split separators already resize. The design uses existing widths as defaults and keeps new widths in memory for the app run. This material revision is pending joint approval.
+Decision: The user requested resizing between screens and menu panels. The approved plan applies that to the fixed ProjectTree sidebar and the shared Editor list/detail boundary; terminal split separators already resize. The design uses existing widths as defaults and keeps new widths in memory for the app run.
 Impact: Adds Task 7 and updates the architecture/manual acceptance; no project-tree contents, tab navigation, database schema, or dependency changes.
-Confirmed by user: 2026-11-03
+Confirmed by user: 2026-11-03 — approved with the revised design and task plan.

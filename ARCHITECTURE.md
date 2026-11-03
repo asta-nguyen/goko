@@ -59,6 +59,13 @@ title, created_at)`, and `settings(key, value)`.
   in-memory terminal workspace with tabs and nested split panes; opening a checkout with no
   tabs starts a Shell. Selecting a session focuses its existing pane or opens it in a new tab.
   Switching checkouts keeps their current tab layouts for the lifetime of the app.
+- The ProjectTree sidebar and shared Editor list/detail panel have accessible separators for
+  pointer drag and keyboard adjustment. ProjectTree defaults to 320 px, is bounded to 220–480
+  px, and keeps at least 320 px for the main workspace. The Editor list defaults to 288 px,
+  is bounded to 180–480 px, and keeps at least 320 px for its detail pane. Each maximum
+  shrinks with the available width; a narrower window keeps the minimums and scrolls
+  horizontally. Widths live in UI memory across workspaces and Editor sections and reset to
+  defaults when Goko restarts.
 - Agent adapters (`shell`, `claude`, `codex`, `opencode`) are discovered from `PATH` by the
   app. Launch resolves the executable again and sends an argv array through the bridge; the
   daemon remains the only PTY and child-process authority.
@@ -83,11 +90,13 @@ title, created_at)`, and `settings(key, value)`.
   whole area; split trees keep all panes visible and fit each terminal to its assigned cell.
   Workspace resizing preserves split ratios. The existing pane minimum can cause scrolling
   when the available area is smaller than the combined minimum.
-- Stop sends SIGTERM and leaves the exited terminal open for inspection. Close is separate:
-  it stops each live session in the target, keeps the pane visible while stopping, and only
-  deletes the daemon record, replay buffer, and SQLite metadata after exit is confirmed. A
-  close taking more than five seconds offers Force kill; Goko never escalates automatically.
-  Stop/delete failures keep a visible retry action. If an older running daemon rejects
+- Stop sends SIGTERM and leaves the exited terminal open for inspection; its manual Force
+  kill action appears after five seconds. Closing a pane or tab force-kills every live session
+  as soon as the daemon accepts stop for its state.
+  A `created` or `starting` session stays visibly Closing until it becomes stoppable or exits
+  naturally. Goko keeps the pane visible until `exited` or `failed` is confirmed, then deletes
+  its daemon record, replay buffer, and SQLite metadata. Retry force-kills a still-live process.
+  Force-stop/delete failures keep a visible retry action. If an older running daemon rejects
   `session.delete`, update and restart it manually before retrying; Goko never restarts a
   daemon that may own other live sessions. A missing daemon session is treated as already
   deleted so metadata cleanup can be retried.
@@ -152,12 +161,17 @@ title, created_at)`, and `settings(key, value)`.
 - Every checkout workspace also has a read-only **Editor** view, opened from the Editor
   action on a Git checkout row or the `Terminal | Editor` switch in the workspace header.
   Its sections are `Files` (a lazy tree of tracked and non-ignored untracked paths beside a
-  line-numbered, read-only preview), `Changes` (conflict, staged, unstaged, and untracked
-  groups with counts and per-layer diffs that preserve rename and deletion state),
-  `History` (local, remote-tracking, and tag refs on a lane graph, 100 commits per page,
-  selected commit files and patch), and `Stashes` (the repository-wide stack with the
-  selected stash's branch hint, files, and patch). Terminal workspaces stay mounted under
-  it, so tabs, splits, and running sessions survive the switch unchanged.
+  line-numbered, read-only preview; Markdown files — `.md`, `.markdown`, and `.mdx` — open
+  as a rendered GFM preview with a `Preview | Raw` toggle that keeps the mode for the app
+  run, and rendered links stay inert text with the href as a tooltip while images show an
+  alt-text placeholder because the view has no opener or asset capability), `Changes`
+  (conflict, staged, unstaged, and untracked groups with counts and per-layer diffs that
+  preserve rename and deletion state), `History` (local, remote-tracking, and tag refs on a
+  lane graph, 100 commits per page, selected commit files and patch), and `Stashes` (the
+  repository-wide stack with the selected stash's branch hint, files, and patch). Terminal
+  workspaces stay mounted under it, so tabs, splits, and running sessions survive the switch
+  unchanged. The list/detail boundary can be resized; its width is shared across all four
+  sections and view switches.
 - The `git_view_*` Tauri commands (`changes`, `diff`, `history`, `tree`, `file`,
   `stashes`, `stash_diff`) are the only Git read boundary. They revalidate the registered
   project and canonical checkout path on every call, reuse the separate-argv

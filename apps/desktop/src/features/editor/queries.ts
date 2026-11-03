@@ -16,8 +16,9 @@ export const GIT_VIEW_POLL_MS = 3000
 
 // Every git-view query overrides the global infinite staleTime: entering a
 // section fetches fresh data while the last successful result stays visible
-// (and a failed refresh keeps it behind a stale indicator).
-const READ = { staleTime: 0 } as const
+// (and a failed refresh keeps it behind a stale indicator). Polling pauses
+// while the window is in the background; regaining focus refetches at once.
+const READ = { staleTime: 0, refetchOnWindowFocus: true, refetchIntervalInBackground: false } as const
 
 export function useGitChanges(projectId: string, checkoutPath: string, enabled: boolean, poll = enabled) {
   return useQuery<GitViewChanges, BridgeError>({
@@ -57,6 +58,15 @@ export function useGitHistory(projectId: string, checkoutPath: string, enabled: 
     queryFn: ({ pageParam }) => gitViewService.history(projectId, checkoutPath, pageParam as number),
     initialPageParam: 0,
     getNextPageParam: (last) => last.next_skip ?? undefined,
+    enabled,
+    ...READ,
+  })
+}
+
+export function useGitFileList(projectId: string, checkoutPath: string, enabled: boolean) {
+  return useQuery<string[], BridgeError>({
+    queryKey: queryKeys.gitFileList(projectId, checkoutPath),
+    queryFn: () => gitViewService.fileList(projectId, checkoutPath),
     enabled,
     ...READ,
   })

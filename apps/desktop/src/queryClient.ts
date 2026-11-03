@@ -17,6 +17,7 @@ export const queryKeys = {
   gitHistory: (projectId: string, checkoutPath: string) => ['git-history', projectId, checkoutPath] as const,
   gitTree: (projectId: string, checkoutPath: string, directory: string) =>
     ['git-tree', projectId, checkoutPath, directory] as const,
+  gitFileList: (projectId: string, checkoutPath: string) => ['git-file-list', projectId, checkoutPath] as const,
   gitFile: (projectId: string, checkoutPath: string, path: string) =>
     ['git-file', projectId, checkoutPath, path] as const,
   // `refs/stash` is repository-wide, so the list key drops the checkout and the

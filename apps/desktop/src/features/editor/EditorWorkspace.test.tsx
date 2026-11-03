@@ -12,6 +12,7 @@ const { service, worktrees } = vi.hoisted(() => ({
     diff: vi.fn(),
     history: vi.fn(),
     tree: vi.fn(),
+    fileList: vi.fn(),
     file: vi.fn(),
     stashes: vi.fn(),
     stashDiff: vi.fn(),
@@ -83,6 +84,7 @@ beforeEach(() => {
     }),
   )
   service.file.mockResolvedValue({ path: 'src/app.ts', kind: 'text', text: 'line one\nline two', truncated: false, size: 17 })
+  service.fileList.mockResolvedValue(['src/app.ts', 'README.md', 'docs/guide.md'])
   service.stashes.mockResolvedValue([{ index: 0, id: 'stashoid', message: 'saved work', branch: 'main', time: 1 }])
   service.stashDiff.mockResolvedValue({ label: 'stash@{0}', patch: 'stash patch', truncated: false, files: [{ path: 'f.txt', orig_path: null, status: 'modified' as const }] })
   worktrees.list.mockReset().mockResolvedValue({ repo: true, worktrees: [ROOT, FEATURE] })
@@ -151,6 +153,19 @@ describe('shell', () => {
     await waitFor(() => expect(service.diff).toHaveBeenCalledWith('p1', '/work/feature', { layer: 'staged', path: 'src/app.ts' }))
     expect(useUi.getState().activeView).toBe('editor')
   })
+
+  it('shares one resizable list width across the Editor sections', async () => {
+    renderEditor()
+    const separator = await screen.findByRole('separator', { name: 'Resize list and detail panes' })
+    expect(separator.getAttribute('aria-valuenow')).toBe('288')
+
+    fireEvent.keyDown(separator, { key: 'ArrowLeft' })
+    await waitFor(() => expect(useUi.getState().panelWidths.editorList).toBe(272))
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    await screen.findByRole('button', { name: 'src' })
+    expect(screen.getByRole('separator', { name: 'Resize list and detail panes' }).getAttribute('aria-valuenow')).toBe('272')
+  })
 })
 
 describe('sections', () => {
@@ -174,6 +189,43 @@ describe('sections', () => {
     expect(screen.getByText('unstaged diff')).toBeTruthy()
   })
 
+  it('switches the Changes diff between the unified and split views', async () => {
+    service.diff.mockResolvedValue({
+      label: 'staged diff',
+      patch: ['--- a/src/app.ts', '+++ b/src/app.ts', '@@ -1,3 +1,3 @@', ' keep', '-old line', '+new line', ' tail'].join('\n'),
+      truncated: false,
+      files: [],
+    })
+    renderEditor()
+    expect(await screen.findByText('old line')).toBeTruthy()
+    // Unified renders one prefixed line per revision.
+    expect(screen.getByText('-')).toBeTruthy()
+    expect(screen.getByText('+')).toBeTruthy()
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Diff view' })).getByRole('radio', { name: 'Split' }))
+    expect(useUi.getState().diffView).toBe('split')
+    expect(await screen.findByText('old line')).toBeTruthy()
+    expect(screen.getByText('new line')).toBeTruthy()
+    expect(screen.queryByText('-')).toBeNull()
+    expect(document.querySelector('.grid-cols-2')).toBeTruthy()
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Diff view' })).getByRole('radio', { name: 'Unified' }))
+    expect(useUi.getState().diffView).toBe('unified')
+    expect(screen.getByText('-')).toBeTruthy()
+    expect(document.querySelector('.grid-cols-2')).toBeNull()
+  })
+
+  it('syntax highlights the file preview for a supported language', async () => {
+    service.file.mockResolvedValue({ path: 'src/app.ts', kind: 'text', text: 'const answer: number = 42', truncated: false, size: 25 })
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+
+    await waitFor(() => expect(document.querySelector('.hljs-keyword')).toBeTruthy())
+    expect(document.querySelector('.hljs-keyword')?.textContent).toBe('const')
+  })
+
   it('shows the clean state when nothing changed', async () => {
     service.changes.mockResolvedValue({ branch: 'main', head: 'abc', conflicts: [], staged: [], unstaged: [], untracked: [] })
     renderEditor()
@@ -192,6 +244,107 @@ describe('sections', () => {
     expect(screen.getByText('2')).toBeTruthy()
     expect(service.tree).toHaveBeenCalledWith('p1', '/work/p1', '')
     expect(service.tree).toHaveBeenCalledWith('p1', '/work/p1', 'src')
+  })
+
+  it('switches sections with number keys and focuses the active filter with Cmd+F', async () => {
+    renderEditor()
+    await screen.findByRole('region', { name: 'Staged files' })
+
+    fireEvent.keyDown(window, { key: '4' })
+    expect(screen.getByRole('tab', { name: 'Stashes' }).getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByLabelText('Filter stashes')).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: '2' })
+    expect(screen.getByRole('tab', { name: 'Changes' }).getAttribute('aria-selected')).toBe('true')
+    await screen.findByLabelText('Filter changed files')
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true })
+    expect(document.activeElement).toBe(screen.getByLabelText('Filter changed files'))
+  })
+
+  it('moves between list rows with j and k', async () => {
+    renderEditor()
+    const staged = await screen.findByRole('region', { name: 'Staged files' })
+    const first = within(staged).getByRole('button', { name: /src\/app\.ts/ })
+
+    fireEvent.keyDown(window, { key: 'j' })
+    expect(document.activeElement).toBe(first)
+
+    fireEvent.keyDown(window, { key: 'j' })
+    expect(document.activeElement).not.toBe(first)
+
+    fireEvent.keyDown(window, { key: 'k' })
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('filters the Files tree by path and previews a match', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.change(await screen.findByLabelText('Filter files'), { target: { value: 'readme' } })
+
+    await waitFor(() => expect(service.fileList).toHaveBeenCalledWith('p1', '/work/p1'))
+    const match = await screen.findByRole('button', { name: /README\.md/ })
+    expect(screen.queryByRole('button', { name: /docs\/guide\.md/ })).toBeNull()
+    fireEvent.click(match)
+    await waitFor(() => expect(service.file).toHaveBeenCalledWith('p1', '/work/p1', 'README.md'))
+  })
+
+  it('previews Markdown files and switches to the raw source', async () => {
+    service.file.mockImplementation((_p: string, _co: string, filePath: string) =>
+      Promise.resolve({
+        path: filePath,
+        kind: 'text' as const,
+        text: filePath === 'README.md' ? '# Read me\n\nHello **world**.' : 'line one\nline two',
+        truncated: false,
+        size: 20,
+      }),
+    )
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }))
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Read me' })).toBeTruthy()
+    const view = screen.getByRole('radiogroup', { name: 'Markdown view' })
+    expect(within(view).getByRole('radio', { name: 'Preview' }).getAttribute('aria-checked')).toBe('true')
+
+    fireEvent.click(within(view).getByRole('radio', { name: 'Raw' }))
+
+    expect(screen.queryByRole('heading', { level: 1, name: 'Read me' })).toBeNull()
+    expect(screen.getByText('# Read me')).toBeTruthy()
+    expect(within(view).getByRole('radio', { name: 'Raw' }).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('keeps the raw code view and no Markdown toggle for other files', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+
+    expect(await screen.findByText('line one')).toBeTruthy()
+    expect(screen.queryByRole('radiogroup', { name: 'Markdown view' })).toBeNull()
+  })
+
+  it('filters changed files by path across the groups', async () => {
+    renderEditor()
+    const staged = await screen.findByRole('region', { name: 'Staged files' })
+    expect(within(staged).getByRole('button', { name: /src\/app\.ts/ })).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Filter changed files'), { target: { value: 'notes' } })
+
+    expect(within(screen.getByRole('region', { name: 'Staged files' })).queryByRole('button', { name: /src\/app\.ts/ })).toBeNull()
+    expect(within(screen.getByRole('region', { name: 'Untracked files' })).getByRole('button', { name: /notes\.txt/ })).toBeTruthy()
+    expect(screen.getByLabelText('0 staged')).toBeTruthy()
+  })
+
+  it('filters commits by subject, author, or id', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    expect(await screen.findByRole('button', { name: /second commit/ })).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Filter commits'), { target: { value: 'bob' } })
+
+    expect(screen.queryByRole('button', { name: /second commit/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /first commit/ })).toBeTruthy()
   })
 
   it('keeps cached file tree and preview visible with stale notices after refresh failures', async () => {

@@ -232,8 +232,10 @@ describe('App', () => {
     worktrees.create.mockImplementation(async () => { createdWorktree = true; return created })
     renderApp()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Editor for one' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Create worktree in one' }))
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for one' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open Editor' }))
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for one' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Create worktree…' }))
     const createWorktree = await screen.findByRole('button', { name: 'Create worktree' })
     await waitFor(() => expect(createWorktree).toHaveProperty('disabled', false))
     fireEvent.click(createWorktree)
@@ -259,7 +261,8 @@ describe('App', () => {
     worktrees.create.mockImplementation(async () => { createdWorktree = true; return created })
     renderApp()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Create worktree in one' }))
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for one' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Create worktree…' }))
     const createWorktree = await screen.findByRole('button', { name: 'Create worktree' })
     await waitFor(() => expect(createWorktree).toHaveProperty('disabled', false))
     fireEvent.click(createWorktree)
@@ -293,9 +296,10 @@ describe('App', () => {
     service.meta.mockResolvedValue([meta('a', { project_id: 'p1' })])
     projects.remove.mockResolvedValue(undefined)
     renderApp()
-    await screen.findByRole('button', { name: 'Remove one' })
+    await screen.findByRole('button', { name: 'More actions for one' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove one' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions for one' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove project' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(screen.getByText('Unassigned')).toBeTruthy()) // a survives, unassigned
     expect(sessionButtons()).toHaveLength(2)
@@ -315,7 +319,8 @@ describe('App', () => {
     await screen.findByRole('tab', { name: 'Shell' })
     expect(log).toEqual(['new:shell'])
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Editor for one' }))
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for one' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open Editor' }))
     const editor = await screen.findByRole('region', { name: 'one editor' })
     // The terminal section stays mounted (hidden in the browser; jsdom does not
     // apply the `hidden` class), so its tab and controller survive the switch.
@@ -327,5 +332,35 @@ describe('App', () => {
     // The same tab and controller come back — nothing was remounted or disposed.
     await screen.findByRole('tab', { name: 'Shell' })
     expect(log).toEqual(['new:shell'])
+  })
+
+  it('keeps the resized project sidebar width across Terminal and Editor switches', async () => {
+    const p1 = project('p1', { name: 'one', root: '/w/one' })
+    const root = { name: 'one', path: p1.root, branch: 'main', head: '12345678', is_root: true, missing: false, dirty: false, changed: 0 }
+    projects.list.mockResolvedValue([p1])
+    service.list.mockResolvedValue([])
+    service.create.mockResolvedValue(session('shell', { title: 'Shell' }))
+    worktrees.list.mockResolvedValue({ repo: true, worktrees: [root] })
+    renderApp()
+
+    fireEvent.click(await screen.findByRole('button', { name: /one.*\/w\/one/ }))
+    await screen.findByRole('tab', { name: 'Shell' })
+    const separator = screen.getByRole('separator', { name: 'Resize project sidebar' })
+    expect(separator.getAttribute('aria-valuenow')).toBe('320')
+    expect(document.querySelector('aside')!.style.width).toBe('320px')
+
+    fireEvent.keyDown(separator, { key: 'ArrowRight' })
+    expect(separator.getAttribute('aria-valuenow')).toBe('336')
+    expect(useUi.getState().panelWidths.projectTree).toBe(336)
+
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for one' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open Editor' }))
+    const editor = await screen.findByRole('region', { name: 'one editor' })
+    expect(useUi.getState().panelWidths.projectTree).toBe(336)
+
+    fireEvent.click(within(editor).getByRole('button', { name: 'Terminal' }))
+    await screen.findByRole('tab', { name: 'Shell' })
+    expect(separator.getAttribute('aria-valuenow')).toBe('336')
+    expect(document.querySelector('aside')!.style.width).toBe('336px')
   })
 })

@@ -10,6 +10,15 @@
   --danger: #e87575;
   --border: #2a3440;
   --radius: 0.625rem;
+  --syntax-keyword: #7aa2f7;
+  --syntax-string: #6dd3a4;
+  --syntax-number: #e8b86a;
+  --syntax-function: #6dd3c2;
+  --syntax-tag: #f28779;
+  --syntax-attr: #c9a7f5;
+  --syntax-comment: #8b99a8;
+  --syntax-addition: #6dd3a4;
+  --syntax-deletion: #e87575;
 }
 
 html[data-theme='light'] {
@@ -23,4 +32,13 @@ html[data-theme='light'] {
   --warning: #976a13;
   --danger: #b84245;
   --border: #dce2e8;
+  --syntax-keyword: #2b5fb0;
+  --syntax-string: #29784a;
+  --syntax-number: #976a13;
+  --syntax-function: #116c6b;
+  --syntax-tag: #b84245;
+  --syntax-attr: #7b4bb0;
+  --syntax-comment: #6c7a89;
+  --syntax-addition: #29784a;
+  --syntax-deletion: #b84245;
 }

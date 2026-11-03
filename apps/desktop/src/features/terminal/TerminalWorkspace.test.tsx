@@ -222,7 +222,7 @@ describe('TerminalWorkspace', () => {
     await waitFor(() => expect(sessionService.create).toHaveBeenCalledTimes(2))
 
     fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
-    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s1', false))
+    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s1', true))
     setSessions([makeSession('s1', 'Shell', 'exited')])
     await waitFor(() => expect(screen.queryByRole('tab', { name: 'Shell' })).toBeNull())
 
@@ -268,7 +268,7 @@ describe('TerminalWorkspace', () => {
     await screen.findByRole('tab', { name: 'Shell' })
 
     fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
-    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s1', false))
+    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s1', true))
     expect(sessionService.delete).not.toHaveBeenCalled()
     expect(screen.getByRole('tab', { name: /Shell.*Closing/ })).toBeTruthy()
 
@@ -286,8 +286,8 @@ describe('TerminalWorkspace', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
     await waitFor(() => {
-      expect(sessionService.stop).toHaveBeenCalledWith('s1', false)
-      expect(sessionService.stop).toHaveBeenCalledWith('s2', false)
+      expect(sessionService.stop).toHaveBeenCalledWith('s1', true)
+      expect(sessionService.stop).toHaveBeenCalledWith('s2', true)
     })
     expect(sessionService.delete).not.toHaveBeenCalled()
 
@@ -308,7 +308,7 @@ describe('TerminalWorkspace', () => {
     expect(screen.getByRole('separator')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Close pane' }))
-    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s2', false))
+    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s2', true))
     setSessions([makeSession('s1'), makeSession('s2', 'Shell', 'exited')])
     await waitFor(() => expect(sessionService.delete).toHaveBeenCalledWith('s2'))
 
@@ -335,5 +335,57 @@ describe('TerminalWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(sessionService.delete).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.queryByRole('tab', { name: 'Done' })).toBeNull())
+  })
+
+  it('force-stops a stopping pane immediately when its tab closes', async () => {
+    view()
+    await screen.findByRole('tab', { name: 'Shell' })
+    setSessions([makeSession('s1', 'Shell', 'stopping')])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
+    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s1', true))
+  })
+
+  it('keeps a starting session visibly Closing until the daemon accepts stop', async () => {
+    view()
+    await screen.findByRole('tab', { name: 'Shell' })
+    setSessions([makeSession('s1', 'Shell', 'starting')])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
+    expect(await screen.findByRole('tab', { name: /Shell.*Closing/ })).toBeTruthy()
+    expect(sessionService.stop).not.toHaveBeenCalled()
+    expect(sessionService.delete).not.toHaveBeenCalled()
+
+    setSessions([makeSession('s1', 'Shell', 'running')])
+    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledWith('s1', true))
+  })
+
+  it('deletes a created session that finishes naturally without stopping it', async () => {
+    view()
+    await screen.findByRole('tab', { name: 'Shell' })
+    setSessions([makeSession('s1', 'Shell', 'created')])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
+    expect(sessionService.stop).not.toHaveBeenCalled()
+
+    setSessions([makeSession('s1', 'Shell', 'failed')])
+    await waitFor(() => expect(sessionService.delete).toHaveBeenCalledWith('s1'))
+    expect(sessionService.stop).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Shell' })).toBeNull())
+  })
+
+  it('keeps a failed force-stop visible and retries with force while still live', async () => {
+    view()
+    await screen.findByRole('tab', { name: 'Shell' })
+    sessionService.stop.mockRejectedValueOnce(new Error('cannot signal session'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Shell tab' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('cannot signal session')
+    expect(screen.getByRole('tab', { name: /Shell.*Closing/ })).toBeTruthy()
+    expect(sessionService.delete).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(sessionService.stop).toHaveBeenCalledTimes(2))
+    expect(sessionService.stop).toHaveBeenLastCalledWith('s1', true)
   })
 })

@@ -1,15 +1,15 @@
 import { useRef, useState } from 'react'
-import { AlertTriangleIcon, BookOpenIcon, ChevronRightIcon, Trash2Icon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import { isBridgeError } from '../../services/errors'
 import type { AgentInfo, Project, SessionInfo, WorktreeInfo } from '../../services/types'
 import { checkoutForCwd, checkoutKey, useUi } from '../../stores/ui'
-import { CustomCommandForm, NewSessionMenu, type SessionTarget } from '../sessions/SessionLaunch'
+import { CustomCommandForm, NewSessionMenu, RowActionsMenu, type SessionTarget } from '../sessions/SessionLaunch'
 import { SessionItems } from '../sessions/SessionItems'
 import { useRemoveWorktree } from './queries'
 
@@ -17,17 +17,6 @@ const message = (error: unknown) => isBridgeError(error) ? error.message : error
 
 function Count({ count }: { count: number }) {
   return <Badge variant="secondary" aria-label={`${count} sessions`} className="min-w-6 justify-center px-1.5 tabular-nums">{count}</Badge>
-}
-
-function IconAction({ label, children, ...props }: { label: string; children: React.ReactNode } & React.ComponentProps<typeof Button>) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-sm" aria-label={label} className="text-muted hover:text-text" {...props}>{children}</Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  )
 }
 
 export function sessionsForCheckout(checkouts: WorktreeInfo[], sessions: SessionInfo[], checkoutPath: string) {
@@ -158,16 +147,7 @@ export function WorktreeRows({
                 </span>
               </button>
               <Count count={attachedSessions.length} />
-              <span className="flex shrink-0 items-center opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
-                <IconAction
-                  label={`Open Editor for ${worktree.name}`}
-                  onClick={() => {
-                    activateWorkspace(workspaceId)
-                    setActiveView('editor')
-                  }}
-                >
-                  <BookOpenIcon />
-                </IconAction>
+              <span className="flex shrink-0 items-center">
                 <NewSessionMenu
                   label={`New session in ${project.name} · ${worktree.name}`}
                   agents={agents}
@@ -175,21 +155,34 @@ export function WorktreeRows({
                   onAgent={(agent) => onStart({ agent }, undefined, worktree.path)}
                   onCustom={() => setCustomPath(worktree.path)}
                 />
-                <IconAction
-                  label={blockedReason ? `Cannot remove ${worktree.name}: ${blockedReason}` : `Remove ${worktree.name}`}
-                  title={blockedReason ?? undefined}
-                  disabled={remove.isPending}
-                  aria-disabled={Boolean(blockedReason)}
-                  className={cn('text-muted hover:text-text', blockedReason && 'cursor-not-allowed opacity-50')}
-                  onClick={(event) => {
-                    if (blockedReason) return
-                    removeTrigger.current = event.currentTarget
-                    setError(null)
-                    setConfirming(worktree)
-                  }}
-                >
-                  <Trash2Icon />
-                </IconAction>
+                <RowActionsMenu ref={removeTrigger} label={`More actions for ${worktree.name}`}>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      activateWorkspace(workspaceId)
+                      setActiveView('editor')
+                    }}
+                  >
+                    Open Editor
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    textValue={`Remove ${worktree.name}`}
+                    disabled={remove.isPending}
+                    aria-disabled={Boolean(blockedReason)}
+                    className={cn(blockedReason && 'cursor-not-allowed opacity-50')}
+                    onSelect={(event) => {
+                      if (blockedReason) {
+                        event.preventDefault()
+                        return
+                      }
+                      setError(null)
+                      setConfirming(worktree)
+                    }}
+                  >
+                    {blockedReason ? `Cannot remove ${worktree.name}: ${blockedReason}` : `Remove ${worktree.name}`}
+                  </DropdownMenuItem>
+                </RowActionsMenu>
               </span>
             </div>
             {custom && <CustomCommandForm initial={defaultShell} disabled={project.missing || worktree.missing || disconnected || remove.isPending} onStart={(command) => onStart({ command }, () => setCustomPath(null), worktree.path)} onCancel={() => setCustomPath(null)} />}

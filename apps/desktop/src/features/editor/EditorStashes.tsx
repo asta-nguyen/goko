@@ -1,11 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ArchiveIcon, ArchiveRestoreIcon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
-import { ChangedFiles, DiffPatch, EmptyPane, ErrorPane, formatTime, LoadingPane, RefreshButton, SplitPane, StaleNotice } from './panes'
+import { ChangedFiles, DiffPatch, DiffViewToggle, EmptyPane, ErrorPane, FilterInput, formatTime, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice } from './panes'
 import { useGitStashes, useGitStashDiff } from './queries'
 
 export function EditorStashes({
@@ -20,6 +20,14 @@ export function EditorStashes({
   const queryClient = useQueryClient()
   const stashes = useGitStashes(projectId, checkoutPath, active)
   const [selected, setSelected] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  const visible = useMemo(
+    () =>
+      filter.trim()
+        ? (stashes.data ?? []).filter((item) => matchesQuery(`${item.message} ${item.branch ?? ''}`, filter))
+        : (stashes.data ?? []),
+    [stashes.data, filter],
+  )
 
   // The stack is repository-wide: the newest entry is the default selection.
   useEffect(() => {
@@ -50,15 +58,21 @@ export function EditorStashes({
             <p className="m-0 shrink-0 border-b border-border px-3 py-1.5 text-[11px] text-muted">
               Shared across all worktrees of this repository.
             </p>
+            <div className="shrink-0 border-b border-border px-2 py-1">
+              <FilterInput label="Filter stashes" value={filter} onChange={setFilter} />
+            </div>
             <ScrollArea className="min-h-0 flex-1">
-              {stashes.data?.length === 0 ? (
-                <p className="m-0 p-3 text-xs text-muted">No stashes in this repository.</p>
+              {visible.length === 0 ? (
+                <p className="m-0 p-3 text-xs text-muted">
+                  {filter.trim() ? 'No stashes match.' : 'No stashes in this repository.'}
+                </p>
               ) : (
                 <ul className="m-0 flex list-none flex-col gap-0.5 p-1.5">
-                  {stashes.data?.map((item) => (
+                  {visible.map((item) => (
                     <li key={item.id}>
                       <button
                         type="button"
+                        data-nav-item
                         aria-pressed={selected === item.id}
                         onClick={() => setSelected(item.id)}
                         className={cn(
@@ -100,6 +114,7 @@ export function EditorStashes({
               </span>
               {stash?.branch && <Badge variant="secondary">branch: {stash.branch}</Badge>}
               {stash && <span className="shrink-0 text-xs text-muted">{formatTime(stash.time)}</span>}
+              <DiffViewToggle />
             </header>
             <ChangedFiles files={diff.data.files} />
             <DiffPatch patch={diff.data.patch} truncated={diff.data.truncated} />

@@ -1,5 +1,5 @@
 import { AlertTriangleIcon, FolderGit2Icon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -36,6 +36,7 @@ export function EditorWorkspace({
   const worktreeQuery = useWorktreeList(projectId, Boolean(project))
   const [section, setSection] = useState<Section>('changes')
   const [jump, setJump] = useState<GitDiffRequest | null>(null)
+  const root = useRef<HTMLElement | null>(null)
   // Once visited, a section stays mounted so its state and scroll survive;
   // its queries only run while it is the visible section.
   const [visited, setVisited] = useState<ReadonlySet<Section>>(new Set(['changes']))
@@ -51,6 +52,52 @@ export function EditorWorkspace({
     !unsupported &&
     (project?.missing === true || checkout?.missing === true || (repo === true && !isRoot && checkout === undefined))
   const ready = !unsupported && !missingCheckout && repo === true
+
+  useEffect(() => {
+    if (!ready) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement
+      const typing =
+        target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+        const input = root.current?.querySelector<HTMLInputElement>(
+          `[data-section="${section}"] input[data-editor-filter]`,
+        )
+        if (input) {
+          event.preventDefault()
+          input.focus()
+          input.select()
+        }
+        return
+      }
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return
+      const index = Number(event.key) - 1
+      if (index >= 0 && index < SECTIONS.length) {
+        event.preventDefault()
+        setSection(SECTIONS[index].id)
+        return
+      }
+      if (event.key === 'j' || event.key === 'k') {
+        const items = Array.from(
+          root.current?.querySelectorAll<HTMLElement>(`[data-section="${section}"] [data-nav-item]`) ?? [],
+        )
+        if (items.length === 0) return
+        event.preventDefault()
+        const current = items.indexOf(document.activeElement as HTMLElement)
+        const next =
+          event.key === 'j'
+            ? current < 0
+              ? 0
+              : Math.min(items.length - 1, current + 1)
+            : current < 0
+              ? items.length - 1
+              : Math.max(0, current - 1)
+        items[next].focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [ready, section])
 
   const branch = checkout?.branch ?? (checkout ? `detached ${checkout.head.slice(0, 8)}` : null)
   const checkoutLabel = checkout?.name ?? checkoutPath.split('/').filter(Boolean).at(-1) ?? checkoutPath
@@ -97,7 +144,7 @@ export function EditorWorkspace({
         {SECTIONS.map(
           (item) =>
             (visited.has(item.id) || item.id === section) && (
-              <div key={item.id} hidden={item.id !== section} className="flex min-h-0 flex-1 flex-col">
+              <div key={item.id} data-section={item.id} hidden={item.id !== section} className="flex min-h-0 flex-1 flex-col">
                 {item.id === 'files' && (
                   <EditorFiles
                     key={checkoutPath}
@@ -141,7 +188,7 @@ export function EditorWorkspace({
   }
 
   return (
-    <section aria-label={`${title} editor`} className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <section ref={root} aria-label={`${title} editor`} className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border bg-panel px-2">
         <ViewSwitch view="editor" onChange={setActiveView} />
         <span className="truncate text-sm font-medium">{title}</span>

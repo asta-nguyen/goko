@@ -1,20 +1,21 @@
 import { open } from '@tauri-apps/plugin-dialog'
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertTriangleIcon, BookOpenIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, PlusIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
 import { isBridgeError } from '../../services/errors'
 import type { AgentInfo, Project, SessionInfo, WorktreeInfo } from '../../services/types'
 import { checkoutContext, checkoutForCwd, checkoutKey, UNASSIGNED_WORKSPACE, useSelectedId, useUi } from '../../stores/ui'
 import { SessionItems } from '../sessions/SessionItems'
-import { CustomCommandForm, NewSessionMenu, type SessionTarget } from '../sessions/SessionLaunch'
+import { CustomCommandForm, NewSessionMenu, RowActionsMenu, type SessionTarget } from '../sessions/SessionLaunch'
 import {
   agentLabel,
   useAgentList,
@@ -41,30 +42,6 @@ const Count = ({ count }: { count: number }) => (
     {count}
   </Badge>
 )
-
-function IconAction({
-  label,
-  destructive,
-  children,
-  ...rest
-}: { label: string; destructive?: boolean; children: React.ReactNode } & React.ComponentProps<typeof Button>) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          className={destructive ? 'text-muted hover:text-danger' : 'text-muted hover:text-text'}
-          {...rest}
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  )
-}
 
 function ProjectNode({
   project,
@@ -111,6 +88,7 @@ function ProjectNode({
   const [createWorktreeOpen, setCreateWorktreeOpen] = useState(false)
   const [envResult, setEnvResult] = useState<WorktreeEnvResult | null>(null)
   const row = useRef<HTMLLIElement>(null)
+  const actionsTrigger = useRef<HTMLButtonElement | null>(null)
   const wasConfirming = useRef(false)
   const worktreeQuery = useWorktreeList(project.id)
   const retryEnvCopy = useEnvCopy()
@@ -150,7 +128,7 @@ function ProjectNode({
 
   useEffect(() => {
     if (confirming) row.current?.querySelector<HTMLButtonElement>('[data-confirm-cancel]')?.focus()
-    else if (wasConfirming.current) row.current?.querySelector<HTMLButtonElement>('[data-row-remove]')?.focus()
+    else if (wasConfirming.current) actionsTrigger.current?.focus()
     wasConfirming.current = confirming
   }, [confirming])
 
@@ -223,18 +201,7 @@ function ProjectNode({
           </span>
         </button>
         <Count count={isGitProject ? rootSessions.length : sessions.length} />
-        <span className="flex shrink-0 items-center opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
-          {isGitProject && root && (
-            <IconAction
-              label={`Open Editor for ${project.name}`}
-              onClick={() => {
-                activateWorkspace(checkoutKey(project.id, rootPath))
-                setActiveView('editor')
-              }}
-            >
-              <BookOpenIcon />
-            </IconAction>
-          )}
+        <span className="flex shrink-0 items-center">
           <NewSessionMenu
             label={`New session in ${project.name}`}
             agents={agents}
@@ -242,23 +209,32 @@ function ProjectNode({
             onAgent={(agent) => onStart({ agent })}
             onCustom={() => setCustom(true)}
           />
-          {isGitProject && (
-            <IconAction
-              label={`Create worktree in ${project.name}`}
-              disabled={project.missing || !selectedCheckout}
-              onClick={() => setCreateWorktreeOpen(true)}
-            >
-              <FolderPlusIcon />
-            </IconAction>
-          )}
-          {isGitProject && (
-            <IconAction label={`Refresh worktrees for ${project.name}`} onClick={() => void worktreeQuery.refetch()}>
-              <RefreshCwIcon className={worktreeQuery.isFetching ? 'animate-spin' : ''} />
-            </IconAction>
-          )}
-          <IconAction label={`Remove ${project.name}`} data-row-remove destructive disabled={busy} onClick={() => setConfirming(true)}>
-            <Trash2Icon />
-          </IconAction>
+          <RowActionsMenu ref={actionsTrigger} label={`More actions for ${project.name}`}>
+            {isGitProject && root && (
+              <DropdownMenuItem
+                onSelect={() => {
+                  activateWorkspace(checkoutKey(project.id, rootPath))
+                  setActiveView('editor')
+                }}
+              >
+                Open Editor
+              </DropdownMenuItem>
+            )}
+            {isGitProject && (
+              <DropdownMenuItem disabled={project.missing || !selectedCheckout} onSelect={() => setCreateWorktreeOpen(true)}>
+                Create worktree…
+              </DropdownMenuItem>
+            )}
+            {isGitProject && (
+              <DropdownMenuItem disabled={worktreeQuery.isFetching} onSelect={() => void worktreeQuery.refetch()}>
+                Refresh worktrees
+              </DropdownMenuItem>
+            )}
+            {isGitProject && <DropdownMenuSeparator />}
+            <DropdownMenuItem variant="destructive" disabled={busy} onSelect={() => setConfirming(true)}>
+              Remove project
+            </DropdownMenuItem>
+          </RowActionsMenu>
         </span>
       </div>
       {custom && (
@@ -320,7 +296,7 @@ function ProjectNode({
           selectedCheckout={selectedCheckout}
           open={createWorktreeOpen}
           onOpenChange={setCreateWorktreeOpen}
-          onFocusReturn={() => row.current?.querySelector<HTMLButtonElement>('[aria-label^="Create worktree in"]')?.focus()}
+          onFocusReturn={() => actionsTrigger.current?.focus()}
           onCreated={(worktree, result) => {
             setEnvResult(result)
             activateWorkspace(checkoutKey(project.id, worktree.path))

@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
 import type { GitDiffRequest } from '../../services/git-view'
 import type { GitViewChanges, GitViewDiffLayer, GitViewStatusEntry } from '../../services/types'
-import { DiffPatch, EmptyPane, entryName, ErrorPane, LoadingPane, RefreshButton, SplitPane, StaleNotice, statusLabel } from './panes'
+import { DiffPatch, DiffViewToggle, EmptyPane, entryName, ErrorPane, FilterInput, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice, statusLabel } from './panes'
 import { useGitChanges, useGitDiff } from './queries'
 
 type Layer = Extract<GitViewDiffLayer, 'conflict' | 'staged' | 'unstaged' | 'untracked'>
@@ -52,6 +52,7 @@ export function EditorChanges({
   const changes = useGitChanges(projectId, checkoutPath, active)
   const [selected, setSelected] = useState<Selection | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [filter, setFilter] = useState('')
   const first = firstChange(changes.data)
 
   // A Files→Changes jump wins over the default first-change selection.
@@ -102,10 +103,13 @@ export function EditorChanges({
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Changed files</span>
                 <RefreshButton label="Refresh changes" isFetching={changes.isFetching || diff.isFetching} onClick={refresh} />
               </header>
+              <div className="shrink-0 border-b border-border px-2 py-1">
+                <FilterInput label="Filter changed files" value={filter} onChange={setFilter} />
+              </div>
               <ScrollArea className="min-h-0 flex-1">
                 <div className="flex flex-col gap-0.5 p-1.5">
                   {GROUPS.map((group) => {
-                    const entries = data?.[group.key] ?? []
+                    const entries = (data?.[group.key] ?? []).filter((entry) => matchesQuery(entryName(entry), filter))
                     const isCollapsed = collapsed[group.key] === true
                     return (
                       <section key={group.key} aria-label={`${group.label} files`}>
@@ -133,6 +137,7 @@ export function EditorChanges({
                                 <li key={`${group.layer}:${entry.path}`}>
                                   <button
                                     type="button"
+                                    data-nav-item
                                     aria-pressed={isSelected}
                                     onClick={() => setSelected({ layer: group.layer, entry })}
                                     className={cn(
@@ -174,6 +179,7 @@ export function EditorChanges({
                   {entryName(selected.entry)}
                 </span>
                 <Badge variant="secondary">{diff.data.label}</Badge>
+                <DiffViewToggle />
               </header>
               <DiffPatch patch={diff.data.patch} truncated={diff.data.truncated} />
             </>

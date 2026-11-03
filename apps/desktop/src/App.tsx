@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { ThemeToggle } from './components/theme-toggle'
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
+import { ResizableSplit } from './components/ui/resizable-split'
 import { TooltipProvider } from './components/ui/tooltip'
 import { EditorWorkspace } from './features/editor/EditorWorkspace'
 import { ProjectTree } from './features/projects/ProjectTree'
@@ -11,7 +12,7 @@ import { useProjectList } from './features/projects/queries'
 import { useDaemonStatus } from './features/sessions/queries'
 import { TerminalWorkspace } from './features/terminal/TerminalWorkspace'
 import { startQuerySync } from './services/sync'
-import { checkoutContext, useUi } from './stores/ui'
+import { checkoutContext, PANEL_LIMITS, useUi } from './stores/ui'
 
 export default function App() {
   const qc = useQueryClient()
@@ -21,6 +22,8 @@ export default function App() {
   const activeWorkspaceId = useUi((state) => state.activeWorkspaceId)
   const activeView = useUi((state) => state.activeView)
   const workspaces = useUi((state) => state.workspaces)
+  const projectTreeWidth = useUi((state) => state.panelWidths.projectTree)
+  const setPanelWidth = useUi((state) => state.setPanelWidth)
   const workspaceIds = [...new Set([...Object.keys(workspaces), ...(activeWorkspaceId ? [activeWorkspaceId] : [])])]
   const activeContext = activeWorkspaceId ? checkoutContext(activeWorkspaceId) : null
   const activeProject = activeContext ? (projects?.find((project) => project.id === activeContext.projectId) ?? null) : null
@@ -73,11 +76,17 @@ export default function App() {
             <AlertDescription>The daemon is unreachable. Goko is restarting it.</AlertDescription>
           </Alert>
         )}
-        <div className="flex min-h-0 flex-1">
-          <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-panel">
-            <ProjectTree />
-          </aside>
-          <main className="flex min-w-0 flex-1 flex-col bg-bg">
+        <ResizableSplit
+          label="Resize project sidebar"
+          width={projectTreeWidth}
+          min={PANEL_LIMITS.projectTree.minWidth}
+          max={PANEL_LIMITS.projectTree.maxWidth}
+          siblingMin={PANEL_LIMITS.projectTree.siblingMin}
+          onResize={(width) => setPanelWidth('projectTree', width)}
+          aside={<ProjectTree />}
+          asideClassName="bg-panel"
+        >
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg">
             {workspaceIds.map((workspaceId) => (
               <TerminalWorkspace
                 key={workspaceId}
@@ -100,7 +109,7 @@ export default function App() {
               </div>
             )}
           </main>
-        </div>
+        </ResizableSplit>
       </div>
     </TooltipProvider>
   )

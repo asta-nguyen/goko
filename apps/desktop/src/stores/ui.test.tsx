@@ -170,6 +170,26 @@ describe('useUi', () => {
     act(() => useUi.getState().openSession(feature, 'a', 'Shell'))
     expect(useUi.getState().activeView).toBe('terminal')
   })
+
+  it('stores panel widths in memory and resets them to the defaults', () => {
+    expect(useUi.getState().panelWidths).toEqual({ projectTree: 320, editorList: 288 })
+    act(() => {
+      useUi.getState().setPanelWidth('projectTree', 400)
+      useUi.getState().setPanelWidth('editorList', 200)
+    })
+    expect(useUi.getState().panelWidths).toEqual({ projectTree: 400, editorList: 200 })
+
+    act(() => useUi.getState().reset())
+    expect(useUi.getState().panelWidths).toEqual({ projectTree: 320, editorList: 288 })
+  })
+
+  it('stores the diff view mode in memory and resets it', () => {
+    expect(useUi.getState().diffView).toBe('unified')
+    act(() => useUi.getState().setDiffView('split'))
+    expect(useUi.getState().diffView).toBe('split')
+    act(() => useUi.getState().reset())
+    expect(useUi.getState().diffView).toBe('unified')
+  })
 })
 
 describe('checkoutForCwd', () => {

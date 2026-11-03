@@ -33,6 +33,8 @@ export const gitViewService = {
     call<GitViewHistory>('git_view_history', { projectId, checkoutPath, skip }),
   tree: (projectId: string, checkoutPath: string, directory: string) =>
     call<GitViewTree>('git_view_tree', { projectId, checkoutPath, directory }),
+  fileList: (projectId: string, checkoutPath: string) =>
+    call<string[]>('git_view_file_list', { projectId, checkoutPath }),
   file: (projectId: string, checkoutPath: string, path: string) =>
     call<GitViewFile>('git_view_file', { projectId, checkoutPath, path }),
   stashes: (projectId: string, checkoutPath: string) =>

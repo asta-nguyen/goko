@@ -71,6 +71,14 @@ export interface TerminalWorkspaceState {
 
 /** The main-area mode of the active workspace; never persisted. */
 export type WorkspaceView = 'terminal' | 'editor'
+export type DiffView = 'unified' | 'split'
+
+/** Fixed app panel bounds in px; the widths live only in memory for the app run. */
+export const PANEL_LIMITS = {
+  projectTree: { defaultWidth: 320, minWidth: 220, maxWidth: 480, siblingMin: 320 },
+  editorList: { defaultWidth: 288, minWidth: 180, maxWidth: 480, siblingMin: 320 },
+} as const
+export type PanelId = keyof typeof PANEL_LIMITS
 
 interface UiState {
   selectedId: string | null
@@ -78,6 +86,10 @@ interface UiState {
   activeView: WorkspaceView
   workspaces: Record<string, TerminalWorkspaceState>
   removedProjectIds: string[]
+  panelWidths: Record<PanelId, number>
+  setPanelWidth: (panel: PanelId, width: number) => void
+  diffView: DiffView
+  setDiffView: (view: DiffView) => void
   select: (id: string | null) => void
   activateWorkspace: (id: string) => void
   setActiveView: (view: WorkspaceView) => void
@@ -227,11 +239,19 @@ const initialState = {
   activeView: 'terminal' as WorkspaceView,
   workspaces: {} as Record<string, TerminalWorkspaceState>,
   removedProjectIds: [] as string[],
+  panelWidths: {
+    projectTree: PANEL_LIMITS.projectTree.defaultWidth,
+    editorList: PANEL_LIMITS.editorList.defaultWidth,
+  },
+  diffView: 'unified' as DiffView,
 }
 
 export const useUi = create<UiState>((set, get) => ({
   ...initialState,
   select: (selectedId) => set({ selectedId }),
+  setPanelWidth: (panel, width) =>
+    set((state) => ({ panelWidths: { ...state.panelWidths, [panel]: width } })),
+  setDiffView: (diffView) => set({ diffView }),
   activateWorkspace: (id) =>
     set((state) => {
       const workspaces = state.workspaces[id] ? state.workspaces : { ...state.workspaces, [id]: emptyWorkspace() }

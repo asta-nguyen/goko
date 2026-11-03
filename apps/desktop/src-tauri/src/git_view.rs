@@ -338,6 +338,28 @@ pub fn history(checkout: &Path, skip: u64) -> Result<GitViewHistory, BridgeError
     Ok(GitViewHistory { commits, next_skip })
 }
 
+/// Every tracked and untracked (non-ignored) path, sorted, for the Files filter.
+pub fn file_list(checkout: &Path) -> Result<Vec<String>, BridgeError> {
+    let out = worktrees::git(
+        checkout,
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+    )?;
+    let mut paths: Vec<String> = out
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .map(lossy)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// One directory level of tracked files plus non-ignored untracked files.
 /// `.git` and ignored paths are never listed. `directory` is checkout-relative
 /// (`""` for the root) and cannot escape the checkout.
@@ -1057,6 +1079,31 @@ mod tests {
         git_ok(&empty, &["init", "-b", "main"]);
         let page = history(&empty, 0).unwrap();
         assert!(page.commits.is_empty() && page.next_skip.is_none());
+    }
+
+    #[test]
+    fn file_list_returns_sorted_tracked_and_untracked_paths() {
+        let (_t, root) = repository("file-list");
+        fs::create_dir_all(root.join("a")).unwrap();
+        commit(&root, "b.txt", "b\n");
+        commit(&root, "a/z.txt", "z\n");
+        fs::write(root.join("loose.txt"), "l\n").unwrap();
+        fs::create_dir_all(root.join("ignored")).unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(root.join("ignored/f.txt"), "i\n").unwrap();
+
+        let paths = file_list(&root).unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                ".gitignore",
+                "a/z.txt",
+                "b.txt",
+                "loose.txt",
+                "second.txt",
+                "tracked.txt"
+            ]
+        );
     }
 
     #[test]

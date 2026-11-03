@@ -73,6 +73,9 @@ const projectButton = (id: string) => screen.getByRole('button', { name: new Reg
 const toggleOf = (id: string) => screen.getByRole('button', { name: new RegExp(`^(Expand|Collapse) name-${id} sessions$`) })
 /** Opens the `＋` menu of a project the way a keyboard user does. */
 const openMenu = (name: string) => fireEvent.keyDown(screen.getByRole('button', { name: `New session in ${name}` }), { key: 'ArrowDown' })
+/** Opens the `⋯` actions menu of a project or checkout row the way a keyboard user does. */
+const openActions = async (name: string) => fireEvent.keyDown(await screen.findByRole('button', { name: `More actions for ${name}` }), { key: 'ArrowDown' })
+const closeActions = () => fireEvent.keyDown(document.body, { key: 'Escape' })
 
 beforeEach(() => {
   qc = makeQueryClient()
@@ -164,7 +167,8 @@ describe('tree', () => {
     renderTree()
     await screen.findByText('missing')
     expect(screen.getByRole('button', { name: 'New session in name-gone' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('button', { name: 'Remove name-gone' })).toHaveProperty('disabled', false)
+    await openActions('name-gone')
+    expect((await screen.findByRole('menuitem', { name: 'Remove project' })).getAttribute('aria-disabled')).not.toBe('true')
   })
 
   it('disables ＋ while the daemon is disconnected, but Remove stays usable', async () => {
@@ -173,7 +177,9 @@ describe('tree', () => {
     renderTree()
     const plus = await screen.findByRole('button', { name: 'New session in name-p1' })
     await waitFor(() => expect(plus).toHaveProperty('disabled', true))
-    expect(screen.getByRole('button', { name: 'Remove name-p1' })).toHaveProperty('disabled', false)
+    await openActions('name-p1')
+    expect((await screen.findByRole('menuitem', { name: 'Remove project' })).getAttribute('aria-disabled')).not.toBe('true')
+    closeActions()
     expect(projectButton('p1')).toHaveProperty('disabled', false)
   })
 
@@ -353,10 +359,12 @@ describe('worktrees', () => {
     session.meta.mockResolvedValue([meta('exited', 'p1')])
 
     renderTree()
-    const changedRemove = await screen.findByRole('button', { name: /Cannot remove changed: Commit or discard/ })
-    const usedRemove = screen.getByRole('button', { name: /Cannot remove used: Close all sessions/ })
-    expect(changedRemove.getAttribute('aria-disabled')).toBe('true')
-    expect(usedRemove.getAttribute('aria-disabled')).toBe('true')
+    await screen.findByText('used')
+    await openActions('changed')
+    expect((await screen.findByRole('menuitem', { name: /Cannot remove changed: Commit or discard/ })).getAttribute('aria-disabled')).toBe('true')
+    closeActions()
+    await openActions('used')
+    expect((await screen.findByRole('menuitem', { name: /Cannot remove used: Close all sessions/ })).getAttribute('aria-disabled')).toBe('true')
   })
 
   it('blocks removal for an exited session attached from another project without rehoming it', async () => {
@@ -369,10 +377,13 @@ describe('worktrees', () => {
 
     renderTree()
 
-    const remove = await screen.findByRole('button', {
+    await screen.findByText('feature')
+    await openActions('feature')
+    const remove = await screen.findByRole('menuitem', {
       name: /Cannot remove feature: Close all sessions in this checkout first/,
     })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
+    closeActions()
     expect(within(screen.getByText('feature').closest('li')!).getByLabelText('1 sessions')).toBeTruthy()
     expect(within(projectButton('p2').closest('li')!).getByRole('button', { name: /title-external/ })).toBeTruthy()
     expect(within(screen.getByText('feature').closest('li')!).queryByRole('button', { name: /title-external/ })).toBeNull()
@@ -388,12 +399,13 @@ describe('worktrees', () => {
 
     renderTree()
 
-    const remove = await screen.findByRole('button', {
+    await screen.findByText('feature')
+    await openActions('feature')
+    const remove = await screen.findByRole('menuitem', {
       name: /Cannot remove feature: Goko cannot confirm the current directory of every session/,
     })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
-    fireEvent.focus(remove)
-    expect((await screen.findByRole('tooltip')).textContent?.includes('close them first')).toBe(true)
+    expect(remove.textContent).toContain('close them first')
     fireEvent.click(remove)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
@@ -408,7 +420,9 @@ describe('worktrees', () => {
 
     renderTree()
 
-    const remove = await screen.findByRole('button', {
+    await screen.findByText('feature')
+    await openActions('feature')
+    const remove = await screen.findByRole('menuitem', {
       name: /Cannot remove feature: Close all running Goko sessions/,
     })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
@@ -424,7 +438,9 @@ describe('worktrees', () => {
     const row = (await screen.findByText('gone')).closest('li')!
     expect(within(row).getByText('missing')).toBeTruthy()
     expect(within(row).getByRole('button', { name: 'New session in name-p1 · gone' })).toHaveProperty('disabled', true)
-    expect(within(row).getByRole('button', { name: /Cannot remove gone: This checkout is missing/ }).getAttribute('aria-disabled')).toBe('true')
+    await openActions('gone')
+    expect((await screen.findByRole('menuitem', { name: /Cannot remove gone: This checkout is missing/ })).getAttribute('aria-disabled')).toBe('true')
+    closeActions()
     expect(within(row).getByRole('button', { name: /title-old-session/ })).toBeTruthy()
   })
 
@@ -443,7 +459,8 @@ describe('worktrees', () => {
     renderTree()
     await screen.findByText('feature')
     const callsBeforeRefresh = worktrees.list.mock.calls.length
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh worktrees for name-p1' }))
+    await openActions('name-p1')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Refresh worktrees' }))
     await waitFor(() => expect(worktrees.list.mock.calls.length).toBeGreaterThan(callsBeforeRefresh))
   })
 
@@ -451,8 +468,9 @@ describe('worktrees', () => {
     worktrees.list.mockResolvedValue({ repo: true, worktrees: [root] })
     worktrees.branches.mockResolvedValue({ branches: [], bases: [{ name: 'main', kind: 'local' }] })
     renderTree()
-    const trigger = await screen.findByRole('button', { name: 'Create worktree in name-p1' })
-    fireEvent.click(trigger)
+    const trigger = await screen.findByRole('button', { name: 'More actions for name-p1' })
+    await openActions('name-p1')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Create worktree…' }))
     await screen.findByRole('dialog', { name: 'New worktree' })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(document.activeElement).toBe(trigger))
@@ -462,15 +480,17 @@ describe('worktrees', () => {
     worktrees.list.mockImplementation(() => Promise.resolve({ repo: true, worktrees: worktrees.remove.mock.calls.length ? [root] : [root, feature] }))
     renderTree()
     await screen.findByText('feature')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove feature' })).toHaveProperty('disabled', false))
+    await openActions('feature')
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Remove feature' }).getAttribute('aria-disabled')).not.toBe('true'))
     act(() => useUi.getState().activateWorkspace(checkoutKey('p1', feature.path)))
-    fireEvent.click(screen.getByRole('button', { name: 'Remove feature' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove feature' }))
     expect(screen.getByText(feature.path)).toBeTruthy()
     expect(screen.getByText(/the branch is preserved/i)).toBeTruthy()
     expect(screen.getByText(/ignored local files/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove feature' })))
-    fireEvent.click(screen.getByRole('button', { name: 'Remove feature' }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More actions for feature' })))
+    await openActions('feature')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove feature' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove worktree' }))
 
     await waitFor(() => expect(worktrees.remove).toHaveBeenCalledWith('p1', feature.path))
@@ -485,14 +505,17 @@ describe('worktrees', () => {
     worktrees.list.mockResolvedValue({ repo: true, worktrees: [root, feature] })
     renderTree()
     await screen.findByText('feature')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove feature' })).toHaveProperty('disabled', false))
-    fireEvent.click(screen.getByRole('button', { name: 'Remove feature' }))
+    await openActions('feature')
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Remove feature' }).getAttribute('aria-disabled')).not.toBe('true'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove feature' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove worktree' }))
     await waitFor(() => expect(worktrees.remove).toHaveBeenCalledWith('p1', feature.path))
     const launch = document.querySelector<HTMLButtonElement>('button[aria-label="New session in name-p1 · feature"]')
     expect(launch).toHaveProperty('disabled', true)
     act(() => finishRemoval())
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove feature' })).toHaveProperty('disabled', false))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await openActions('feature')
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Remove feature' }).getAttribute('aria-disabled')).not.toBe('true'))
   })
 
   it('blocks removal while the daemon is disconnected and cannot verify sessions', async () => {
@@ -500,7 +523,9 @@ describe('worktrees', () => {
     session.status.mockResolvedValue({ connected: false, default_shell: '/bin/zsh', home: '/h' })
     renderTree()
 
-    const remove = await screen.findByRole('button', { name: /Cannot remove feature: The daemon is disconnected/ })
+    await screen.findByText('feature')
+    await openActions('feature')
+    const remove = await screen.findByRole('menuitem', { name: /Cannot remove feature: The daemon is disconnected/ })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
   })
 
@@ -510,7 +535,9 @@ describe('worktrees', () => {
 
     renderTree()
 
-    const remove = await screen.findByRole('button', {
+    await screen.findByText('feature')
+    await openActions('feature')
+    const remove = await screen.findByRole('menuitem', {
       name: /Cannot remove feature: Update and restart the connected gokod manually/,
     })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
@@ -527,7 +554,8 @@ describe('worktrees', () => {
       .mockResolvedValueOnce({ copied: ['.env'], skipped: [], failed: [] })
 
     renderTree()
-    fireEvent.click(await screen.findByRole('button', { name: 'Create worktree in name-p1' }))
+    await openActions('name-p1')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Create worktree…' }))
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'try-me' } })
     fireEvent.click(screen.getByRole('checkbox', { name: /Copy environment files into this worktree/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Create worktree' }))
@@ -543,11 +571,14 @@ describe('worktrees', () => {
   it('opens the Editor on the root checkout and on a linked worktree checkout', async () => {
     worktrees.list.mockResolvedValue({ repo: true, worktrees: [root, feature] })
     renderTree()
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Editor for feature' }))
+    await screen.findByText('feature')
+    await openActions('feature')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open Editor' }))
     expect(useUi.getState().activeWorkspaceId).toBe(checkoutKey('p1', feature.path))
     expect(useUi.getState().activeView).toBe('editor')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open Editor for name-p1' }))
+    await openActions('name-p1')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open Editor' }))
     expect(useUi.getState().activeWorkspaceId).toBe(checkoutKey('p1', root.path))
     expect(useUi.getState().activeView).toBe('editor')
   })
@@ -556,7 +587,9 @@ describe('worktrees', () => {
     worktrees.list.mockResolvedValue({ repo: false, worktrees: [] })
     renderTree()
     await screen.findByRole('button', { name: /^name-p1\s*\/work\/p1$/ })
-    expect(screen.queryByRole('button', { name: /Open Editor/ })).toBeNull()
+    await openActions('name-p1')
+    expect(await screen.findByRole('menuitem', { name: 'Remove project' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: /Open Editor/ })).toBeNull()
   })
 })
 
@@ -587,7 +620,8 @@ describe('remove', () => {
     renderTree()
     await screen.findByText('doomed')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove doomed' }))
+    await openActions('doomed')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove project' }))
     expect(projects.remove).not.toHaveBeenCalled()
     expect(screen.getByText('Remove doomed?')).toBeTruthy()
     expect(screen.getByText(/files and running sessions are untouched/i)).toBeTruthy()
@@ -595,9 +629,10 @@ describe('remove', () => {
 
     // Cancel once to prove it is two-step, then confirm.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove doomed' })))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More actions for doomed' })))
     expect(screen.queryByText('Remove doomed?')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Remove doomed' }))
+    await openActions('doomed')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove project' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
 
     await waitFor(() => expect(projects.remove).toHaveBeenCalledWith('p1', expect.anything()))
@@ -614,7 +649,8 @@ describe('remove', () => {
     renderTree()
     await screen.findByRole('button', { name: /title-a/ })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove name-p1' }))
+    await openActions('name-p1')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove project' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(screen.getByText('Unassigned')).toBeTruthy())
     expect(screen.getByRole('button', { name: /title-a/ })).toBeTruthy()

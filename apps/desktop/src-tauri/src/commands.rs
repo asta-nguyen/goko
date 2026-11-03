@@ -485,6 +485,15 @@ pub fn git_view_history(
 }
 
 #[tauri::command]
+pub fn git_view_file_list(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+) -> Result<Vec<String>, BridgeError> {
+    git_view::file_list(&git_view_checkout(&storage, &project_id, &checkout_path)?)
+}
+
+#[tauri::command]
 pub fn git_view_tree(
     storage: State<'_, Storage>,
     project_id: String,
