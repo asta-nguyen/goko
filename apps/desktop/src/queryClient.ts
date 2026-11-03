@@ -6,6 +6,23 @@ export const queryKeys = {
   sessionMeta: ['session-meta'],
   projects: ['projects'],
   agents: ['agents'],
+  worktrees: (projectId: string) => ['worktrees', projectId] as const,
+  worktreeBranches: (projectId: string) => ['worktree-branches', projectId] as const,
+  envCandidates: (projectId: string, sourcePath: string) => ['env-candidates', projectId, sourcePath] as const,
+  // Git view reads are checkout-scoped: two worktrees of one project never
+  // share status, diff, history, tree, or preview entries.
+  gitChanges: (projectId: string, checkoutPath: string) => ['git-changes', projectId, checkoutPath] as const,
+  gitDiff: (projectId: string, checkoutPath: string, layer: string | null, path: string | null, commit: string | null) =>
+    ['git-diff', projectId, checkoutPath, layer, path, commit] as const,
+  gitHistory: (projectId: string, checkoutPath: string) => ['git-history', projectId, checkoutPath] as const,
+  gitTree: (projectId: string, checkoutPath: string, directory: string) =>
+    ['git-tree', projectId, checkoutPath, directory] as const,
+  gitFile: (projectId: string, checkoutPath: string, path: string) =>
+    ['git-file', projectId, checkoutPath, path] as const,
+  // `refs/stash` is repository-wide, so the list key drops the checkout and the
+  // detail key uses the stash's immutable commit id.
+  gitStashes: (projectId: string) => ['git-stashes', projectId] as const,
+  gitStashDiff: (projectId: string, stashId: string) => ['git-stash-diff', projectId, stashId] as const,
   lastAgent: ['settings', 'last-agent'],
   daemonStatus: ['daemon-status'],
 } as const

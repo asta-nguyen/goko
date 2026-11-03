@@ -52,10 +52,12 @@ impl TestServer {
         let token_text = fs::read_to_string(paths.token()).expect("read token file");
         let (shutdown, stop) = oneshot::channel::<()>();
         let sessions = Arc::new(SessionManager::new());
+        let worktree_operations_lock = paths.worktree_operations_lock();
         tokio::spawn(server::serve(
             listener,
             token,
             Arc::clone(&sessions),
+            worktree_operations_lock,
             async {
                 let _ = stop.await;
             },

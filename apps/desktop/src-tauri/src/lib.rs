@@ -4,8 +4,10 @@ pub mod commands;
 pub mod daemon_client;
 pub mod error;
 pub mod events;
+pub mod git_view;
 pub mod store;
 pub mod terminal;
+pub mod worktrees;
 
 #[cfg(test)]
 mod test_support;
@@ -20,7 +22,21 @@ use tauri::{Emitter, Manager};
 fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         commands::session_create,
+        commands::worktree_list,
+        commands::worktree_branches,
+        commands::worktree_create,
+        commands::worktree_remove,
+        commands::git_view_changes,
+        commands::git_view_diff,
+        commands::git_view_history,
+        commands::git_view_tree,
+        commands::git_view_file,
+        commands::git_view_stashes,
+        commands::git_view_stash_diff,
+        commands::env_file_candidates,
+        commands::env_copy,
         commands::session_stop,
+        commands::session_delete,
         commands::session_list,
         commands::terminal_write,
         commands::terminal_resize,

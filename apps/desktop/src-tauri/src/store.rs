@@ -180,6 +180,14 @@ impl Store {
             .map_err(|error| storage("cannot list the session metadata", error))
     }
 
+    /// Idempotently remove the app-owned metadata for a finished daemon session.
+    pub fn delete_session_meta(&self, id: &str) -> Result<(), BridgeError> {
+        self.lock()?
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id])
+            .map(drop)
+            .map_err(|error| storage("cannot delete the session metadata", error))
+    }
+
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, BridgeError> {
         self.lock()?
             .query_row(
@@ -381,5 +389,37 @@ mod tests {
         let meta = meta("s1", Some(&project.id));
         store.insert_session_meta(&meta).unwrap();
         assert_eq!(store.list_session_meta().unwrap(), vec![meta]);
+    }
+
+    #[test]
+    fn deleting_session_meta_is_idempotent_and_a_storage_failure_is_retryable() {
+        let dir = TempDir::new("store-delete-session");
+        let store = open(&dir);
+        store.insert_session_meta(&meta("s1", None)).unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER deny_session_delete BEFORE DELETE ON sessions \
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.delete_session_meta("s1").unwrap_err().code,
+            Code::Storage
+        );
+        assert_eq!(store.list_session_meta().unwrap(), vec![meta("s1", None)]);
+
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER deny_session_delete")
+            .unwrap();
+        store.delete_session_meta("s1").unwrap();
+        store.delete_session_meta("s1").unwrap();
+        assert!(store.list_session_meta().unwrap().is_empty());
     }
 }

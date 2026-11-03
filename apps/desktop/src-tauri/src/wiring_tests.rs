@@ -5,6 +5,9 @@ use super::*;
 use crate::store::Storage;
 use crate::test_support::Home;
 use serde_json::{json, Value};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
 use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
 use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
@@ -136,6 +139,48 @@ async fn commands_take_and_return_what_the_frontend_services_send_and_expect() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_delete_uses_the_frontend_shape_and_removes_metadata_after_exit() {
+    let home = Home::new("wire-delete");
+    let (_app, webview) = webview(&home);
+    let session = invoke(
+        &webview,
+        "session_create",
+        json!({"command": "sh -c 'exit 0'", "cwd": "/tmp", "cols": 80, "rows": 24}),
+    )
+    .unwrap();
+    let id = session["id"].clone();
+
+    for _ in 0..100 {
+        let listed = invoke(&webview, "session_list", json!({})).unwrap();
+        if listed.as_array().unwrap()[0]["state"] == "exited" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        invoke(&webview, "session_list", json!({}))
+            .unwrap()
+            .as_array()
+            .unwrap()[0]["state"],
+        "exited"
+    );
+    assert_eq!(
+        invoke(&webview, "session_delete", json!({"id": id})),
+        Ok(Value::Null)
+    );
+    assert!(invoke(&webview, "session_list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(invoke(&webview, "session_meta_list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_s2_commands_take_and_return_the_frontend_shapes() {
     let home = Home::new("wire-s2");
     let (_app, webview) = webview(&home);
@@ -152,6 +197,23 @@ async fn the_s2_commands_take_and_return_the_frontend_shapes() {
     }
     assert_eq!(project["missing"], false);
     let project_id = project["id"].clone();
+
+    let worktrees = invoke(
+        &webview,
+        "worktree_list",
+        json!({"projectId": project_id.clone()}),
+    )
+    .unwrap();
+    assert_eq!(worktrees["repo"], false);
+    assert_eq!(worktrees["worktrees"], json!([]));
+    let branches = invoke(
+        &webview,
+        "worktree_branches",
+        json!({"projectId": project_id.clone()}),
+    )
+    .unwrap();
+    assert_eq!(branches["branches"], json!([]));
+    assert_eq!(branches["bases"], json!([]));
 
     // Re-adding the same canonical root returns the existing project.
     let again = invoke(
@@ -177,14 +239,27 @@ async fn the_s2_commands_take_and_return_the_frontend_shapes() {
         }
     }
 
-    // An agent launch under a project: `agent` + `project_id` (camelCase on the wire),
-    // no `command` or `cwd`.
+    // An agent launch under a project checkout: `agent`, `project_id`, and `checkout`
+    // (camelCase on the wire), no `command` or `cwd`.
     let session = invoke(
         &webview,
         "session_create",
-        json!({"agent": "shell", "projectId": project_id, "cols": 80, "rows": 24}),
+        json!({
+            "agent": "shell",
+            "projectId": project_id.clone(),
+            "checkout": home.path().display().to_string(),
+            "cols": 80,
+            "rows": 24
+        }),
     )
     .unwrap();
+    assert_eq!(
+        session["cwd"],
+        std::fs::canonicalize(home.path())
+            .unwrap()
+            .display()
+            .to_string()
+    );
     let session_id = session["id"].clone();
     invoke(
         &webview,
@@ -333,4 +408,317 @@ async fn failures_reject_with_code_and_message() {
 
     assert_eq!(rejection["code"], "invalid_argument");
     assert!(rejection["message"].is_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worktree_and_environment_commands_match_the_frontend_wire_shapes() {
+    let home = Home::new("wire-worktree");
+    let (_app, webview) = webview(&home);
+    let root = home.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    git_ok(&root, &["init", "-b", "main"]);
+    git_ok(&root, &["config", "user.name", "Goko Test"]);
+    git_ok(&root, &["config", "user.email", "goko@example.invalid"]);
+    fs::write(root.join("tracked.txt"), "tracked\n").unwrap();
+    fs::write(root.join(".gitignore"), ".env\n").unwrap();
+    git_ok(&root, &["add", "."]);
+    git_ok(&root, &["commit", "-m", "initial"]);
+    fs::write(root.join(".env"), "SECRET=wire\n").unwrap();
+    let root = fs::canonicalize(&root).unwrap();
+    let project = invoke(
+        &webview,
+        "project_add",
+        json!({"path": root.display().to_string()}),
+    )
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap();
+
+    let listed = invoke(&webview, "worktree_list", json!({"projectId": project_id})).unwrap();
+    assert_eq!(listed["repo"], true);
+    let root_row = &listed["worktrees"][0];
+    for key in [
+        "name", "path", "branch", "head", "is_root", "missing", "dirty", "changed",
+    ] {
+        assert!(root_row.get(key).is_some(), "missing {key}: {root_row}");
+    }
+    let branch_data = invoke(
+        &webview,
+        "worktree_branches",
+        json!({"projectId": project_id}),
+    )
+    .unwrap();
+    assert!(branch_data["branches"].is_array());
+    assert!(branch_data["bases"].is_array());
+
+    let target = home.path().join("wire-checkout");
+    let created = invoke(
+        &webview,
+        "worktree_create",
+        json!({
+            "projectId": project_id,
+            "path": target.display().to_string(),
+            "mode": "new",
+            "branch": "feature/wire",
+            "base": "main"
+        }),
+    )
+    .unwrap();
+    assert_eq!(created["branch"], "feature/wire");
+
+    let candidates = invoke(
+        &webview,
+        "env_file_candidates",
+        json!({"projectId": project_id, "sourcePath": root.display().to_string()}),
+    )
+    .unwrap();
+    assert_eq!(candidates[0]["name"], ".env");
+    assert_eq!(candidates[0]["eligible"], true);
+    assert!(candidates[0].get("reason").is_some());
+    let copied = invoke(
+        &webview,
+        "env_copy",
+        json!({
+            "projectId": project_id,
+            "sourcePath": root.display().to_string(),
+            "targetPath": target.display().to_string()
+        }),
+    )
+    .unwrap();
+    assert_eq!(copied["copied"], json!([".env"]));
+    assert_eq!(
+        fs::read_to_string(target.join(".env")).unwrap(),
+        "SECRET=wire\n"
+    );
+
+    assert_eq!(
+        invoke(
+            &webview,
+            "worktree_remove",
+            json!({"projectId": project_id, "path": target.display().to_string()}),
+        ),
+        Ok(Value::Null)
+    );
+    assert!(!Path::new(&target).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_view_commands_match_the_frontend_wire_shapes() {
+    let home = Home::new("wire-gitview");
+    let (_app, webview) = webview(&home);
+    let root = home.path().join("gv");
+    fs::create_dir_all(&root).unwrap();
+    git_ok(&root, &["init", "-b", "main"]);
+    git_ok(&root, &["config", "user.name", "Goko Test"]);
+    git_ok(&root, &["config", "user.email", "goko@example.invalid"]);
+    fs::write(root.join("tracked.txt"), "one\n").unwrap();
+    fs::create_dir_all(root.join("dir")).unwrap();
+    fs::write(root.join("dir/nested.txt"), "nested\n").unwrap();
+    git_ok(&root, &["add", "."]);
+    git_ok(&root, &["commit", "-qm", "initial"]);
+    fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
+    fs::write(root.join("loose.txt"), "loose\n").unwrap();
+    git_ok(&root, &["stash", "push", "-u", "-m", "wire stash"]);
+    fs::write(root.join("tracked.txt"), "one\nunstaged\n").unwrap();
+    let root = fs::canonicalize(&root).unwrap();
+    let project = invoke(
+        &webview,
+        "project_add",
+        json!({"path": root.display().to_string()}),
+    )
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap();
+    let checkout = json!({
+        "projectId": project_id,
+        "checkoutPath": root.display().to_string()
+    });
+
+    let changes = invoke(&webview, "git_view_changes", checkout.clone()).unwrap();
+    for key in [
+        "branch",
+        "head",
+        "conflicts",
+        "staged",
+        "unstaged",
+        "untracked",
+    ] {
+        assert!(
+            changes.get(key).is_some(),
+            "GitViewChanges lacks {key}: {changes}"
+        );
+    }
+    assert_eq!(changes["branch"], "main");
+    let entry = &changes["unstaged"][0];
+    for key in ["path", "orig_path", "status"] {
+        assert!(entry.get(key).is_some(), "StatusEntry lacks {key}: {entry}");
+    }
+
+    let diff = invoke(
+        &webview,
+        "git_view_diff",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "layer": "unstaged",
+            "path": "tracked.txt"
+        }),
+    )
+    .unwrap();
+    for key in ["label", "patch", "truncated", "files"] {
+        assert!(diff.get(key).is_some(), "GitViewDiff lacks {key}: {diff}");
+    }
+    assert!(diff["patch"].as_str().unwrap().contains("+unstaged"));
+
+    let history = invoke(
+        &webview,
+        "git_view_history",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "skip": 0
+        }),
+    )
+    .unwrap();
+    let commit = &history["commits"][0];
+    for key in ["id", "parents", "refs", "head", "author", "time", "subject"] {
+        assert!(
+            commit.get(key).is_some(),
+            "GitViewCommit lacks {key}: {commit}"
+        );
+    }
+    assert!(history.get("next_skip").is_some());
+    let oid = commit["id"].as_str().unwrap().to_owned();
+    let commit_diff = invoke(
+        &webview,
+        "git_view_diff",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "layer": "commit",
+            "commit": oid
+        }),
+    )
+    .unwrap();
+    assert_eq!(commit_diff["files"][0]["status"], "added");
+
+    let tree = invoke(
+        &webview,
+        "git_view_tree",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "directory": ""
+        }),
+    )
+    .unwrap();
+    let dir = &tree["entries"][0];
+    for key in ["path", "name", "kind"] {
+        assert!(
+            dir.get(key).is_some(),
+            "GitViewTreeEntry lacks {key}: {dir}"
+        );
+    }
+
+    let file = invoke(
+        &webview,
+        "git_view_file",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "path": "dir/nested.txt"
+        }),
+    )
+    .unwrap();
+    for key in ["path", "kind", "text", "truncated", "size"] {
+        assert!(file.get(key).is_some(), "GitViewFile lacks {key}: {file}");
+    }
+    assert_eq!(file["kind"], "text");
+
+    let stashes = invoke(&webview, "git_view_stashes", checkout.clone()).unwrap();
+    let stash = &stashes.as_array().unwrap()[0];
+    for key in ["index", "id", "message", "branch", "time"] {
+        assert!(
+            stash.get(key).is_some(),
+            "GitViewStash lacks {key}: {stash}"
+        );
+    }
+    let stash_diff = invoke(
+        &webview,
+        "git_view_stash_diff",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "stashId": stash["id"]
+        }),
+    )
+    .unwrap();
+    assert_eq!(stash_diff["label"], "stash@{0}");
+    assert!(stash_diff["patch"].as_str().unwrap().contains("+loose"));
+
+    // Rejections: unregistered project, non-Git project, non-checkout path,
+    // escaping paths.
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_view_changes",
+            json!({"projectId": "nope", "checkoutPath": root.display().to_string()})
+        )
+        .unwrap_err()["code"],
+        "not_found"
+    );
+    let plain_dir = home.path().join("plain");
+    fs::create_dir_all(&plain_dir).unwrap();
+    let plain = invoke(
+        &webview,
+        "project_add",
+        json!({"path": plain_dir.display().to_string()}),
+    )
+    .unwrap();
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_view_changes",
+            json!({
+                "projectId": plain["id"],
+                "checkoutPath": fs::canonicalize(&plain_dir).unwrap().display().to_string()
+            })
+        )
+        .unwrap_err()["code"],
+        "invalid_argument"
+    );
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_view_changes",
+            json!({"projectId": project_id, "checkoutPath": home.path().display().to_string()})
+        )
+        .unwrap_err()["code"],
+        "invalid_argument"
+    );
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_view_file",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "path": "../outside"
+            })
+        )
+        .unwrap_err()["code"],
+        "invalid_argument"
+    );
+}
+
+fn git_ok(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

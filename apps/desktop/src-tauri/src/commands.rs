@@ -4,7 +4,13 @@
 use crate::agents::{self, AgentInfo};
 use crate::bridge::Bridge;
 use crate::error::{BridgeError, Code};
+use crate::git_view::{
+    self, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewStash, GitViewTree,
+};
 use crate::store::{Project, SessionMeta, Storage, Store};
+use crate::worktrees::{
+    self, EnvCopyReport, EnvFileCandidate, WorktreeBranches, WorktreeInfo, WorktreeList,
+};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use protocol::message::{ErrorCode, Request};
@@ -13,12 +19,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::State;
 
 #[derive(Debug, Serialize)]
 pub struct DaemonStatus {
     pub connected: bool,
+    pub live_cwd_supported: Option<bool>,
     pub default_shell: String,
     pub home: String,
 }
@@ -46,6 +53,7 @@ pub struct CreateArgs {
     pub command: Option<String>,
     pub agent: Option<String>,
     pub project_id: Option<String>,
+    pub checkout: Option<String>,
     pub cwd: Option<String>,
     pub title: Option<String>,
     pub cols: u16,
@@ -70,6 +78,7 @@ impl Bridge {
         storage: &Storage,
         args: CreateArgs,
     ) -> Result<SessionInfo, BridgeError> {
+        let _session_launch = self.worktree_operations().read().await;
         let launch = resolve_launch(storage, &args)?;
         let Launch {
             argv,
@@ -106,6 +115,32 @@ impl Bridge {
         })
         .await
         .map(drop)
+    }
+
+    pub async fn session_delete(
+        &self,
+        storage: &Storage,
+        session_id: SessionId,
+    ) -> Result<(), BridgeError> {
+        if let Err(error) = self
+            .call(|id| Request::SessionDelete { id, session_id })
+            .await
+        {
+            if error.code != Code::Daemon(ErrorCode::NotFound) {
+                if error.code == Code::Daemon(ErrorCode::Malformed)
+                    && error.message.contains("unknown variant `session.delete`")
+                {
+                    return Err(BridgeError::new(
+                        error.code,
+                        "Daemon is outdated; save live sessions, restart it, then retry closing this session.",
+                    ));
+                }
+                return Err(error);
+            }
+        }
+        storage
+            .get()?
+            .delete_session_meta(&session_id.as_uuid().to_string())
     }
 
     pub async fn session_list(&self) -> Result<Vec<SessionInfo>, BridgeError> {
@@ -150,8 +185,10 @@ impl Bridge {
 
     /// Never connects or starts the daemon.
     pub fn daemon_status(&self) -> DaemonStatus {
+        let client = self.current();
         DaemonStatus {
-            connected: self.current().is_some(),
+            connected: client.is_some(),
+            live_cwd_supported: client.map(|client| client.supports_live_cwd()),
             default_shell: default_shell(std::env::var_os("SHELL")),
             home: self.home().display().to_string(),
         }
@@ -165,6 +202,9 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
     }
     if args.project_id.is_some() == args.cwd.is_some() {
         return Err(invalid("pass exactly one of `project_id` or `cwd`"));
+    }
+    if args.checkout.is_some() && args.project_id.is_none() {
+        return Err(invalid("`checkout` is only valid with `project_id`"));
     }
     let (argv, agent) = match &args.agent {
         Some(agent) => (
@@ -185,7 +225,13 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
         }
     };
     let cwd = match &args.project_id {
-        Some(project_id) => project_root(storage, project_id)?,
+        Some(project_id) => {
+            let root = project_root(storage, project_id)?;
+            match &args.checkout {
+                Some(checkout) => project_checkout(&root, checkout)?,
+                None => root,
+            }
+        }
         None => args.cwd.clone().expect("exactly one checked above"),
     };
     Ok(Launch {
@@ -194,6 +240,23 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
         project_id: args.project_id.clone(),
         agent,
     })
+}
+
+fn project_checkout(root: &str, checkout: &str) -> Result<String, BridgeError> {
+    let root = std::fs::canonicalize(root)
+        .map_err(|error| invalid(format!("the project root is unavailable: {error}")))?;
+    let checkout = std::fs::canonicalize(checkout)
+        .map_err(|error| invalid(format!("the checkout path is unavailable: {error}")))?;
+    if checkout == root {
+        return Ok(checkout.display().to_string());
+    }
+    if worktrees::contains_checkout(&root, &checkout)? {
+        Ok(checkout.display().to_string())
+    } else {
+        Err(invalid(
+            "the checkout is not the project root or a listed Git worktree",
+        ))
+    }
 }
 
 /// The registered project's root, which must still exist on disk.
@@ -282,6 +345,7 @@ pub async fn session_create(
     command: Option<String>,
     agent: Option<String>,
     project_id: Option<String>,
+    checkout: Option<String>,
     cwd: Option<String>,
     title: Option<String>,
     cols: u16,
@@ -294,6 +358,7 @@ pub async fn session_create(
                 command,
                 agent,
                 project_id,
+                checkout,
                 cwd,
                 title,
                 cols,
@@ -304,12 +369,185 @@ pub async fn session_create(
 }
 
 #[tauri::command]
+pub fn worktree_list(
+    storage: State<'_, Storage>,
+    project_id: String,
+) -> Result<WorktreeList, BridgeError> {
+    let root = project_root(&storage, &project_id)?;
+    worktrees::list(Path::new(&root))
+}
+
+#[tauri::command]
+pub fn worktree_branches(
+    storage: State<'_, Storage>,
+    project_id: String,
+) -> Result<WorktreeBranches, BridgeError> {
+    let root = project_root(&storage, &project_id)?;
+    worktrees::branches(Path::new(&root))
+}
+
+#[tauri::command]
+pub fn worktree_create(
+    storage: State<'_, Storage>,
+    project_id: String,
+    path: String,
+    mode: String,
+    branch: String,
+    base: Option<String>,
+) -> Result<WorktreeInfo, BridgeError> {
+    let root = project_root(&storage, &project_id)?;
+    worktrees::create(Path::new(&root), &path, &mode, &branch, base.as_deref())
+}
+
+#[tauri::command]
+pub async fn worktree_remove(
+    bridge: State<'_, Bridge>,
+    storage: State<'_, Storage>,
+    project_id: String,
+    path: String,
+) -> Result<(), BridgeError> {
+    let root = project_root(&storage, &project_id)?;
+    worktrees::remove(&bridge, Path::new(&root), &path).await
+}
+
+#[tauri::command]
+pub fn env_file_candidates(
+    storage: State<'_, Storage>,
+    project_id: String,
+    source_path: String,
+) -> Result<Vec<EnvFileCandidate>, BridgeError> {
+    let root = project_root(&storage, &project_id)?;
+    worktrees::env_candidates(Path::new(&root), &source_path)
+}
+
+#[tauri::command]
+pub fn env_copy(
+    storage: State<'_, Storage>,
+    project_id: String,
+    source_path: String,
+    target_path: String,
+) -> Result<EnvCopyReport, BridgeError> {
+    let root = project_root(&storage, &project_id)?;
+    worktrees::env_copy(Path::new(&root), &source_path, &target_path)
+}
+
+/// Checkout for a Git view command: registered project, root-or-listed
+/// worktree, and a real non-bare Git worktree root — read commands never run
+/// against an arbitrary path.
+fn git_view_checkout(
+    storage: &Storage,
+    project_id: &str,
+    checkout_path: &str,
+) -> Result<PathBuf, BridgeError> {
+    let root = project_root(storage, project_id)?;
+    let checkout = project_checkout(&root, checkout_path)?;
+    git_view::repo_checkout(Path::new(&checkout))?;
+    Ok(PathBuf::from(checkout))
+}
+
+#[tauri::command]
+pub fn git_view_changes(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+) -> Result<GitViewChanges, BridgeError> {
+    git_view::changes(&git_view_checkout(&storage, &project_id, &checkout_path)?)
+}
+
+#[tauri::command]
+pub fn git_view_diff(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    layer: String,
+    path: Option<String>,
+    commit: Option<String>,
+) -> Result<GitViewDiff, BridgeError> {
+    git_view::diff(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &layer,
+        path.as_deref(),
+        commit.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn git_view_history(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    skip: Option<u64>,
+) -> Result<GitViewHistory, BridgeError> {
+    git_view::history(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        skip.unwrap_or(0),
+    )
+}
+
+#[tauri::command]
+pub fn git_view_tree(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    directory: String,
+) -> Result<GitViewTree, BridgeError> {
+    git_view::tree(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &directory,
+    )
+}
+
+#[tauri::command]
+pub fn git_view_file(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    path: String,
+) -> Result<GitViewFile, BridgeError> {
+    git_view::file(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &path,
+    )
+}
+
+#[tauri::command]
+pub fn git_view_stashes(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+) -> Result<Vec<GitViewStash>, BridgeError> {
+    git_view::stashes(&git_view_checkout(&storage, &project_id, &checkout_path)?)
+}
+
+#[tauri::command]
+pub fn git_view_stash_diff(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    stash_id: String,
+) -> Result<GitViewDiff, BridgeError> {
+    git_view::stash_diff(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &stash_id,
+    )
+}
+
+#[tauri::command]
 pub async fn session_stop(
     bridge: State<'_, Bridge>,
     id: SessionId,
     force: bool,
 ) -> Result<(), BridgeError> {
     bridge.session_stop(id, force).await
+}
+
+#[tauri::command]
+pub async fn session_delete(
+    bridge: State<'_, Bridge>,
+    storage: State<'_, Storage>,
+    id: SessionId,
+) -> Result<(), BridgeError> {
+    bridge.session_delete(&storage, id).await
 }
 
 #[tauri::command]

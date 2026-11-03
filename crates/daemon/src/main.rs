@@ -64,12 +64,18 @@ async fn run() -> io::Result<ExitCode> {
     );
 
     let sessions = Arc::new(SessionManager::new());
-    server::serve(listener, token, Arc::clone(&sessions), async {
-        tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
-        }
-    })
+    server::serve(
+        listener,
+        token,
+        Arc::clone(&sessions),
+        paths.worktree_operations_lock(),
+        async {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
+        },
+    )
     .await?;
 
     tracing::info!("shutting down");

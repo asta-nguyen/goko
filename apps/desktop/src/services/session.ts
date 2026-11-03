@@ -8,6 +8,7 @@ export interface CreateSessionInput {
   agent?: string
   cwd?: string
   projectId?: string
+  checkout?: string
   cols: number
   rows: number
   title?: string
@@ -16,6 +17,7 @@ export interface CreateSessionInput {
 export const sessionService = {
   create: (input: CreateSessionInput) => call<SessionInfo>('session_create', { ...input }),
   stop: (id: string, force: boolean) => call<void>('session_stop', { id, force }),
+  delete: (id: string) => call<void>('session_delete', { id }),
   list: () => call<SessionInfo[]>('session_list'),
   meta: () => call<SessionMeta[]>('session_meta_list'),
   write: (id: string, data: string) => call<void>('terminal_write', { id, data }),

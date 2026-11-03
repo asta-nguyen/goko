@@ -1,7 +1,10 @@
 mod common;
 
-use common::{Client, Incoming, TestServer};
+use common::{connect, Client, Daemon, Incoming, TempDir, TestServer};
 use serde_json::{json, Value};
+use std::fs::OpenOptions;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::Duration;
 
 fn create(argv: &[&str]) -> Value {
@@ -59,6 +62,73 @@ async fn create_list_get_and_stop_work_over_the_socket() {
 }
 
 #[tokio::test]
+async fn session_create_waits_for_the_shared_worktree_operation_lock() {
+    let home = TempDir::new("session-worktree-lock");
+    let paths = daemon::paths::Paths::at(home.path()).unwrap();
+    let mut daemon = Daemon::start(&home);
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).mode(0o600);
+    let lock = options.open(paths.worktree_operations_lock()).unwrap();
+    // SAFETY: the file remains open until after the session-create response.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+
+    let mut client = connect(&paths).await;
+    let mut request = create(&["cat"]);
+    request["id"] = json!(1);
+    client.send(&request).await;
+    let premature = client.next_within(Duration::from_millis(75)).await;
+    assert!(
+        premature.is_none(),
+        "session creation bypassed its lock: {premature:?}"
+    );
+
+    drop(lock);
+    let created = client.recv().await.unwrap();
+    assert_eq!(created["result"]["state"], "running");
+    let id = created["result"]["id"].clone();
+    client
+        .request(json!({"type": "session.stop", "session_id": id, "force": true}))
+        .await;
+    wait_for_state(&mut client, &id, "exited").await;
+    assert_eq!(unsafe { libc::kill(daemon.pid(), libc::SIGTERM) }, 0);
+    assert!(daemon
+        .exited_within(Duration::from_secs(5))
+        .await
+        .unwrap()
+        .success());
+}
+
+#[tokio::test]
+async fn session_delete_requires_exit_then_removes_and_retries_idempotently() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let created = client.request(create(&["cat"])).await;
+    let id = created["result"]["id"].clone();
+
+    let rejected = client
+        .request(json!({"type": "session.delete", "session_id": id}))
+        .await;
+    assert_eq!(rejected["error"]["code"], "invalid_argument");
+
+    client
+        .request(json!({"type": "session.stop", "session_id": id, "force": false}))
+        .await;
+    wait_for_state(&mut client, &id, "exited").await;
+
+    let deleted = client
+        .request(json!({"type": "session.delete", "session_id": id}))
+        .await;
+    assert_eq!(deleted["result"], json!({}));
+    let listed = client.request(json!({"type": "session.list"})).await;
+    assert_eq!(listed["result"]["sessions"], json!([]));
+
+    let retried = client
+        .request(json!({"type": "session.delete", "session_id": id}))
+        .await;
+    assert_eq!(retried["result"], json!({}));
+}
+
+#[tokio::test]
 async fn only_a_subscribed_client_receives_session_events() {
     let server = TestServer::start();
     let mut subscribed = server.authenticated().await;
@@ -89,6 +159,7 @@ async fn only_a_subscribed_client_receives_session_events() {
             other => panic!("unexpected frame {other:?}"),
         }
     }
+    states.dedup();
     assert_eq!(states, ["starting", "running", "stopping", "exited"]);
     let exited_event = exited_event.unwrap();
     assert_eq!(exited_event["session_id"], id);

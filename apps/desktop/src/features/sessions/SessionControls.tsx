@@ -13,7 +13,7 @@ function format(ms: number) {
   return s >= 3600 ? `${Math.floor(s / 3600)}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
-export function SessionControls({ sessionId }: { sessionId: string }) {
+export function SessionControls({ sessionId, onClosePane }: { sessionId: string; onClosePane?: () => void }) {
   const { data: session } = useSession(sessionId)
   const { data: status } = useDaemonStatus()
   const stop = useStopSession()
@@ -72,6 +72,11 @@ export function SessionControls({ sessionId }: { sessionId: string }) {
         {forceReady && (
           <Button variant="destructive" size="sm" disabled={disabled} onClick={() => stop.mutate({ id: sessionId, force: true })}>
             Force kill
+          </Button>
+        )}
+        {onClosePane && (
+          <Button variant="ghost" size="sm" onClick={onClosePane}>
+            Close pane
           </Button>
         )}
       </div>

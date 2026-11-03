@@ -1,4 +1,4 @@
-# Goko architecture (S1 and S2)
+# Goko architecture
 
 This describes what is built, taken from the code, not from the plans. The plans and
 their results are in [docs/agent-devkit](docs/agent-devkit/INDEX.md).
@@ -31,8 +31,8 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
 The Tauri process opens `goko.db` in the support directory. SQLite `user_version` controls
 schema migrations; schema v1 contains `projects`, `sessions`, and `settings`. This database
 stores project registration and session metadata, not PTY state or terminal output. The app
-continues to call `gokod` for process creation and session state, and the protocol and daemon
-remain unchanged.
+continues to call `gokod` for process creation and session state; finished session rows are
+removed from the app and daemon through `session.delete`.
 
 Schema v1 is `projects(id, name, root UNIQUE, created_at)`,
 `sessions(id, project_id REFERENCES projects ON DELETE SET NULL, agent, argv JSON, cwd,
@@ -45,14 +45,142 @@ title, created_at)`, and `settings(key, value)`.
 - `sessions` is keyed by the daemon session UUID and stores the optional project, agent id,
   argv JSON, cwd, title, and creation time. The row is written best-effort after the daemon
   successfully starts a session. A storage error leaves the process running and the session
-  unassigned in the UI.
-- `settings` stores `active_project_id` and `last_agent`. Per-project last-session selection
-  remains in UI memory for the current app run; it is not persisted.
+  unassigned in the UI. Closing a finished session deletes this row after daemon deletion;
+  if SQLite deletion fails, an idempotent retry can complete the cleanup.
+- `settings` is a key/value table. `session_create` writes `last_agent` after a successful
+  agent launch, but the project tree does not read it as a launch default. The D3 UI no
+  longer reads or writes `active_project_id`; any value left by an earlier build is ignored.
+- The sidebar is a project tree: Git projects contain the registered root checkout and
+  linked worktree checkouts; sessions group by their metadata's parent project and their
+  daemon-reported `cwd`. Sessions without matching metadata appear under **Unassigned**.
+  SQLite's session `cwd` remains the launch directory; checkout grouping reads the daemon's
+  live `SessionInfo.cwd`.
+  Project disclosure and workspace activation are separate actions. Every checkout has an
+  in-memory terminal workspace with tabs and nested split panes; opening a checkout with no
+  tabs starts a Shell. Selecting a session focuses its existing pane or opens it in a new tab.
+  Switching checkouts keeps their current tab layouts for the lifetime of the app.
 - Agent adapters (`shell`, `claude`, `codex`, `opencode`) are discovered from `PATH` by the
   app. Launch resolves the executable again and sends an argv array through the bridge; the
   daemon remains the only PTY and child-process authority.
 - On daemon restart, live sessions are gone while metadata rows remain in SQLite. The app
   hides metadata for sessions absent from `session.list`; S2 does not reattach them.
+
+## Terminal workspaces
+
+- A tab is one terminal pane or a nested split tree. Each pane owns one daemon session id,
+  one xterm controller, one output subscription, and that session's PTY size. A daemon
+  session is never rendered in multiple panes.
+- New Tab starts a distinct Shell in the active checkout. The project/worktree launch menu
+  opens successfully created agent/custom sessions in the selected checkout. Split
+  left/right and split top/bottom each start a new Shell in the same checkout. Separators
+  support pointer drag and keyboard movement, and enforce a minimum size for each side.
+- Tab layouts are only in memory and disappear when Goko exits. Xterm instances for open
+  hidden tabs remain mounted so their scrollback and output subscriptions continue; hidden
+  panes do not send PTY resize requests. Each pane in the active tab fits its assigned cell
+  and sends debounced dimensions to its own session.
+- The complete active tab layout fills the available terminal content area below the workspace
+  controls. Opening or selecting a session focuses its tab and pane. A single pane uses the
+  whole area; split trees keep all panes visible and fit each terminal to its assigned cell.
+  Workspace resizing preserves split ratios. The existing pane minimum can cause scrolling
+  when the available area is smaller than the combined minimum.
+- Stop sends SIGTERM and leaves the exited terminal open for inspection. Close is separate:
+  it stops each live session in the target, keeps the pane visible while stopping, and only
+  deletes the daemon record, replay buffer, and SQLite metadata after exit is confirmed. A
+  close taking more than five seconds offers Force kill; Goko never escalates automatically.
+  Stop/delete failures keep a visible retry action. If an older running daemon rejects
+  `session.delete`, update and restart it manually before retrying; Goko never restarts a
+  daemon that may own other live sessions. A missing daemon session is treated as already
+  deleted so metadata cleanup can be retried.
+- Removing a project does not stop its sessions. Its open tabs are rehomed under Unassigned
+  and remain closable there.
+
+## Project checkouts and Git worktrees (S3)
+
+- A registered project remains the parent identity and its root stays the primary checkout.
+  Worktrees are discovered from Git on demand; Goko stores no worktree table or checkout
+  state in SQLite. Workspace state is keyed in memory by project ID plus checkout path.
+- `worktree_list` exposes controls only when the registered directory is exactly the
+  canonical root of a non-bare Git worktree. It runs `git worktree list --porcelain -z`
+  and reports each checkout's final path component, branch or detached HEAD, canonical
+  path, root/missing flags, and a `git status --porcelain=v1 -z --untracked-files=all`
+  changed-file count. Missing paths remain visible with unknown dirty status until restored
+  or pruned outside Goko. A normal directory or a project nested inside a repository keeps
+  the flat project UI with no worktree controls.
+- Worktree commands use `Command::new("git")` with separate argv values and `-C <root>`;
+  no shell command string is built. `worktree_branches` lists local branches and local plus
+  remote-tracking base refs without fetching. `worktree_create` validates the path, branch
+  mode, and base before `git worktree add`. The path must be absent or empty and cannot
+  overlap another checkout. `worktree_remove` accepts linked non-root worktrees only and
+  never uses force.
+- Tauri's `session_create` accepts an optional `checkout` alongside `project_id`. The app
+  canonicalizes it and verifies that it is the project root or a listed worktree before
+  asking the bridge to launch with that directory as `cwd`. The saved session metadata keeps
+  the parent `project_id`; the sidebar uses the daemon's live `cwd` to group the session under
+  the longest matching checkout path. New Shell, agent, custom-command, tab, and split
+  launches inherit the active checkout. A shell changing directory moves its session row
+  and checkout count after the daemon refreshes the session.
+- Environment-file copying is opt-in. The preview and copy include only top-level regular
+  `.env` and `.env.*` files, skip example/sample/template/dist suffixes and symlinks, never
+  follow symlinks, and use exclusive creates so an existing destination is not overwritten.
+  A partial failure retains the new checkout and reports copied, skipped, and failed files;
+  retry repeats the copy, with prior successful files reported as skipped.
+- Removal is fail-closed: the linked worktree must be clean and every daemon session across
+  all projects must be exited or failed. The backend then checks session CWDs and refuses
+  when an exited session is still attached to the checkout, the daemon cannot list sessions,
+  or any session directory is unknown. It also refuses removal when the connected daemon is
+  older than 0.1.1 because that version does not report live process CWD. The client reads
+  `daemon_version` from the existing handshake; Goko does not restart an older daemon because
+  it may own sessions. Goko does not kill or close sessions for removal, does not force
+  removal, and preserves the branch. Confirmation warns that the checkout directory and
+  local/ignored files, including copied `.env`, are deleted.
+  Session creation shares the bridge's in-process operation gate with removal, and the
+  daemon acquires a shared `flock` under `GOKO_HOME` for every `SessionCreate` request.
+  Worktree removal takes the exclusive lock before checking sessions and running Git, so
+  authenticated daemon clients also wait while a checkout is removed.
+  On success, its empty in-memory workspace is dropped and the project root becomes active.
+- The daemon updates the existing `SessionInfo.cwd` field as a live shell changes directory;
+  its JSON shape and the daemon protocol stay unchanged. Session `list`/`get` refresh CWD
+  synchronously, and the daemon watcher emits `session.updated` when a periodic refresh sees
+  a change. macOS reads the process vnode path, Linux reads `/proc/<pid>/cwd`, and an
+  unavailable or non-UTF-8 path is sent as an empty `cwd`. The UI groups that session under
+  the project's other sessions and disables worktree removal until the session is deleted.
+  It also disables removal of every checkout while any daemon session is live, even if that
+  session belongs to another project, and globally if any session's CWD is unknown. Blocked
+  remove actions stay focusable and expose their reason on hover or focus. `daemon_status`
+  reports whether the connected daemon supports live CWD so the UI can explain when an older
+  daemon needs a manual restart. Exited sessions retain their last known path.
+- Every checkout workspace also has a read-only **Editor** view, opened from the Editor
+  action on a Git checkout row or the `Terminal | Editor` switch in the workspace header.
+  Its sections are `Files` (a lazy tree of tracked and non-ignored untracked paths beside a
+  line-numbered, read-only preview), `Changes` (conflict, staged, unstaged, and untracked
+  groups with counts and per-layer diffs that preserve rename and deletion state),
+  `History` (local, remote-tracking, and tag refs on a lane graph, 100 commits per page,
+  selected commit files and patch), and `Stashes` (the repository-wide stack with the
+  selected stash's branch hint, files, and patch). Terminal workspaces stay mounted under
+  it, so tabs, splits, and running sessions survive the switch unchanged.
+- The `git_view_*` Tauri commands (`changes`, `diff`, `history`, `tree`, `file`,
+  `stashes`, `stash_diff`) are the only Git read boundary. They revalidate the registered
+  project and canonical checkout path on every call, reuse the separate-argv
+  `Command::new("git")` rule with `-C <checkout>` and never build a shell string, and the
+  daemon and protocol are untouched. File and tree paths must be relative and resolve
+  inside the checkout after symlink resolution. Patch and text responses cap at 1 MiB and
+  report `truncated`; binary, non-UTF-8, oversized, and missing files return an explicit
+  kind instead of content. There is no file write or Git mutation anywhere in the view.
+- Editor queries are keyed by checkout context: status, diff, history, tree, and file
+  reads carry the project ID plus canonical checkout path, so switching checkout re-keys
+  every read and stale results from another checkout can never appear. The stash list is
+  keyed by project because `refs/stash` is shared across linked worktrees, and a stash
+  patch is keyed by the immutable stash commit ID. Changes status/diffs and the stash list
+  poll every three seconds only while their section is visible; other reads load on entry
+  or selection, expose manual refresh, and keep the previous result behind a stale-data
+  notice when a refresh fails.
+- Fetch, commit, stage/unstage/discard, stash apply/pop/drop, checkout, merge, rebase,
+  push, pull, branch deletion/renaming, lock/unlock, and automatic prune remain out of
+  scope.
+- Verification: `cargo test --workspace`, `cargo fmt --check`, `cargo clippy --workspace
+  -- -D warnings`, `cargo build --workspace`, and desktop typecheck/tests/build are recorded
+  with the [worktree UX change](docs/agent-devkit/changes/2026-11-02-worktree-ux/tasks.md).
+  Manual macOS acceptance: pending.
 
 ## Daemon lifecycle
 
@@ -86,7 +214,7 @@ are rejected before they are allocated.
 - Error codes: `auth_failed`, `version_unsupported`, `frame_too_large`, `malformed`,
   `invalid_argument`, `not_found`, `spawn_failed`, `internal`.
 - Requests: `system.health`, `system.version`, `events.subscribe`, `session.create`,
-  `session.list`, `session.get`, `session.stop`, `terminal.write` (`data_b64`),
+  `session.list`, `session.get`, `session.stop`, `session.delete`, `terminal.write` (`data_b64`),
   `terminal.resize`, `terminal.subscribe`, `terminal.unsubscribe`.
 - Pushes: `session.updated` (full `SessionInfo`), `session.exited`, and `terminal.lagged`.
 - Session ids are UUID strings in JSON and 16 bytes in output frames. Timestamps are
@@ -114,17 +242,29 @@ created | starting → failed
   The Stop action sends SIGTERM, so its exited banner can have no numeric code.
 - Every state change is broadcast as the full `SessionInfo` (capacity 64). A subscriber
   that falls behind is sent the current state of every session instead.
-- Exited and failed sessions stay listed until the daemon exits.
+- For a live session, `SessionInfo.cwd` is the process's current directory. `list` and `get`
+  refresh it before returning, and a 200 ms watcher emits `session.updated` only when it
+  changes. If the OS cannot provide an absolute UTF-8 path, the daemon reports an empty
+  string; it preserves the last known path once the session exits.
+- Exited and failed sessions stay listed until `session.delete` removes them. Deletion rejects
+  live sessions, closes output subscribers, and drops the session's replay buffer; an absent
+  id succeeds so app-side cleanup can safely retry.
 
 ## PTY ownership
 
 `PtyProcess` (via `portable-pty`) opens the PTY, starts the child in a new session with
 the PTY as its controlling terminal (`TERM=xterm-256color`, `COLORTERM=truecolor`), and
-keeps the master. The child's pid is also its process-group id, so SIGTERM and SIGKILL go
-to the whole group with `killpg` and take grandchildren with them. Commands are `argv`
-arrays; no shell string is ever built. A reader thread moves output into the replay
-buffer and a waiter thread records the exit status. Resize accepts 1 to 1000 in each
-dimension.
+keeps the master. Each child gets the first inherited UTF-8 locale among `LC_ALL`, `LC_CTYPE`,
+and `LANG` that the system recognizes, or `en_US.UTF-8` when none is usable. The child clears
+an unavailable or non-UTF-8 `LC_ALL` and sets `LC_CTYPE` and `LANG` to the selected locale;
+Goko and the daemon keep their
+original environments. The child's pid is also its process-group id, so SIGTERM and SIGKILL go
+to the whole group with `killpg` and take grandchildren with them. The daemon retains the
+child PID to query its current working directory: macOS uses `proc_pidinfo` with
+`PROC_PIDVNODEPATHINFO`, Linux reads `/proc/<pid>/cwd`, and other platforms report an
+unknown directory. Commands are `argv` arrays; no shell string is ever built. A reader thread
+moves output into the replay buffer and a waiter thread records the exit status. Resize
+accepts 1 to 1000 in each dimension.
 
 Closing the master (the daemon dying) hangs up the terminal, so processes that do not
 ignore SIGHUP die with the daemon even without a graceful shutdown.
@@ -181,6 +321,6 @@ Observed against the real `gokod` (see the [agent-devkit change index](docs/agen
 
 ## What S2 does not do
 
-Git/worktrees, GUI reattach, terminal-emulator snapshots, interrupted-session reconciliation,
-a command palette, settings screens, packaging, and benchmarks are later sub-projects (see
-[the roadmap](docs/agent-devkit/roadmap.md)).
+GUI reattach, terminal-emulator snapshots, interrupted-session reconciliation, a command
+palette, settings screens, packaging, and benchmarks are later sub-projects (see [the
+roadmap](docs/agent-devkit/roadmap.md)).

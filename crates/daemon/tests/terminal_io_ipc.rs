@@ -60,6 +60,23 @@ async fn written_input_reaches_the_process_and_its_echo_comes_back() {
 }
 
 #[tokio::test]
+async fn vietnamese_input_and_output_keep_the_same_utf8_text() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let created = client.request(create(&["cat"])).await;
+    let id = created["result"]["id"].clone();
+    subscribe(&mut client, &id).await;
+    let text = "Tiếng Việt: ă â ê ô ơ ư đ a\u{0306}";
+
+    let reply = client
+        .request(write_request(&id, &format!("{text}\n")))
+        .await;
+
+    assert_eq!(reply["result"], json!({}));
+    wait_for_text(&mut client, text).await;
+}
+
+#[tokio::test]
 async fn resizing_changes_the_size_the_process_sees() {
     let server = TestServer::start();
     let mut client = server.authenticated().await;

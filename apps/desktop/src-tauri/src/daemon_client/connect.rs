@@ -11,6 +11,16 @@ fn code_of(result: Result<DaemonClient, BridgeError>) -> Code {
     result.err().expect("expected an error").code
 }
 
+#[test]
+fn live_cwd_support_requires_daemon_version_0_1_1_or_newer() {
+    assert!(!super::supports_live_cwd("0.1.0"));
+    assert!(super::supports_live_cwd("0.1.1"));
+    assert!(super::supports_live_cwd("0.2.0"));
+    assert!(super::supports_live_cwd("1.0.0"));
+    assert!(!super::supports_live_cwd("unknown"));
+    assert!(!super::supports_live_cwd("0.1.1-rc.1"));
+}
+
 #[tokio::test]
 async fn correct_token_connects_and_health_succeeds() {
     let home = Home::new("ok");

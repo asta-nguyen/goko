@@ -43,6 +43,8 @@ pub enum Request {
         session_id: SessionId,
         force: bool,
     },
+    #[serde(rename = "session.delete")]
+    SessionDelete { id: u64, session_id: SessionId },
     #[serde(rename = "terminal.write")]
     TerminalWrite {
         id: u64,
@@ -223,6 +225,7 @@ mod tests {
                 session_id,
                 force: false,
             },
+            Request::SessionDelete { id: 12, session_id },
             Request::TerminalWrite {
                 id: 8,
                 session_id,

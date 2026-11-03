@@ -25,7 +25,9 @@ describe('sessionService commands', () => {
   it('calls each command with its payload', async () => {
     await sessionService.create({ command: 'sh -l', cwd: '/tmp', cols: 80, rows: 24, title: 't' })
     await sessionService.create({ agent: 'claude', projectId: 'p1', cols: 80, rows: 24 })
+    await sessionService.create({ agent: 'shell', projectId: 'p1', checkout: '/worktree', cols: 80, rows: 24 })
     await sessionService.stop('a', true)
+    await sessionService.delete('a')
     await sessionService.list()
     await sessionService.meta()
     await sessionService.write('a', 'ls\r')
@@ -34,7 +36,9 @@ describe('sessionService commands', () => {
     expect(invoke.mock.calls).toEqual([
       ['session_create', { command: 'sh -l', cwd: '/tmp', cols: 80, rows: 24, title: 't' }],
       ['session_create', { agent: 'claude', projectId: 'p1', cols: 80, rows: 24 }],
+      ['session_create', { agent: 'shell', projectId: 'p1', checkout: '/worktree', cols: 80, rows: 24 }],
       ['session_stop', { id: 'a', force: true }],
+      ['session_delete', { id: 'a' }],
       ['session_list', undefined],
       ['session_meta_list', undefined],
       ['terminal_write', { id: 'a', data: 'ls\r' }],

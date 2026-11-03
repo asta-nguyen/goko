@@ -28,6 +28,10 @@ impl Paths {
         self.dir.join("daemon.lock")
     }
 
+    pub fn worktree_operations_lock(&self) -> PathBuf {
+        self.dir.join("worktree-operations.lock")
+    }
+
     pub fn socket(&self) -> PathBuf {
         self.dir.join("daemon.sock")
     }
@@ -75,6 +79,10 @@ mod tests {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
         assert_eq!(paths.lock(), dir.join("daemon.lock"));
+        assert_eq!(
+            paths.worktree_operations_lock(),
+            dir.join("worktree-operations.lock")
+        );
         assert_eq!(paths.socket(), dir.join("daemon.sock"));
         assert_eq!(paths.token(), dir.join("daemon.token"));
         assert_eq!(paths.log(), dir.join("daemon.log"));

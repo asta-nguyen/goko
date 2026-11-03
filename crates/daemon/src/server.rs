@@ -33,10 +33,12 @@ use protocol::PROTOCOL_VERSION;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::{self, Permissions};
+use std::fs::{self, File, OpenOptions, Permissions};
 use std::future::Future;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -55,6 +57,7 @@ struct State {
     token: Token,
     started: Instant,
     sessions: Arc<SessionManager>,
+    worktree_operations_lock: PathBuf,
 }
 
 /// Replace any stale `daemon.sock` and bind a fresh one with mode 0600. The caller must
@@ -72,12 +75,14 @@ pub async fn serve(
     listener: UnixListener,
     token: Token,
     sessions: Arc<SessionManager>,
+    worktree_operations_lock: PathBuf,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let state = Arc::new(State {
         token,
         started: Instant::now(),
         sessions,
+        worktree_operations_lock,
     });
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -97,6 +102,36 @@ pub async fn serve(
             Some(_) = connections.join_next() => {}
         }
     }
+}
+
+async fn acquire_session_launch_lock(path: PathBuf) -> Result<File, ProtoError> {
+    let file = tokio::task::spawn_blocking(move || -> io::Result<File> {
+        let mut options = OpenOptions::new();
+        options
+            .create(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW);
+        let file = options.open(path)?;
+        // SAFETY: `file` stays open while the shared lock protects PTY creation.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(file)
+    })
+    .await
+    .map_err(|error| ProtoError {
+        code: ErrorCode::Internal,
+        message: format!("cannot acquire the session launch lock: {error}"),
+        hint: None,
+    })?
+    .map_err(|error| ProtoError {
+        code: ErrorCode::Internal,
+        message: format!("cannot acquire the session launch lock: {error}"),
+        hint: None,
+    })?;
+    Ok(file)
 }
 
 async fn handle(stream: UnixStream, state: Arc<State>) {
@@ -254,16 +289,21 @@ impl Client<'_> {
                 rows,
                 title,
                 ..
-            } => sessions
-                .create(CreateSpec {
-                    argv,
-                    cwd,
-                    cols,
-                    rows,
-                    title,
-                })
-                .map(|info| json!(info))
-                .map_err(session_error),
+            } => match acquire_session_launch_lock(self.state.worktree_operations_lock.clone())
+                .await
+            {
+                Ok(_lock) => sessions
+                    .create(CreateSpec {
+                        argv,
+                        cwd,
+                        cols,
+                        rows,
+                        title,
+                    })
+                    .map(|info| json!(info))
+                    .map_err(session_error),
+                Err(error) => Err(error),
+            },
             Request::SessionList { .. } => Ok(json!({ "sessions": sessions.list() })),
             Request::SessionGet { session_id, .. } => sessions
                 .get(session_id)
@@ -275,6 +315,19 @@ impl Client<'_> {
                 .stop(session_id, force)
                 .map(|info| json!(info))
                 .map_err(session_error),
+            Request::SessionDelete { session_id, .. } => {
+                let deleted = sessions
+                    .delete(session_id)
+                    .map(|()| json!({}))
+                    .map_err(session_error);
+                if deleted.is_ok() {
+                    if let Some(task) = self.terminals.remove(&session_id) {
+                        task.abort();
+                        let _ = task.await;
+                    }
+                }
+                deleted
+            }
             Request::TerminalWrite {
                 session_id,
                 data_b64,

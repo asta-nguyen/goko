@@ -148,6 +148,7 @@ pub fn create_args(command: &str, cwd: &str) -> CreateArgs {
         command: Some(command.into()),
         agent: None,
         project_id: None,
+        checkout: None,
         cwd: Some(cwd.into()),
         title: None,
         cols: 80,
@@ -163,6 +164,18 @@ where
     F: Fn(usize, UnixStream) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
+    fake_daemon_with_version(home, "0.1.1", serve)
+}
+
+pub fn fake_daemon_with_version<F, Fut>(
+    home: &Home,
+    version: &'static str,
+    serve: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(usize, UnixStream) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     fs::create_dir_all(home.path()).unwrap();
     fs::write(home.path().join("daemon.token"), "tok").unwrap();
     let listener = UnixListener::bind(home.path().join("daemon.sock")).unwrap();
@@ -170,7 +183,7 @@ where
         for index in 0.. {
             let (mut stream, _) = listener.accept().await.unwrap();
             assert_eq!(read_json(&mut stream).await["token"], "tok");
-            send_json(&mut stream, json!({"daemon_version": "fake"})).await;
+            send_json(&mut stream, json!({"daemon_version": version})).await;
             tokio::spawn(serve(index, stream));
         }
     })

@@ -11,9 +11,9 @@
   never stops sessions.
 - The daemon remains the sole PTY/process authority; project and agent association is
   app-owned metadata in SQLite, so the daemon protocol does not change.
-- Each project has its own session list and terminal selection. Switching to a project
-  restores its last selected live session during the current app run; All Projects
-  retains the current live selection; no switch stops or detaches a PTY.
+- Each project is a collapsible tree parent with its daemon-listed sessions as children.
+  Selecting a session changes only the visible terminal; no switch stops or detaches
+  another PTY. There is no active-project filter or remembered selection per project.
 - New UI uses the existing semantic tokens only — no hex colours in components;
   TypeScript stays `strict` with no `any` without a comment; the UI never builds a shell
   string (custom commands still go through the bridge's `shlex` split); terminal bytes
@@ -25,12 +25,12 @@
 ## Impact map
 
 ```text
-Entry: apps/desktop/src/App.tsx::App (composition and All Projects grouping), apps/desktop/src/features/sessions/NewSessionForm.tsx::NewSessionForm (composer), apps/desktop/src/features/sessions/SessionList.tsx::SessionList (project-grouped All Projects list and filtered named-project list); new sidebar section apps/desktop/src/features/projects/ProjectList.tsx; Tauri registration at apps/desktop/src-tauri/src/lib.rs::handler
-Flow: ProjectList/NewSessionForm → services/{projects,agents,settings,session}.ts (invoke) → apps/desktop/src-tauri/src/commands.rs → store.rs (goko.db in GOKO_HOME), agents.rs (PATH scan), or Bridge::call → daemon session.create → SessionManager::create → PtyProcess::spawn; project and session metadata return through useProjectList/useSessionMetaList and are joined with useSessionList in App/SessionList for project filtering and All Projects grouping; terminal output path unchanged (daemon replay → Tauri Channel → TerminalController → xterm)
-State changes: NEW persistent goko.db (projects, sessions metadata, settings) beside the daemon files in GOKO_HOME; Zustand gains persisted activeProjectId plus an in-memory lastSelectedSessionByProject map; daemon session state stays in memory and authoritative
-External effects: native directory picker (existing dialog:allow-open; no new capability); PATH read for agent discovery; goko.db created mode 0600; new cargo/npm dependencies
-Change candidates: apps/desktop/src-tauri/{Cargo.toml,src/{lib,error,commands,store,agents}.rs,src/commands/tests.rs,src/wiring_tests.rs}; apps/desktop/{package.json,tsconfig.json,vite.config.ts}; apps/desktop/src/{services/{types,errors,session,projects,agents,settings}.ts,queryClient.ts,stores/ui.ts,lib/utils.ts,components/ui/{select,button}.tsx,styles/{tokens,index}.css,features/projects/{queries,ProjectList}.tsx,features/sessions/{queries,NewSessionForm,SessionList}.tsx,App.tsx} plus their *.test.* files; Cargo.lock, pnpm-lock.yaml; ARCHITECTURE.md
-Verification: cargo test -p desktop and cargo test --workspace; cargo clippy --workspace -- -D warnings; cargo fmt --check; pnpm -C apps/desktop test (including All Projects project grouping, Unassigned grouping, agent labels, and session-state badges); pnpm -C apps/desktop typecheck; pnpm -C apps/desktop build; hex-colour grep on src; manual S2 checklist ending with two different real agents running side by side
+Entry: apps/desktop/src/App.tsx::App and apps/desktop/src/features/projects/ProjectTree.tsx::ProjectTree; Tauri registration remains at apps/desktop/src-tauri/src/lib.rs::handler
+Flow: ProjectTree → useProjectList/useSessionList/useSessionMetaList/useAgentList/useCreateSession → services/{projects,agents,session}.ts → Tauri commands and Store/agent discovery, or Bridge::call → daemon session.create → SessionManager::create → PtyProcess::spawn; the tree joins daemon sessions to metadata by session id/project_id; terminal output remains daemon replay → Tauri Channel → TerminalController → xterm
+State changes: goko.db stores projects, session metadata, and settings; Zustand keeps only the selected session id in UI memory; daemon session state stays authoritative; no activeProjectId or per-project session-selection map
+External effects: native directory picker using existing dialog:allow-open; PATH read for agent discovery; goko.db in GOKO_HOME; agent processes start through the daemon; no new Tauri capability or dependency for the tree UX changes
+Change candidates: apps/desktop/src-tauri/{Cargo.toml,src/{lib,error,commands,store,agents}.rs,src/commands/tests.rs,src/wiring_tests.rs}; apps/desktop/src/{services/{types,errors,session,projects,agents,settings}.ts,queryClient.ts,stores/ui.ts,components/ui/{button,dropdown-menu}.tsx,styles/{tokens,index}.css,features/projects/{queries,ProjectTree}.tsx,features/sessions/{queries,SessionControls,StateBadge}.tsx,App.tsx} and relevant *.test.* files; ARCHITECTURE.md
+Verification: cargo test --workspace; cargo clippy --workspace -- -D warnings; cargo fmt --check; pnpm -C apps/desktop test (including project-tree nesting, Unassigned fallback, disabled launch states, agent labels, and session-state markers); pnpm -C apps/desktop typecheck; pnpm -C apps/desktop build; semantic-token grep; manual S2 tree checklist with two different real agents side by side
 Verified at: e075f405648ab0600627e7c8efb721c7efeec359
 ```
 
@@ -379,40 +379,58 @@ omitted empty groups, agent labels, state badges, and the flat named-project vie
 `pnpm -C apps/desktop typecheck` and `pnpm -C apps/desktop build` pass; the build
 retains the known large-chunk warning.
 
+### Task 8b — Project tree UX resilience and brand mark
+
+Files: apps/desktop/src/features/projects/ProjectTree.tsx,
+apps/desktop/src/features/projects/ProjectTree.test.tsx, apps/desktop/src/App.tsx,
+design.md
+Interfaces: no new API, schema, or dependency; consumes the approved D3 project tree.
+Change: Keep daemon sessions selectable under **Unassigned** when project storage fails;
+disable agent and custom-command launch actions while the daemon is disconnected; use
+the bundled Goko `>_` mark in the app header; synchronize the S2 design document with
+D3 and these failure behaviors.
+Verify: `pnpm -C apps/desktop test ProjectTree`, `pnpm -C apps/desktop typecheck`, and
+`pnpm -C apps/desktop build`; full repository checks run during final review.
+Progress: done
+Result: `pnpm -C apps/desktop test ProjectTree` — 19 tests pass, including selectable
+sessions after project storage errors and launch actions disabled during disconnects;
+`pnpm -C apps/desktop typecheck` and `pnpm -C apps/desktop build` pass. The build retains
+the existing large-chunk warning. Final review: `cargo test --workspace` (151 tests),
+the full desktop suite (96 tests), `cargo fmt --check`, `cargo clippy --workspace -- -D
+warnings`, `cargo build --workspace`, desktop typecheck, and desktop build all pass.
+
 ### Task 9 — S2 manual checklist and documentation handoff
 
 Files: ARCHITECTURE.md; no code.
-Interfaces: consumes Tasks 1–8 and Task 8a.
-Change: run the manual checklist from the design's `## Verification` — add two
-projects including a duplicate and a symlinked spelling, plus a second project whose
-basename matches an existing one, and confirm the same-basename rows show
-distinguishable truncated roots; under All Projects, confirm each session is under the
-correct project group with its agent label and state, and unassigned sessions are in
-Unassigned; move or delete a project root on disk and see it flagged `missing`; remove
-a project while its session runs and find the session in Unassigned; select a terminal
-in each project and switch back and forth to confirm
-each project restores its last selected session while the others keep running; start a
-session from an agent that is installed and confirm a missing
-one shows disabled with its hint; run two different real agents side by side and
-switch sessions repeatedly — neither stops (the roadmap exit check: if fewer than two
-real agent CLIs are installed, record which and mark the missing leg `not run`); start
-a custom-command session; quit and relaunch to see the active project restored; kill
-the daemon and confirm the sidebar empties of sessions with no reattach claim; check
-dark/light rendering. Record each item pass/fail/not run with observations in
-`Result`. As an implementation handoff item, update `ARCHITECTURE.md` (process
+Interfaces: consumes Tasks 1–8, Task 8a, Task 8b, and D3.
+Change: run the manual checklist from the design's `## Verification` — register two
+existing project directories; start sessions from each project and confirm they appear
+under the correct parent with agent and state markers; expand/collapse parents; move or
+delete a root and confirm its missing badge and disabled launch action; remove a project
+while a session runs and find the session under **Unassigned**; confirm selecting another
+session does not stop a PTY; confirm unavailable agents and disconnected launch actions
+are disabled; run two different real agents side by side and switch sessions repeatedly
+— neither stops (the roadmap exit check: if fewer than two real agent CLIs are installed,
+record which and mark the missing leg `not run`); start a custom command; check dark/light
+rendering and the Goko header mark. Record each item pass/fail/not run with observations
+in `Result`. As an implementation handoff item, update `ARCHITECTURE.md` (process
 topology gains `goko.db`, agent discovery, the project↔session model and
 daemon-vs-metadata authority, restart behavior with no S2 reattach, schema v1). Wiki
 coverage is not applicable: `docs/llm/` does not exist, so `document-wiki`'s
 `## Task updates` creates no wiki files and no `delta.md` is written.
 Verify: `cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo
 fmt --check && pnpm -C apps/desktop test && pnpm -C apps/desktop typecheck` all pass;
-every checklist item has an observed result recorded.
+every checklist item has an observed result recorded. D3 removes the former active-project
+restore and All Projects checks.
 Progress: partial
 Result: `ARCHITECTURE.md` documents the S2 support-directory database, schema v1,
 agent discovery, project/session metadata ownership, best-effort metadata writes, and
 the no-reattach behavior after daemon restart. `docs/llm/` is absent, so wiki work is
-not applicable. Manual checks used an isolated `GOKO_HOME` and disposable project
-roots.
+not applicable. The manual checks below are historical D1/D2 results and do not verify
+the D3 project tree. Manual checks used an isolated `GOKO_HOME` and disposable project
+roots. Final automated verification passes: workspace Rust tests (151), desktop tests
+(96), fmt, clippy, workspace build, desktop typecheck, and desktop production build; Vite
+continues to report the existing over-500-kB bundle warning.
 
 - Pass (manual): duplicate canonical roots remain one project; symlink spelling
   resolves to the canonical root; two roots named `app` register; moving a root shows
@@ -517,7 +535,9 @@ without a project (add the folder as a project first) and the persisted
 `lastSelectedSessionByProject`, `hydrateActiveProject`). The `last_agent` default is no
 longer used by the UI.
 Impact: Frontend only (`App`, `ProjectTree`, `SessionControls`, `StateBadge`, `ui.ts`,
-`useCreateSession`, Vitest setup); no Rust, daemon, protocol, or SQLite change — the
-settings keys simply go unused. `useCreateSession` now awaits the metadata refresh before
-inserting the session so it never flashes under Unassigned.
+`useCreateSession`, Vitest setup); no Rust, daemon, protocol, or SQLite change. The UI
+stops reading `active_project_id` and stops using `last_agent` as a default; the backend
+continues recording `last_agent` after an agent launch. Any old active-project setting is
+ignored. `useCreateSession` awaits the metadata refresh before inserting the session so
+it never flashes under Unassigned.
 Confirmed by user: 2026-11-02.

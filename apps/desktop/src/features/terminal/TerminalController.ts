@@ -21,6 +21,7 @@ export class TerminalController {
   private unsubscribe?: () => void
   private sent = ''
   private disposed = false
+  private visible = true
 
   constructor(
     private sessionId: string,
@@ -28,8 +29,9 @@ export class TerminalController {
   ) {}
 
   /** Open, fit, send the fitted size, then subscribe, so the replay never lands in a wrong-size terminal. */
-  async mount(element: HTMLElement): Promise<void> {
+  async mount(element: HTMLElement, visible = true): Promise<void> {
     if (this.term || this.disposed) return
+    this.visible = visible
     const { sessionId: id, service } = this
     const term = (this.term = new Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -49,7 +51,7 @@ export class TerminalController {
     })
     this.observer.observe(element)
 
-    await this.syncSize()
+    if (this.visible) await this.syncSize()
     if (this.disposed) return
     try {
       const unsubscribe = await service.subscribe(id, (_seq, data) => {
@@ -74,15 +76,23 @@ export class TerminalController {
     this.term?.dispose()
   }
 
+  setVisible(visible: boolean): void {
+    if (this.disposed || this.visible === visible) return
+    this.visible = visible
+    if (visible) void this.syncSize()
+  }
+
   /** Fit, then tell the daemon once per changed size. A hidden (0x0) element is skipped. */
   private async syncSize(): Promise<void> {
     const { term, element } = this
-    if (this.disposed || !term || !element?.clientWidth || !element.clientHeight) return
+    if (this.disposed || !this.visible || !term || !element?.clientWidth || !element.clientHeight) return
     this.fit.fit()
     const size = `${term.cols}x${term.rows}`
     if (size === this.sent) return
     this.sent = size
-    // A rejected resize (e.g. exited session) must not stop the replay from being shown.
-    await this.service.resize(this.sessionId, term.cols, term.rows).catch(noop)
+    // Keep replay visible after errors and let a later observer event retry this size.
+    await this.service.resize(this.sessionId, term.cols, term.rows).catch(() => {
+      if (this.sent === size) this.sent = ''
+    })
   }
 }

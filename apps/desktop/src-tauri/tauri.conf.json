@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "identifier": "dev.goko.app",
   "bundle": {
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "externalBin": ["binaries/gokod"]
   },
   "build": {
     "beforeDevCommand": "cargo build -p daemon --bin gokod && pnpm dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "mkdir -p src-tauri/binaries && if [ \"$TAURI_ENV_TARGET_TRIPLE\" = \"universal-apple-darwin\" ]; then cargo build -p daemon --bin gokod --release --target aarch64-apple-darwin && cargo build -p daemon --bin gokod --release --target x86_64-apple-darwin && lipo -create ../../target/aarch64-apple-darwin/release/gokod ../../target/x86_64-apple-darwin/release/gokod -output src-tauri/binaries/gokod-universal-apple-darwin; else cargo build -p daemon --bin gokod --release --target \"$TAURI_ENV_TARGET_TRIPLE\" && cp ../../target/$TAURI_ENV_TARGET_TRIPLE/release/gokod src-tauri/binaries/gokod-$TAURI_ENV_TARGET_TRIPLE; fi && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {

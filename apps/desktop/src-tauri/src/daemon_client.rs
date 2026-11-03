@@ -58,6 +58,7 @@ pub struct DaemonClient {
     shared: Shared,
     writes: mpsc::Sender<Vec<u8>>,
     next_id: AtomicU64,
+    daemon_version: String,
 }
 
 #[derive(Deserialize)]
@@ -76,7 +77,7 @@ impl DaemonClient {
         // Read the token only once the socket accepted: a live daemon writes it before
         // binding, so a stale file from a crashed daemon is never sent.
         let token = fs::read_to_string(home.join("daemon.token")).map_err(unavailable)?;
-        timeout(REQUEST_TIMEOUT, handshake(&mut stream, token))
+        let daemon_version = timeout(REQUEST_TIMEOUT, handshake(&mut stream, token))
             .await
             .map_err(|_| timed_out())??;
 
@@ -101,6 +102,7 @@ impl DaemonClient {
             shared,
             writes,
             next_id: AtomicU64::new(1),
+            daemon_version,
         })
     }
 
@@ -200,6 +202,14 @@ impl DaemonClient {
         self.shared.lock().unwrap().is_none()
     }
 
+    pub fn daemon_version(&self) -> &str {
+        &self.daemon_version
+    }
+
+    pub fn supports_live_cwd(&self) -> bool {
+        supports_live_cwd(&self.daemon_version)
+    }
+
     fn routes<T>(&self, use_routes: impl FnOnce(&mut Routes) -> T) -> Result<T, BridgeError> {
         let mut shared = self.shared.lock().unwrap();
         shared.as_mut().map(use_routes).ok_or_else(disconnected)
@@ -283,7 +293,7 @@ fn spawn_daemon(home: &Path, bin: &Path) -> Result<(), BridgeError> {
         .map_err(|error| failed(&format!("cannot start {}", bin.display()), error))
 }
 
-async fn handshake(stream: &mut UnixStream, token: String) -> Result<(), BridgeError> {
+async fn handshake(stream: &mut UnixStream, token: String) -> Result<String, BridgeError> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         token,
@@ -299,8 +309,8 @@ async fn handshake(stream: &mut UnixStream, token: String) -> Result<(), BridgeE
         }) => payload,
         _ => return Err(disconnected()),
     };
-    if serde_json::from_slice::<HelloOk>(&reply).is_ok() {
-        return Ok(());
+    if let Ok(hello) = serde_json::from_slice::<HelloOk>(&reply) {
+        return Ok(hello.daemon_version);
     }
     match serde_json::from_slice::<Response>(&reply) {
         Ok(Response {
@@ -312,6 +322,19 @@ async fn handshake(stream: &mut UnixStream, token: String) -> Result<(), BridgeE
             "the daemon's handshake reply was not understood",
         )),
     }
+}
+
+fn supports_live_cwd(version: &str) -> bool {
+    let mut components = version.split('.');
+    let (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) = (
+        components.next().map(str::parse::<u64>),
+        components.next().map(str::parse::<u64>),
+        components.next().map(str::parse::<u64>),
+        components.next(),
+    ) else {
+        return false;
+    };
+    (major, minor, patch) >= (0, 1, 1)
 }
 
 async fn read_loop(mut reader: BufReader<tokio::net::unix::OwnedReadHalf>, shared: Shared) {

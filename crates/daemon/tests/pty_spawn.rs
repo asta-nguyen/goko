@@ -23,6 +23,23 @@ async fn spawn_captures_output_and_exit_code() {
     assert!(bytes.windows(2).any(|window| window == b"hi"));
 }
 
+#[tokio::test]
+async fn child_pty_keeps_precomposed_and_decomposed_vietnamese_utf8() {
+    let text = "Tiếng Việt: ă â ê ô ơ ư đ a\u{0306}";
+    let command = format!("printf '%s' '{text}'");
+    let process = PtyProcess::spawn(spec(
+        &["sh", "-c", command.as_str()],
+        std::env::current_dir().expect("current directory"),
+    ))
+    .expect("spawn command");
+
+    process.wait_exit().await.expect("wait for command");
+    let (_, bytes, _) = wait_for_output(&process, text.as_bytes());
+    assert!(bytes
+        .windows(text.len())
+        .any(|window| window == text.as_bytes()));
+}
+
 #[test]
 fn missing_working_directory_returns_spawn_error() {
     let temp = TempDir::new();

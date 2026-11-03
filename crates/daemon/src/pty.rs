@@ -1,6 +1,7 @@
 use crate::buffer::RingBuffer;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use std::error::Error;
+use std::ffi::CString;
 use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
@@ -10,6 +11,7 @@ use std::thread;
 use tokio::sync::{mpsc, watch};
 
 const MAX_DIMENSION: u16 = 1000;
+const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
 /// Chunks a subscriber may have queued before it is dropped as lagging.
 const SUBSCRIBER_QUEUE: usize = 256;
 
@@ -156,6 +158,17 @@ impl PtyProcess {
         command.cwd(spec.cwd.as_os_str());
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        let lc_all = std::env::var_os("LC_ALL").map(|value| value.to_string_lossy().into_owned());
+        let lc_ctype =
+            std::env::var_os("LC_CTYPE").map(|value| value.to_string_lossy().into_owned());
+        let lang = std::env::var_os("LANG").map(|value| value.to_string_lossy().into_owned());
+        let (locale, clear_lc_all) =
+            resolve_utf8_locale(lc_all.as_deref(), lc_ctype.as_deref(), lang.as_deref());
+        if clear_lc_all {
+            command.env_remove("LC_ALL");
+        }
+        command.env("LC_CTYPE", &locale);
+        command.env("LANG", &locale);
 
         let portable_pty::PtyPair { slave, master } = pair;
         let mut child = slave.spawn_command(command).map_err(|error| {
@@ -250,6 +263,11 @@ impl PtyProcess {
         self.pid as u32
     }
 
+    /// Read the child process's current working directory when the platform exposes it.
+    pub fn current_dir(&self) -> Option<PathBuf> {
+        process_current_dir(self.pid).filter(|path| path.is_absolute())
+    }
+
     /// Return the current replay window as (oldest offset, bytes, next offset).
     pub fn buffer(&self) -> (u64, Vec<u8>, u64) {
         lock_unpoisoned(&self.shared).buffer.snapshot()
@@ -282,6 +300,11 @@ impl PtyProcess {
         lock_unpoisoned(&self.shared).subscribers.len()
     }
 
+    /// Stop every output subscription after the owning session has been deleted.
+    pub fn close_subscribers(&self) {
+        lock_unpoisoned(&self.shared).close();
+    }
+
     /// Wait for the child process to exit. Multiple callers can await the same status.
     pub async fn wait_exit(&self) -> Result<ExitStatus, PtyError> {
         let mut exit_state = self.exit_state.clone();
@@ -310,6 +333,86 @@ impl PtyProcess {
     }
 }
 
+fn resolve_utf8_locale(
+    lc_all: Option<&str>,
+    lc_ctype: Option<&str>,
+    lang: Option<&str>,
+) -> (String, bool) {
+    let locale = [lc_all, lc_ctype, lang]
+        .into_iter()
+        .flatten()
+        .find(|value| is_available_utf8_locale(value))
+        .unwrap_or(DEFAULT_UTF8_LOCALE)
+        .to_owned();
+    let clear_lc_all = lc_all.is_some_and(|value| !is_available_utf8_locale(value));
+    (locale, clear_lc_all)
+}
+
+fn is_utf8_locale(locale: &str) -> bool {
+    let locale = locale.split('@').next().unwrap_or(locale);
+    let encoding = locale
+        .rsplit_once('.')
+        .map_or(locale, |(_, encoding)| encoding);
+    matches!(encoding.to_ascii_lowercase().as_str(), "utf8" | "utf-8")
+}
+
+fn is_available_utf8_locale(locale: &str) -> bool {
+    if !is_utf8_locale(locale) {
+        return false;
+    }
+    let Ok(name) = CString::new(locale) else {
+        return false;
+    };
+    let resolved =
+        unsafe { libc::newlocale(libc::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut()) };
+    if resolved.is_null() {
+        return false;
+    }
+    unsafe { libc::freelocale(resolved) };
+    true
+}
+
+#[cfg(test)]
+mod locale_tests {
+    use super::{resolve_utf8_locale, DEFAULT_UTF8_LOCALE};
+
+    #[test]
+    fn locale_precedence_prefers_lc_all_then_lc_ctype_then_lang() {
+        assert_eq!(
+            resolve_utf8_locale(Some("en_US.UTF-8"), Some("C.UTF-8"), Some("en_US.UTF-8")),
+            ("en_US.UTF-8".into(), false)
+        );
+        assert_eq!(
+            resolve_utf8_locale(Some("C"), Some("C.UTF-8"), Some("en_US.UTF-8")),
+            ("C.UTF-8".into(), true)
+        );
+        assert_eq!(
+            resolve_utf8_locale(Some("C"), Some("POSIX"), Some("en_US.UTF-8")),
+            ("en_US.UTF-8".into(), true)
+        );
+    }
+
+    #[test]
+    fn locale_falls_back_when_inherited_locales_are_not_utf8() {
+        assert_eq!(
+            resolve_utf8_locale(Some("C"), Some("POSIX"), None),
+            ("en_US.UTF-8".into(), true)
+        );
+        assert_eq!(
+            resolve_utf8_locale(None, None, None),
+            ("en_US.UTF-8".into(), false)
+        );
+    }
+
+    #[test]
+    fn unavailable_utf8_named_locale_is_rejected() {
+        assert_eq!(
+            resolve_utf8_locale(Some("goko_missing_locale.UTF-8"), None, None),
+            (DEFAULT_UTF8_LOCALE.into(), true)
+        );
+    }
+}
+
 fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
     match fs::metadata(cwd) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -322,6 +425,41 @@ fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
             cwd.display()
         ))),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
+    // SAFETY: proc_vnodepathinfo contains only integer fields, for which zero is valid.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of_val(&info);
+    // SAFETY: `info` is writable storage of the size passed to proc_pidinfo.
+    let result = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&mut info as *mut libc::proc_vnodepathinfo).cast(),
+            i32::try_from(size).ok()?,
+        )
+    };
+    if usize::try_from(result).ok()? < size {
+        return None;
+    }
+    // SAFETY: proc_pidinfo returns a NUL-terminated path in vip_path on success.
+    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) }
+        .to_str()
+        .ok()?;
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+#[cfg(target_os = "linux")]
+fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_current_dir(_pid: libc::pid_t) -> Option<PathBuf> {
+    None
 }
 
 pub(crate) fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {

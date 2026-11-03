@@ -14,6 +14,8 @@ use tracing::warn;
 const EVENT_CAPACITY: usize = 64;
 /// How long `shutdown` waits after SIGTERM before sending SIGKILL.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// How often a live PTY process's working directory is refreshed.
+const CWD_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transition {
@@ -205,14 +207,25 @@ impl SessionManager {
 
     /// All sessions in creation order; exited and failed ones stay listed.
     pub fn list(&self) -> Vec<SessionInfo> {
-        lock(&self.sessions)
+        let sessions = lock(&self.sessions).clone();
+        sessions
             .iter()
-            .map(|session| lock(&session.info).clone())
+            .map(|session| {
+                if let Some(pty) = session.pty.get() {
+                    refresh_cwd(session, pty);
+                }
+                lock(&session.info).clone()
+            })
             .collect()
     }
 
     pub fn get(&self, id: SessionId) -> Result<SessionInfo, SessionError> {
-        Ok(lock(&self.find(id)?.info).clone())
+        let session = self.find(id)?;
+        if let Some(pty) = session.pty.get() {
+            refresh_cwd(&session, pty);
+        }
+        let info = lock(&session.info).clone();
+        Ok(info)
     }
 
     /// The process behind a session, for terminal I/O. A failed session has none.
@@ -254,6 +267,31 @@ impl SessionManager {
         Ok(info.clone())
     }
 
+    /// Remove a finished session and its replay state. An absent id is already deleted,
+    /// making a retry after partial app-side cleanup safe.
+    pub fn delete(&self, id: SessionId) -> Result<(), SessionError> {
+        let mut sessions = lock(&self.sessions);
+        let Some(index) = sessions
+            .iter()
+            .position(|session| lock(&session.info).id == id)
+        else {
+            return Ok(());
+        };
+
+        let session = &sessions[index];
+        let state = lock(&session.info).state;
+        if !is_finished(state) {
+            return Err(SessionError::InvalidArgument(
+                "cannot delete a session before its process exits".to_owned(),
+            ));
+        }
+        if let Some(pty) = session.pty.get() {
+            pty.close_subscribers();
+        }
+        sessions.remove(index);
+        Ok(())
+    }
+
     /// SIGTERM every live process, wait up to two seconds, then SIGKILL the rest. Returns
     /// once every process has exited.
     pub async fn shutdown(&self) {
@@ -287,14 +325,36 @@ impl SessionManager {
 
 /// Record the exit. A process killed by a signal has no exit code.
 async fn watch_exit(session: Arc<Session>, pty: Arc<PtyProcess>) {
-    let exit_code = match pty.wait_exit().await {
-        Ok(status) if status.signal.is_none() => i32::try_from(status.code).ok(),
-        _ => None,
+    let mut interval = tokio::time::interval(CWD_REFRESH_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let exit_code = loop {
+        tokio::select! {
+            status = pty.wait_exit() => {
+                break match status {
+                    Ok(status) if status.signal.is_none() => i32::try_from(status.code).ok(),
+                    _ => None,
+                };
+            }
+            _ = interval.tick() => refresh_cwd(&session, &pty),
+        }
     };
     let _ = session.apply(Transition::ProcessExited, |info| {
         info.exit_code = exit_code;
         info.ended_at = Some(now_ms());
     });
+}
+
+fn refresh_cwd(session: &Session, pty: &PtyProcess) {
+    let cwd = pty
+        .current_dir()
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .unwrap_or_default();
+    let mut info = lock(&session.info);
+    if is_finished(info.state) || info.cwd == cwd {
+        return;
+    }
+    info.cwd = cwd;
+    let _ = session.events.send(info.clone());
 }
 
 fn is_finished(state: SessionState) -> bool {

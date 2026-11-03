@@ -1,7 +1,7 @@
 mod common;
 
 use common::{frame_bytes, read_incoming, Client, Incoming, TestServer};
-use protocol::session::SessionId;
+use protocol::session::{SessionId, SessionState};
 use protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -247,6 +247,46 @@ async fn subscribing_to_an_exited_session_yields_the_snapshot_then_nothing() {
     };
     assert_eq!((seq, bytes.as_slice()), (0, b"done\r\n".as_slice()));
     assert_eq!(client.next_within(Duration::from_millis(300)).await, None);
+}
+
+#[tokio::test]
+async fn deleting_a_finished_session_stops_existing_subscriptions_and_rejects_new_ones() {
+    let server = TestServer::start();
+    let mut first = server.authenticated().await;
+    let mut second = server.authenticated().await;
+    let created = first.request(create(&["cat"])).await;
+    let id = created["result"]["id"].clone();
+    let session_id = session_id(&id);
+    subscribe(&mut first, &id).await;
+    subscribe(&mut second, &id).await;
+
+    server.sessions.stop(session_id, false).unwrap();
+    for _ in 0..500 {
+        if server.sessions.get(session_id).unwrap().state == SessionState::Exited {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        server.sessions.get(session_id).unwrap().state,
+        SessionState::Exited
+    );
+
+    let deleted = first
+        .request(json!({"type": "session.delete", "session_id": id}))
+        .await;
+    assert_eq!(deleted["result"], json!({}));
+    assert!(matches!(
+        server.sessions.pty(session_id),
+        Err(daemon::session::SessionError::NotFound(_))
+    ));
+    assert_eq!(first.next_within(Duration::from_millis(100)).await, None);
+    assert_eq!(second.next_within(Duration::from_millis(100)).await, None);
+
+    let rejected = first
+        .request(json!({"type": "terminal.subscribe", "session_id": id}))
+        .await;
+    assert_eq!(rejected["error"]["code"], "not_found");
 }
 
 #[tokio::test]

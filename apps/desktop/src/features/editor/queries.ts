@@ -1,0 +1,105 @@
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { queryKeys } from '../../queryClient'
+import type { BridgeError } from '../../services/errors'
+import { gitViewService, type GitDiffRequest } from '../../services/git-view'
+import type {
+  GitViewChanges,
+  GitViewDiff,
+  GitViewFile,
+  GitViewHistory,
+  GitViewStash,
+  GitViewTree,
+} from '../../services/types'
+
+/** Changes status/diff and the stash list poll at this rate while their section is visible. */
+export const GIT_VIEW_POLL_MS = 3000
+
+// Every git-view query overrides the global infinite staleTime: entering a
+// section fetches fresh data while the last successful result stays visible
+// (and a failed refresh keeps it behind a stale indicator).
+const READ = { staleTime: 0 } as const
+
+export function useGitChanges(projectId: string, checkoutPath: string, enabled: boolean, poll = enabled) {
+  return useQuery<GitViewChanges, BridgeError>({
+    queryKey: queryKeys.gitChanges(projectId, checkoutPath),
+    queryFn: () => gitViewService.changes(projectId, checkoutPath),
+    enabled,
+    refetchInterval: enabled && poll ? GIT_VIEW_POLL_MS : false,
+    ...READ,
+  })
+}
+
+export function useGitDiff(
+  projectId: string,
+  checkoutPath: string,
+  request: GitDiffRequest | null,
+  options: { enabled?: boolean; poll?: boolean } = {},
+) {
+  const enabled = (options.enabled ?? true) && request !== null
+  return useQuery<GitViewDiff, BridgeError>({
+    queryKey: queryKeys.gitDiff(
+      projectId,
+      checkoutPath,
+      request?.layer ?? null,
+      request?.path ?? null,
+      request?.commit ?? null,
+    ),
+    queryFn: () => gitViewService.diff(projectId, checkoutPath, request as GitDiffRequest),
+    enabled,
+    refetchInterval: enabled && options.poll ? GIT_VIEW_POLL_MS : false,
+    ...READ,
+  })
+}
+
+export function useGitHistory(projectId: string, checkoutPath: string, enabled: boolean) {
+  return useInfiniteQuery<GitViewHistory, BridgeError>({
+    queryKey: queryKeys.gitHistory(projectId, checkoutPath),
+    queryFn: ({ pageParam }) => gitViewService.history(projectId, checkoutPath, pageParam as number),
+    initialPageParam: 0,
+    getNextPageParam: (last) => last.next_skip ?? undefined,
+    enabled,
+    ...READ,
+  })
+}
+
+export function useGitTree(projectId: string, checkoutPath: string, directory: string, enabled: boolean) {
+  return useQuery<GitViewTree, BridgeError>({
+    queryKey: queryKeys.gitTree(projectId, checkoutPath, directory),
+    queryFn: () => gitViewService.tree(projectId, checkoutPath, directory),
+    enabled,
+    ...READ,
+  })
+}
+
+export function useGitFile(projectId: string, checkoutPath: string, path: string | null, enabled: boolean) {
+  return useQuery<GitViewFile, BridgeError>({
+    queryKey: queryKeys.gitFile(projectId, checkoutPath, path ?? ''),
+    queryFn: () => gitViewService.file(projectId, checkoutPath, path as string),
+    enabled: enabled && path !== null,
+    ...READ,
+  })
+}
+
+// `refs/stash` is shared by every linked worktree of the project, so the list
+// is keyed by project alone; `checkoutPath` only picks which checkout runs the
+// read. It polls at the same cadence as Changes while the section is visible.
+export function useGitStashes(projectId: string, checkoutPath: string, enabled: boolean) {
+  return useQuery<GitViewStash[], BridgeError>({
+    queryKey: queryKeys.gitStashes(projectId),
+    queryFn: () => gitViewService.stashes(projectId, checkoutPath),
+    enabled,
+    refetchInterval: enabled ? GIT_VIEW_POLL_MS : false,
+    ...READ,
+  })
+}
+
+// The detail key is the stash's immutable commit id: the same stash returns
+// the same patch from any checkout of the repository.
+export function useGitStashDiff(projectId: string, checkoutPath: string, stashId: string | null, enabled: boolean) {
+  return useQuery<GitViewDiff, BridgeError>({
+    queryKey: queryKeys.gitStashDiff(projectId, stashId ?? ''),
+    queryFn: () => gitViewService.stashDiff(projectId, checkoutPath, stashId as string),
+    enabled: enabled && stashId !== null,
+    ...READ,
+  })
+}

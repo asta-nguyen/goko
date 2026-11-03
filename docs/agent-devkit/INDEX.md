@@ -2,7 +2,9 @@
 
 ## Changes
 
-- [S2 Projects, agents, and sessions](changes/2026-10-30-s2-projects-agents-sessions/design.md) ([tasks](changes/2026-10-30-s2-projects-agents-sessions/tasks.md))
+- [Project terminal workspaces, splits, and Vietnamese support](changes/2026-11-02-terminal-workspaces-vietnamese/design.md) ([tasks](changes/2026-11-02-terminal-workspaces-vietnamese/tasks.md))
+- [Git worktree management UX](changes/2026-11-02-worktree-ux/design.md) ([tasks](changes/2026-11-02-worktree-ux/tasks.md))
+- [Workspace editor and Git review](changes/git-workbench-view/design.md) ([tasks](changes/git-workbench-view/tasks.md))
 
 ## Archived changes
 
@@ -19,3 +21,4 @@
 - [s1-11 UI terminal](changes/archive/s1-11-ui-terminal/design.md) ([tasks](changes/archive/s1-11-ui-terminal/tasks.md))
 - [s1-12 UI sessions](changes/archive/s1-12-ui-session/design.md) ([tasks](changes/archive/s1-12-ui-session/tasks.md))
 - [s1-13 Acceptance](changes/archive/s1-13-acceptance/design.md) ([tasks](changes/archive/s1-13-acceptance/tasks.md))
+- [S2 Projects, agents, and sessions](changes/archive/2026-10-30-s2-projects-agents-sessions/design.md) ([tasks](changes/archive/2026-10-30-s2-projects-agents-sessions/tasks.md))

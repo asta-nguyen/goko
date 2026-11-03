@@ -6,7 +6,7 @@ import { useUi } from './stores/ui'
 import App from './App'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service, projects, agents, log } = vi.hoisted(() => {
+const { handlers, listen, service, projects, agents, worktrees, gitview, log } = vi.hoisted(() => {
   const handlers = new Map<string, Set<Handler>>()
   const listen = vi.fn(async (name: string, cb: Handler) => {
     if (!handlers.has(name)) handlers.set(name, new Set())
@@ -17,9 +17,11 @@ const { handlers, listen, service, projects, agents, log } = vi.hoisted(() => {
     handlers,
     listen,
     log: [] as string[],
-    service: { list: vi.fn(), status: vi.fn(), create: vi.fn(), stop: vi.fn(), meta: vi.fn() },
+    service: { list: vi.fn(), status: vi.fn(), create: vi.fn(), stop: vi.fn(), delete: vi.fn(), meta: vi.fn() },
     projects: { list: vi.fn(), add: vi.fn(), remove: vi.fn() },
     agents: { list: vi.fn() },
+    worktrees: { list: vi.fn(), branches: vi.fn(), create: vi.fn(), envCandidates: vi.fn(), envCopy: vi.fn(), remove: vi.fn() },
+    gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
   }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen }))
@@ -27,6 +29,8 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('./services/session', () => ({ sessionService: service }))
 vi.mock('./services/projects', () => ({ projectService: projects }))
 vi.mock('./services/agents', () => ({ agentService: agents }))
+vi.mock('./services/worktrees', () => ({ worktreeService: worktrees }))
+vi.mock('./services/git-view', () => ({ gitViewService: gitview }))
 // jsdom has no layout, so the xterm-based controller is replaced; its own tests cover it.
 vi.mock('./features/terminal/TerminalController', () => ({
   TerminalController: class {
@@ -34,6 +38,7 @@ vi.mock('./features/terminal/TerminalController', () => ({
       log.push(`new:${id}`)
     }
     async mount() {}
+    setVisible() {}
     dispose() {
       log.push(`dispose:${this.id}`)
     }
@@ -91,28 +96,38 @@ beforeEach(async () => {
   Object.values(service).forEach((f) => f.mockReset())
   Object.values(projects).forEach((f) => f.mockReset())
   agents.list.mockReset().mockResolvedValue([])
+  Object.values(worktrees).forEach((f) => f.mockReset())
+  worktrees.list.mockResolvedValue({ repo: false, worktrees: [] })
+  worktrees.branches.mockResolvedValue({ branches: [], bases: [] })
+  worktrees.envCandidates.mockResolvedValue([])
+  worktrees.envCopy.mockResolvedValue({ copied: [], skipped: [], failed: [] })
+  worktrees.remove.mockResolvedValue(undefined)
+  Object.values(gitview).forEach((f) => f.mockReset().mockResolvedValue(undefined))
+  gitview.changes.mockResolvedValue({ branch: 'main', head: 'x', conflicts: [], staged: [], unstaged: [], untracked: [] })
   service.list.mockResolvedValue([session('a'), session('b')])
   service.meta.mockResolvedValue([])
   service.status.mockResolvedValue(status(true))
   projects.list.mockResolvedValue([])
-  useUi.setState({ selectedId: null })
+  useUi.getState().reset()
 })
 
 describe('App', () => {
-  it('renders a row per session and mounts a terminal for the one selected', async () => {
+  it('shows unassigned sessions without a workspace until one is opened', async () => {
     renderApp()
     expect((await screen.findAllByRole('button', { name: /title-/ })).length).toBe(2)
-    expect(screen.getByText(/select or create a session/i)).toBeTruthy()
+    expect(screen.getByText(/select a project/i)).toBeTruthy()
     expect(log).toEqual([])
 
     fireEvent.click(screen.getByRole('button', { name: /title-b/ }))
     expect(log).toEqual(['new:b'])
-    expect(screen.getByRole('button', { name: /title-b/ }).getAttribute('aria-current')).toBe('true')
-    expect(screen.getByRole('button', { name: /title-a/ }).getAttribute('aria-current')).toBe('false')
+    expect(useUi.getState().activeWorkspaceId).toBe('__unassigned__')
+    expect(screen.getByRole('tab', { name: 'title-b' }).getAttribute('aria-selected')).toBe('true')
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /title-a/ }))
-    expect(log).toEqual(['new:b', 'dispose:b', 'new:a'])
+    expect(log).toEqual(['new:b', 'new:a'])
+    expect(screen.getByRole('tab', { name: 'title-b' }).getAttribute('aria-selected')).toBe('false')
+    expect(screen.getByRole('tab', { name: 'title-a' }).getAttribute('aria-selected')).toBe('true')
   })
 
   it('shows the banner and disables controls while disconnected, and recovers', async () => {
@@ -179,8 +194,80 @@ describe('App', () => {
 
     fireEvent.click(within(node).getByRole('button', { name: /title-a/ }))
     expect(log).toEqual(['new:a'])
-    await waitFor(() => expect(screen.getByText(/one ›/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'title-a' })).toBeTruthy())
+    expect(screen.getByText(/one ›/)).toBeTruthy()
     expect(screen.getByText(/Claude Code ·/)).toBeTruthy()
+  })
+
+  it('creates the default shell once when a project workspace is activated', async () => {
+    const p1 = project('p1', { name: 'one', root: '/w/one' })
+    projects.list.mockResolvedValue([p1])
+    service.list.mockResolvedValue([])
+    service.create.mockResolvedValue(session('shell', { title: 'Shell' }))
+    renderApp()
+
+    const projectButton = await screen.findByRole('button', { name: /one.*\/w\/one/ })
+    fireEvent.click(projectButton)
+    await waitFor(() => expect(service.create).toHaveBeenCalledTimes(1))
+    await screen.findByRole('tab', { name: 'Shell' })
+    fireEvent.click(projectButton)
+
+    expect(service.create).toHaveBeenCalledTimes(1)
+    expect(service.create).toHaveBeenCalledWith(
+      { agent: 'shell', projectId: 'p1', checkout: '/w/one', cols: 80, rows: 24, title: 'Shell' },
+      expect.anything(),
+    )
+  })
+
+  it('creates a worktree from Editor, switches to Terminal, and starts its first Shell tab there', async () => {
+    const p1 = project('p1', { name: 'one', root: '/w/one' })
+    const root = { name: 'one', path: p1.root, branch: 'main', head: '12345678', is_root: true, missing: false, dirty: false, changed: 0 }
+    const created = { name: 'worktree', path: '/w/one-worktrees/worktree', branch: 'worktree', head: 'abcdef12', is_root: false, missing: false, dirty: false, changed: 0 }
+    let createdWorktree = false
+    projects.list.mockResolvedValue([p1])
+    service.list.mockResolvedValue([])
+    service.create.mockResolvedValue(session('shell', { title: 'Shell', cwd: created.path }))
+    worktrees.list.mockImplementation(async () => ({ repo: true, worktrees: createdWorktree ? [root, created] : [root] }))
+    worktrees.branches.mockResolvedValue({ branches: [{ name: 'main', checked_out_at: p1.root }], bases: [{ name: 'main', kind: 'local' }] })
+    worktrees.create.mockImplementation(async () => { createdWorktree = true; return created })
+    renderApp()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Editor for one' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create worktree in one' }))
+    const createWorktree = await screen.findByRole('button', { name: 'Create worktree' })
+    await waitFor(() => expect(createWorktree).toHaveProperty('disabled', false))
+    fireEvent.click(createWorktree)
+    await screen.findByRole('tab', { name: 'Shell' })
+
+    expect(useUi.getState().activeWorkspaceId).toBe(`${p1.id}\u0000${created.path}`)
+    expect(service.create).toHaveBeenCalledWith(
+      { agent: 'shell', projectId: 'p1', checkout: created.path, cols: 80, rows: 24, title: 'Shell' },
+      expect.anything(),
+    )
+  })
+
+  it('keeps a created checkout without a phantom tab when its first Shell launch fails', async () => {
+    const p1 = project('p1', { name: 'one', root: '/w/one' })
+    const root = { name: 'one', path: p1.root, branch: 'main', head: '12345678', is_root: true, missing: false, dirty: false, changed: 0 }
+    const created = { name: 'worktree', path: '/w/one-worktrees/worktree', branch: 'worktree', head: 'abcdef12', is_root: false, missing: false, dirty: false, changed: 0 }
+    let createdWorktree = false
+    projects.list.mockResolvedValue([p1])
+    service.list.mockResolvedValue([])
+    service.create.mockRejectedValue(new Error('shell launch failed'))
+    worktrees.list.mockImplementation(async () => ({ repo: true, worktrees: createdWorktree ? [root, created] : [root] }))
+    worktrees.branches.mockResolvedValue({ branches: [], bases: [{ name: 'main', kind: 'local' }] })
+    worktrees.create.mockImplementation(async () => { createdWorktree = true; return created })
+    renderApp()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create worktree in one' }))
+    const createWorktree = await screen.findByRole('button', { name: 'Create worktree' })
+    await waitFor(() => expect(createWorktree).toHaveProperty('disabled', false))
+    fireEvent.click(createWorktree)
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/shell launch failed/)
+    expect(screen.queryByRole('tab')).toBeNull()
+    expect(useUi.getState().activeWorkspaceId).toBe(`${p1.id}\u0000${created.path}`)
+    expect(worktrees.create).toHaveBeenCalled()
   })
 
   it('starting an agent from a project selects the new session and mounts its terminal', async () => {
@@ -196,7 +283,7 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Shell' }))
 
     await waitFor(() => expect(log).toEqual(['new:new']))
-    expect(service.create).toHaveBeenCalledWith({ agent: 'shell', projectId: 'p1', cols: 80, rows: 24 }, expect.anything())
+    expect(service.create).toHaveBeenCalledWith({ agent: 'shell', projectId: 'p1', checkout: '/w/one', cols: 80, rows: 24 }, expect.anything())
     expect(useUi.getState().selectedId).toBe('new')
   })
 
@@ -213,5 +300,32 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText('Unassigned')).toBeTruthy()) // a survives, unassigned
     expect(sessionButtons()).toHaveLength(2)
     expect(service.stop).not.toHaveBeenCalled()
+  })
+
+  it('keeps the terminal workspace mounted while the Editor covers it', async () => {
+    const p1 = project('p1', { name: 'one', root: '/w/one' })
+    const root = { name: 'one', path: p1.root, branch: 'main', head: '12345678', is_root: true, missing: false, dirty: false, changed: 0 }
+    projects.list.mockResolvedValue([p1])
+    service.list.mockResolvedValue([])
+    service.create.mockResolvedValue(session('shell', { title: 'Shell' }))
+    worktrees.list.mockResolvedValue({ repo: true, worktrees: [root] })
+    renderApp()
+
+    fireEvent.click(await screen.findByRole('button', { name: /one.*\/w\/one/ }))
+    await screen.findByRole('tab', { name: 'Shell' })
+    expect(log).toEqual(['new:shell'])
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Editor for one' }))
+    const editor = await screen.findByRole('region', { name: 'one editor' })
+    // The terminal section stays mounted (hidden in the browser; jsdom does not
+    // apply the `hidden` class), so its tab and controller survive the switch.
+    expect(document.querySelector('section[aria-label="one terminal workspace"]')).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Shell' })).toBeTruthy()
+    expect(log).toEqual(['new:shell'])
+
+    fireEvent.click(within(editor).getByRole('button', { name: 'Terminal' }))
+    // The same tab and controller come back — nothing was remounted or disposed.
+    await screen.findByRole('tab', { name: 'Shell' })
+    expect(log).toEqual(['new:shell'])
   })
 })

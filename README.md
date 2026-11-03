@@ -73,14 +73,10 @@ Building a bundle does not set up Developer ID signing or notarization; see
 [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/) before
 distributing it outside your development machine.
 
-### Current release-bundle limitation
-
-The macOS bundle command succeeds, but the current bundle does not include
-`gokod`. The app looks for that daemon beside its executable, while the Tauri
-configuration only builds the frontend before packaging. The development
-command above does build `gokod`, so use `tauri dev` to run the app from source.
-Do not distribute the generated `.app` or `.dmg` until release packaging stages
-the daemon into the bundle.
+The build hook compiles and stages the matching `gokod` sidecar, so the app can
+start its daemon from inside the `.app` bundle. Bundle artifacts are unsigned
+unless a local signing identity is configured; they are intended for local
+testing until Developer ID signing and notarization are set up.
 
 The current build also warns that the bundle identifier `dev.goko.app` ends in
 `.app`; Tauri recommends changing it before distribution.
@@ -102,3 +98,11 @@ cargo clippy --workspace -- -D warnings
 
 - [Architecture overview](ARCHITECTURE.md)
 - [S1 system contract](docs/agent-devkit/s1-contract.md)
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

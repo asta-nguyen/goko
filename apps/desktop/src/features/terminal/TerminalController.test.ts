@@ -110,6 +110,18 @@ describe('TerminalController mount', () => {
     c.dispose()
   })
 
+  it('preserves Vietnamese input strings and output bytes', async () => {
+    const c = new TerminalController('vi', service)
+    await c.mount(element())
+    const vietnamese = 'Tiếng Việt: ă â ê ô ơ ư đ a\u0306'
+    state.terms[0].dataListeners.forEach((cb) => cb(vietnamese))
+    onBytes(0, bytes(vietnamese))
+
+    expect(service.write).toHaveBeenCalledWith('vi', vietnamese)
+    expect(text(state.terms[0])).toBe(vietnamese)
+    c.dispose()
+  })
+
   it('ignores a second mount', async () => {
     const c = new TerminalController('s1', service)
     await c.mount(element())
@@ -124,6 +136,19 @@ describe('TerminalController mount', () => {
     const c = new TerminalController('s1', service)
     await c.mount(element())
     expect(service.subscribe).toHaveBeenCalledTimes(1)
+    c.dispose()
+  })
+
+  it('retries a resize after a transient failure', async () => {
+    service.resize.mockRejectedValueOnce(new Error('temporary resize failure'))
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    service.resize.mockClear()
+    vi.useFakeTimers()
+    state.fitSize = { cols: 120, rows: 40 }
+    state.observers[0].cb()
+    await vi.advanceTimersByTimeAsync(101)
+    expect(service.resize).toHaveBeenCalledWith('s1', 120, 40)
     c.dispose()
   })
 
@@ -145,6 +170,18 @@ describe('TerminalController mount', () => {
     await vi.advanceTimersByTimeAsync(100)
     expect(service.resize).not.toHaveBeenCalled()
     expect(service.subscribe).toHaveBeenCalledTimes(1)
+    c.dispose()
+  })
+
+  it('keeps hidden terminal output mounted without resizing until shown', async () => {
+    const c = new TerminalController('hidden', service)
+    await c.mount(element(), false)
+    expect(service.resize).not.toHaveBeenCalled()
+    onBytes(0, bytes('buffered'))
+    expect(text(state.terms[0])).toBe('buffered')
+
+    c.setVisible(true)
+    await vi.waitFor(() => expect(service.resize).toHaveBeenCalledWith('hidden', 100, 30))
     c.dispose()
   })
 })

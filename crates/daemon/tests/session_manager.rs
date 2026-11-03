@@ -1,5 +1,6 @@
 use daemon::session::{CreateSpec, SessionError, SessionManager};
 use protocol::session::{SessionId, SessionInfo, SessionState};
+use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::Receiver;
@@ -30,6 +31,19 @@ async fn next_event(events: &mut Receiver<SessionInfo>, id: SessionId) -> Sessio
     })
     .await
     .expect("timed out waiting for a session event")
+}
+
+async fn next_event_with_state(
+    events: &mut Receiver<SessionInfo>,
+    id: SessionId,
+    state: SessionState,
+) -> SessionInfo {
+    loop {
+        let event = next_event(events, id).await;
+        if event.state == state {
+            return event;
+        }
+    }
 }
 
 async fn wait_for_state(manager: &SessionManager, id: SessionId, state: SessionState) {
@@ -82,8 +96,8 @@ async fn a_cat_session_runs_and_events_follow_the_state_machine() {
 
     let stopped = manager.stop(created.id, false).expect("stop cat");
     assert_eq!(stopped.state, SessionState::Stopping);
-    let stopping = next_event(&mut events, created.id).await;
-    let exited = next_event(&mut events, created.id).await;
+    let stopping = next_event_with_state(&mut events, created.id, SessionState::Stopping).await;
+    let exited = next_event_with_state(&mut events, created.id, SessionState::Exited).await;
     assert_eq!(stopping.state, SessionState::Stopping);
     assert_eq!(exited.state, SessionState::Exited);
     assert_eq!(
@@ -91,6 +105,47 @@ async fn a_cat_session_runs_and_events_follow_the_state_machine() {
         "killed by a signal has no exit code"
     );
     assert!(exited.ended_at.unwrap() >= exited.started_at);
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn a_shell_directory_change_updates_session_list_get_and_events() {
+    let directory = std::env::temp_dir().join(format!("goko-cwd-{}", SessionId::new().as_uuid()));
+    fs::create_dir(&directory).expect("create target directory");
+    let expected = fs::canonicalize(&directory)
+        .expect("canonical target directory")
+        .to_string_lossy()
+        .into_owned();
+    let manager = SessionManager::new();
+    let mut events = manager.subscribe_events();
+    let mut create = spec(&["sh"]);
+    create.argv = ["sh", "-c", "cd \"$1\" && exec cat", "goko-cwd", &expected]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+    let session = manager.create(create).expect("create shell");
+    let changed = timeout(Duration::from_secs(5), async {
+        loop {
+            let info = events
+                .recv()
+                .await
+                .expect("session event stream stays open");
+            if info.id == session.id && info.cwd == expected {
+                break info;
+            }
+        }
+    })
+    .await
+    .expect("live CWD update event");
+    assert_eq!(changed.cwd, expected);
+    assert_eq!(manager.get(session.id).unwrap().cwd, expected);
+    assert_eq!(manager.list()[0].cwd, expected);
+
+    manager.stop(session.id, false).unwrap();
+    wait_for_state(&manager, session.id, SessionState::Exited).await;
+    assert_eq!(manager.get(session.id).unwrap().cwd, expected);
+    fs::remove_dir_all(directory).expect("remove target directory");
 }
 
 #[tokio::test]
@@ -166,6 +221,39 @@ async fn unknown_ids_are_not_found() {
         Err(SessionError::NotFound(_))
     ));
     assert!(matches!(manager.pty(id), Err(SessionError::NotFound(_))));
+}
+
+#[tokio::test]
+async fn deletion_rejects_live_sessions_and_removes_finished_and_failed_sessions() {
+    let manager = SessionManager::new();
+    let live = manager.create(spec(&["cat"])).unwrap();
+
+    assert!(matches!(
+        manager.delete(live.id),
+        Err(SessionError::InvalidArgument(_))
+    ));
+    assert_eq!(manager.list().len(), 1);
+
+    manager.stop(live.id, false).unwrap();
+    wait_for_state(&manager, live.id, SessionState::Exited).await;
+    manager.delete(live.id).unwrap();
+    assert!(manager.list().is_empty());
+    assert!(matches!(
+        manager.get(live.id),
+        Err(SessionError::NotFound(_))
+    ));
+    assert!(matches!(
+        manager.pty(live.id),
+        Err(SessionError::NotFound(_))
+    ));
+    manager.delete(live.id).unwrap();
+
+    let mut bad_cwd = spec(&["cat"]);
+    bad_cwd.cwd = "/definitely/not/a/directory".to_owned();
+    let failed = manager.create(bad_cwd).unwrap();
+    assert_eq!(failed.state, SessionState::Failed);
+    manager.delete(failed.id).unwrap();
+    assert!(manager.list().is_empty());
 }
 
 #[tokio::test]

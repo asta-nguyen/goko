@@ -13,6 +13,7 @@ vi.mock('./TerminalController', () => ({
     async mount(el: HTMLElement) {
       log.push(`mount:${this.id}:${el.tagName}`)
     }
+    setVisible() {}
     dispose() {
       log.push(`dispose:${this.id}`)
     }

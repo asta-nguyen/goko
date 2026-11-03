@@ -1,22 +1,32 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertCircleIcon, TerminalSquareIcon } from 'lucide-react'
+import { AlertCircleIcon } from 'lucide-react'
 import { useEffect } from 'react'
 import { ThemeToggle } from './components/theme-toggle'
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
 import { TooltipProvider } from './components/ui/tooltip'
+import { EditorWorkspace } from './features/editor/EditorWorkspace'
 import { ProjectTree } from './features/projects/ProjectTree'
-import { SessionControls } from './features/sessions/SessionControls'
+import { useProjectList } from './features/projects/queries'
 import { useDaemonStatus } from './features/sessions/queries'
-import { TerminalView } from './features/terminal/TerminalView'
+import { TerminalWorkspace } from './features/terminal/TerminalWorkspace'
 import { startQuerySync } from './services/sync'
-import { useSelectedId } from './stores/ui'
+import { checkoutContext, useUi } from './stores/ui'
 
 export default function App() {
   const qc = useQueryClient()
   useEffect(() => startQuerySync(qc), [qc]) // returns its stop function
   const { data: status } = useDaemonStatus()
-  const selectedId = useSelectedId()
+  const { data: projects } = useProjectList()
+  const activeWorkspaceId = useUi((state) => state.activeWorkspaceId)
+  const activeView = useUi((state) => state.activeView)
+  const workspaces = useUi((state) => state.workspaces)
+  const workspaceIds = [...new Set([...Object.keys(workspaces), ...(activeWorkspaceId ? [activeWorkspaceId] : [])])]
+  const activeContext = activeWorkspaceId ? checkoutContext(activeWorkspaceId) : null
+  const activeProject = activeContext ? (projects?.find((project) => project.id === activeContext.projectId) ?? null) : null
+  // Every terminal workspace stays mounted while Editor covers the main area,
+  // so tabs, splits, and running sessions survive a view switch untouched.
+  const editorMode = activeView === 'editor' && activeContext !== null
   const disconnected = status?.connected === false
   const connection = status ? (disconnected ? 'Disconnected' : 'Connected') : 'Connecting'
 
@@ -26,7 +36,17 @@ export default function App() {
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel px-4">
           <div className="flex items-center gap-2.5">
             <span className="grid size-7 shrink-0 place-items-center rounded-md bg-accent text-bg" aria-hidden>
-              <TerminalSquareIcon className="size-4" />
+              <svg viewBox="112 128 288 256" className="size-4">
+                <path
+                  d="m142 164 92 92-92 92"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="32"
+                />
+                <rect x="272" y="332" width="112" height="32" rx="16" fill="currentColor" />
+              </svg>
             </span>
             <span className="text-sm font-semibold tracking-tight">goko</span>
           </div>
@@ -58,8 +78,27 @@ export default function App() {
             <ProjectTree />
           </aside>
           <main className="flex min-w-0 flex-1 flex-col bg-bg">
-            {selectedId && <SessionControls sessionId={selectedId} />}
-            <TerminalView sessionId={selectedId} />
+            {workspaceIds.map((workspaceId) => (
+              <TerminalWorkspace
+                key={workspaceId}
+                workspaceId={workspaceId}
+                active={workspaceId === activeWorkspaceId && !editorMode}
+                project={projects?.find((project) => project.id === checkoutContext(workspaceId)?.projectId) ?? null}
+                checkoutPath={checkoutContext(workspaceId)?.checkoutPath}
+              />
+            ))}
+            {editorMode && (
+              <EditorWorkspace
+                project={activeProject}
+                projectId={activeContext.projectId}
+                checkoutPath={activeContext.checkoutPath}
+              />
+            )}
+            {activeWorkspaceId === null && (
+              <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted">
+                Select a project to open its terminal workspace.
+              </div>
+            )}
           </main>
         </div>
       </div>
