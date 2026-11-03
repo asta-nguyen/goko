@@ -1,0 +1,263 @@
+apps/desktop/src/features/editor/highlight-languages.d.ts
+  s_b45d953ed74174::t_759adda3816e48 1-5
+apps/desktop/src/features/editor/diff-view.test.ts
+  s_b45d953ed74174::t_56d52a2e989610 1-107
+apps/desktop/src-tauri/src/git_view.rs
+  s_b45d953ed74174::t_3331b91c65dbe8 341-344,352-362
+  s_b45d953ed74174::t_6de0e5f3157c91 1085-1086,1088-1095,1107-1108
+  s_b45d953ed74174::t_2a66781a0d2134 345-351,1098-1105
+  s_b45d953ed74174::t_6f218526046bc3 1096-1097,1106
+  s_b45d953ed74174::t_11edf03b804609 1084,1087
+apps/desktop/src/features/editor/panes.test.ts
+  s_b45d953ed74174::t_1b09bb7cbfd3ad 1-19
+apps/desktop/src/features/editor/EditorWorkspace.test.tsx
+  s_f412c5bc1c9958::t_f600438e333e2c 292-328
+  s_b45d953ed74174::t_af66a5eceef61a 15
+  s_1601b337a3523f::t_bc6abac6d9c943 156-168
+  s_b45d953ed74174::t_17cfd6dcfdd4a5 192-199,204,206-208,211,213,227-228
+  s_b45d953ed74174::t_ef3668708f96c4 87
+  s_b45d953ed74174::t_e9762f7dd87ad0 205,212
+  s_b45d953ed74174::t_5b51d5eecbb0ac 249-279
+  s_b45d953ed74174::t_7ad8e4b54f72fb 200-203,209-210,214-226
+  s_b45d953ed74174::t_2c490b605038f8 280-282,284-291,329-349
+  s_b45d953ed74174::t_40483919f6826c 283
+apps/desktop/src/services/git-view.ts
+  s_b45d953ed74174::t_f9aee3a2b48b12 36-37
+apps/desktop/src/features/editor/EditorFiles.tsx
+  s_f412c5bc1c9958::t_d98af9aa63644d 252-257
+  s_b45d953ed74174::t_a828a760bb08e5 3
+  s_b45d953ed74174::t_76ae2e204fc1e5 171-173,176-193,195-213
+  s_f412c5bc1c9958::t_25c4e8b9fdd3c7 13
+  s_f412c5bc1c9958::t_ec7852a5dd8548 160-161
+  s_f412c5bc1c9958::t_97714f3b4de8fc 131
+  s_b45d953ed74174::t_fa1e327e50ca39 66,96,194
+  s_b45d953ed74174::t_acf0b2de511dc2 130,135-142,146
+  s_f412c5bc1c9958::t_3966f7c828c846 7
+  s_f412c5bc1c9958::t_0381ebc8bf733a 232-245
+  s_b45d953ed74174::t_f1186349654f1d 12,14
+apps/desktop/src/features/editor/panes.tsx
+  s_b45d953ed74174::t_bd60beb07f69a9 14-15
+  s_b45d953ed74174::t_f7edd6ebaf1139 6
+  s_b45d953ed74174::t_fd297027688638 47,163-186,196,198-199,201-206,209-214,218-221,225-234,236,269,287
+  s_1601b337a3523f::t_7a3ba72ad11f0f 7,13
+  s_b45d953ed74174::t_291c63f69b5b05 72
+  s_b45d953ed74174::t_f5d790df664668 154-161
+  s_b45d953ed74174::t_16cf9ae9e09dc0 197
+  s_b45d953ed74174::t_db9ab93ad4a2c2 9
+  s_b45d953ed74174::t_5a21c39a107c32 46,189-195,200,207-208,215-217,222-224,237-264,267-268,271-286
+  s_b45d953ed74174::t_7269f83df7480d 270
+  s_1601b337a3523f::t_a7d595ee9b7f6c 29,31-32,34-45
+  s_b45d953ed74174::t_e9109fbf708227 297-298,300,309-313
+  s_b45d953ed74174::t_3c57dae69d3f01 49-71,73-79
+  s_b45d953ed74174::t_ab456a205e8261 48
+  s_b45d953ed74174::t_22fa0fb031abf0 162
+apps/desktop/src/features/terminal/TerminalWorkspace.tsx
+  s_1601b337a3523f::t_c7c3092a0dacc4 291,295
+apps/desktop/src-tauri/src/commands.rs
+  s_b45d953ed74174::t_8eb5aa71e5a6fb 488-495
+  s_b45d953ed74174::t_263fab24b27ed6 487
+apps/desktop/src-tauri/src/lib.rs
+  s_b45d953ed74174::t_96af9a4fe2858e 32
+apps/desktop/src/features/editor/highlight.ts
+  s_b45d953ed74174::t_cabad3c75f40c6 91,96
+  s_b45d953ed74174::t_da4eb3d22944ec 1-90,92-95,97-112,142-169
+  s_b45d953ed74174::t_7f633acb30d619 113-141
+docs/agent-devkit/changes/2026-11-02-terminal-workspaces-vietnamese/tasks.md
+  s_1601b337a3523f::t_9d11fc530b82ee 114-115
+  s_30c2a7c384fd82::t_13a554700b05ff 141
+  s_1601b337a3523f::t_8883c064a76c60 127-128
+  s_967c8a9cfb18c5::t_ad07902373c37d 158,177,179,184,186
+ARCHITECTURE.md
+  s_30c2a7c384fd82::t_b35129269ff659 62-68
+  s_30c2a7c384fd82::t_6948556276f41b 96
+  s_30c2a7c384fd82::t_8c49c0114efc77 97-98
+  s_30c2a7c384fd82::t_2013a1ae2dbe1a 99
+  s_30c2a7c384fd82::t_d346c034c7d3e9 93-95
+  s_f412c5bc1c9958::t_227700643c62ba 169-171
+  s_f412c5bc1c9958::t_ab562963f9a706 167-168
+  s_f412c5bc1c9958::t_aaab20cb22f017 172
+  s_f412c5bc1c9958::t_78b1ee47afdb43 173-174
+  s_f412c5bc1c9958::t_1f65609d9ebc58 164-166
+apps/desktop/src/features/editor/MarkdownView.tsx
+  s_f412c5bc1c9958::t_4f1a31876cb7e0 1-57
+apps/desktop/src/stores/ui.ts
+  s_1601b337a3523f::t_a23d3a5f16d450 252-253
+  s_1601b337a3523f::t_2b23634875ad00 76-81,89-90
+  s_1601b337a3523f::t_5a2a18810caffc 242-245
+  s_b45d953ed74174::t_b99ebeca086a8f 91-92
+  s_b45d953ed74174::t_a86b66b6cd378a 246
+  s_b45d953ed74174::t_8b34243cd550a0 254
+  s_b45d953ed74174::t_76b0a27ffbe185 74
+apps/desktop/src/features/editor/EditorChanges.tsx
+  s_b45d953ed74174::t_fa1e327e50ca39 140
+  s_b45d953ed74174::t_289d8d2b177bc0 10
+  s_b45d953ed74174::t_280b847c8d7320 182
+  s_b45d953ed74174::t_f3c315ee07c7d7 55
+  s_b45d953ed74174::t_8271dbbf2b5442 106-108
+  s_b45d953ed74174::t_4e0ff1e3410df1 112
+apps/desktop/src/features/editor/highlight.test.ts
+  s_b45d953ed74174::t_2318c4dbe4462a 1-46
+apps/desktop/package.json
+  s_f412c5bc1c9958::t_da51333476bb36 28-29
+  s_b45d953ed74174::t_94af17762d71af 23
+apps/desktop/src/queryClient.ts
+  s_b45d953ed74174::t_7874c29c3cb6a9 20
+apps/desktop/src/features/terminal/TerminalWorkspace.test.tsx
+  s_1601b337a3523f::t_8eafeccd185453 225
+  s_1601b337a3523f::t_c0fdfd47f53ce4 289-290
+  s_1601b337a3523f::t_09616ea8657853 311
+  s_1601b337a3523f::t_315a080f6381d6 271
+  s_1601b337a3523f::t_18a7c357ce311e 339-390
+apps/desktop/src/features/sessions/SessionLaunch.tsx
+  s_b45d953ed74174::t_7ad54bccffceaa 2
+  s_b45d953ed74174::t_b4a70b03ff7078 56-74
+  s_30c2a7c384fd82::t_aedc6b7a1b39ba 53-55
+apps/desktop/src/components/ui/resizable-split.test.tsx
+  s_1601b337a3523f::t_b7ca12d0138a6c 1-116
+apps/desktop/src/features/editor/EditorWorkspace.tsx
+  s_b45d953ed74174::t_b993ac0b61099c 191
+  s_b45d953ed74174::t_e75a3cef0f9cf3 2
+  s_b45d953ed74174::t_26f367aa971982 39
+  s_b45d953ed74174::t_9891ebb1b6a19d 147
+  s_b45d953ed74174::t_57aa3d4ee1ad8b 56-101
+apps/desktop/src/components/ui/resizable-split.tsx
+  s_1601b337a3523f::t_8c5883861a807c 1-111,113-117
+  s_1601b337a3523f::t_0d20b42ed97e6c 112
+apps/desktop/src/features/editor/EditorHistory.tsx
+  s_b45d953ed74174::t_c0c9dafeac9c50 10
+  s_b45d953ed74174::t_fa1e327e50ca39 165
+  s_b45d953ed74174::t_315d4a877bf97f 228
+  s_b45d953ed74174::t_75b7f41f900050 106-113
+  s_b45d953ed74174::t_89047d0142102d 151-153,156,158-161
+apps/desktop/src/stores/ui.test.tsx
+  s_1601b337a3523f::t_107303fd2cd744 173-184
+  s_b45d953ed74174::t_9c07e4cc9d034f 185-192
+apps/desktop/src/features/projects/ProjectTree.test.tsx
+  s_b45d953ed74174::t_bc9445ec46b24c 442
+  s_b45d953ed74174::t_6940756ec92943 471,473
+  s_b45d953ed74174::t_1dc483f4081a44 526,528
+  s_b45d953ed74174::t_81d5fc12279166 171,181
+  s_b45d953ed74174::t_ae6f95904aabe8 182
+  s_b45d953ed74174::t_3185f8379c9efe 484,486,491,493
+  s_b45d953ed74174::t_8e93c8f1c0357d 362,364-365,367
+  s_b45d953ed74174::t_7236fb30eaf56d 509-510,518
+  s_b45d953ed74174::t_dc7f679b7225f1 538,540
+  s_b45d953ed74174::t_41eda97a1aa0c7 574,576,581,591-592
+  s_b45d953ed74174::t_a17081dcc58833 170,180,363,366,381,403,424,441,462,472,483,492,508,517,527,539,557,575,580,590,623,634,652
+  s_b45d953ed74174::t_445091fbfde5cc 386
+  s_b45d953ed74174::t_e34ca18041f859 402,404,408
+  s_b45d953ed74174::t_e3bf4df5e7e953 443
+  s_b45d953ed74174::t_a11843da78b1c3 558
+  s_b45d953ed74174::t_ee93afde5526a9 380,382
+  s_b45d953ed74174::t_a35c5df69c114e 624,632,635
+  s_b45d953ed74174::t_700ab71d82e698 653
+  s_b45d953ed74174::t_462feb885d4017 76,78
+  s_b45d953ed74174::t_c8efcb6e4e2c76 516
+  s_b45d953ed74174::t_a29652002edb9c 463
+  s_b45d953ed74174::t_06c123f184badd 423,425
+  s_34a1b82a7dfa25::t_81e24a02c5e07d 77
+apps/desktop/src/features/worktrees/WorktreeRows.tsx
+  s_b45d953ed74174::t_175ab8879db798 12
+  s_b45d953ed74174::t_30712de21b856c 2,7
+  s_b45d953ed74174::t_17286ecf3278c1 150,158-185
+apps/desktop/src/App.test.tsx
+  s_b45d953ed74174::t_93d258e148e16f 264-265
+  s_1601b337a3523f::t_01955a080ff1bf 336-355,358-365
+  s_b45d953ed74174::t_04d9a7dda6cd3f 356-357
+  s_b45d953ed74174::t_db203fc435db36 322-323
+  s_b45d953ed74174::t_54987b8dd93184 299,301-302
+  s_b45d953ed74174::t_a17eae9fb2c74d 235-238
+apps/desktop/src/App.tsx
+  s_1601b337a3523f::t_15f1b51f4a0c46 15
+  s_1601b337a3523f::t_4a6217fc2f2710 25-26
+  s_b45d953ed74174::t_e5bfff3e9e66af 89
+  s_1601b337a3523f::t_f9b22e53e4d2eb 112
+  s_1601b337a3523f::t_79e6bd5b5a733e 7
+  s_1601b337a3523f::t_a15c6d9034b6d1 79-88
+apps/desktop/src/features/editor/EditorStashes.tsx
+  s_b45d953ed74174::t_295f21f8f75535 75
+  s_b45d953ed74174::t_8101f03926f1ec 3
+  s_b45d953ed74174::t_64196cc1a47175 8
+  s_b45d953ed74174::t_6d154d27183e33 61-63,65-68,71
+  s_b45d953ed74174::t_43b7c093119e40 117
+  s_b45d953ed74174::t_4222b7c89a2e33 23-30
+apps/desktop/src/styles/tokens.css
+  s_b45d953ed74174::t_13b0966f6928dd 13-21
+  s_b45d953ed74174::t_73de84b102c857 35-43
+apps/desktop/src/features/editor/MarkdownView.test.tsx
+  s_f412c5bc1c9958::t_be6e7615292786 1-73
+apps/desktop/src/features/editor/queries.ts
+  s_b45d953ed74174::t_762f50ee504b49 19-21
+  s_b45d953ed74174::t_f5157a905bde48 66-74
+apps/desktop/src/features/projects/ProjectTree.tsx
+  s_b45d953ed74174::t_1adb1cffb88643 18
+  s_b45d953ed74174::t_1739b04ee408d2 299
+  s_b45d953ed74174::t_70806ea3101258 3
+  s_b45d953ed74174::t_b3930f3a478273 204,212-237
+  s_b45d953ed74174::t_efd2c4c7676a94 131
+  s_b45d953ed74174::t_d43335cc0d1fd5 8,11
+  s_b45d953ed74174::t_ad1eb810280283 91
+apps/desktop/src/styles/index.css
+  s_b45d953ed74174::t_34dc194d6d7d5a 74-152
+apps/desktop/src/features/editor/diff-view.ts
+  s_b45d953ed74174::t_671ea2393745f2 1-6,12,27-29,31-45,47-52,61-65,67-71,73-76,78-81,83-98,100,103-107,109-117,119-130,132-134,162
+  s_b45d953ed74174::t_d34652f94f3f10 7-11,13-26,30,46,53-60,66,72,77,82,99,101-102,108,118,131,135-161
+pnpm-lock.yaml
+  s_f412c5bc1c9958::t_0fd63a1cbd6346 37-39,52-57,1194-1196,1200-1202,1206-1214,1223-1228,1349-1351,1407-1409,1413-1415,1420-1431,1439-1441,1453-1461,1465-1467,1479-1481,1496-1502,1510-1512,1534-1543,1548-1569,1729-1731,1755-1802,1806-1895,1905-1907,1926-1928,1954-1959,1994-2005,2026-2028,2032-2037,2075-2080,2093-2110,2131-2136,2267-2269,3322-3325,3328-3331,3334-3343,3352-3355,3416-3417,3452-3453,3458-3459,3462-3469,3476-3477,3492-3495,3498-3501,3508-3511,3523-3526,3533-3534,3546-3571,3578-3594,3724-3725,3744-3900,3903-4101,4106-4115,4136-4137,4210-4227,4257-4290,4322-4323,4326-4334,4364-4367,4395-4427,4443-4452,4511-4512
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ce3b5523f2e1759b681edd8b6fd02a36162a204a",
+  "prompts": {},
+  "sessions": {
+    "s_1601b337a3523f": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "abyssinian-platypus",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_30c2a7c384fd82": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19f64-47c7-7e53-8639-600c9742afc2",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_34a1b82a7dfa25": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19f16-581d-70d1-b150-a35e1aa351fc",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_967c8a9cfb18c5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e6450d281ffe6uS3fL1xmw4E4y",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_b45d953ed74174": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "harvest-derby",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f412c5bc1c9958": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "coral-sleep",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
