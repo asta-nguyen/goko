@@ -77,6 +77,13 @@ title, created_at)`, and `settings(key, value)`.
 - A tab is one terminal pane or a nested split tree. Each pane owns one daemon session id,
   one xterm controller, one output subscription, and that session's PTY size. A daemon
   session is never rendered in multiple panes.
+- Input is UTF-8 end to end: `terminal.write` base64-encodes the JS string's UTF-8 bytes and
+  the daemon writes them to the PTY unchanged. WKWebView fires no composition events for some
+  IMEs (macOS Simple Telex, 2-Set Korean); it sends each key with `keyCode` 229 and an `input`
+  event whose `insertReplacementText`/`insertText` value is the whole line in xterm's hidden
+  textarea, with a non-breaking space for the space key. The controller keeps a model of that
+  line, normalizes NFC and NBSP, and sends only the difference, so xterm's own 229 fallback is
+  disabled once that shape is detected. Typing `tieengs vieetj` yields `tiếng việt`.
 - New Tab starts a distinct Shell in the active checkout. The project/worktree launch menu
   opens successfully created agent/custom sessions in the selected checkout. Split
   left/right and split top/bottom each start a new Shell in the same checkout. Separators
