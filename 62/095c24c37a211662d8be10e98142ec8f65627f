@@ -1,0 +1,19 @@
+ARCHITECTURE.md
+  s_488623f12b1399::t_ec8b6df46db832 80-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "62095c24c37a211662d8be10e98142ec8f65627f",
+  "prompts": {},
+  "sessions": {
+    "s_488623f12b1399": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sticky-titanium",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
