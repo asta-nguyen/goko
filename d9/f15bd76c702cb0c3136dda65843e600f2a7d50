@@ -1,0 +1,60 @@
+apps/desktop/src/App.test.tsx
+  s_488623f12b1399::t_b531d46c2f2813 3
+  s_488623f12b1399::t_9bd5ff2b79a76e 117
+  s_488623f12b1399::t_d98fdaea9c5bb0 116,118-123
+  s_488623f12b1399::t_6c3d112430ea52 127-128
+apps/desktop/src/components/ui/scroll-area.tsx
+  s_488623f12b1399::t_c9e275c987168d 18
+apps/desktop/src/features/sessions/SessionItems.tsx
+  s_488623f12b1399::t_4bfc0afa5dd16e 19-21,34-35
+apps/desktop/src/features/worktrees/WorktreeRows.tsx
+  s_488623f12b1399::t_f1ac0634a66ff3 138
+  s_488623f12b1399::t_5e709513c88f64 140
+  s_488623f12b1399::t_002daf8bdde3a3 139,145,148
+apps/desktop/src/features/sessions/SessionControls.tsx
+  s_488623f12b1399::t_ec75e1c30e2c01 53-56,62-63
+apps/desktop/src/features/projects/use-add-project.ts
+  s_488623f12b1399::t_e58c09b63ba092 1-30
+apps/desktop/src/features/projects/ProjectTree.test.tsx
+  s_488623f12b1399::t_eafced52e08e0e 132,134
+  s_488623f12b1399::t_b55e24c7d71866 610,619
+  s_488623f12b1399::t_487a2aefe9dfce 247
+  s_488623f12b1399::t_f1796c0b735ac8 123-127,130-131
+  s_488623f12b1399::t_86fffe32aae91d 114
+  s_488623f12b1399::t_43d333e2f22d8f 128-129
+apps/desktop/src/features/projects/ProjectTree.tsx
+  s_488623f12b1399::t_2a92cff47a80d0 442-481,484,487-490
+  s_488623f12b1399::t_f1ac0634a66ff3 177
+  s_488623f12b1399::t_aaaa9173bd4049 178,190
+  s_488623f12b1399::t_b14cb7378db7ae 191
+  s_488623f12b1399::t_13fa645331039a 409
+  s_488623f12b1399::t_a8036795bbbbcb 2
+  s_488623f12b1399::t_6df5d2191c494b 354
+  s_488623f12b1399::t_5bf2d93d250a0c 410
+  s_488623f12b1399::t_2cfb6294813783 196
+  s_488623f12b1399::t_5e709513c88f64 179
+  s_488623f12b1399::t_3d6a3fdf00837f 423-432
+  s_488623f12b1399::t_37b1bb53b4fb30 496,498
+  s_488623f12b1399::t_a04964eef0d1e2 25-26
+apps/desktop/src/App.tsx
+  s_488623f12b1399::t_6d71e547945622 114
+  s_488623f12b1399::t_58e44bfe2e3c57 2,7-8,14
+  s_488623f12b1399::t_7efb52a4a73d44 110-113,115-136
+  s_488623f12b1399::t_523b7349dbddc5 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d9f15bd76c702cb0c3136dda65843e600f2a7d50",
+  "prompts": {},
+  "sessions": {
+    "s_488623f12b1399": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sticky-titanium",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
