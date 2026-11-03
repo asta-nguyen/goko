@@ -135,18 +135,17 @@ export function WorktreeRows({
                 className={cn('flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', activeWorkspaceId === workspaceId && 'bg-secondary/70')}
               >
                 <span className="size-2 shrink-0 rounded-full bg-accent" aria-hidden />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5">
-                    <span className="truncate text-sm font-medium">{worktree.name}</span>
+                <span className="min-w-0 flex-1 overflow-hidden">
+                  <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                    <span className="min-w-12 truncate text-sm font-medium">{worktree.name}</span>
                     {worktree.missing ? <Badge variant="warning" className="gap-1"><AlertTriangleIcon aria-hidden />missing</Badge> : null}
                     {dirty ? <Badge variant="warning">Changed{worktree.changed === null ? '' : ` · ${worktree.changed}`}</Badge> : null}
-                    {!dirty && !unknownStatus && !worktree.missing ? <Badge variant="secondary">Clean</Badge> : null}
                     {unknownStatus && !worktree.missing ? <Badge variant="outline">Status unknown</Badge> : null}
                   </span>
-                  <span className="block truncate text-[11px] text-muted" title={worktree.path}>{worktree.branch ?? `detached ${worktree.head.slice(0, 8)}`} · {worktree.path}</span>
+                  <span dir="ltr" className="block truncate text-[11px] text-muted" title={worktree.path}>{worktree.branch ?? `detached ${worktree.head.slice(0, 8)}`} · {worktree.path}</span>
                 </span>
               </button>
-              <Count count={attachedSessions.length} />
+              {attachedSessions.length > 0 && <Count count={attachedSessions.length} />}
               <span className="flex shrink-0 items-center">
                 <NewSessionMenu
                   label={`New session in ${project.name} · ${worktree.name}`}

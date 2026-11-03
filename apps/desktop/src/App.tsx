@@ -1,14 +1,17 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertCircleIcon } from 'lucide-react'
+import { AlertCircleIcon, FolderPlusIcon, PlusIcon } from 'lucide-react'
 import { useEffect } from 'react'
 import { ThemeToggle } from './components/theme-toggle'
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
+import { Button } from './components/ui/button'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty'
 import { ResizableSplit } from './components/ui/resizable-split'
 import { TooltipProvider } from './components/ui/tooltip'
 import { EditorWorkspace } from './features/editor/EditorWorkspace'
 import { ProjectTree } from './features/projects/ProjectTree'
 import { useProjectList } from './features/projects/queries'
+import { useAddProjectFolder } from './features/projects/use-add-project'
 import { useDaemonStatus } from './features/sessions/queries'
 import { TerminalWorkspace } from './features/terminal/TerminalWorkspace'
 import { startQuerySync } from './services/sync'
@@ -19,6 +22,7 @@ export default function App() {
   useEffect(() => startQuerySync(qc), [qc]) // returns its stop function
   const { data: status } = useDaemonStatus()
   const { data: projects } = useProjectList()
+  const { addProject, error: addError, pending: adding } = useAddProjectFolder()
   const activeWorkspaceId = useUi((state) => state.activeWorkspaceId)
   const activeView = useUi((state) => state.activeView)
   const workspaces = useUi((state) => state.workspaces)
@@ -103,11 +107,33 @@ export default function App() {
                 checkoutPath={activeContext.checkoutPath}
               />
             )}
-            {activeWorkspaceId === null && (
-              <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted">
-                Select a project to open its terminal workspace.
-              </div>
-            )}
+            {activeWorkspaceId === null &&
+              (projects?.length === 0 ? (
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon" className="border border-border bg-panel text-muted">
+                      <FolderPlusIcon />
+                    </EmptyMedia>
+                    <EmptyTitle>No projects yet</EmptyTitle>
+                    <EmptyDescription>Add a project folder, then start an agent inside it.</EmptyDescription>
+                  </EmptyHeader>
+                  <EmptyContent>
+                    <Button disabled={adding} onClick={() => void addProject()}>
+                      <PlusIcon data-icon="inline-start" />
+                      Choose a folder…
+                    </Button>
+                    {addError && (
+                      <p role="alert" className="m-0 text-xs text-danger">
+                        {addError}
+                      </p>
+                    )}
+                  </EmptyContent>
+                </Empty>
+              ) : (
+                <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted">
+                  Select a project to open its terminal workspace.
+                </div>
+              ))}
           </main>
         </ResizableSplit>
       </div>

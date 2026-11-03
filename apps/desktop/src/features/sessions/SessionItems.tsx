@@ -16,6 +16,9 @@ const SessionRow = memo(function SessionRow({
   selected: boolean
   onSelect: (id: string) => void
 }) {
+  const title = sessionTitle(session)
+  // A Shell session is labelled "Shell" and titled "Shell"; show one, not both.
+  const showLabel = label !== undefined && label.toLowerCase() !== title.toLowerCase()
   return (
     <li>
       <button
@@ -28,8 +31,8 @@ const SessionRow = memo(function SessionRow({
         )}
       >
         <StateDot state={session.state} />
-        {label && <span className="shrink-0 text-xs font-medium text-muted">{label}</span>}
-        <span className="min-w-0 truncate">{sessionTitle(session)}</span>
+        {showLabel && <span className="shrink-0 text-xs font-medium text-muted">{label}</span>}
+        <span className="min-w-0 truncate">{title}</span>
       </button>
     </li>
   )

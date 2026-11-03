@@ -111,7 +111,7 @@ describe('tree', () => {
     expect(within(p1).getByRole('button', { name: /Claude Code.*title-a/ })).toBeTruthy()
     expect(within(p1).getByRole('button', { name: /Custom.*title-b/ })).toBeTruthy()
     const p2 = projectButton('p2').closest('li')!
-    expect(within(p2).getByLabelText('0 sessions')).toBeTruthy()
+    expect(within(p2).queryByLabelText(/^\d+ sessions$/)).toBeNull()
     expect(within(p2).queryByRole('list')).toBeNull()
 
     const unassigned = screen.getByText('Unassigned').closest('li')!
@@ -120,9 +120,18 @@ describe('tree', () => {
     expect(within(unassigned).getByRole('button', { name: /title-d/ })).toBeTruthy()
   })
 
-  it('hides Unassigned when empty and shows the empty state with nothing at all', async () => {
+  it('shows a Shell session once instead of repeating its agent label', async () => {
+    projects.list.mockResolvedValue([project('p1')])
+    session.list.mockResolvedValue([{ ...makeSession('a'), title: 'Shell' }])
+    session.meta.mockResolvedValue([meta('a', 'p1', 'shell')])
     renderTree()
-    await screen.findByText('No projects yet')
+    await screen.findByText('Shell')
+    expect(screen.getAllByText('Shell')).toHaveLength(1)
+  })
+
+  it('hides Unassigned when there is nothing at all', async () => {
+    renderTree()
+    await screen.findByText('Projects')
     expect(screen.queryByText('Unassigned')).toBeNull()
   })
 
@@ -235,7 +244,7 @@ describe('tree', () => {
 
     const unassigned = (await screen.findByText('Unassigned')).closest('li')!
     expect(within(unassigned).getByRole('button', { name: /title-a/ })).toBeTruthy()
-    expect(within(toggleOf('p1').closest('li')!).getByLabelText('0 sessions')).toBeTruthy()
+    expect(within(toggleOf('p1').closest('li')!).queryByLabelText(/^\d+ sessions$/)).toBeNull()
   })
 })
 
@@ -598,7 +607,7 @@ describe('add', () => {
     open.mockResolvedValue('/picked/dir')
     projects.add.mockResolvedValue(project('new', { root: '/picked/dir' }))
     renderTree()
-    await screen.findByText('No projects yet')
+    await screen.findByText('Projects')
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Project' }))
     await waitFor(() => expect(projects.add).toHaveBeenCalledWith('/picked/dir', expect.anything()))
@@ -607,7 +616,7 @@ describe('add', () => {
 
   it('a cancelled dialog changes nothing', async () => {
     renderTree()
-    await screen.findByText('No projects yet')
+    await screen.findByText('Projects')
     fireEvent.click(screen.getByRole('button', { name: 'Add Project' }))
     await waitFor(() => expect(open).toHaveBeenCalled())
     expect(projects.add).not.toHaveBeenCalled()

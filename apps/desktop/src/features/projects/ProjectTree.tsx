@@ -1,12 +1,10 @@
-import { open } from '@tauri-apps/plugin-dialog'
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertTriangleIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, PlusIcon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon, FolderIcon, PlusIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -24,7 +22,8 @@ import {
   useSessionList,
   useSessionMetaList,
 } from '../sessions/queries'
-import { useAddProject, useProjectList, useRemoveProject } from './queries'
+import { useProjectList, useRemoveProject } from './queries'
+import { useAddProjectFolder } from './use-add-project'
 import { useWorktreeList } from '../worktrees/queries'
 import { sessionsForCheckout, WorktreeRows } from '../worktrees/WorktreeRows'
 import { WorktreeCreateDialog, type WorktreeEnvResult } from '../worktrees/WorktreeCreateDialog'
@@ -175,14 +174,11 @@ function ProjectNode({
           )}
         >
           <FolderIcon className="size-4 shrink-0 text-accent" aria-hidden />
-          <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1.5">
-              <span className="truncate text-sm font-medium">{project.name}</span>
-              {isGitProject && root && <Badge variant="outline">root</Badge>}
-              {root?.branch ? <Badge variant="secondary">{root.branch}</Badge> : null}
+          <span className="min-w-0 flex-1 overflow-hidden">
+            <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+              <span className="min-w-12 truncate text-sm font-medium">{project.name}</span>
               {isGitProject && root?.branch === null && root && <Badge variant="secondary">detached {root.head.slice(0, 8)}</Badge>}
               {root?.dirty === true && <Badge variant="warning">Changed{root.changed === null ? '' : ` · ${root.changed}`}</Badge>}
-              {root?.dirty === false && !root.missing && <Badge variant="secondary">Clean</Badge>}
               {root?.dirty === null && !root.missing && <Badge variant="outline">Status unavailable</Badge>}
               {project.missing && (
                 <Badge variant="warning" className="gap-1">
@@ -191,16 +187,13 @@ function ProjectNode({
                 </Badge>
               )}
             </span>
-            <span
-              className="block truncate text-[11px] text-muted"
-              title={project.root}
-              style={{ direction: 'rtl', textAlign: 'left' }}
-            >
+            <span dir="ltr" className="block truncate text-[11px] text-muted" title={project.root}>
+              {root?.branch ? `${root.branch} · ` : ''}
               {project.root}
             </span>
           </span>
         </button>
-        <Count count={isGitProject ? rootSessions.length : sessions.length} />
+        {rootSessions.length > 0 && <Count count={rootSessions.length} />}
         <span className="flex shrink-0 items-center">
           <NewSessionMenu
             label={`New session in ${project.name}`}
@@ -358,7 +351,7 @@ export function ProjectTree() {
   const activeWorkspaceId = useUi((s) => s.activeWorkspaceId)
   const openSession = useUi((s) => s.openSession)
   const activateWorkspace = useUi((s) => s.activateWorkspace)
-  const add = useAddProject()
+  const { addProject, error: addError, pending: adding } = useAddProjectFolder()
   const remove = useRemoveProject()
   const create = useCreateSession()
   const [actionError, setActionError] = useState<string | null>(null)
@@ -402,17 +395,6 @@ export function ProjectTree() {
     )
   }
 
-  async function addProject() {
-    setActionError(null)
-    try {
-      const dir = await open({ directory: true })
-      if (typeof dir !== 'string') return // cancelled: nothing changes
-      await add.mutateAsync(dir)
-    } catch (e) {
-      setActionError(message(e))
-    }
-  }
-
   async function removeProject(project: Project) {
     setActionError(null)
     try {
@@ -424,7 +406,8 @@ export function ProjectTree() {
     }
   }
 
-  const busy = add.isPending || remove.isPending || create.isPending
+  const busy = adding || remove.isPending || create.isPending
+  const errorNote = actionError ?? addError
   const disconnected = status?.connected === false
   const defaultShell = status?.default_shell ?? ''
   const selectSession = (id: string, workspaceId: string) => {
@@ -437,7 +420,16 @@ export function ProjectTree() {
       <section aria-label="Projects" className="flex min-h-0 flex-1 flex-col gap-2 p-3">
         <header className="flex items-center justify-between px-1">
           <h2 className="m-0 text-[11px] font-semibold uppercase tracking-wider text-muted">Projects</h2>
-          <Button ref={addButton} variant="ghost" size="sm" onClick={() => void addProject()} disabled={add.isPending}>
+          <Button
+            ref={addButton}
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setActionError(null)
+              void addProject()
+            }}
+            disabled={adding}
+          >
             <PlusIcon data-icon="inline-start" />
             Add Project
           </Button>
@@ -447,75 +439,63 @@ export function ProjectTree() {
             <AlertDescription>{projectsError.message}</AlertDescription>
           </Alert>
         )}
-        {projects !== undefined && projects.length === 0 && sessions.length === 0 ? (
-          <Empty className="p-4">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <FolderPlusIcon />
-              </EmptyMedia>
-              <EmptyTitle>No projects yet</EmptyTitle>
-              <EmptyDescription>Add a project folder, then start an agent inside it.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ScrollArea className="min-h-0 flex-1">
-            <ul className="m-0 flex list-none flex-col gap-1 p-0 pr-2">
-              {projects?.map((project) => (
-                <ProjectNode
-                  key={project.id}
-                  project={project}
-                  sessions={byProject[project.id] ?? EMPTY_SESSIONS}
-                  allSessions={sessions}
-                  agents={agents}
-                  defaultShell={defaultShell}
-                  active={activeWorkspaceId === checkoutKey(project.id, project.root)}
-                  busy={busy}
-                  disconnected={disconnected}
-                  onActivate={() => activateWorkspace(checkoutKey(project.id, project.root))}
-                  onStart={(target, done, checkoutPath) => start(project, target, done, checkoutPath)}
-                  onRemove={() => removeProject(project)}
+        <ScrollArea className="min-h-0 flex-1">
+          <ul className="m-0 flex list-none flex-col gap-1 p-0 pr-2">
+            {projects?.map((project) => (
+              <ProjectNode
+                key={project.id}
+                project={project}
+                sessions={byProject[project.id] ?? EMPTY_SESSIONS}
+                allSessions={sessions}
+                agents={agents}
+                defaultShell={defaultShell}
+                active={activeWorkspaceId === checkoutKey(project.id, project.root)}
+                busy={busy}
+                disconnected={disconnected}
+                onActivate={() => activateWorkspace(checkoutKey(project.id, project.root))}
+                onStart={(target, done, checkoutPath) => start(project, target, done, checkoutPath)}
+                onRemove={() => removeProject(project)}
+                labelOf={labelOf}
+                selectedId={selectedId}
+                sessionListKnown={sessionsQuery.data !== undefined && !sessionsError && sessionMetaQuery.data !== undefined && !sessionMetaQuery.error}
+                hasLiveSessions={hasLiveSessions}
+                hasUnknownSessionCwd={hasUnknownSessionCwd}
+                liveCwdSupported={liveCwdSupported}
+                onSelect={selectSession}
+              />
+            ))}
+            {unassigned.length > 0 && (
+              <li>
+                <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
+                  <button
+                    type="button"
+                    aria-pressed={activeWorkspaceId === UNASSIGNED_WORKSPACE}
+                    onClick={() => activateWorkspace(UNASSIGNED_WORKSPACE)}
+                    className="flex-1 rounded text-left outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Unassigned
+                  </button>
+                  <Count count={unassigned.length} />
+                </div>
+                <SessionItems
+                  sessions={unassigned}
                   labelOf={labelOf}
                   selectedId={selectedId}
-                  sessionListKnown={sessionsQuery.data !== undefined && !sessionsError && sessionMetaQuery.data !== undefined && !sessionMetaQuery.error}
-                  hasLiveSessions={hasLiveSessions}
-                  hasUnknownSessionCwd={hasUnknownSessionCwd}
-                  liveCwdSupported={liveCwdSupported}
+                  workspaceId={UNASSIGNED_WORKSPACE}
                   onSelect={selectSession}
                 />
-              ))}
-              {unassigned.length > 0 && (
-                <li>
-                  <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
-                    <button
-                      type="button"
-                      aria-pressed={activeWorkspaceId === UNASSIGNED_WORKSPACE}
-                      onClick={() => activateWorkspace(UNASSIGNED_WORKSPACE)}
-                      className="flex-1 rounded text-left outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Unassigned
-                    </button>
-                    <Count count={unassigned.length} />
-                  </div>
-                  <SessionItems
-                    sessions={unassigned}
-                    labelOf={labelOf}
-                    selectedId={selectedId}
-                    workspaceId={UNASSIGNED_WORKSPACE}
-                    onSelect={selectSession}
-                  />
-                </li>
-              )}
-            </ul>
-          </ScrollArea>
-        )}
+              </li>
+            )}
+          </ul>
+        </ScrollArea>
         {sessionsError && (
           <Alert variant="destructive" className="px-2.5 py-2">
             <AlertDescription>{sessionsError.message}</AlertDescription>
           </Alert>
         )}
-        {actionError && (
+        {errorNote && (
           <Alert variant="destructive" className="px-2.5 py-2">
-            <AlertDescription>{actionError}</AlertDescription>
+            <AlertDescription>{errorNote}</AlertDescription>
           </Alert>
         )}
         {create.error && (

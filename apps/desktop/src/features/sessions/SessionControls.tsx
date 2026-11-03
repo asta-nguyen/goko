@@ -50,13 +50,17 @@ export function SessionControls({ sessionId, onClosePane }: { sessionId: string;
   const elapsed = (live ? now : (session.ended_at ?? now)) - session.started_at
   const meta = metas?.find((m) => m.session_id === sessionId)
   const projectName = projects?.find((p) => p.id === meta?.project_id)?.name
+  const title = session.title || session.argv.join(' ')
+  const agent = meta ? agentLabel(agents, meta.agent) : undefined
+  // A Shell session is labelled "Shell" and titled "Shell"; show one, not both.
+  const showAgent = agent !== undefined && agent.toLowerCase() !== title.toLowerCase()
 
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-border bg-panel px-4 py-2">
       <span className="min-w-0 truncate text-sm">
         {projectName && <span className="text-muted">{projectName} › </span>}
-        {meta && <span className="text-muted">{agentLabel(agents, meta.agent)} · </span>}
-        <span className="font-medium">{session.title || session.argv.join(' ')}</span>
+        {showAgent && <span className="text-muted">{agent} · </span>}
+        <span className="font-medium">{title}</span>
       </span>
       <StateBadge state={session.state} />
       <span className="text-xs tabular-nums text-muted">{format(elapsed)}</span>
