@@ -1,0 +1,322 @@
+apps/desktop/src/features/terminal/TerminalController.ts
+  s_84bab7de5aed0e::t_6cd7b56faaefd2 136
+  s_84bab7de5aed0e::t_3a0783e95c19bf 14-20,58,60-65,105-110,112,115,122,125-126,132,134-135
+  s_84bab7de5aed0e::t_4db0b651b8c2f7 119,121,124,128-129
+  s_84bab7de5aed0e::t_2746dcfc193cb2 116-118,120,127
+  s_84bab7de5aed0e::t_792cbf6a102071 137,139
+.agents/skills/react-best-practices/rules/rendering-script-defer-async.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-68
+.agents/skills/react-best-practices/AGENTS.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-3810
+apps/desktop/src/features/projects/ProjectTree.tsx
+  s_4daa8b033fc783::t_5d27c1fd6af71f 82
+  s_4daa8b033fc783::t_eb2b3cc1c0076d 398,400-408
+.agents/skills/react-best-practices/rules/server-serialization.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-38
+.agents/skills/react-best-practices/metadata.json
+  s_488623f12b1399::t_ce09e4b88a157d 1-15
+docs/agent-devkit/changes/2026-11-04-stop-processes-on-exit/design.md
+  s_d34a6857da7c6b::t_15bd870f9aff97 1-25,30-77
+  s_d34a6857da7c6b::t_b96bb226c2be12 26-29
+apps/desktop/src-tauri/src/git_view.rs
+  s_4daa8b033fc783::t_eb53d6b9e2ddf8 912-914
+  s_4daa8b033fc783::t_90e124d33cac91 100
+  s_4daa8b033fc783::t_5dcf0ec6eedb24 573-578,610-615,648,650,652-655,665-674
+  s_4daa8b033fc783::t_5f17b7f6898c68 12-13,15,19,544-572,579-589,593-596,603-609,616-630,644-647,649,651,656,675
+  s_4daa8b033fc783::t_be4eb0183b7c88 525
+  s_4daa8b033fc783::t_e6e26f4453d65d 597-602,631-642
+  s_4daa8b033fc783::t_139c3791d123f3 1,4-5
+  s_4daa8b033fc783::t_3b158a782a77d3 17
+  s_4daa8b033fc783::t_2c8f0aee1e6ee3 657-664
+  s_4daa8b033fc783::t_0e23c8eeb24a2e 590-592
+  s_4daa8b033fc783::t_5d27c1fd6af71f 643
+  s_4daa8b033fc783::t_3df8b42b3879d2 676
+.agents/skills/react-best-practices/rules/rendering-activity.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-26
+.agents/skills/react-best-practices/rules/rendering-resource-hints.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-85
+apps/desktop/src/features/terminal/TerminalController.test.ts
+  s_84bab7de5aed0e::t_64718072e82426 1,23,269-283,285-286,289,294-296,299-300,302-307,309,314-315,317-321,323,353-358,360,364-370,372-379,381-382,384-386,395-396
+  s_84bab7de5aed0e::t_d366894de281f1 287-288,290,292-293,313,316,327-334,336,340-347,349
+docs/llm/INDEX.md
+  s_b14810c2363551::t_1d7b377b1750f9 1-7,9-15
+  s_b14810c2363551::t_2e19473d2982eb 8
+.agents/skills/react-best-practices/rules/async-cheap-condition-before-await.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-37
+crates/daemon/src/main.rs
+  s_d34a6857da7c6b::t_2549a5bb175bca 58,73,78
+.agents/skills/react-best-practices/rules/async-api-routes.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-38
+.agents/skills/react-best-practices/rules/server-cache-react.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-76
+.agents/skills/react-best-practices/rules/rendering-hydration-suppress-warning.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-30
+.agents/skills/react-best-practices/rules/js-batch-dom-css.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-107
+.agents/skills/react-best-practices/rules/rendering-hoist-jsx.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-46
+.agents/skills/react-best-practices/rules/rerender-use-deferred-value.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-59
+.agents/skills/react-best-practices/rules/js-cache-function-results.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-80
+.agents/skills/react-best-practices/rules/bundle-analyzable-paths.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-63
+crates/daemon/tests/e2e.rs
+  s_d34a6857da7c6b::t_2549a5bb175bca 112-113
+.agents/skills/react-best-practices/rules/js-cache-property-access.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-28
+.agents/skills/react-best-practices/rules/js-index-maps.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-37
+.agents/skills/react-best-practices/rules/js-hoist-regexp.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-45
+.agents/skills/react-best-practices/rules/js-min-max-loop.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-82
+.agents/skills/react-best-practices/rules/rendering-svg-precision.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-28
+docs/llm/architecture/overview.md
+  s_d34a6857da7c6b::t_d9fae7a0e700aa 20-23,32-44,83-85,88
+  s_b14810c2363551::t_d9b5177dff86c2 1-19,24-31,45-82,86-87,89-98
+.agents/skills/react-best-practices/rules/server-parallel-fetching.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-83
+.agents/skills/react-best-practices/rules/server-auth-actions.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-96
+.agents/skills/react-best-practices/rules/rerender-move-effect-to-event.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-45
+.agents/skills/react-best-practices/rules/client-localstorage-schema.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-71
+.agents/skills/react-best-practices/rules/rerender-derived-state-no-effect.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-40
+apps/desktop/src/services/types.ts
+  s_4daa8b033fc783::t_be4eb0183b7c88 118,198
+apps/desktop/src/App.tsx
+  s_4daa8b033fc783::t_a5c8499731a8f6 3,8,29-33,46-66,70-101
+.agents/skills/react-best-practices/README.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-123
+apps/desktop/src/stores/ui.ts
+  s_4daa8b033fc783::t_1b29bce3605b97 76-85,97-101,112-114,116-118,263-267,284-296,301-302,304-329,348-354,384-387
+  s_4daa8b033fc783::t_eb53d6b9e2ddf8 297-300
+  s_4daa8b033fc783::t_5f2f1e2eefe541 102,115,268,303
+.agents/skills/react-best-practices/rules/server-parallel-nested-fetching.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-34
+.agents/skills/react-best-practices/rules/client-swr-dedup.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-56
+AGENTS.md
+  s_488623f12b1399::t_18d46166533c34 31
+  s_1c02f9dcec023b::t_f7d92dfba83c3f 49
+.agents/skills/react-best-practices/rules/bundle-barrel-imports.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-60
+.agents/skills/react-best-practices/rules/rerender-lazy-state-init.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-58
+.agents/skills/react-best-practices/rules/rerender-use-ref-transient-values.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-73
+apps/desktop/src/services/git-view.ts
+  s_4daa8b033fc783::t_5d27c1fd6af71f 48
+  s_4daa8b033fc783::t_a5e694811a9cdd 19-26
+  s_4daa8b033fc783::t_2c8f0aee1e6ee3 27-28
+.agents/skills/react-best-practices/rules/rendering-hydration-no-flicker.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-82
+.agents/skills/react-best-practices/rules/rendering-content-visibility.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-38
+apps/desktop/src/styles/index.css
+  s_84bab7de5aed0e::t_c2129dc09f012b 153-159
+.agents/skills/react-best-practices/rules/_template.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-28
+.agents/skills/react-best-practices/rules/bundle-dynamic-imports.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-35
+.agents/skills/react-best-practices/rules/server-no-shared-module-state.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-50
+.agents/skills/react-best-practices/rules/async-defer-await.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-82
+.agents/skills/react-best-practices/rules/js-cache-storage.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-70
+.agents/skills/react-best-practices/rules/advanced-event-handler-refs.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-55
+apps/desktop/src/features/editor/EditorFiles.tsx
+  s_4daa8b033fc783::t_30844f5adcf89a 20,28-29,167-168,170,181,245
+  s_4daa8b033fc783::t_cf4d0dc263fe5f 258,290,301,325
+  s_4daa8b033fc783::t_eb53d6b9e2ddf8 21-27
+  s_4daa8b033fc783::t_7a75a3e2a021de 237-244,249-257,259-266
+  s_4daa8b033fc783::t_75efdcd187821c 337,354,356-358,365-370,372-384
+  s_4daa8b033fc783::t_4736bf4b0b6f96 3,10-11,13,144-151,164-166,174-180,182-219
+  s_4daa8b033fc783::t_a85aa8c5ac7603 19,169,171-173,246,338-339,355
+  s_4daa8b033fc783::t_a0ad1288928d2f 220
+  s_4daa8b033fc783::t_d101afdee8336a 267
+.agents/skills/react-best-practices/rules/async-parallel.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-28
+.agents/skills/react-best-practices/rules/rerender-derived-state.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-29
+.agents/skills/react-best-practices/rules/js-request-idle-callback.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-105
+.agents/skills/react-best-practices/rules/server-dedup-props.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-65
+.agents/skills/react-best-practices/rules/rerender-transitions.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-40
+.agents/skills/react-best-practices/rules/advanced-use-latest.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-39
+.agents/skills/react-best-practices/rules/rerender-defer-reads.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-39
+ARCHITECTURE.md
+  s_84bab7de5aed0e::t_6c0b0fc8eaad59 83-86
+  s_4daa8b033fc783::t_3b158a782a77d3 199-200
+  s_d34a6857da7c6b::t_d9fae7a0e700aa 17-22,224-225,248,344-347
+  s_4daa8b033fc783::t_52786c9b0c867f 173,176-181
+  s_84bab7de5aed0e::t_7ec16b2c7bd5ce 87-91
+  s_4daa8b033fc783::t_8b1fcdc5089955 190-198
+apps/desktop/src-tauri/src/lib.rs
+  s_d34a6857da7c6b::t_9ff53f6ebbfd40 18,20-44,48-53,93-94,111,113-115,117-121,125-127
+  s_d34a6857da7c6b::t_cb04fde5b8b2e9 116
+  s_d34a6857da7c6b::t_877b7e1148cc4d 123-124
+  s_d34a6857da7c6b::t_813be379bbc4df 122
+  s_4daa8b033fc783::t_da08212e9ce0c1 69
+  s_d34a6857da7c6b::t_4f696987456313 45-47
+.agents/skills/react-best-practices/rules/rerender-memo-with-default-value.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-38
+.agents/skills/react-best-practices/rules/bundle-defer-third-party.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-49
+.agents/skills/react-best-practices/rules/rerender-dependencies.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-45
+crates/daemon/src/server.rs
+  s_d34a6857da7c6b::t_88b8167464861c 195-198,226,229-233,238,244,250-251,260-261,265,277,280-283,285,287,362-363,375
+  s_d34a6857da7c6b::t_d0f6ae0ea7870c 61
+  s_d34a6857da7c6b::t_ab255d3fe99948 249,259
+  s_d34a6857da7c6b::t_b28be7e3f1009b 80,88
+.agents/skills/react-best-practices/rules/bundle-conditional.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-31
+.agents/skills/react-best-practices/rules/bundle-preload.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-50
+.agents/skills/react-best-practices/rules/js-set-map-lookups.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-24
+apps/desktop/src/features/editor/EditorWorkspace.tsx
+  s_4daa8b033fc783::t_30844f5adcf89a 25,62-69
+.agents/skills/react-best-practices/rules/client-passive-event-listeners.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-48
+.agents/skills/react-best-practices/rules/js-combine-iterations.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-32
+.agents/skills/react-best-practices/rules/rerender-simple-expression-in-memo.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-35
+.agents/skills/react-best-practices/rules/rerender-functional-setstate.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-74
+docs/agent-devkit/changes/2026-11-04-stop-processes-on-exit/tasks.md
+  s_d34a6857da7c6b::t_33d0129871a32b 21-22
+  s_d34a6857da7c6b::t_b96bb226c2be12 55,57,102-105
+  s_d34a6857da7c6b::t_6afd24e17616a3 61-62
+  s_d34a6857da7c6b::t_6fe2ced37445cc 99
+  s_d34a6857da7c6b::t_15bd870f9aff97 1-20,23-42,49-54,56,58-60,63-98,100-101
+  s_d34a6857da7c6b::t_74d709ba12f8ec 43-48
+.agents/skills/react-best-practices/rules/advanced-init-once.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-42
+docs/llm/AGENTS.md
+  s_b14810c2363551::t_04ae0fb2324745 1-36
+.agents/skills/react-best-practices/rules/_sections.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-46
+.agents/skills/react-best-practices/rules/js-tosorted-immutable.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-57
+.agents/skills/react-best-practices/rules/rendering-conditional-render.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-40
+.agents/skills/react-best-practices/rules/client-event-listeners.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-74
+.agents/skills/react-best-practices/rules/server-hoist-static-io.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-149
+.agents/skills/react-best-practices/rules/async-suspense-boundaries.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-99
+.agents/skills/react-best-practices/rules/rendering-animate-svg-wrapper.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-47
+.agents/skills/react-best-practices/rules/server-cache-lru.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-41
+docs/agent-devkit/INDEX.md
+  s_d34a6857da7c6b::t_6fe2ced37445cc 5
+.agents/skills/react-best-practices/rules/rerender-split-combined-hooks.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-64
+.agents/skills/react-best-practices/rules/rendering-usetransition-loading.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-75
+.agents/skills/react-best-practices/rules/server-after-nonblocking.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-73
+apps/desktop/src-tauri/src/commands.rs
+  s_4daa8b033fc783::t_2c8f0aee1e6ee3 435
+  s_4daa8b033fc783::t_628121e41f275d 522-538
+apps/desktop/src/features/editor/EditorWorkspace.test.tsx
+  s_4daa8b033fc783::t_ef336a582a9183 218-219,236,243-244,280,292,306-307,309,311,313-314,317,323-324,351,364-365,371
+.agents/skills/react-best-practices/rules/rerender-no-inline-components.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-82
+.agents/skills/react-best-practices/rules/js-length-check-first.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-49
+.agents/skills/react-best-practices/SKILL.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-149
+.agents/skills/react-best-practices/rules/js-flatmap-filter.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-60
+.agents/skills/react-best-practices/rules/async-dependencies.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-51
+.agents/skills/react-best-practices/rules/js-early-exit.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-50
+.agents/skills/react-best-practices/rules/rerender-memo.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-44
+apps/desktop/src/features/worktrees/WorktreeRows.tsx
+  s_4daa8b033fc783::t_037c73946d24ed 65,73,75,77-87
+apps/desktop/src-tauri/src/bridge.rs
+  s_d34a6857da7c6b::t_3e1d7e9b435c80 247-303,305-307
+  s_d34a6857da7c6b::t_69b31d1972b63f 304
+  s_d34a6857da7c6b::t_598248483146bc 13,15,17,28,50,125-127,132-134,143-156,162-165,167-246
+  s_d34a6857da7c6b::t_4f696987456313 166
+.agents/skills/react-best-practices/rules/advanced-effect-event-deps.md
+  s_488623f12b1399::t_ce09e4b88a157d 1-56
+crates/protocol/src/message.rs
+  s_d34a6857da7c6b::t_d0f6ae0ea7870c 21-22,212-215,217,224-225,227,231,233,238,243-244
+crates/daemon/tests/common/mod.rs
+  s_d34a6857da7c6b::t_9d6d3907ca78f3 54,57-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "89b2f215dc4bd4e6038fcebce01bbdd48a72ea93",
+  "prompts": {},
+  "sessions": {
+    "s_1c02f9dcec023b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e5bbd11a7ffeueLqHP54AE8gEB",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_488623f12b1399": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sticky-titanium",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_4daa8b033fc783": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1a0bf-43bb-7a71-9abe-cb8bfb615621",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_84bab7de5aed0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7dcff756-0448-423d-b402-99f6f9d41cc4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_b14810c2363551": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "carnation-nasturtium",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d34a6857da7c6b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1a440-e8ae-7a92-9ade-22e28ec66502",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
