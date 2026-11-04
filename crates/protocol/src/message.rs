@@ -18,6 +18,8 @@ pub struct HelloOk {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type")]
 pub enum Request {
+    #[serde(rename = "system.shutdown")]
+    SystemShutdown { id: u64 },
     #[serde(rename = "system.health")]
     SystemHealth { id: u64 },
     #[serde(rename = "system.version")]
@@ -207,38 +209,39 @@ mod tests {
     fn every_request_round_trips_with_numeric_id() {
         let session_id = SessionId::new();
         let requests = [
-            Request::SystemHealth { id: 1 },
-            Request::SystemVersion { id: 2 },
-            Request::EventsSubscribe { id: 3 },
+            Request::SystemShutdown { id: 1 },
+            Request::SystemHealth { id: 2 },
+            Request::SystemVersion { id: 3 },
+            Request::EventsSubscribe { id: 4 },
             Request::SessionCreate {
-                id: 4,
+                id: 5,
                 argv: vec!["sh".into()],
                 cwd: "/tmp".into(),
                 cols: 80,
                 rows: 24,
                 title: "shell".into(),
             },
-            Request::SessionList { id: 5 },
-            Request::SessionGet { id: 6, session_id },
+            Request::SessionList { id: 6 },
+            Request::SessionGet { id: 7, session_id },
             Request::SessionStop {
-                id: 7,
+                id: 8,
                 session_id,
                 force: false,
             },
-            Request::SessionDelete { id: 12, session_id },
+            Request::SessionDelete { id: 13, session_id },
             Request::TerminalWrite {
-                id: 8,
+                id: 9,
                 session_id,
                 data_b64: "aGVsbG8=".into(),
             },
             Request::TerminalResize {
-                id: 9,
+                id: 10,
                 session_id,
                 cols: 100,
                 rows: 30,
             },
-            Request::TerminalSubscribe { id: 10, session_id },
-            Request::TerminalUnsubscribe { id: 11, session_id },
+            Request::TerminalSubscribe { id: 11, session_id },
+            Request::TerminalUnsubscribe { id: 12, session_id },
         ];
 
         for request in requests {

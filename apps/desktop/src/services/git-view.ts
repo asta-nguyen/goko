@@ -16,8 +16,16 @@ export interface GitDiffRequest {
   commit?: string
 }
 
-// Read-only Git inspection for the workspace Editor; every call stays inside a
-// validated project checkout (the Rust side re-checks it on each request).
+export interface GitFileSaveRequest {
+  projectId: string
+  checkoutPath: string
+  path: string
+  expectedText: string
+  text: string
+}
+
+// Git inspection and text-file saving stay inside a validated project checkout
+// (the Rust side re-checks it on each request).
 export const gitViewService = {
   changes: (projectId: string, checkoutPath: string) =>
     call<GitViewChanges>('git_view_changes', { projectId, checkoutPath }),
@@ -37,6 +45,7 @@ export const gitViewService = {
     call<string[]>('git_view_file_list', { projectId, checkoutPath }),
   file: (projectId: string, checkoutPath: string, path: string) =>
     call<GitViewFile>('git_view_file', { projectId, checkoutPath, path }),
+  saveFile: (request: GitFileSaveRequest) => call<GitViewFile>('git_view_file_save', { ...request }),
   stashes: (projectId: string, checkoutPath: string) =>
     call<GitViewStash[]>('git_view_stashes', { projectId, checkoutPath }),
   stashDiff: (projectId: string, checkoutPath: string, stashId: string) =>

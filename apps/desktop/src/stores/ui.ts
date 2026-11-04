@@ -73,6 +73,16 @@ export interface TerminalWorkspaceState {
 export type WorkspaceView = 'terminal' | 'editor'
 export type DiffView = 'unified' | 'split'
 
+export interface EditorDraft {
+  projectId: string
+  checkoutPath: string
+  path: string
+  originalText: string
+  text: string
+}
+
+type EditorNavigation = () => void | Promise<void>
+
 /** Fixed app panel bounds in px; the widths live only in memory for the app run. */
 export const PANEL_LIMITS = {
   projectTree: { defaultWidth: 320, minWidth: 220, maxWidth: 480, siblingMin: 320 },
@@ -84,6 +94,12 @@ interface UiState {
   selectedId: string | null
   activeWorkspaceId: string | null
   activeView: WorkspaceView
+  editorDraft: EditorDraft | null
+  editorGuardOpen: boolean
+  editorSaveError: string | null
+  pendingEditorNavigation: EditorNavigation | null
+  editorSaveDraft: (() => Promise<boolean>) | null
+  editorReloadDraft: (() => Promise<boolean>) | null
   workspaces: Record<string, TerminalWorkspaceState>
   removedProjectIds: string[]
   panelWidths: Record<PanelId, number>
@@ -93,6 +109,13 @@ interface UiState {
   select: (id: string | null) => void
   activateWorkspace: (id: string) => void
   setActiveView: (view: WorkspaceView) => void
+  setEditorDraft: (draft: EditorDraft | null) => void
+  setEditorSaveError: (error: string | null) => void
+  setEditorSaveDraft: (save: (() => Promise<boolean>) | null) => void
+  setEditorReloadDraft: (reload: (() => Promise<boolean>) | null) => void
+  requestEditorNavigation: (navigation: EditorNavigation) => void
+  continueEditorNavigation: (discard: boolean) => void
+  cancelEditorNavigation: () => void
   claimDefaultTab: (id: string) => boolean
   failDefaultTab: (id: string, error: string) => void
   openSession: (workspaceId: string, sessionId: string, title: string, activate?: boolean) => void
@@ -237,6 +260,12 @@ const initialState = {
   selectedId: null,
   activeWorkspaceId: null,
   activeView: 'terminal' as WorkspaceView,
+  editorDraft: null as EditorDraft | null,
+  editorGuardOpen: false,
+  editorSaveError: null as string | null,
+  pendingEditorNavigation: null as EditorNavigation | null,
+  editorSaveDraft: null as (() => Promise<boolean>) | null,
+  editorReloadDraft: null as (() => Promise<boolean>) | null,
   workspaces: {} as Record<string, TerminalWorkspaceState>,
   removedProjectIds: [] as string[],
   panelWidths: {
@@ -252,12 +281,52 @@ export const useUi = create<UiState>((set, get) => ({
   setPanelWidth: (panel, width) =>
     set((state) => ({ panelWidths: { ...state.panelWidths, [panel]: width } })),
   setDiffView: (diffView) => set({ diffView }),
-  activateWorkspace: (id) =>
-    set((state) => {
-      const workspaces = state.workspaces[id] ? state.workspaces : { ...state.workspaces, [id]: emptyWorkspace() }
-      return { activeWorkspaceId: id, selectedId: focusedSession(workspaces[id]), workspaces }
-    }),
-  setActiveView: (activeView) => set({ activeView }),
+  activateWorkspace: (id) => {
+    if (get().activeWorkspaceId === id) return
+    get().requestEditorNavigation(() =>
+      set((state) => {
+        const workspaces = state.workspaces[id] ? state.workspaces : { ...state.workspaces, [id]: emptyWorkspace() }
+        return { activeWorkspaceId: id, selectedId: focusedSession(workspaces[id]), workspaces }
+      }),
+    )
+  },
+  setActiveView: (activeView) => {
+    if (get().activeView === activeView) return
+    get().requestEditorNavigation(() => set({ activeView }))
+  },
+  setEditorDraft: (draft) => set({
+    editorDraft: draft && draft.text !== draft.originalText.replace(/\r\n|\r/g, '\n') ? draft : null,
+    editorSaveError: null,
+  }),
+  setEditorSaveError: (editorSaveError) => set({ editorSaveError }),
+  setEditorSaveDraft: (editorSaveDraft) => set({ editorSaveDraft }),
+  setEditorReloadDraft: (editorReloadDraft) => set({ editorReloadDraft }),
+  requestEditorNavigation: (navigation) => {
+    const state = get()
+    if (!state.editorDraft) {
+      void navigation()
+      return
+    }
+    const previous = state.pendingEditorNavigation
+    set({
+      editorGuardOpen: true,
+      editorSaveError: null,
+      pendingEditorNavigation: previous
+        ? () => Promise.resolve(previous()).then(navigation)
+        : navigation,
+    })
+  },
+  continueEditorNavigation: (discard) => {
+    const navigation = get().pendingEditorNavigation
+    set((state) => ({
+      editorDraft: discard ? null : state.editorDraft,
+      editorGuardOpen: false,
+      editorSaveError: null,
+      pendingEditorNavigation: null,
+    }))
+    if (navigation) void navigation()
+  },
+  cancelEditorNavigation: () => set({ editorGuardOpen: false, pendingEditorNavigation: null }),
   claimDefaultTab: (id) => {
     const current = get().workspaces[id] ?? emptyWorkspace()
     if (current.tabs.length > 0 || current.defaultPending) return false
@@ -276,8 +345,13 @@ export const useUi = create<UiState>((set, get) => ({
         [id]: { ...(state.workspaces[id] ?? emptyWorkspace()), defaultPending: false, error },
       },
     })),
-  openSession: (requestedWorkspaceId, sessionId, title, activate = true) =>
-    set((state) => {
+  openSession: (requestedWorkspaceId, sessionId, title, activate = true) => {
+    const state = get()
+    const location = sessionLocation(state.workspaces, sessionId)
+    const projectId = projectIdForWorkspace(requestedWorkspaceId)
+    const projectWasRemoved = projectId !== null && state.removedProjectIds.includes(projectId)
+    const willActivate = location ? activate : activate || (projectWasRemoved && state.activeWorkspaceId === null)
+    const open = () => set((state) => {
       const location = sessionLocation(state.workspaces, sessionId)
       if (location) {
         if (!activate) return state
@@ -307,7 +381,10 @@ export const useUi = create<UiState>((set, get) => ({
       return activate || (projectWasRemoved && state.activeWorkspaceId === null)
         ? { activeWorkspaceId: workspaceId, selectedId: sessionId, activeView: 'terminal', workspaces }
         : { workspaces }
-    }),
+    })
+    if (willActivate) get().requestEditorNavigation(open)
+    else open()
+  },
   setActiveTab: (workspaceId, tabId) =>
     set((state) => {
       const workspace = state.workspaces[workspaceId]

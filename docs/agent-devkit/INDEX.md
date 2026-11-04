@@ -2,6 +2,7 @@
 
 ## Changes
 
+- [Stop Goko-owned processes when the app exits](changes/2026-11-04-stop-processes-on-exit/design.md) ([tasks](changes/2026-11-04-stop-processes-on-exit/tasks.md))
 - [Project terminal workspaces, splits, and Vietnamese support](changes/2026-11-02-terminal-workspaces-vietnamese/design.md) ([tasks](changes/2026-11-02-terminal-workspaces-vietnamese/tasks.md))
 - [Git worktree management UX](changes/2026-11-02-worktree-ux/design.md) ([tasks](changes/2026-11-02-worktree-ux/tasks.md))
 - [Workspace editor and Git review](changes/git-workbench-view/design.md) ([tasks](changes/git-workbench-view/tasks.md))

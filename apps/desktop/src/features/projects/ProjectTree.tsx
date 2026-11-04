@@ -79,7 +79,7 @@ function ProjectNode({
   onSelect: (id: string, workspaceId: string) => void
   onActivate: () => void
   onStart: Start
-  onRemove: () => Promise<void>
+  onRemove: () => void
 }) {
   const [expanded, setExpanded] = useState(true)
   const [confirming, setConfirming] = useState(false)
@@ -395,15 +395,17 @@ export function ProjectTree() {
     )
   }
 
-  async function removeProject(project: Project) {
+  function removeProject(project: Project) {
     setActionError(null)
-    try {
-      await remove.mutateAsync(project.id)
-      useUi.getState().removeProject(project.id)
-      addButton.current?.focus() // the removed row had focus
-    } catch (e) {
-      setActionError(message(e))
-    }
+    useUi.getState().requestEditorNavigation(async () => {
+      try {
+        await remove.mutateAsync(project.id)
+        useUi.getState().removeProject(project.id)
+        addButton.current?.focus() // the removed row had focus
+      } catch (e) {
+        setActionError(message(e))
+      }
+    })
   }
 
   const busy = adding || remove.isPending || create.isPending

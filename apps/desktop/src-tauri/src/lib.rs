@@ -15,8 +15,42 @@ mod test_support;
 mod wiring_tests;
 
 use bridge::Bridge;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
+
+#[derive(Default)]
+struct ShutdownState {
+    started: AtomicBool,
+    completed: AtomicBool,
+}
+
+fn start_shutdown(app: &tauri::AppHandle, state: Arc<ShutdownState>) {
+    if state.started.swap(true, Ordering::AcqRel) || state.completed.load(Ordering::Acquire) {
+        return;
+    }
+
+    let app = app.clone();
+    let bridge = app.state::<Bridge>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        match bridge.shutdown().await {
+            Ok(()) => {
+                state.completed.store(true, Ordering::Release);
+                app.exit(0);
+            }
+            Err(error) => {
+                state.started.store(false, Ordering::Release);
+                app.dialog()
+                    .message(format!(
+                        "Goko could not stop its background processes: {error}"
+                    ))
+                    .title("Goko is still running")
+                    .show(|_| {});
+            }
+        }
+    });
+}
 
 /// Every command the webview may call.
 fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
@@ -32,6 +66,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::git_view_file_list,
         commands::git_view_tree,
         commands::git_view_file,
+        commands::git_view_file_save,
         commands::git_view_stashes,
         commands::git_view_stash_diff,
         commands::env_file_candidates,
@@ -55,7 +90,8 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let shutdown = Arc::new(ShutdownState::default());
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let home = daemon_client::home_dir()?;
@@ -72,6 +108,21 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(handler())
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running goko");
+    app.run(move |app, event| match event {
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" => {
+            api.prevent_close();
+            start_shutdown(app, Arc::clone(&shutdown));
+        }
+        RunEvent::ExitRequested { api, .. } if !shutdown.completed.load(Ordering::Acquire) => {
+            api.prevent_exit();
+            start_shutdown(app, Arc::clone(&shutdown));
+        }
+        _ => {}
+    });
 }

@@ -432,8 +432,7 @@ pub fn env_copy(
 }
 
 /// Checkout for a Git view command: registered project, root-or-listed
-/// worktree, and a real non-bare Git worktree root — read commands never run
-/// against an arbitrary path.
+/// worktree, and a real non-bare Git worktree root.
 fn git_view_checkout(
     storage: &Storage,
     project_id: &str,
@@ -516,6 +515,23 @@ pub fn git_view_file(
     git_view::file(
         &git_view_checkout(&storage, &project_id, &checkout_path)?,
         &path,
+    )
+}
+
+#[tauri::command]
+pub fn git_view_file_save(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    path: String,
+    expected_text: String,
+    text: String,
+) -> Result<GitViewFile, BridgeError> {
+    git_view::save_file(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &path,
+        &expected_text,
+        &text,
     )
 }
 

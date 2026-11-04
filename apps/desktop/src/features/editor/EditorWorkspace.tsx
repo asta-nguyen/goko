@@ -22,7 +22,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: 'stashes', label: 'Stashes' },
 ]
 
-/** The workspace-level Editor: Git inspection for the active checkout. */
+/** The workspace-level Editor: Git inspection and file editing for the active checkout. */
 export function EditorWorkspace({
   project,
   projectId,
@@ -59,6 +59,14 @@ export function EditorWorkspace({
       const target = event.target as HTMLElement
       const typing =
         target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        const state = useUi.getState()
+        if (state.editorDraft && state.editorSaveDraft) {
+          event.preventDefault()
+          void state.editorSaveDraft()
+        }
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
         const input = root.current?.querySelector<HTMLInputElement>(
           `[data-section="${section}"] input[data-editor-filter]`,

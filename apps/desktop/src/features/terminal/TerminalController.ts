@@ -6,18 +6,18 @@ import type { SessionService } from '../../services/session'
 type Service = Pick<SessionService, 'subscribe' | 'write' | 'resize'>
 
 const RESIZE_DEBOUNCE_MS = 100
-// WKWebView reports IME keys with keyCode 229; the committed text follows within this window.
-const IME_KEY_WINDOW_MS = 100
 const BACKSPACE = '\x7f'
 const noop = () => {}
 // Colours come from the theme tokens (CSS variables), read once at mount.
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined
 
-const commonPrefix = (left: string, right: string): number => {
-  const max = Math.min(left.length, right.length)
-  let index = 0
-  while (index < max && left[index] === right[index]) index += 1
-  return index
+/** What the terminal must receive to turn `before` into `after`: erase the changed tail, type the new one. */
+export const textareaEdit = (before: string, after: string): string => {
+  const old = [...before.normalize('NFC')]
+  const next = [...after.normalize('NFC')]
+  let common = 0
+  while (common < old.length && common < next.length && old[common] === next[common]) common += 1
+  return BACKSPACE.repeat(old.length - common) + next.slice(common).join('')
 }
 
 /** One xterm instance bound to one session. Output goes straight to `term.write`, never through React. */
@@ -33,11 +33,6 @@ export class TerminalController {
   private sent = ''
   private disposed = false
   private visible = true
-  /** Model of what the terminal already has for the IME line being typed. */
-  private line = ''
-  private imeKeyAt = 0
-  /** True once this IME has proved it commits whole values instead of composition events. */
-  private replacementIme = false
   private writes: Promise<void> = Promise.resolve()
 
   constructor(
@@ -60,9 +55,14 @@ export class TerminalController {
     this.element = element
     term.loadAddon(this.fit)
     term.open(element)
-    this.attachIme(term)
+    this.attachIme(term, element)
     // Writes to an exited session are rejected by the daemon; the view's banner shows why.
-    this.onData = term.onData((data) => this.onTerminalData(data))
+    this.onData = term.onData((data) => {
+      // A key xterm handled itself (space, Backspace, Enter, arrows) ends the IME word, and the
+      // textarea no longer mirrors the line, so start the next IME edit from empty.
+      if (term.textarea) term.textarea.value = ''
+      this.send(data)
+    })
     this.observer = new ResizeObserver(() => {
       clearTimeout(this.timer)
       this.timer = setTimeout(() => void this.syncSize(), RESIZE_DEBOUNCE_MS)
@@ -102,83 +102,42 @@ export class TerminalController {
   }
 
   /**
-   * WKWebView does not fire composition events for every IME: macOS Simple Telex and 2-Set Korean
-   * send each key as keyCode 229 plus an `input` event that replaces the whole textarea value.
-   * xterm only forwards the first diff, so the word is lost. Forward the delta ourselves and drop
-   * xterm's duplicate diff until the key that ends the word.
+   * Plain-text input (no composition) is forwarded as the textarea edit it made. macOS Simple
+   * Telex in WKWebView fires `input` *before* its keyCode-229 keydown and rewrites the whole word
+   * (`insertReplacementText` "tiê" -> "tiên"); xterm's 229 fallback diffs that wrongly (equal
+   * length resends everything) and its `insertText` path only sometimes sends. So this owns those
+   * input events (capture on the parent, ahead of xterm) and switches the 229 fallback off.
+   * Composition IMEs (Japanese, Chinese) still go through xterm untouched.
    */
-  private attachIme(term: Terminal): void {
+  private attachIme(term: Terminal, element: HTMLElement): void {
     const textarea = term.textarea
     if (!textarea) return
+    let before = ''
+    // xterm already sent a key it saw on keypress (the IME's space), yet the IME still inserts it.
+    // Drop exactly that insertText. Matching the text, cleared by the next keydown rather than
+    // keyup, stays right when keys overlap or keyup lands first.
+    let pressed = ''
+    const onKeyDown = () => (pressed = '')
+    const onKeyPress = (event: Event) => (pressed = (event as KeyboardEvent).key)
+    const onBeforeInput = () => (before = textarea.value)
     const onInput = (event: Event) => {
-      const input = event as InputEvent
-      if (input.isComposing) return
-      const replacement = input.inputType === 'insertReplacementText'
-      const first = input.inputType === 'insertText' && Date.now() - this.imeKeyAt < IME_KEY_WINDOW_MS
-      if (!replacement && !first) return
-      if (replacement) this.replacementIme = true
-      this.acceptIme(textarea)
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.target !== textarea) return
-      if (event.keyCode === 229) {
-        this.imeKeyAt = Date.now()
+      const { inputType, isComposing, data } = event as InputEvent
+      if (event.target !== textarea || isComposing) return
+      if (inputType !== 'insertText' && inputType !== 'insertReplacementText') return
+      event.stopImmediatePropagation()
+      if (inputType === 'insertText' && pressed && data === pressed) {
+        pressed = ''
         return
       }
-      // Only keys that end or rewrite the line invalidate the model; WKWebView also repeats a
-      // printable key with its real keyCode, and that one is still part of the IME text.
-      if (
-        event.key === 'Enter' ||
-        event.key === 'Tab' ||
-        event.key === 'Escape' ||
-        (event.ctrlKey && event.key.toLowerCase() === 'c')
-      ) {
-        this.resetLine()
-      }
+      this.send(textareaEdit(before, textarea.value))
     }
-    const onBlur = () => this.resetLine()
-    // xterm's own keyCode-229 fallback appends partial text for this IME; the handler above
-    // sends the committed value instead, so keep xterm out of the way once that shape is known.
-    term.attachCustomKeyEventHandler(
-      (event) => !(event.type === 'keydown' && event.keyCode === 229 && this.replacementIme),
-    )
-    textarea.addEventListener('input', onInput)
-    textarea.addEventListener('blur', onBlur)
-    document.addEventListener('keydown', onKeyDown, true)
+    // During a composition xterm ignores 229 too, so this only removes the broken fallback.
+    term.attachCustomKeyEventHandler((event) => !(event.type === 'keydown' && event.keyCode === 229))
+    const listeners = { keydown: onKeyDown, keypress: onKeyPress, beforeinput: onBeforeInput, input: onInput }
+    for (const [type, listener] of Object.entries(listeners)) element.addEventListener(type, listener, true)
     this.imeCleanup = () => {
-      textarea.removeEventListener('input', onInput)
-      textarea.removeEventListener('blur', onBlur)
-      document.removeEventListener('keydown', onKeyDown, true)
+      for (const [type, listener] of Object.entries(listeners)) element.removeEventListener(type, listener, true)
     }
-  }
-
-  /** Every byte xterm forwards is real input, so keep the line model in step with it. */
-  private onTerminalData(data: string): void {
-    for (const char of data) {
-      if (char === BACKSPACE) this.line = this.line.slice(0, -1)
-      else if (char >= ' ') this.line += char // control keys never belong to the IME line
-    }
-    this.send(data)
-  }
-
-  /**
-   * WKWebView commits this IME as whole textarea values, and the textarea holds the whole line
-   * (`"tiếng vi"`), not the word. Make the terminal match it by sending only the difference.
-   */
-  private acceptIme(textarea: HTMLTextAreaElement): void {
-    // The textarea holds the whole line (`"tiếng vi"`), not the word, and WKWebView writes a
-    // non-breaking space for the space key while xterm forwards a real one.
-    const next = textarea.value.normalize('NFC').replace(/\u00a0/g, ' ')
-    const current = this.line.normalize('NFC')
-    const common = commonPrefix(current, next)
-    // One chunk per commit keeps the write queue short and the order obvious.
-    const chunk = BACKSPACE.repeat(current.length - common) + next.slice(common)
-    this.send(chunk)
-    this.line = next
-  }
-
-  private resetLine(): void {
-    this.line = ''
   }
 
   /** Writes stay ordered: each one starts after the previous invoke settles. */

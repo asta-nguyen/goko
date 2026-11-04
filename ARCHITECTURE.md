@@ -14,10 +14,12 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
 ```
 
 - **`gokod`** is a separate process that owns every PTY and child process. The app starts it
-  in a separate session; state is in memory only. In a direct-binary `.app` acceptance run,
-  Cmd-Q closed the app while `gokod` and its live shell kept running. A separate test using
-  a temporary launcher wrapper showed daemon shutdown, so normally packaged app behavior
-  remains unverified.
+  in a separate session; state is in memory only. Closing the main window or choosing Cmd-Q
+  now uses the same graceful shutdown path: the backend sends the authenticated
+  `system.shutdown` request, waits for the daemon lock to be released, then exits. The daemon
+  stops every live PTY process group. A shutdown error or timeout keeps the app open and
+  shows an error; normal quit preserves `GOKO_HOME` and `goko.db`. Force Quit and crashes do
+  not guarantee cleanup.
 - **The Tauri backend** talks to `gokod` over `daemon.sock` and is the only thing the UI
   talks to. It depends on the `protocol` crate and nothing else from the daemon.
 - **The UI** never sees the socket. It calls Tauri commands, listens for Tauri events, and
@@ -78,12 +80,15 @@ title, created_at)`, and `settings(key, value)`.
   one xterm controller, one output subscription, and that session's PTY size. A daemon
   session is never rendered in multiple panes.
 - Input is UTF-8 end to end: `terminal.write` base64-encodes the JS string's UTF-8 bytes and
-  the daemon writes them to the PTY unchanged. WKWebView fires no composition events for some
-  IMEs (macOS Simple Telex, 2-Set Korean); it sends each key with `keyCode` 229 and an `input`
-  event whose `insertReplacementText`/`insertText` value is the whole line in xterm's hidden
-  textarea, with a non-breaking space for the space key. The controller keeps a model of that
-  line, normalizes NFC and NBSP, and sends only the difference, so xterm's own 229 fallback is
-  disabled once that shape is detected. Typing `tieengs vieetj` yields `tiếng việt`.
+  the daemon writes them to the PTY unchanged. macOS Simple Telex in WKWebView fires no
+  composition events: each key's `input` (`insertText`, then `insertReplacementText` rewriting
+  the word, e.g. `tiê` -> `tiên`) arrives before its `keyCode` 229 keydown. The controller
+  captures those `input` events ahead of xterm and sends the textarea edit (backspaces for the
+  changed tail, then the new tail, NFC), turns off xterm's 229 fallback, drops the IME's
+  `insertText` of a key xterm already sent on keypress (space), and clears the textarea whenever
+  xterm sends a key itself. The helper textarea is kept at least 1x1 px: at 0x0 Telex cannot read
+  it back and falls back to marked text, losing a word's first letter. Compositions (Japanese,
+  Chinese) stay with xterm. Typing `tieengs vieetj` yields `tiếng việt`.
 - New Tab starts a distinct Shell in the active checkout. The project/worktree launch menu
   opens successfully created agent/custom sessions in the selected checkout. Split
   left/right and split top/bottom each start a new Shell in the same checkout. Separators
@@ -165,13 +170,15 @@ title, created_at)`, and `settings(key, value)`.
   remove actions stay focusable and expose their reason on hover or focus. `daemon_status`
   reports whether the connected daemon supports live CWD so the UI can explain when an older
   daemon needs a manual restart. Exited sessions retain their last known path.
-- Every checkout workspace also has a read-only **Editor** view, opened from the Editor
+- Every checkout workspace also has an **Editor** view, opened from the Editor
   action on a Git checkout row or the `Terminal | Editor` switch in the workspace header.
   Its sections are `Files` (a lazy tree of tracked and non-ignored untracked paths beside a
-  line-numbered, read-only preview; Markdown files — `.md`, `.markdown`, and `.mdx` — open
-  as a rendered GFM preview with a `Preview | Raw` toggle that keeps the mode for the app
-  run, and rendered links stay inert text with the href as a tooltip while images show an
-  alt-text placeholder because the view has no opener or asset capability), `Changes`
+  monospaced editor for complete UTF-8 text files up to 1 MiB; files open ready to edit,
+  Save and `Cmd/Ctrl+S` write to the checkout working tree, and Markdown files — `.md`,
+  `.markdown`, and `.mdx` — can switch to a rendered GFM preview. Unsaved edits prompt
+  before changing files, workspaces, or the main-area view. Rendered links stay inert text
+  with the href as a tooltip while images show an alt-text placeholder because the view has
+  no opener or asset capability), `Changes`
   (conflict, staged, unstaged, and untracked groups with counts and per-layer diffs that
   preserve rename and deletion state), `History` (local, remote-tracking, and tag refs on a
   lane graph, 100 commits per page, selected commit files and patch), and `Stashes` (the
@@ -180,15 +187,17 @@ title, created_at)`, and `settings(key, value)`.
   unchanged. The list/detail boundary can be resized; its width is shared across all four
   sections and view switches.
 - The `git_view_*` Tauri commands (`changes`, `diff`, `history`, `tree`, `file`,
-  `stashes`, `stash_diff`) are the only Git read boundary. They revalidate the registered
-  project and canonical checkout path on every call, reuse the separate-argv
-  `Command::new("git")` rule with `-C <checkout>` and never build a shell string, and the
-  daemon and protocol are untouched. File and tree paths must be relative and resolve
-  inside the checkout after symlink resolution. Patch and text responses cap at 1 MiB and
-  report `truncated`; binary, non-UTF-8, oversized, and missing files return an explicit
-  kind instead of content. There is no file write or Git mutation anywhere in the view.
-- Editor queries are keyed by checkout context: status, diff, history, tree, and file
-  reads carry the project ID plus canonical checkout path, so switching checkout re-keys
+  `file_save`, `stashes`, `stash_diff`) are the Editor's Git and file boundary. Every call
+  revalidates the registered project and canonical checkout path; Git calls use separate
+  argv with `Command::new("git")` and `-C <checkout>`, never a shell command. The daemon
+  and protocol are untouched. File and tree paths must be relative and resolve inside the
+  checkout after symlink resolution. Patch and file reads cap at 1 MiB; binary, non-UTF-8,
+  oversized, and missing files return an explicit kind. Saves accept only existing text
+  files within that cap, compare the opened contents before replacing the file atomically,
+  preserve its permissions, and update only the working tree. They do not stage, commit, or
+  change refs or stash state.
+- Editor queries and saves are keyed by checkout context: status, diff, history, tree, and
+  file read/write operations carry the project ID plus canonical checkout path, so switching checkout re-keys
   every read and stale results from another checkout can never appear. The stash list is
   keyed by project because `refs/stash` is shared across linked worktrees, and a stash
   patch is keyed by the immutable stash commit ID. Changes status/diffs and the stash list
@@ -212,6 +221,8 @@ title, created_at)`, and `settings(key, value)`.
 3. SIGTERM or SIGINT stops accepting, drops every connection, calls
    `SessionManager::shutdown()` (SIGTERM every session's process group, wait up to 2 s,
    then SIGKILL), removes the socket file, and exits 0.
+4. The authenticated `system.shutdown` request follows the same stop and session cleanup
+   path. The desktop waits for `daemon.lock` to be released before exiting; app data is kept.
 
 The lock is released by the kernel when the process dies, so a crashed daemon never blocks
 the next one; the stale socket file is replaced on the next start.
@@ -234,7 +245,7 @@ are rejected before they are allocated.
   Errors that cannot be tied to a request (bad hello, bad frame) use `id` 0 and close.
 - Error codes: `auth_failed`, `version_unsupported`, `frame_too_large`, `malformed`,
   `invalid_argument`, `not_found`, `spawn_failed`, `internal`.
-- Requests: `system.health`, `system.version`, `events.subscribe`, `session.create`,
+- Requests: `system.health`, `system.version`, `system.shutdown`, `events.subscribe`, `session.create`,
   `session.list`, `session.get`, `session.stop`, `session.delete`, `terminal.write` (`data_b64`),
   `terminal.resize`, `terminal.subscribe`, `terminal.unsubscribe`.
 - Pushes: `session.updated` (full `SessionInfo`), `session.exited`, and `terminal.lagged`.
@@ -330,10 +341,10 @@ end-to-end output backpressure is not implemented in S1.
 
 Observed against the real `gokod` (see the [agent-devkit change index](docs/agent-devkit/INDEX.md)):
 
-- **App quit:** In a direct-binary `.app` run, Cmd-Q closed the app and left `gokod` holding
-  its lock with the live shell still running. Relaunching restored the `zsh running` session
-  row. A temporary launcher-wrapper run instead logged daemon shutdown and lost the session.
-  The different outcomes leave normally packaged app behavior unverified.
+- **App quit before graceful shutdown was added:** Earlier direct-binary `.app` runs found
+  Cmd-Q could leave `gokod` and its shell alive; a temporary launcher-wrapper run instead
+  shut the daemon down. These are historical acceptance observations; current close and
+  Cmd-Q behavior is described under [Daemon lifecycle](#daemon-lifecycle).
 - **`kill -9` of the daemon:** the app reconnected to a fresh daemon with an empty session
   list, and the previous shell PID was absent. The first UI read already showed
   `Daemon connected`, so the disconnected banner was not captured. Reattaching to survivors

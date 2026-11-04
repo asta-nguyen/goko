@@ -62,6 +62,7 @@ export function WorktreeRows({
   const activateWorkspace = useUi((state) => state.activateWorkspace)
   const activeWorkspaceId = useUi((state) => state.activeWorkspaceId)
   const setActiveView = useUi((state) => state.setActiveView)
+  const requestEditorNavigation = useUi((state) => state.requestEditorNavigation)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [confirming, setConfirming] = useState<WorktreeInfo | null>(null)
   const [customPath, setCustomPath] = useState<string | null>(null)
@@ -69,18 +70,21 @@ export function WorktreeRows({
   const removeTrigger = useRef<HTMLButtonElement | null>(null)
   const linked = worktrees.filter((worktree) => !worktree.is_root)
 
-  const confirmRemove = async () => {
+  const confirmRemove = () => {
     if (!confirming) return
+    const removing = confirming
     setError(null)
-    try {
-      const key = checkoutKey(project.id, confirming.path)
-      await remove.mutateAsync({ projectId: project.id, path: confirming.path })
-      if (activeWorkspaceId === key) activateWorkspace(checkoutKey(project.id, project.root))
-      useUi.getState().removeWorkspace(key)
-      setConfirming(null)
-    } catch (cause) {
-      setError(message(cause))
-    }
+    requestEditorNavigation(async () => {
+      try {
+        const key = checkoutKey(project.id, removing.path)
+        await remove.mutateAsync({ projectId: project.id, path: removing.path })
+        if (useUi.getState().activeWorkspaceId === key) activateWorkspace(checkoutKey(project.id, project.root))
+        useUi.getState().removeWorkspace(key)
+        setConfirming(null)
+      } catch (cause) {
+        setError(message(cause))
+      }
+    })
   }
 
   if (!linked.length) return null

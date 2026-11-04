@@ -109,7 +109,8 @@ async fn sessions_run_stop_and_die_with_the_daemon() {
     let (_, _third, third_pid) = start(&paths, &mut control, script).await;
     assert!(process_exists(third_pid));
 
-    assert_eq!(unsafe { libc::kill(daemon.pid(), libc::SIGTERM) }, 0);
+    let reply = control.request(json!({"type": "system.shutdown"})).await;
+    assert_eq!(reply["result"], json!({}));
     let status = daemon
         .exited_within(Duration::from_secs(5))
         .await

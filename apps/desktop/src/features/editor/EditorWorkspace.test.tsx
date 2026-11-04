@@ -215,8 +215,8 @@ describe('sections', () => {
     expect(document.querySelector('.grid-cols-2')).toBeNull()
   })
 
-  it('syntax highlights the file preview for a supported language', async () => {
-    service.file.mockResolvedValue({ path: 'src/app.ts', kind: 'text', text: 'const answer: number = 42', truncated: false, size: 25 })
+  it('syntax highlights a truncated read-only file preview', async () => {
+    service.file.mockResolvedValue({ path: 'src/app.ts', kind: 'text', text: 'const answer: number = 42', truncated: true, size: 1024 * 1024 + 1 })
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     fireEvent.click(await screen.findByRole('button', { name: 'src' }))
@@ -233,15 +233,15 @@ describe('sections', () => {
     expect(service.diff).not.toHaveBeenCalled()
   })
 
-  it('navigates the Files tree lazily and previews the file with line numbers', async () => {
+  it('navigates the Files tree lazily and opens the selected file for editing', async () => {
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     fireEvent.click(await screen.findByRole('button', { name: 'src' }))
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
 
     await waitFor(() => expect(service.file).toHaveBeenCalledWith('p1', '/work/p1', 'src/app.ts'))
-    expect(await screen.findByText('line one')).toBeTruthy()
-    expect(screen.getByText('2')).toBeTruthy()
+    const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' }) as HTMLTextAreaElement
+    expect(editor.value).toBe('line one\nline two')
     expect(service.tree).toHaveBeenCalledWith('p1', '/work/p1', '')
     expect(service.tree).toHaveBeenCalledWith('p1', '/work/p1', 'src')
   })
@@ -277,7 +277,7 @@ describe('sections', () => {
     expect(document.activeElement).toBe(first)
   })
 
-  it('filters the Files tree by path and previews a match', async () => {
+  it('filters the Files tree by path and opens a match for editing', async () => {
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     fireEvent.change(await screen.findByLabelText('Filter files'), { target: { value: 'readme' } })
@@ -289,7 +289,7 @@ describe('sections', () => {
     await waitFor(() => expect(service.file).toHaveBeenCalledWith('p1', '/work/p1', 'README.md'))
   })
 
-  it('previews Markdown files and switches to the raw source', async () => {
+  it('opens Markdown source for editing and allows switching to preview', async () => {
     service.file.mockImplementation((_p: string, _co: string, filePath: string) =>
       Promise.resolve({
         path: filePath,
@@ -303,24 +303,25 @@ describe('sections', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }))
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Read me' })).toBeTruthy()
+    const editor = await screen.findByRole('textbox', { name: 'Edit README.md' }) as HTMLTextAreaElement
+    expect(editor.value).toBe('# Read me\n\nHello **world**.')
     const view = screen.getByRole('radiogroup', { name: 'Markdown view' })
-    expect(within(view).getByRole('radio', { name: 'Preview' }).getAttribute('aria-checked')).toBe('true')
-
-    fireEvent.click(within(view).getByRole('radio', { name: 'Raw' }))
-
-    expect(screen.queryByRole('heading', { level: 1, name: 'Read me' })).toBeNull()
-    expect(screen.getByText('# Read me')).toBeTruthy()
     expect(within(view).getByRole('radio', { name: 'Raw' }).getAttribute('aria-checked')).toBe('true')
+
+    fireEvent.click(within(view).getByRole('radio', { name: 'Preview' }))
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Read me' })).toBeTruthy()
+    expect(within(view).getByRole('radio', { name: 'Preview' }).getAttribute('aria-checked')).toBe('true')
   })
 
-  it('keeps the raw code view and no Markdown toggle for other files', async () => {
+  it('keeps other text files editable without a Markdown toggle', async () => {
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     fireEvent.click(await screen.findByRole('button', { name: 'src' }))
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
 
-    expect(await screen.findByText('line one')).toBeTruthy()
+    const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' }) as HTMLTextAreaElement
+    expect(editor.value).toBe('line one\nline two')
     expect(screen.queryByRole('radiogroup', { name: 'Markdown view' })).toBeNull()
   })
 
@@ -347,7 +348,7 @@ describe('sections', () => {
     expect(screen.getByRole('button', { name: /first commit/ })).toBeTruthy()
   })
 
-  it('keeps cached file tree and preview visible with stale notices after refresh failures', async () => {
+  it('keeps cached file tree and editor content visible with stale notices after refresh failures', async () => {
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     expect(await screen.findByRole('button', { name: 'src' })).toBeTruthy()
@@ -360,13 +361,14 @@ describe('sections', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'src' }))
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
-    expect(await screen.findByText('line one')).toBeTruthy()
+    const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' }) as HTMLTextAreaElement
+    expect(editor.value).toBe('line one\nline two')
     service.file.mockRejectedValueOnce(new Error('preview refresh failed'))
 
     await qc.invalidateQueries({ queryKey: queryKeys.gitFile('p1', '/work/p1', 'src/app.ts') })
 
     expect(await screen.findByText(/preview refresh failed/)).toBeTruthy()
-    expect(screen.getByText('line one')).toBeTruthy()
+    expect((screen.getByRole('textbox', { name: 'Edit src/app.ts' }) as HTMLTextAreaElement).value).toBe('line one\nline two')
   })
 
   it('links a changed file from Files to its Changes diff', async () => {

@@ -55,6 +55,7 @@ async fn run() -> io::Result<ExitCode> {
 
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
     let token = auth::create_token(&paths)?;
     let listener = server::bind(&paths)?;
     tracing::info!(
@@ -69,10 +70,12 @@ async fn run() -> io::Result<ExitCode> {
         token,
         Arc::clone(&sessions),
         paths.worktree_operations_lock(),
+        shutdown_tx,
         async {
             tokio::select! {
                 _ = terminate.recv() => {}
                 _ = interrupt.recv() => {}
+                _ = shutdown_rx.recv() => {}
             }
         },
     )

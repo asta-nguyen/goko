@@ -51,17 +51,27 @@ impl TestServer {
         let listener = server::bind(&paths).expect("bind daemon socket");
         let token_text = fs::read_to_string(paths.token()).expect("read token file");
         let (shutdown, stop) = oneshot::channel::<()>();
+        let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
         let sessions = Arc::new(SessionManager::new());
         let worktree_operations_lock = paths.worktree_operations_lock();
-        tokio::spawn(server::serve(
-            listener,
-            token,
-            Arc::clone(&sessions),
-            worktree_operations_lock,
-            async {
-                let _ = stop.await;
-            },
-        ));
+        let shutdown_sessions = Arc::clone(&sessions);
+        tokio::spawn(async move {
+            let _ = server::serve(
+                listener,
+                token,
+                Arc::clone(&shutdown_sessions),
+                worktree_operations_lock,
+                shutdown_tx,
+                async {
+                    tokio::select! {
+                        _ = stop => {}
+                        _ = shutdown_rx.recv() => {}
+                    }
+                },
+            )
+            .await;
+            shutdown_sessions.shutdown().await;
+        });
         Self {
             paths,
             token: token_text,

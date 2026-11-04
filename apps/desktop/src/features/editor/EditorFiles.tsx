@@ -1,19 +1,32 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ChevronRightIcon, FileIcon, FileWarningIcon, FolderIcon } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
-import type { GitDiffRequest } from '../../services/git-view'
+import { gitViewService, type GitDiffRequest } from '../../services/git-view'
+import { toBridgeError } from '../../services/errors'
 import type { GitViewDiffLayer } from '../../services/types'
+import { useUi } from '../../stores/ui'
 import { CodeView, EmptyPane, ErrorPane, FilterInput, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice } from './panes'
 import { MarkdownView, isMarkdownPath } from './MarkdownView'
 import { useGitChanges, useGitFile, useGitFileList, useGitTree } from './queries'
 
 const sizeLabel = (size: number) => (size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.round(size / 1024))} KiB`)
+const EDITOR_FILE_CAP = 1024 * 1024
+const textForSave = (draft: { originalText: string; text: string }) => {
+  const originalNewlines = draft.originalText.match(/\r\n|\r|\n/g) ?? []
+  const editedNewlines = draft.text.match(/\r\n|\r|\n/g) ?? []
+  if (originalNewlines.length === editedNewlines.length) {
+    let index = 0
+    return draft.text.replace(/\r\n|\r|\n/g, () => originalNewlines[index++] ?? '\n')
+  }
+  const newline = originalNewlines[0] ?? '\n'
+  return draft.text.replace(/\r\n|\r|\n/g, newline)
+}
 
 function TreeRows({
   projectId,
@@ -128,7 +141,14 @@ export function EditorFiles({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [path, setPath] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
-  const [mdView, setMdView] = useState<'preview' | 'raw'>('preview')
+  const [mdView, setMdView] = useState<'preview' | 'raw'>('raw')
+  const [saving, setSaving] = useState(false)
+  const editorDraft = useUi((state) => state.editorDraft)
+  const editorSaveError = useUi((state) => state.editorSaveError)
+  const setEditorDraft = useUi((state) => state.setEditorDraft)
+  const setEditorSaveDraft = useUi((state) => state.setEditorSaveDraft)
+  const setEditorReloadDraft = useUi((state) => state.setEditorReloadDraft)
+  const requestEditorNavigation = useUi((state) => state.requestEditorNavigation)
   const file = useGitFile(projectId, checkoutPath, path, active)
   // No polling here — one fresh status read powers the "show changes" link.
   const changes = useGitChanges(projectId, checkoutPath, active, false)
@@ -140,6 +160,63 @@ export function EditorFiles({
         : null,
     [fileList.data, filter],
   )
+
+  const saveDraft = useCallback(async () => {
+    const draft = useUi.getState().editorDraft
+    if (!draft) return true
+    const text = textForSave(draft)
+    if (text.includes('\0') || new TextEncoder().encode(text).byteLength > EDITOR_FILE_CAP) {
+      useUi.getState().setEditorSaveError(
+        text.includes('\0') ? 'Remove binary NUL characters before saving.' : 'Edited text exceeds the 1 MiB limit.',
+      )
+      return false
+    }
+    setSaving(true)
+    try {
+      const saved = await gitViewService.saveFile({
+        projectId: draft.projectId,
+        checkoutPath: draft.checkoutPath,
+        path: draft.path,
+        expectedText: draft.originalText,
+        text,
+      })
+      queryClient.setQueryData(queryKeys.gitFile(draft.projectId, draft.checkoutPath, draft.path), saved)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.gitChanges(draft.projectId, draft.checkoutPath) })
+      void queryClient.invalidateQueries({ queryKey: ['git-diff', draft.projectId, draft.checkoutPath] })
+      useUi.getState().setEditorDraft(null)
+      useUi.getState().setEditorSaveError(null)
+      return true
+    } catch (error) {
+      useUi.getState().setEditorSaveError(toBridgeError(error).message)
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }, [queryClient])
+
+  const reloadDraft = useCallback(async () => {
+    const draft = useUi.getState().editorDraft
+    if (!draft) return true
+    try {
+      const current = await gitViewService.file(draft.projectId, draft.checkoutPath, draft.path)
+      queryClient.setQueryData(queryKeys.gitFile(draft.projectId, draft.checkoutPath, draft.path), current)
+      useUi.getState().setEditorDraft(null)
+      useUi.getState().setEditorSaveError(null)
+      return true
+    } catch (error) {
+      useUi.getState().setEditorSaveError(toBridgeError(error).message)
+      return false
+    }
+  }, [queryClient])
+
+  useEffect(() => {
+    setEditorSaveDraft(saveDraft)
+    setEditorReloadDraft(reloadDraft)
+    return () => {
+      setEditorSaveDraft(null)
+      setEditorReloadDraft(null)
+    }
+  }, [reloadDraft, saveDraft, setEditorReloadDraft, setEditorSaveDraft])
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['git-tree', projectId, checkoutPath] })
@@ -157,8 +234,36 @@ export function EditorFiles({
     return null
   }
   const changedLayer = path !== null ? layerFor(path) : null
-  const text = file.data?.kind === 'text' ? file.data.text : null
+  const draft = editorDraft &&
+    editorDraft.projectId === projectId &&
+    editorDraft.checkoutPath === checkoutPath &&
+    editorDraft.path === path
+    ? editorDraft
+    : null
+  const text = draft?.text ?? (file.data?.kind === 'text' ? file.data.text : null)
+  const editable = file.data?.kind === 'text' && !file.data.truncated && text !== null
+  const draftTooLarge = draft !== null && new TextEncoder().encode(textForSave(draft)).byteLength > EDITOR_FILE_CAP
+  const draftHasNul = draft?.text.includes('\0') === true
   const markdown = text !== null && isMarkdownPath(file.data?.path)
+
+  const selectPath = (nextPath: string) => {
+    if (nextPath === path) return
+    requestEditorNavigation(() => {
+      setMdView('raw')
+      setPath(nextPath)
+    })
+  }
+
+  const updateText = (nextText: string) => {
+    if (!editable || !file.data || file.data.text === null || path === null) return
+    setEditorDraft({
+      projectId,
+      checkoutPath,
+      path,
+      originalText: draft?.originalText ?? file.data.text,
+      text: nextText,
+    })
+  }
 
   return (
     <SplitPane
@@ -182,7 +287,7 @@ export function EditorFiles({
                   expanded={expanded}
                   onToggle={(directory) => setExpanded((current) => ({ ...current, [directory]: !current[directory] }))}
                   selected={path}
-                  onSelect={setPath}
+                  onSelect={selectPath}
                   active={active}
                 />
               ) : (
@@ -193,7 +298,7 @@ export function EditorFiles({
                         type="button"
                         data-nav-item
                         aria-pressed={path === item}
-                        onClick={() => setPath(item)}
+                        onClick={() => selectPath(item)}
                         className={cn(
                           'flex w-full items-center gap-1.5 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
                           path === item && 'bg-secondary/70',
@@ -217,7 +322,7 @@ export function EditorFiles({
       }
     >
       {path === null ? (
-        <EmptyPane icon={<FileIcon className="size-4" />} title="Select a file to preview it" />
+        <EmptyPane icon={<FileIcon className="size-4" />} title="Select a file to edit it" />
       ) : file.isPending ? (
         <LoadingPane label="Loading file…" />
       ) : file.isError && !file.data ? (
@@ -229,6 +334,9 @@ export function EditorFiles({
             <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium" title={file.data.path}>{file.data.path}</span>
             <Badge variant="secondary">{sizeLabel(file.data.size)}</Badge>
             {file.data.truncated && <Badge variant="warning">truncated</Badge>}
+            {draft && <Badge variant="warning">Unsaved</Badge>}
+            {draftTooLarge && <Badge variant="warning">over 1 MiB</Badge>}
+            {draftHasNul && <Badge variant="warning">binary NUL</Badge>}
             {markdown && (
               <ToggleGroup
                 type="single"
@@ -243,14 +351,37 @@ export function EditorFiles({
                 <ToggleGroupItem value="raw">Raw</ToggleGroupItem>
               </ToggleGroup>
             )}
+            {editable && (
+              <Button variant="outline" size="sm" disabled={!draft || saving || draftTooLarge || draftHasNul} onClick={() => void saveDraft()}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+            )}
             {changedLayer && (
               <Button variant="outline" size="sm" onClick={() => onShowChanges({ layer: changedLayer, path })}>
                 Show changes
               </Button>
             )}
           </header>
+          {editorSaveError && (
+            <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border bg-danger/10 px-3 py-1.5 text-xs text-danger">
+              <span className="min-w-0 flex-1">{editorSaveError}</span>
+              {draft && <Button variant="ghost" size="xs" disabled={file.isFetching} onClick={() => void reloadDraft()}>Reload from disk</Button>}
+            </div>
+          )}
           {text !== null ? (
-            markdown && mdView === 'preview' ? (
+            editable && markdown && mdView === 'preview' ? (
+              <MarkdownView text={text} />
+            ) : editable ? (
+              <textarea
+                aria-label={`Edit ${file.data.path}`}
+                spellCheck={false}
+                wrap="off"
+                readOnly={saving}
+                value={text}
+                onChange={(event) => updateText(event.target.value)}
+                className="min-h-0 min-w-0 flex-1 resize-none overflow-auto bg-bg px-3 py-2 font-mono text-xs leading-5 text-text outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              />
+            ) : markdown && mdView === 'preview' ? (
               <MarkdownView text={text} />
             ) : (
               <CodeView text={text} path={file.data.path} />

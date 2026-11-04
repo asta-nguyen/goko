@@ -1,4 +1,4 @@
-import { TerminalController } from './TerminalController'
+import { TerminalController, textareaEdit } from './TerminalController'
 
 const h = vi.hoisted(() => {
   const state = {
@@ -16,12 +16,11 @@ const h = vi.hoisted(() => {
     textarea = document.createElement('textarea')
     constructor(public options: Record<string, unknown>) {
       state.terms.push(this)
-      document.body.append(this.textarea) // xterm's textarea is in the document, so keydown reaches document listeners
     }
     loadAddon(a: { activate(t: FakeTerminal): void }) {
       a.activate(this)
     }
-    open = vi.fn()
+    open = vi.fn((el: HTMLElement) => el.append(this.textarea)) // xterm's textarea lives inside the element
     attachCustomKeyEventHandler = vi.fn()
     onData(cb: (d: string) => void) {
       this.dataListeners.add(cb)
@@ -267,106 +266,124 @@ describe('TerminalController dispose', () => {
   })
 })
 
+describe('textareaEdit', () => {
+  it('erases the changed tail and types the new one', () => {
+    expect(textareaEdit('', 't')).toBe('t')
+    expect(textareaEdit('tiê', 'tiên')).toBe('n')
+    expect(textareaEdit('tiêng', 'tiếng')).toBe('\x7f\x7f\x7fếng')
+    expect(textareaEdit('đây v', 'đây vi')).toBe('i')
+    expect(textareaEdit('d', 'đ')).toBe('\x7fđ')
+  })
+
+  it('counts characters, not UTF-16 units, and compares NFC', () => {
+    expect(textareaEdit('a😀', 'ab')).toBe('\x7fb')
+    expect(textareaEdit('tie\u0302', 'tiê')).toBe('')
+  })
+})
+
 describe('TerminalController IME', () => {
-  const key = (ta: HTMLTextAreaElement, k: string, keyCode: number) => {
-    const event = new KeyboardEvent('keydown', { key: k, bubbles: true })
-    Object.defineProperty(event, 'keyCode', { value: keyCode })
-    ta.dispatchEvent(event)
+  /** Event order recorded from macOS Simple Telex in WKWebView: the edit lands before the 229 keydown. */
+  const imeKey = (ta: HTMLTextAreaElement, value: string, inputType = 'insertReplacementText') => {
+    const data = inputType === 'insertText' ? value.slice(ta.value.length) : value
+    ta.dispatchEvent(new InputEvent('beforeinput', { inputType, data, bubbles: true }))
+    ta.value = value
+    ta.dispatchEvent(new InputEvent('input', { inputType, data, bubbles: true }))
   }
-  const imeInput = (ta: HTMLTextAreaElement, data: string, inputType = 'insertReplacementText') => {
-    ta.value = data // the IME writes the whole line into the hidden textarea
-    ta.dispatchEvent(new InputEvent('input', { data, inputType, bubbles: true }))
+  const keyEvent = (ta: HTMLTextAreaElement, type: string, key = ' ') =>
+    ta.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true }))
+  /** What xterm forwards for a key it handles itself. */
+  const xtermData = (data: string) => state.terms[0].dataListeners.forEach((cb) => cb(data))
+  const mounted = async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    return { c, ta: state.terms[0].textarea }
   }
-  /** What xterm's own textarea diff emits for the same keys. */
-  const xtermDiff = (data: string) => state.terms[0].dataListeners.forEach((cb) => cb(data))
 
-  it('forwards a WKWebView IME word once, as deltas', async () => {
-    const c = new TerminalController('s1', service)
-    await c.mount(element())
-    const ta = state.terms[0].textarea
-
-    key(ta, 't', 229)
-    imeInput(ta, 't')
-    imeInput(ta, 'ti')
-    imeInput(ta, 'tí') // Telex rewrites the tone: replace "i" with "í"
+  it('forwards each Telex rewrite as its edit, once', async () => {
+    const { c, ta } = await mounted()
+    imeKey(ta, 'd', 'insertText')
+    imeKey(ta, 'đ')
+    imeKey(ta, 'đa')
+    imeKey(ta, 'đâ')
     await flush()
-
-    expect(written()).toEqual(['t', 'i', '\x7fí'])
-    expect(text(state.terms[0])).toBe('')
+    expect(written()).toEqual(['d', '\x7fđ', 'a', '\x7fâ'])
     c.dispose()
   })
 
-  it('does not repeat a first key xterm already forwarded', async () => {
-    const c = new TerminalController('s1', service)
-    await c.mount(element())
-    const ta = state.terms[0].textarea
-
-    xtermDiff('t') // xterm forwarded the first key before the IME committed the word
-    imeInput(ta, 'ti')
+  it('drops the insertText of a key xterm already sent on keypress', async () => {
+    const { c, ta } = await mounted()
+    imeKey(ta, 'đây', 'insertText')
+    keyEvent(ta, 'keydown')
+    keyEvent(ta, 'keypress')
+    xtermData(' ') // xterm sent the space on keypress and clears the textarea
+    imeKey(ta, ' ', 'insertText') // the IME still inserts it
+    keyEvent(ta, 'keyup')
+    imeKey(ta, ' v', 'insertText')
     await flush()
-
-    expect(written()).toEqual(['t', 'i'])
+    expect(written()).toEqual(['đây', ' ', 'v'])
     c.dispose()
   })
 
-  it('treats the IME non-breaking space as the space xterm already sent', async () => {
-    const c = new TerminalController('s1', service)
-    await c.mount(element())
-    const ta = state.terms[0].textarea
-
-    imeInput(ta, 't')
-    key(ta, ' ', 32)
-    xtermDiff(' ')
-    imeInput(ta, 't\u00a0') // WKWebView writes NBSP for the space key
+  it('keeps the next letter when it lands before the space is released', async () => {
+    const { c, ta } = await mounted()
+    keyEvent(ta, 'keydown')
+    keyEvent(ta, 'keypress')
+    xtermData(' ')
+    imeKey(ta, ' ', 'insertText')
+    imeKey(ta, ' v', 'insertText') // fast typing: no keyup yet
+    imeKey(ta, ' vi')
     await flush()
-
-    expect(written()).toEqual(['t', ' '])
+    expect(written()).toEqual([' ', 'v', 'i'])
     c.dispose()
   })
 
-  it('tracks the accumulated IME line across words', async () => {
-    const c = new TerminalController('s1', service)
-    await c.mount(element())
-    const ta = state.terms[0].textarea
-
-    imeInput(ta, 't')
-    key(ta, ' ', 32)
-    xtermDiff(' ') // the space is a normal key, not IME text
-    imeInput(ta, 't v') // the textarea keeps the whole line, spaces included
+  it('only drops the keypressed text itself', async () => {
+    const { c, ta } = await mounted()
+    keyEvent(ta, 'keydown', '1')
+    keyEvent(ta, 'keypress', '1')
+    xtermData('1') // a cancelled keypress inserts nothing
+    imeKey(ta, 'a', 'insertText')
+    keyEvent(ta, 'keydown', '1')
+    imeKey(ta, 'a1', 'insertText') // a later, unrelated insertText is not dropped
     await flush()
-
-    expect(written()).toEqual(['t', ' ', 'v'])
+    expect(written()).toEqual(['1', 'a', '1'])
     c.dispose()
   })
 
-  it('starts over after the line is executed', async () => {
-    const c = new TerminalController('s1', service)
-    await c.mount(element())
-    const ta = state.terms[0].textarea
-
-    imeInput(ta, 't')
-    key(ta, 'Enter', 13)
-    xtermDiff('\r')
-    imeInput(ta, 'x')
+  it('starts the next word from an empty textarea after a key xterm handled', async () => {
+    const { c, ta } = await mounted()
+    imeKey(ta, 'việt', 'insertText')
+    xtermData('\x7f') // Backspace goes through xterm, not the IME
+    expect(ta.value).toBe('')
+    imeKey(ta, 'a', 'insertText')
     await flush()
-
-    expect(written()).toEqual(['t', '\r', 'x'])
+    expect(written()).toEqual(['việt', '\x7f', 'a'])
     c.dispose()
   })
 
-  it('lets the key that ends the word through', async () => {
-    const c = new TerminalController('s1', service)
-    await c.mount(element())
-    const ta = state.terms[0].textarea
-
-    key(ta, 'a', 229)
-    imeInput(ta, 'a', 'insertText')
-    key(ta, ' ', 32)
-    xtermDiff(' ')
+  it('leaves compositions and other inputs to xterm, and turns off its 229 fallback', async () => {
+    const { c, ta } = await mounted()
+    const xtermInput = vi.fn()
+    ta.addEventListener('input', xtermInput)
+    ta.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', isComposing: true, bubbles: true }))
+    ta.dispatchEvent(new InputEvent('input', { inputType: 'deleteContentBackward', bubbles: true }))
+    imeKey(ta, 'x', 'insertText')
     await flush()
-
-    expect(written()).toEqual(['a', ' '])
+    expect(xtermInput).toHaveBeenCalledTimes(2) // the IME text never reaches xterm's own handler
+    expect(written()).toEqual(['x'])
+    const handler = state.terms[0].attachCustomKeyEventHandler.mock.calls[0][0] as (e: KeyboardEvent) => boolean
+    const keydown = (keyCode: number) => Object.defineProperty(new KeyboardEvent('keydown'), 'keyCode', { value: keyCode })
+    expect(handler(keydown(229))).toBe(false)
+    expect(handler(keydown(65))).toBe(true)
     c.dispose()
+  })
+
+  it('stops listening on dispose', async () => {
+    const { c, ta } = await mounted()
+    c.dispose()
+    imeKey(ta, 'x', 'insertText')
+    await flush()
+    expect(written()).toEqual([])
   })
 
   it('keeps queued writes in order', async () => {
@@ -375,8 +392,8 @@ describe('TerminalController IME', () => {
     let release!: () => void
     service.write.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)))
 
-    xtermDiff('a')
-    xtermDiff('b')
+    xtermData('a')
+    xtermData('b')
     await flush()
     expect(service.write).toHaveBeenCalledTimes(1)
 

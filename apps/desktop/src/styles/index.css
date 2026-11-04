@@ -150,3 +150,10 @@ body {
   color: var(--accent);
   text-decoration: underline;
 }
+
+/* xterm sizes its hidden textarea to the cursor cell, but it starts at 0x0. At 0x0 macOS Telex
+   cannot read back the text and falls back to marked text, dropping a word's first letter. */
+.xterm-helper-textarea {
+  min-width: 1px;
+  min-height: 1px;
+}

@@ -58,6 +58,7 @@ struct State {
     started: Instant,
     sessions: Arc<SessionManager>,
     worktree_operations_lock: PathBuf,
+    shutdown: mpsc::UnboundedSender<()>,
 }
 
 /// Replace any stale `daemon.sock` and bind a fresh one with mode 0600. The caller must
@@ -76,6 +77,7 @@ pub async fn serve(
     token: Token,
     sessions: Arc<SessionManager>,
     worktree_operations_lock: PathBuf,
+    shutdown_tx: mpsc::UnboundedSender<()>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let state = Arc::new(State {
@@ -83,6 +85,7 @@ pub async fn serve(
         started: Instant::now(),
         sessions,
         worktree_operations_lock,
+        shutdown: shutdown_tx,
     });
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -189,7 +192,10 @@ async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
     // queued (including a final error) and ends.
     drop(client);
     let written = writer.await.map_err(io::Error::other)?;
-    served.and(written)
+    if matches!(&served, Ok(true)) {
+        let _ = state.shutdown.send(());
+    }
+    served.map(|_| ()).and(written)
 }
 
 /// One authenticated connection: its outgoing queue and its subscriptions.
@@ -217,28 +223,32 @@ struct Output {
 }
 
 impl Client<'_> {
-    async fn serve(&mut self, reader: &mut (impl AsyncRead + Unpin)) -> io::Result<()> {
+    async fn serve(&mut self, reader: &mut (impl AsyncRead + Unpin)) -> io::Result<bool> {
         loop {
             match next_control(reader).await? {
-                Next::Payload(payload) => self.handle(&payload).await?,
+                Next::Payload(payload) => {
+                    if self.handle(&payload).await? {
+                        return Ok(true);
+                    }
+                }
                 Next::Finished(reply) => {
                     if let Some(reply) = reply {
                         self.send(&reply).await?;
                     }
-                    return Ok(());
+                    return Ok(false);
                 }
             }
         }
     }
 
-    async fn handle(&mut self, payload: &[u8]) -> io::Result<()> {
+    async fn handle(&mut self, payload: &[u8]) -> io::Result<bool> {
         let value = match serde_json::from_slice::<Value>(payload) {
             Ok(value) => value,
             Err(error) => {
                 let message = format!("invalid JSON: {error}");
-                return self
-                    .send(&error_response(0, ErrorCode::Malformed, message))
-                    .await;
+                self.send(&error_response(0, ErrorCode::Malformed, message))
+                    .await?;
+                return Ok(false);
             }
         };
         let id = value.get("id").and_then(Value::as_u64).unwrap_or(0);
@@ -246,13 +256,13 @@ impl Client<'_> {
             Ok(request) => request,
             Err(error) => {
                 let message = format!("invalid request: {error}");
-                return self
-                    .send(&error_response(id, ErrorCode::Malformed, message))
-                    .await;
+                self.send(&error_response(id, ErrorCode::Malformed, message))
+                    .await?;
+                return Ok(false);
             }
         };
 
-        let (outcome, output) = self.dispatch(request).await;
+        let (outcome, output, shutdown) = self.dispatch(request).await;
         let outcome = match outcome {
             Ok(result) => ResponseOutcome::Result { result },
             Err(error) => ResponseOutcome::Error { error },
@@ -264,12 +274,17 @@ impl Client<'_> {
             let task = tokio::spawn(stream_output(self.outgoing.clone(), output));
             self.terminals.insert(session_id, task);
         }
-        Ok(())
+        Ok(shutdown)
     }
 
-    async fn dispatch(&mut self, request: Request) -> (Result<Value, ProtoError>, Option<Output>) {
+    async fn dispatch(
+        &mut self,
+        request: Request,
+    ) -> (Result<Value, ProtoError>, Option<Output>, bool) {
         let sessions = &self.state.sessions;
+        let shutdown = matches!(&request, Request::SystemShutdown { .. });
         let outcome = match request {
+            Request::SystemShutdown { .. } => Ok(json!({})),
             Request::SystemHealth { .. } => Ok(json!({
                 "status": "ok",
                 "uptime_seconds": self.state.started.elapsed().as_secs(),
@@ -344,8 +359,8 @@ impl Client<'_> {
             }),
             Request::TerminalSubscribe { session_id, .. } => {
                 return match self.terminal_subscribe(session_id) {
-                    Ok((result, output)) => (Ok(result), Some(output)),
-                    Err(error) => (Err(error), None),
+                    Ok((result, output)) => (Ok(result), Some(output), false),
+                    Err(error) => (Err(error), None, false),
                 };
             }
             Request::TerminalUnsubscribe { session_id, .. } => {
@@ -357,7 +372,7 @@ impl Client<'_> {
                 Ok(json!({}))
             }
         };
-        (outcome, None)
+        (outcome, None, shutdown)
     }
 
     fn subscribe_events(&mut self) {

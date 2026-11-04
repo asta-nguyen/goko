@@ -1,20 +1,22 @@
-//! Read-only Git and file inspection for the workspace Editor. Public
+//! Git inspection and bounded file editing for the workspace Editor. Public
 //! functions receive a checkout that `commands::git_view_checkout` already
 //! validated: registered project, root-or-listed-worktree path, real non-bare
-//! Git worktree root. Every invocation is a separate-argv Git read — nothing
-//! here writes files, the index, refs, or stash state.
+//! Git worktree root. Git calls use separate argv; file saves only replace a
+//! validated working-tree file and never mutate the index, refs, or stash.
 
 use crate::error::{BridgeError, Code};
 use crate::worktrees;
 use protocol::message::ErrorCode;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
-use std::io::Read;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Diffs and text previews are capped at 1 MiB; the UI shows a truncated state.
+/// Diffs, text reads, and file saves are capped at 1 MiB.
 const CAP: usize = 1024 * 1024;
+static TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 /// Commits per History page.
 const HISTORY_PAGE: u64 = 100;
 
@@ -95,7 +97,7 @@ pub struct GitViewFile {
     pub path: String,
     /// `text`, `binary`, `nonutf8`, `missing`, or `unreadable`.
     pub kind: &'static str,
-    /// Present only for `text` (possibly truncated) previews.
+    /// Present only for text files; read responses may be truncated.
     pub text: Option<String>,
     /// `true` when the file exceeded 1 MiB and the preview was cut.
     pub truncated: bool,
@@ -520,7 +522,7 @@ pub fn file(checkout: &Path, path: &str) -> Result<GitViewFile, BridgeError> {
     if truncated {
         buf.truncate(CAP);
     }
-    let nul = buf.iter().take(8192).any(|b| *b == 0);
+    let nul = buf.contains(&0);
     let utf8 = std::str::from_utf8(&buf);
     let kind = if nul {
         "binary"
@@ -536,6 +538,139 @@ pub fn file(checkout: &Path, path: &str) -> Result<GitViewFile, BridgeError> {
         text: (kind == "text").then(|| String::from_utf8_lossy(&buf).into_owned()),
         truncated,
         size,
+    })
+}
+
+/// Save a complete UTF-8 text file only when its on-disk contents still match
+/// the version that was opened in the editor.
+pub fn save_file(
+    checkout: &Path,
+    path: &str,
+    expected_text: &str,
+    text: &str,
+) -> Result<GitViewFile, BridgeError> {
+    let rel = relative_path(path)?;
+    if expected_text.len() > CAP || text.len() > CAP || text.contains('\0') {
+        return Err(invalid("edited text exceeds the 1 MiB text-file limit"));
+    }
+    let target = std::fs::canonicalize(checkout.join(&rel))
+        .map_err(|_| not_found(format!("the file {} is not available", rel.display())))?;
+    if !target.starts_with(checkout) {
+        return Err(invalid("the path resolves outside the checkout"));
+    }
+    let metadata = std::fs::metadata(&target)
+        .map_err(|_| not_found(format!("the file {} is not available", rel.display())))?;
+    if !metadata.is_file() {
+        return Err(invalid("only existing text files can be saved"));
+    }
+    if metadata.permissions().readonly() {
+        return Err(invalid("the file is read-only"));
+    }
+    let current = current_text(&target)?;
+    if current != expected_text.as_bytes() {
+        return Err(invalid("the file changed on disk; reload it before saving"));
+    }
+    atomic_replace(
+        &target,
+        expected_text.as_bytes(),
+        text.as_bytes(),
+        metadata.permissions(),
+    )?;
+    Ok(GitViewFile {
+        path: rel.to_string_lossy().into_owned(),
+        kind: "text",
+        text: Some(text.to_owned()),
+        truncated: false,
+        size: text.len() as u64,
+    })
+}
+
+fn current_text(path: &Path) -> Result<Vec<u8>, BridgeError> {
+    let mut current = Vec::new();
+    match std::fs::File::open(path)
+        .and_then(|file| file.take(CAP as u64 + 1).read_to_end(&mut current))
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(not_found("the file is no longer available"));
+        }
+        Err(_) => {
+            return Err(BridgeError::new(
+                Code::Daemon(ErrorCode::Internal),
+                "the file could not be read before saving",
+            ));
+        }
+    }
+    if current.len() > CAP || current.contains(&0) || std::str::from_utf8(&current).is_err() {
+        return Err(invalid("the file is no longer an editable text file"));
+    }
+    Ok(current)
+}
+
+fn atomic_replace(
+    target: &Path,
+    expected_text: &[u8],
+    text: &[u8],
+    permissions: std::fs::Permissions,
+) -> Result<(), BridgeError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| invalid("the file has no checkout parent directory"))?;
+    // Write beside the target so replacement stays on the same filesystem.
+    let (temporary_path, mut temporary_file) = (0..8)
+        .find_map(|_| {
+            let sequence = TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".goko-save-{}-{sequence}.tmp", std::process::id()));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => Some(Ok((path, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .transpose()
+        .map_err(|error| {
+            BridgeError::new(
+                Code::Daemon(ErrorCode::Internal),
+                format!("could not create a temporary file for saving: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            BridgeError::new(
+                Code::Daemon(ErrorCode::Internal),
+                "could not create a temporary file for saving",
+            )
+        })?;
+    let result: std::io::Result<()> = (|| {
+        temporary_file.write_all(text)?;
+        temporary_file.set_permissions(permissions)?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(BridgeError::new(
+            Code::Daemon(ErrorCode::Internal),
+            format!("could not prepare the file for saving: {error}"),
+        ));
+    }
+    let current = match current_text(target) {
+        Ok(current) => current,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+    };
+    if current != expected_text {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(invalid("the file changed on disk; reload it before saving"));
+    }
+    std::fs::rename(&temporary_path, target).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary_path);
+        BridgeError::new(
+            Code::Daemon(ErrorCode::Internal),
+            format!("could not save the file: {error}"),
+        )
     })
 }
 
@@ -774,9 +909,9 @@ fn relative_path(path: &str) -> Result<PathBuf, BridgeError> {
         }
     }
     if clean.as_os_str().is_empty()
-        || clean
-            .components()
-            .any(|component| component == Component::Normal(OsStr::new(".git")))
+        || clean.components().any(
+            |component| matches!(component, Component::Normal(part) if part.to_string_lossy().eq_ignore_ascii_case(".git")),
+        )
     {
         return Err(invalid("a non-`.git` checkout-relative path is required"));
     }

@@ -28,6 +28,7 @@ Root `dev`, `build`, and `typecheck` scripts target `apps/desktop`. `pnpm tauri 
 - `lean-audit`: `.agents/skills/lean-audit/SKILL.md`
 - `plan-feature`: `.agents/skills/plan-feature/SKILL.md`
 - `read-codebase-context`: `.agents/skills/read-codebase-context/SKILL.md`
+- `react-best-practices`: `.agents/skills/react-best-practices/SKILL.md`
 - `review-and-verify`: `.agents/skills/review-and-verify/SKILL.md`
 - `setup-codebase`: `.agents/skills/setup-codebase/SKILL.md`
 - `setup-openez`: `.agents/skills/setup-openez/SKILL.md`
@@ -45,4 +46,4 @@ reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
 
-<!--You are responsible for managing the final outcomes of tasks. Use the Devin CLI—specifically the `swe-2-max` model with full permissions—to execute these tasks. Your role is to oversee the results; if any issues arise, instruct the `swe-2-max` model to fix them until the task is complete. Stick closely to the plan, and if you are unsure about anything or wish to propose an approach, ask for clarification. Since the `swe-2-max` model is free to use, leverage it for as much work as possible to conserve your own quota. Can add multi subagent `swe-2-max` to implement parallel tasks.-->
+You are responsible for managing the final outcomes of tasks. Use the Devin CLI—specifically the `swe-2-max` model with full permissions—to execute these tasks. Your role is to oversee the results; if any issues arise, instruct the `swe-2-max` model to fix them until the task is complete. Stick closely to the plan, and if you are unsure about anything or wish to propose an approach, ask for clarification. Since the `swe-2-max` model is free to use, leverage it for as much work as possible to conserve your own quota. Can add multi subagent `swe-2-max` to implement parallel tasks.

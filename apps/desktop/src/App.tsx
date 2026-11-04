@@ -1,10 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertCircleIcon, FolderPlusIcon, PlusIcon } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { ThemeToggle } from './components/theme-toggle'
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty'
 import { ResizableSplit } from './components/ui/resizable-split'
 import { TooltipProvider } from './components/ui/tooltip'
@@ -25,6 +26,11 @@ export default function App() {
   const { addProject, error: addError, pending: adding } = useAddProjectFolder()
   const activeWorkspaceId = useUi((state) => state.activeWorkspaceId)
   const activeView = useUi((state) => state.activeView)
+  const editorDraft = useUi((state) => state.editorDraft)
+  const editorGuardOpen = useUi((state) => state.editorGuardOpen)
+  const editorSaveError = useUi((state) => state.editorSaveError)
+  const editorSaveDraft = useUi((state) => state.editorSaveDraft)
+  const [guardSaving, setGuardSaving] = useState(false)
   const workspaces = useUi((state) => state.workspaces)
   const projectTreeWidth = useUi((state) => state.panelWidths.projectTree)
   const setPanelWidth = useUi((state) => state.setPanelWidth)
@@ -37,9 +43,62 @@ export default function App() {
   const disconnected = status?.connected === false
   const connection = status ? (disconnected ? 'Disconnected' : 'Connected') : 'Connecting'
 
+  const saveAndContinue = async () => {
+    const save = useUi.getState().editorSaveDraft
+    if (!save) return
+    setGuardSaving(true)
+    try {
+      if (await save()) useUi.getState().continueEditorNavigation(false)
+    } finally {
+      setGuardSaving(false)
+    }
+  }
+  const reloadFromDisk = async () => {
+    const reload = useUi.getState().editorReloadDraft
+    if (!reload) return
+    setGuardSaving(true)
+    try {
+      if (await reload()) useUi.getState().cancelEditorNavigation()
+    } finally {
+      setGuardSaving(false)
+    }
+  }
+
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col bg-bg text-text">
+        <Dialog
+          open={editorGuardOpen}
+          onOpenChange={(open) => {
+            if (!open) useUi.getState().cancelEditorNavigation()
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Unsaved changes</DialogTitle>
+              <DialogDescription>
+                Save changes to <span className="font-mono text-text">{editorDraft?.path}</span> before leaving?
+              </DialogDescription>
+            </DialogHeader>
+            {editorSaveError && <p role="alert" className="m-0 text-sm text-danger">{editorSaveError}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" disabled={guardSaving} onClick={() => useUi.getState().cancelEditorNavigation()}>
+                Stay
+              </Button>
+              {editorSaveError && (
+                <Button variant="ghost" disabled={guardSaving || !useUi.getState().editorReloadDraft} onClick={() => void reloadFromDisk()}>
+                  Reload from disk
+                </Button>
+              )}
+              <Button variant="ghost" disabled={guardSaving} onClick={() => useUi.getState().continueEditorNavigation(true)}>
+                Discard
+              </Button>
+              <Button disabled={guardSaving || !editorSaveDraft} onClick={() => void saveAndContinue()}>
+                {guardSaving ? 'Saving…' : 'Save'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel px-4">
           <div className="flex items-center gap-2.5">
             <span className="grid size-7 shrink-0 place-items-center rounded-md bg-accent text-bg" aria-hidden>

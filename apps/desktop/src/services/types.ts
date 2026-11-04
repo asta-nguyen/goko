@@ -115,7 +115,7 @@ export interface EnvCopyReport {
   failed: EnvCopyFailure[]
 }
 
-// Hand-mirrored from src-tauri `git_view.rs` (the `git_view_*` read commands).
+// Hand-mirrored from src-tauri `git_view.rs` (the `git_view_*` commands).
 export type GitViewStatus =
   | 'modified'
   | 'added'
@@ -195,7 +195,7 @@ export type GitViewFileKind = 'text' | 'binary' | 'nonutf8' | 'missing' | 'unrea
 export interface GitViewFile {
   path: string
   kind: GitViewFileKind
-  /** Present only for `text` (possibly truncated) previews. */
+  /** Present only for text files; read results may be truncated. */
   text: string | null
   /** The file exceeded 1 MiB and the preview was cut. */
   truncated: boolean
