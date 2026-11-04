@@ -5,6 +5,7 @@ import type {
   GitViewDiffLayer,
   GitViewFile,
   GitViewHistory,
+  GitViewSearch,
   GitViewStash,
   GitViewTree,
 } from './types'
@@ -43,6 +44,8 @@ export const gitViewService = {
     call<GitViewTree>('git_view_tree', { projectId, checkoutPath, directory }),
   fileList: (projectId: string, checkoutPath: string) =>
     call<string[]>('git_view_file_list', { projectId, checkoutPath }),
+  search: (projectId: string, checkoutPath: string, query: string) =>
+    call<GitViewSearch>('git_view_search', { projectId, checkoutPath, query }),
   file: (projectId: string, checkoutPath: string, path: string) =>
     call<GitViewFile>('git_view_file', { projectId, checkoutPath, path }),
   saveFile: (request: GitFileSaveRequest) => call<GitViewFile>('git_view_file_save', { ...request }),

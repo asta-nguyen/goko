@@ -26,7 +26,8 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
   receives terminal bytes on a Tauri `Channel`.
 - Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
   holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
-  and the app-owned `goko.db` (0600).
+  the app-owned `goko.db` (0600), and `usage/claude/<session-id>.json` captures
+  (JSON files older than seven days are pruned at app startup).
 
 ## App-owned project metadata (S2)
 
@@ -173,12 +174,16 @@ title, created_at)`, and `settings(key, value)`.
 - Every checkout workspace also has an **Editor** view, opened from the Editor
   action on a Git checkout row or the `Terminal | Editor` switch in the workspace header.
   Its sections are `Files` (a lazy tree of tracked and non-ignored untracked paths beside a
-  monospaced editor for complete UTF-8 text files up to 1 MiB; files open ready to edit,
-  Save and `Cmd/Ctrl+S` write to the checkout working tree, and Markdown files — `.md`,
+  CodeMirror editor for complete UTF-8 text files up to 1 MiB, with line numbers, lazy
+  filename-based syntax support, in-editor `Cmd/Ctrl+F`, and an optional persisted Vim mode
+  whose `:w` uses the existing save action; files open ready to edit, Save and `Cmd/Ctrl+S`
+  write to the checkout working tree, and Markdown files — `.md`,
   `.markdown`, and `.mdx` — can switch to a rendered GFM preview. Unsaved edits prompt
   before changing files, workspaces, or the main-area view. Rendered links stay inert text
   with the href as a tooltip while images show an alt-text placeholder because the view has
-  no opener or asset capability), `Changes`
+  no opener or asset capability. Files also has Name and Content search modes; Content
+  searches the checkout after a short debounce and opens a match at its line through the
+  same unsaved-edits guard), `Changes`
   (conflict, staged, unstaged, and untracked groups with counts and per-layer diffs that
   preserve rename and deletion state), `History` (local, remote-tracking, and tag refs on a
   lane graph, 100 commits per page, selected commit files and patch), and `Stashes` (the
@@ -187,14 +192,16 @@ title, created_at)`, and `settings(key, value)`.
   unchanged. The list/detail boundary can be resized; its width is shared across all four
   sections and view switches.
 - The `git_view_*` Tauri commands (`changes`, `diff`, `history`, `tree`, `file`,
-  `file_save`, `stashes`, `stash_diff`) are the Editor's Git and file boundary. Every call
+  `file_list`, `search`, `file_save`, `stashes`, `stash_diff`) are the Editor's Git and file boundary. Every call
   revalidates the registered project and canonical checkout path; Git calls use separate
   argv with `Command::new("git")` and `-C <checkout>`, never a shell command. The daemon
   and protocol are untouched. File and tree paths must be relative and resolve inside the
   checkout after symlink resolution. Patch and file reads cap at 1 MiB; binary, non-UTF-8,
   oversized, and missing files return an explicit kind. Saves accept only existing text
   files within that cap, compare the opened contents before replacing the file atomically,
-  preserve its permissions, and update only the working tree. They do not stage, commit, or
+  preserve its permissions, and update only the working tree. Content search uses
+  fixed-string smart-case `git grep`, includes non-ignored untracked text files, skips
+  binary files, and caps output, matches, and previews. They do not stage, commit, or
   change refs or stash state.
 - Editor queries and saves are keyed by checkout context: status, diff, history, tree, and
   file read/write operations carry the project ID plus canonical checkout path, so switching checkout re-keys
@@ -209,7 +216,7 @@ title, created_at)`, and `settings(key, value)`.
   scope.
 - Verification: `cargo test --workspace`, `cargo fmt --check`, `cargo clippy --workspace
   -- -D warnings`, `cargo build --workspace`, and desktop typecheck/tests/build are recorded
-  with the [worktree UX change](docs/agent-devkit/changes/2026-11-02-worktree-ux/tasks.md).
+  with the [worktree UX change](docs/agent-devkit/changes/archive/2026-11-02-worktree-ux/tasks.md).
   Manual macOS acceptance: pending.
 
 ## Daemon lifecycle
@@ -247,7 +254,8 @@ are rejected before they are allocated.
   `invalid_argument`, `not_found`, `spawn_failed`, `internal`.
 - Requests: `system.health`, `system.version`, `system.shutdown`, `events.subscribe`, `session.create`,
   `session.list`, `session.get`, `session.stop`, `session.delete`, `terminal.write` (`data_b64`),
-  `terminal.resize`, `terminal.subscribe`, `terminal.unsubscribe`.
+  `terminal.resize`, `terminal.subscribe` (`flow` opts into the output window), `terminal.ack`
+  (`upto_seq`), `terminal.unsubscribe`.
 - Pushes: `session.updated` (full `SessionInfo`), `session.exited`, and `terminal.lagged`.
 - Session ids are UUID strings in JSON and 16 bytes in output frames. Timestamps are
   Unix epoch milliseconds (`i64`).
@@ -282,6 +290,22 @@ created | starting → failed
   live sessions, closes output subscribers, and drops the session's replay buffer; an absent
   id succeeds so app-side cleanup can safely retry.
 
+## Agent usage indicators
+
+The desktop backend exposes `usage_get` for the initial usage snapshot and emits
+`usage://updated` when its five-second poll detects changed data. Claude launches receive a
+UUIDv4 through `--session-id` and inline `--settings`; the injected statusline command saves
+Claude's JSON to `GOKO_HOME/usage/claude/<session-id>.json` and forwards it to the user's
+`$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude/settings.json`) `statusLine.command`, when
+configured. Claude context fill is keyed by that session id, while account limits use the newest
+modified capture file that reports `rate_limits` (a newer session without them is skipped).
+
+Codex limits are read from the latest `token_count` event in the last 64 KiB of the newest
+modified `rollout-*.jsonl` in the two newest day directories under `$CODEX_HOME/sessions`
+(default `~/.codex/sessions`). The UI
+shows known provider limits in header chips with reset times and data age, and known Claude
+context percentages in session rows. A reset limit is shown as `reset`.
+
 ## PTY ownership
 
 `PtyProcess` (via `portable-pty`) opens the PTY, starts the child in a new session with
@@ -312,11 +336,24 @@ reader appends under, so every byte is either in the snapshot or delivered live,
 gap and no duplicate. The response (`{replay_from, next_seq}`) is sent first, then the
 retained output in frames of up to 64 KiB, then live chunks.
 
-Each subscriber has a queue of 256 chunks plus one reserved slot. The reader only ever does
-a non-blocking send; if a queue is full the subscriber is removed and told `Lagged`, which
-the server turns into a `terminal.lagged` event, and the client subscribes again. The PTY
-reader never waits for a client. A client that disconnects loses its subscription and
+Each subscriber has a queue of 256 chunks plus one reserved slot. If a queue is full the
+subscriber is removed and told `Lagged`, which the server turns into a `terminal.lagged`
+event, and the client subscribes again. A client that disconnects loses its subscription and
 never affects the session.
+
+Subscribers come in two kinds. A `terminal.subscribe` without `flow` (the default, and the
+only kind a daemon older than 0.1.2 understands) never holds the producer back: the reader
+only ever does a non-blocking send and the PTY reader never waits for a client. With
+`flow: true` the reader gates on a 256 KiB window of unacknowledged output per session: it
+pauses once published output reaches the acknowledged offset plus the window (plus the one
+16 KiB read in flight) and resumes when `terminal.ack` moves the offset. `upto_seq` is
+an absolute end offset, not a delta; the session keeps the largest it has seen across
+resubscribes and caps a future value at the published end. Replayed snapshot bytes count
+against the same window, so a 1 MiB history streams in about four window round trips
+instead of one burst. If no ack moves the offset for 5 s the flow subscriber is dropped
+through the same `Lagged` path — a stuck client slows its own stream, never the session.
+The bridge answers that drop by waiting for the next webview ack before resubscribing, so
+a hung view cannot keep accumulating windows.
 
 ## Documented limit: raw replay
 
@@ -331,11 +368,30 @@ against an idealized stream will see it.
 
 ## High-output behavior
 
-PTY and daemon bridge queues are bounded, but forwarding to the Tauri `Channel` has no
-acknowledgement from xterm. During the manual `yes` check, the WebView stopped responding
-before Ctrl-C could be delivered. After SIGINT stopped `yes` directly, the WebKit process
-still held about 4.2 GB RSS and the UI showed stale state. The test is recorded as failed;
-end-to-end output backpressure is not implemented in S1.
+PTY and daemon bridge queues are bounded, and flow subscriptions add the missing
+end-to-end piece. When the desktop app connects to daemon 0.1.2 or newer it subscribes
+with `flow: true`; `TerminalController` then acknowledges output as xterm parses it — one
+coalesced `terminal.ack` per 64 KiB, carrying the absolute end offset of the last parsed
+chunk — and the daemon's PTY reader holds unacknowledged output to the 256 KiB window
+described above. A WebView that stops parsing is therefore bounded to about one window
+(plus the in-flight snapshot piece and one 16 KiB read) instead of an unbounded backlog:
+after 5 s without ack progress its subscription is dropped as `Lagged`, and the bridge
+waits for the next ack before resubscribing. A remounted xterm starts a fresh ack count,
+and an early `yes` burst now stops producing when the view stalls rather than growing its
+RSS without limit.
+
+Measured on macOS with the gate active (`pnpm -C apps/desktop tauri dev`, `gokod` 0.1.2):
+during ~90 s of `yes` the WebKit WebContent process oscillated between roughly 400 and
+700 MB RSS (baseline ~165 MB) as its JS heap churned — bounded, not the former
+multi-GB climb — while `yes` itself stayed throttled to ~5% CPU, the producer running
+at xterm's parse rate end to end. Ctrl-C killed `yes` immediately. A 512 MiB `cat`
+finished in ~94 s (4.5 s of it the producer's own CPU time, the rest pacing). With the
+window hidden for 30 s the producer stayed gated near 5% CPU, RSS fell to ~350 MB, and
+the stream resumed with no gap on restore.
+
+An earlier run of the manual `yes` check predates this gate: the WebView stopped responding
+before Ctrl-C could be delivered, and after SIGINT stopped `yes` directly the WebKit
+process still held about 4.2 GB RSS and the UI showed stale state.
 
 ## Crash behavior
 

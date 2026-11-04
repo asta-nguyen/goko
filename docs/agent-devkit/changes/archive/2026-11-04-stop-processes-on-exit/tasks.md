@@ -71,8 +71,8 @@ Change: prevent the main window/app from exiting until the daemon confirms shutd
 
 Verify: on macOS, start a live shell and child process, close the main window, and confirm the app, daemon, and child PIDs exit; repeat with Cmd+Q. Confirm `goko.db` remains and that an unavailable daemon does not block exit.
 
-Progress: todo
-Result: none
+Progress: done
+Result: Implemented and committed in `89b2f21` (`lib.rs::start_shutdown` on `CloseRequested` and `ExitRequested`, `Bridge::shutdown`); the bridge tests `shutdown_does_not_start_a_missing_daemon` and `shutdown_stops_a_live_session_and_waits_for_the_daemon` exist. The manual macOS close-window and Cmd+Q check was reported done by the user and was not re-observed here; an automated rerun was not possible because the working tree did not compile the `desktop` tests at archive time (unrelated in-progress edits).
 
 ### Task 3 — Refresh current architecture docs
 
@@ -84,8 +84,8 @@ Change: document that normal close and Cmd+Q stop the daemon and PTY sessions, a
 
 Verify: read both updated pages against current source and confirm no current-behavior claim says terminal sessions survive normal app quit.
 
-Progress: todo
-Result: none
+Progress: done
+Result: `docs/llm/architecture/overview.md` (`## Graceful app shutdown`) and `ARCHITECTURE.md` (shutdown paragraph and the `system.shutdown` request) describe close/Cmd+Q stopping the daemon and PTY sessions, preserved `GOKO_HOME`/`goko.db`, and no promise for Force Quit or crashes; a search for survive/outlive/keeps-running claims found none about normal quit.
 
 ## Files inspected, no change
 

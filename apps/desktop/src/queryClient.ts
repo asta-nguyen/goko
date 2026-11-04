@@ -20,12 +20,16 @@ export const queryKeys = {
   gitFileList: (projectId: string, checkoutPath: string) => ['git-file-list', projectId, checkoutPath] as const,
   gitFile: (projectId: string, checkoutPath: string, path: string) =>
     ['git-file', projectId, checkoutPath, path] as const,
+  gitSearch: (projectId: string, checkoutPath: string, query: string) =>
+    ['git-search', projectId, checkoutPath, query] as const,
   // `refs/stash` is repository-wide, so the list key drops the checkout and the
   // detail key uses the stash's immutable commit id.
   gitStashes: (projectId: string) => ['git-stashes', projectId] as const,
   gitStashDiff: (projectId: string, stashId: string) => ['git-stash-diff', projectId, stashId] as const,
   lastAgent: ['settings', 'last-agent'],
+  editorVim: ['settings', 'editor.vim'] as const,
   daemonStatus: ['daemon-status'],
+  usage: ['usage'],
 } as const
 
 // The daemon pushes changes and the bridge already reconnects, so never refetch on our own.

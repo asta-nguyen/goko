@@ -68,6 +68,7 @@ export function EditorWorkspace({
         return
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+        if (target instanceof Element && target.closest('.cm-editor')) return
         const input = root.current?.querySelector<HTMLInputElement>(
           `[data-section="${section}"] input[data-editor-filter]`,
         )

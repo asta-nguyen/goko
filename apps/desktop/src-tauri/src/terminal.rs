@@ -7,7 +7,9 @@
 //! Output reaches the webview as `[u64 BE seq][bytes]`. The task remembers how far it
 //! delivered; whenever it must subscribe again (the daemon sent `terminal.lagged`, this
 //! consumer fell behind, or the connection was replaced) the replayed prefix it already
-//! delivered is trimmed away, so the webview never sees a byte twice.
+//! delivered is trimmed away, so the webview never sees a byte twice. A lagged `flow`
+//! stream waits for the next `terminal_ack` first, so a hung view cannot pile up
+//! resubscribe windows; `terminal_ack` itself never fails the UI.
 
 use crate::bridge::Bridge;
 use crate::daemon_client::{DaemonClient, Output};
@@ -19,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -76,6 +78,25 @@ impl Bridge {
             let _ = queue.send(Command::Unsubscribe { session });
         }
     }
+
+    /// `terminal.ack` for output the webview finished parsing. The offset is always
+    /// published on the session's ack watch so a stalled flow stream can resume; the
+    /// daemon is told only when it supports flow control, and its reply is ignored.
+    /// Never connects just to ack: with no live client there is nothing to tell.
+    pub async fn terminal_ack(&self, session: SessionId, upto_seq: u64) {
+        self.publish_ack(session, upto_seq);
+        let Some(client) = self.current() else {
+            return;
+        };
+        if client.supports_flow_control() {
+            let ack = |id| Request::TerminalAck {
+                id,
+                session_id: session,
+                upto_seq,
+            };
+            let _ = client.request(ack).await;
+        }
+    }
 }
 
 async fn actor(bridge: Bridge, mut commands: mpsc::UnboundedReceiver<Command>) {
@@ -127,6 +148,9 @@ struct Attached {
     client: Arc<DaemonClient>,
     output: mpsc::Receiver<Output>,
     events: broadcast::Receiver<Event>,
+    /// This attach asked the daemon for flow control; a `terminal.lagged` then
+    /// means the stream stalled and waits for a webview ack before re-attaching.
+    flow: bool,
 }
 
 async fn stream(
@@ -158,10 +182,20 @@ async fn stream(
         if let Some(started) = started.take() {
             let _ = started.send(Ok(()));
         }
-        if !forward(&mut attached, session, &sink, &mut delivered).await {
-            // The webview closed its channel: stop the daemon's stream too.
-            unsubscribe_from_daemon(Some(attached.client), session).await;
-            return;
+        match forward(&bridge, &mut attached, session, &sink, &mut delivered).await {
+            Forward::Closed => {
+                // The webview closed its channel: stop the daemon's stream too.
+                unsubscribe_from_daemon(Some(attached.client), session).await;
+                return;
+            }
+            Forward::Now => {}
+            // A stalled flow stream restarts only once the webview acks again:
+            // re-attaching now would feed another window into a hung view. The
+            // receiver was captured when the lag notice arrived, so any ack sent
+            // after that moment — whatever its offset — releases this wait.
+            Forward::AfterAck(mut acks) => {
+                let _ = acks.changed().await;
+            }
         }
     }
 }
@@ -176,16 +210,21 @@ async fn attach(bridge: &Bridge, session: SessionId) -> Result<Attached, BridgeE
     unsubscribe_from_daemon(Some(Arc::clone(&client)), session).await;
     let events = client.events()?;
     let output = client.subscribe_output(session)?;
+    // Only a 0.1.2+ daemon understands `flow`; an older one would call the request
+    // malformed and close the connection, so the flag is negotiated by version.
+    let flow = client.supports_flow_control();
     client
         .request(|id| Request::TerminalSubscribe {
             id,
             session_id: session,
+            flow,
         })
         .await?;
     Ok(Attached {
         client,
         output,
         events,
+        flow,
     })
 }
 
@@ -196,23 +235,39 @@ fn resumable(error: &BridgeError) -> bool {
     )
 }
 
-/// Forward output until the stream must be re-established (true) or the sink is closed
-/// (false).
+/// Why `forward` stopped: re-attach at once, wait for a webview ack first, or
+/// not at all (the webview closed its channel).
+enum Forward {
+    Now,
+    AfterAck(watch::Receiver<u64>),
+    Closed,
+}
+
+/// Forward output until the stream must be re-established or the sink is closed.
 async fn forward(
+    bridge: &Bridge,
     attached: &mut Attached,
     session: SessionId,
     sink: &Sink,
     delivered: &mut Option<u64>,
-) -> bool {
+) -> Forward {
+    // Set when a `terminal.lagged` arrived on a flow attach: the ack watch
+    // generation at that moment.
+    let mut stalled = None;
     loop {
         tokio::select! {
             chunk = attached.output.recv() => match chunk {
-                Some(chunk) => if !deliver(sink, delivered, chunk) { return false },
+                Some(chunk) => if !deliver(sink, delivered, chunk) { return Forward::Closed },
                 // The connection ended, or this consumer fell too far behind.
-                None => return true,
+                None => break,
             },
             event = attached.events.recv() => match event {
-                Ok(Event::TerminalLagged { session_id }) if session_id == session => break,
+                Ok(Event::TerminalLagged { session_id }) if session_id == session => {
+                    // Only a flow stream was dropped for stalling; a non-flow lag
+                    // means a full queue and resubscribes at once, as before.
+                    stalled = attached.flow.then(|| bridge.ack_events(session));
+                    break;
+                }
                 Ok(_) => {}
                 // Closed: the connection ended. Lagged: our own lag notice may be lost.
                 Err(_) => break,
@@ -222,10 +277,13 @@ async fn forward(
     // Whatever the daemon sent before it stopped is already queued: deliver it first.
     while let Ok(chunk) = attached.output.try_recv() {
         if !deliver(sink, delivered, chunk) {
-            return false;
+            return Forward::Closed;
         }
     }
-    true
+    match stalled {
+        Some(acks) => Forward::AfterAck(acks),
+        None => Forward::Now,
+    }
 }
 
 fn deliver(sink: &Sink, delivered: &mut Option<u64>, chunk: Output) -> bool {
@@ -263,6 +321,17 @@ pub async fn terminal_subscribe(
 #[tauri::command]
 pub fn terminal_unsubscribe(bridge: State<'_, Bridge>, id: SessionId) {
     bridge.terminal_unsubscribe(id);
+}
+
+/// Never rejects: the webview has nothing to do with an ack failure.
+#[tauri::command]
+pub async fn terminal_ack(
+    bridge: State<'_, Bridge>,
+    id: SessionId,
+    upto_seq: u64,
+) -> Result<(), BridgeError> {
+    bridge.terminal_ack(id, upto_seq).await;
+    Ok(())
 }
 
 #[cfg(test)]

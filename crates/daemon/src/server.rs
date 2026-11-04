@@ -14,13 +14,14 @@
 //! - After `terminal.subscribe` the connection receives kind-1 frames: the retained output
 //!   first (starting at `replay_from`), then live output, `seq` being the byte offset of
 //!   each frame's first byte. A subscriber that falls behind gets `terminal.lagged` and
-//!   must subscribe again.
+//!   must subscribe again. With `flow: true` the retained output is also paced by the
+//!   256 KiB window: each piece waits until `terminal.ack` covers it.
 //! - One writer task per connection puts responses, events, and output frames on the
 //!   socket, so frames never interleave.
 
 use crate::auth::Token;
 use crate::paths::{remove_if_exists, Paths};
-use crate::pty::{PtyError, PtyProcess, Snapshot, StreamItem};
+use crate::pty::{PtyError, PtyProcess, Snapshot, StreamItem, FLOW_WINDOW};
 use crate::session::{CreateSpec, SessionError, SessionManager};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -44,7 +45,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, warn};
 
@@ -220,6 +221,9 @@ struct Output {
     session_id: SessionId,
     snapshot: Snapshot,
     receiver: mpsc::Receiver<StreamItem>,
+    /// Flow subscriptions only: the session's acknowledged offset, watched so
+    /// replay pieces wait for credit.
+    credit: Option<watch::Receiver<u64>>,
 }
 
 impl Client<'_> {
@@ -357,8 +361,10 @@ impl Client<'_> {
                 pty.resize(cols, rows).map_err(pty_error)?;
                 Ok(json!({}))
             }),
-            Request::TerminalSubscribe { session_id, .. } => {
-                return match self.terminal_subscribe(session_id) {
+            Request::TerminalSubscribe {
+                session_id, flow, ..
+            } => {
+                return match self.terminal_subscribe(session_id, flow) {
                     Ok((result, output)) => (Ok(result), Some(output), false),
                     Err(error) => (Err(error), None, false),
                 };
@@ -371,6 +377,17 @@ impl Client<'_> {
                 }
                 Ok(json!({}))
             }
+            Request::TerminalAck {
+                session_id,
+                upto_seq,
+                ..
+            } => sessions
+                .pty(session_id)
+                .map(|pty| {
+                    pty.ack(upto_seq);
+                    json!({})
+                })
+                .map_err(session_error),
         };
         (outcome, None, shutdown)
     }
@@ -407,9 +424,19 @@ impl Client<'_> {
         Ok(json!({}))
     }
 
-    fn terminal_subscribe(&mut self, session_id: SessionId) -> Result<(Value, Output), ProtoError> {
+    fn terminal_subscribe(
+        &mut self,
+        session_id: SessionId,
+        flow: bool,
+    ) -> Result<(Value, Output), ProtoError> {
         let pty = self.state.sessions.pty(session_id).map_err(session_error)?;
-        let (snapshot, receiver) = pty.subscribe();
+        let (snapshot, receiver, credit) = if flow {
+            let (snapshot, receiver) = pty.subscribe_flow();
+            (snapshot, receiver, Some(pty.acknowledged_offset()))
+        } else {
+            let (snapshot, receiver) = pty.subscribe();
+            (snapshot, receiver, None)
+        };
         // A repeat subscribe (after `terminal.lagged`) replaces the old stream.
         if let Some(old) = self.terminals.remove(&session_id) {
             old.abort();
@@ -422,6 +449,7 @@ impl Client<'_> {
             session_id,
             snapshot,
             receiver,
+            credit,
         };
         Ok((result, output))
     }
@@ -475,11 +503,19 @@ async fn forward_events(
 }
 
 /// Send the retained output, then live output, as kind-1 frames until the stream ends.
+/// A flow subscription paces each snapshot piece by the same window the reader
+/// uses: a piece goes out only when its end offset is at most the acknowledged
+/// offset plus `FLOW_WINDOW`, so replayed bytes count as unacknowledged too.
 async fn stream_output(outgoing: mpsc::Sender<Vec<u8>>, mut output: Output) {
     let id = *output.session_id.as_bytes();
     let snapshot = &output.snapshot;
     for (index, piece) in snapshot.bytes.chunks(SNAPSHOT_PIECE).enumerate() {
         let seq = snapshot.replay_from + (index * SNAPSHOT_PIECE) as u64;
+        if let Some(credit) = output.credit.as_mut() {
+            if !has_credit(credit, seq + piece.len() as u64).await {
+                return;
+            }
+        }
         if send_output(&outgoing, id, seq, piece).await.is_err() {
             return;
         }
@@ -502,6 +538,21 @@ async fn stream_output(outgoing: mpsc::Sender<Vec<u8>>, mut output: Output) {
                 return;
             }
             StreamItem::Closed => return,
+        }
+    }
+}
+
+/// Wait until the acknowledged offset rises enough that a piece ending at
+/// `piece_end` fits the window. Returns false when the producer is gone and no
+/// more acks can arrive.
+async fn has_credit(credit: &mut watch::Receiver<u64>, piece_end: u64) -> bool {
+    loop {
+        let limit = (*credit.borrow_and_update()).saturating_add(FLOW_WINDOW);
+        if piece_end <= limit {
+            return true;
+        }
+        if credit.changed().await.is_err() {
+            return false;
         }
     }
 }

@@ -3,9 +3,10 @@ import { Terminal } from '@xterm/xterm'
 import { toBridgeError } from '../../services/errors'
 import type { SessionService } from '../../services/session'
 
-type Service = Pick<SessionService, 'subscribe' | 'write' | 'resize'>
+type Service = Pick<SessionService, 'subscribe' | 'write' | 'resize' | 'ack'>
 
 const RESIZE_DEBOUNCE_MS = 100
+const ACK_THRESHOLD = 64 * 1024
 const BACKSPACE = '\x7f'
 const noop = () => {}
 // Colours come from the theme tokens (CSS variables), read once at mount.
@@ -34,6 +35,7 @@ export class TerminalController {
   private disposed = false
   private visible = true
   private writes: Promise<void> = Promise.resolve()
+  private parsed = 0
 
   constructor(
     private sessionId: string,
@@ -72,8 +74,11 @@ export class TerminalController {
     if (this.visible) await this.syncSize()
     if (this.disposed) return
     try {
-      const unsubscribe = await service.subscribe(id, (_seq, data) => {
-        if (!this.disposed) term.write(data)
+      const unsubscribe = await service.subscribe(id, (seq, data) => {
+        if (this.disposed) return
+        // The write callback runs once xterm parsed the chunk: that is what the
+        // daemon's window needs to hear about, not the bytes handed to `write`.
+        term.write(data, () => this.parsedChunk(id, seq, data.length))
       })
       if (this.disposed) unsubscribe() // disposed while subscribing
       else this.unsubscribe = unsubscribe
@@ -138,6 +143,18 @@ export class TerminalController {
     this.imeCleanup = () => {
       for (const [type, listener] of Object.entries(listeners)) element.removeEventListener(type, listener, true)
     }
+  }
+
+  /**
+   * One ack per 64 KiB xterm actually parsed, carrying the absolute end offset of the last
+   * parsed chunk. Acks are cheap hints: a failure is ignored, nothing is sent after dispose,
+   * and hidden panes keep acking so their stream never stalls.
+   */
+  private parsedChunk(id: string, seq: number, length: number): void {
+    this.parsed += length
+    if (this.disposed || this.parsed < ACK_THRESHOLD) return
+    this.parsed = 0
+    void this.service.ack(id, seq + length).catch(noop)
   }
 
   /** Writes stay ordered: each one starts after the previous invoke settles. */

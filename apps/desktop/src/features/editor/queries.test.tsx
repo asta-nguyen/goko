@@ -8,9 +8,11 @@ import {
   useGitDiff,
   useGitFile,
   useGitHistory,
+  useGitSearch,
   useGitStashDiff,
   useGitStashes,
   useGitTree,
+  useEditorVim,
 } from './queries'
 
 const service = vi.hoisted(() => ({
@@ -19,10 +21,13 @@ const service = vi.hoisted(() => ({
   history: vi.fn(),
   tree: vi.fn(),
   file: vi.fn(),
+  search: vi.fn(),
   stashes: vi.fn(),
   stashDiff: vi.fn(),
 }))
+const settings = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn() }))
 vi.mock('../../services/git-view', () => ({ gitViewService: service }))
+vi.mock('../../services/settings', () => ({ settingsService: settings }))
 
 const changes = (head: string): GitViewChanges => ({
   branch: 'main',
@@ -42,6 +47,32 @@ beforeEach(() => {
   vi.useRealTimers()
   qc = makeQueryClient()
   Object.values(service).forEach((fn) => fn.mockReset().mockResolvedValue(undefined))
+  settings.get.mockReset().mockResolvedValue(null)
+  settings.set.mockReset().mockResolvedValue(undefined)
+})
+
+describe('Vim setting', () => {
+  it('persists the enabled value and reads it back through the query cache', async () => {
+    const { result } = renderHook(() => useEditorVim(), { wrapper })
+    await waitFor(() => expect(settings.get).toHaveBeenCalledWith('editor.vim'))
+    expect(result.current[0]).toBe(false)
+
+    act(() => result.current[1](true))
+    await waitFor(() => expect(settings.set).toHaveBeenLastCalledWith('editor.vim', '1'))
+    await waitFor(() => expect(result.current[0]).toBe(true))
+
+    act(() => result.current[1](false))
+    await waitFor(() => expect(settings.set).toHaveBeenLastCalledWith('editor.vim', '0'))
+    await waitFor(() => expect(result.current[0]).toBe(false))
+    expect(settings.set.mock.calls).toEqual([['editor.vim', '1'], ['editor.vim', '0']])
+  })
+
+  it('keeps Vim off when reading the setting fails', async () => {
+    settings.get.mockRejectedValue(new Error('settings unavailable'))
+    const { result } = renderHook(() => useEditorVim(), { wrapper })
+    await waitFor(() => expect(result.current[0]).toBe(false))
+    expect(result.current[0]).toBe(false)
+  })
 })
 
 describe('checkout-scoped queries', () => {
@@ -101,11 +132,36 @@ describe('checkout-scoped queries', () => {
       useGitHistory('p1', '/a', false)
       useGitTree('p1', '/a', '', false)
       useGitFile('p1', '/a', 'f', false)
+      useGitSearch('p1', '/a', 'ab', false)
       useGitStashes('p1', '/a', false)
       useGitStashDiff('p1', '/a', 'oid', false)
     }, { wrapper })
     await act(async () => {})
     for (const fn of Object.values(service)) expect(fn).not.toHaveBeenCalled()
+  })
+
+  it('rekeys search by query, keeps the previous result while loading, and collects it soon after', async () => {
+    const first = { matches: [{ path: 'a.ts', line: 1, text: 'first' }], truncated: false }
+    const second = { matches: [{ path: 'b.ts', line: 2, text: 'second' }], truncated: false }
+    let resolveSecond!: (result: typeof second) => void
+    service.search
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve }))
+    const { result, rerender } = renderHook(
+      ({ query }) => useGitSearch('p1', '/a', query, true),
+      { initialProps: { query: 'ab' }, wrapper },
+    )
+    await waitFor(() => expect(result.current.data).toEqual(first))
+
+    rerender({ query: 'cd' })
+    await waitFor(() => expect(service.search).toHaveBeenCalledTimes(2))
+    expect(result.current.data).toEqual(first)
+    expect(result.current.isPlaceholderData).toBe(true)
+    expect(qc.getQueryData(queryKeys.gitSearch('p1', '/a', 'ab'))).toEqual(first)
+
+    await act(async () => resolveSecond(second))
+    await waitFor(() => expect(result.current.data).toEqual(second))
+    expect(qc.getQueryData(queryKeys.gitSearch('p1', '/a', 'cd'))).toEqual(second)
   })
 
   it('keeps the last good result behind an error state when a refresh fails', async () => {

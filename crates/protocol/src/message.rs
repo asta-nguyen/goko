@@ -15,6 +15,10 @@ pub struct HelloOk {
     pub daemon_version: String,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type")]
 pub enum Request {
@@ -61,9 +65,20 @@ pub enum Request {
         rows: u16,
     },
     #[serde(rename = "terminal.subscribe")]
-    TerminalSubscribe { id: u64, session_id: SessionId },
+    TerminalSubscribe {
+        id: u64,
+        session_id: SessionId,
+        #[serde(default, skip_serializing_if = "is_false")]
+        flow: bool,
+    },
     #[serde(rename = "terminal.unsubscribe")]
     TerminalUnsubscribe { id: u64, session_id: SessionId },
+    #[serde(rename = "terminal.ack")]
+    TerminalAck {
+        id: u64,
+        session_id: SessionId,
+        upto_seq: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -240,13 +255,77 @@ mod tests {
                 cols: 100,
                 rows: 30,
             },
-            Request::TerminalSubscribe { id: 11, session_id },
+            Request::TerminalSubscribe {
+                id: 11,
+                session_id,
+                flow: false,
+            },
             Request::TerminalUnsubscribe { id: 12, session_id },
+            Request::TerminalAck {
+                id: 14,
+                session_id,
+                upto_seq: 512,
+            },
         ];
 
         for request in requests {
             assert_round_trip(&request);
         }
+    }
+
+    #[test]
+    fn terminal_ack_uses_terminal_ack_wire_type() {
+        let session_id = SessionId::new();
+        let request = Request::TerminalAck {
+            id: 7,
+            session_id,
+            upto_seq: 512,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["type"], "terminal.ack");
+        assert_eq!(value["upto_seq"], 512);
+        assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
+    }
+
+    #[test]
+    fn terminal_subscribe_without_flow_decodes_as_false() {
+        let session_id = SessionId::new();
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "type": "terminal.subscribe",
+            "id": 1,
+            "session_id": session_id,
+        }))
+        .unwrap();
+        assert_eq!(
+            request,
+            Request::TerminalSubscribe {
+                id: 1,
+                session_id,
+                flow: false,
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_subscribe_flow_is_omitted_when_false_and_kept_when_true() {
+        let session_id = SessionId::new();
+        let request = Request::TerminalSubscribe {
+            id: 3,
+            session_id,
+            flow: false,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("flow"));
+        assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
+
+        let request = Request::TerminalSubscribe {
+            id: 3,
+            session_id,
+            flow: true,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["flow"], true);
+        assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
     }
 
     #[test]

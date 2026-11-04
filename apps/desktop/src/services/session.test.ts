@@ -32,6 +32,7 @@ describe('sessionService commands', () => {
     await sessionService.meta()
     await sessionService.write('a', 'ls\r')
     await sessionService.resize('a', 100, 30)
+    await sessionService.ack('a', 4096)
     await sessionService.status()
     expect(invoke.mock.calls).toEqual([
       ['session_create', { command: 'sh -l', cwd: '/tmp', cols: 80, rows: 24, title: 't' }],
@@ -43,6 +44,7 @@ describe('sessionService commands', () => {
       ['session_meta_list', undefined],
       ['terminal_write', { id: 'a', data: 'ls\r' }],
       ['terminal_resize', { id: 'a', cols: 100, rows: 30 }],
+      ['terminal_ack', { id: 'a', uptoSeq: 4096 }],
       ['daemon_status', undefined],
     ])
   })

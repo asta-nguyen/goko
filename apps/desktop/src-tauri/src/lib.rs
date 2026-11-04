@@ -7,6 +7,7 @@ pub mod events;
 pub mod git_view;
 pub mod store;
 pub mod terminal;
+pub mod usage;
 pub mod worktrees;
 
 #[cfg(test)]
@@ -64,6 +65,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::git_view_diff,
         commands::git_view_history,
         commands::git_view_file_list,
+        commands::git_view_search,
         commands::git_view_tree,
         commands::git_view_file,
         commands::git_view_file_save,
@@ -74,6 +76,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::session_stop,
         commands::session_delete,
         commands::session_list,
+        usage::usage_get,
         commands::terminal_write,
         commands::terminal_resize,
         commands::daemon_status,
@@ -86,6 +89,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::settings_set,
         terminal::terminal_subscribe,
         terminal::terminal_unsubscribe,
+        terminal::terminal_ack,
     ]
 }
 
@@ -98,13 +102,12 @@ pub fn run() {
             let bridge = Bridge::new(home.clone());
             app.manage(bridge.clone());
             app.manage(store::Storage::open(&home));
-            let app = app.handle().clone();
-            events::spawn_pump(
-                bridge,
-                Arc::new(move |name, payload| {
-                    let _ = app.emit(name, payload);
-                }),
-            );
+            let app_handle = app.handle().clone();
+            let emit: events::Emit = Arc::new(move |name, payload| {
+                let _ = app_handle.emit(name, payload);
+            });
+            app.manage(usage::spawn_poller(home, Arc::clone(&emit)));
+            events::spawn_pump(bridge, emit);
             Ok(())
         })
         .invoke_handler(handler())

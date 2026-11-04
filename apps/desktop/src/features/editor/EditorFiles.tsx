@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Toggle } from '@/components/ui/toggle'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
@@ -13,7 +14,9 @@ import type { GitViewDiffLayer } from '../../services/types'
 import { useUi } from '../../stores/ui'
 import { CodeView, EmptyPane, ErrorPane, FilterInput, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice } from './panes'
 import { MarkdownView, isMarkdownPath } from './MarkdownView'
-import { useGitChanges, useGitFile, useGitFileList, useGitTree } from './queries'
+import { useEditorVim, useGitChanges, useGitFile, useGitFileList, useGitTree } from './queries'
+import { CodeEditor } from './CodeEditor'
+import { EditorSearch } from './EditorSearch'
 
 const sizeLabel = (size: number) => (size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.round(size / 1024))} KiB`)
 const EDITOR_FILE_CAP = 1024 * 1024
@@ -141,8 +144,11 @@ export function EditorFiles({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [path, setPath] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const [searchMode, setSearchMode] = useState<'name' | 'content'>('name')
+  const [reveal, setReveal] = useState<{ line: number; nonce: number } | null>(null)
   const [mdView, setMdView] = useState<'preview' | 'raw'>('raw')
   const [saving, setSaving] = useState(false)
+  const [vim, setVim] = useEditorVim()
   const editorDraft = useUi((state) => state.editorDraft)
   const editorSaveError = useUi((state) => state.editorSaveError)
   const setEditorDraft = useUi((state) => state.setEditorDraft)
@@ -152,13 +158,13 @@ export function EditorFiles({
   const file = useGitFile(projectId, checkoutPath, path, active)
   // No polling here — one fresh status read powers the "show changes" link.
   const changes = useGitChanges(projectId, checkoutPath, active, false)
-  const fileList = useGitFileList(projectId, checkoutPath, active && filter.trim().length > 0)
+  const fileList = useGitFileList(projectId, checkoutPath, active && searchMode === 'name' && filter.trim().length > 0)
   const filtered = useMemo(
     () =>
-      filter.trim()
+      searchMode === 'name' && filter.trim()
         ? (fileList.data ?? []).filter((item) => matchesQuery(item, filter)).slice(0, 200)
         : null,
-    [fileList.data, filter],
+    [fileList.data, filter, searchMode],
   )
 
   const saveDraft = useCallback(async () => {
@@ -246,11 +252,18 @@ export function EditorFiles({
   const draftHasNul = draft?.text.includes('\0') === true
   const markdown = text !== null && isMarkdownPath(file.data?.path)
 
-  const selectPath = (nextPath: string) => {
-    if (nextPath === path) return
+  const selectPath = (nextPath: string, line?: number) => {
+    if (nextPath === path) {
+      if (line !== undefined) {
+        setMdView('raw')
+        setReveal((current) => ({ line, nonce: (current?.nonce ?? 0) + 1 }))
+      }
+      return
+    }
     requestEditorNavigation(() => {
       setMdView('raw')
       setPath(nextPath)
+      setReveal(line === undefined ? null : (current) => ({ line, nonce: (current?.nonce ?? 0) + 1 }))
     })
   }
 
@@ -273,51 +286,77 @@ export function EditorFiles({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Files</span>
             <RefreshButton label="Refresh file tree" isFetching={file.isFetching} onClick={refresh} />
           </header>
-          <div className="shrink-0 border-b border-border px-2 py-1">
-            <FilterInput label="Filter files" value={filter} onChange={setFilter} />
+          <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
+            <ToggleGroup
+              type="single"
+              size="sm"
+              value={searchMode}
+              aria-label="File search mode"
+              onValueChange={(value) => {
+                if (value === 'name' || value === 'content') setSearchMode(value)
+              }}
+            >
+              <ToggleGroupItem value="name">Name</ToggleGroupItem>
+              <ToggleGroupItem value="content">Content</ToggleGroupItem>
+            </ToggleGroup>
+            <FilterInput
+              label={searchMode === 'name' ? 'Filter files' : 'Search file contents'}
+              value={filter}
+              onChange={setFilter}
+            />
           </div>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="p-1.5">
-              {filtered === null ? (
-                <TreeRows
-                  projectId={projectId}
-                  checkoutPath={checkoutPath}
-                  directory=""
-                  depth={0}
-                  expanded={expanded}
-                  onToggle={(directory) => setExpanded((current) => ({ ...current, [directory]: !current[directory] }))}
-                  selected={path}
-                  onSelect={selectPath}
-                  active={active}
-                />
-              ) : (
-                <ul className="m-0 list-none p-0">
-                  {filtered.map((item) => (
-                    <li key={item}>
-                      <button
-                        type="button"
-                        data-nav-item
-                        aria-pressed={path === item}
-                        onClick={() => selectPath(item)}
-                        className={cn(
-                          'flex w-full items-center gap-1.5 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
-                          path === item && 'bg-secondary/70',
-                        )}
-                      >
-                        <FileIcon className="size-3.5 shrink-0 text-muted" aria-hidden />
-                        <span className="truncate font-mono text-xs" title={item}>{item}</span>
-                      </button>
-                    </li>
-                  ))}
-                  {filtered.length === 0 && (
-                    <li className="px-1 py-1 text-xs text-muted">
-                      {fileList.isPending ? 'Loading…' : fileList.isError ? 'Could not list files.' : 'No files match.'}
-                    </li>
-                  )}
-                </ul>
-              )}
-            </div>
-          </ScrollArea>
+          {searchMode === 'content' ? (
+            <EditorSearch
+              projectId={projectId}
+              checkoutPath={checkoutPath}
+              active={active}
+              query={filter}
+              onSelect={selectPath}
+            />
+          ) : (
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-1.5">
+                {filtered === null ? (
+                  <TreeRows
+                    projectId={projectId}
+                    checkoutPath={checkoutPath}
+                    directory=""
+                    depth={0}
+                    expanded={expanded}
+                    onToggle={(directory) => setExpanded((current) => ({ ...current, [directory]: !current[directory] }))}
+                    selected={path}
+                    onSelect={selectPath}
+                    active={active}
+                  />
+                ) : (
+                  <ul className="m-0 list-none p-0">
+                    {filtered.map((item) => (
+                      <li key={item}>
+                        <button
+                          type="button"
+                          data-nav-item
+                          aria-pressed={path === item}
+                          onClick={() => selectPath(item)}
+                          className={cn(
+                            'flex w-full items-center gap-1.5 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
+                            path === item && 'bg-secondary/70',
+                          )}
+                        >
+                          <FileIcon className="size-3.5 shrink-0 text-muted" aria-hidden />
+                          <span className="truncate font-mono text-xs" title={item}>{item}</span>
+                        </button>
+                      </li>
+                    ))}
+                    {filtered.length === 0 && (
+                      <li className="px-1 py-1 text-xs text-muted">
+                        {fileList.isPending ? 'Loading…' : fileList.isError ? 'Could not list files.' : 'No files match.'}
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            </ScrollArea>
+          )}
         </>
       }
     >
@@ -337,6 +376,17 @@ export function EditorFiles({
             {draft && <Badge variant="warning">Unsaved</Badge>}
             {draftTooLarge && <Badge variant="warning">over 1 MiB</Badge>}
             {draftHasNul && <Badge variant="warning">binary NUL</Badge>}
+            {editable && (
+              <Toggle
+                variant="outline"
+                size="sm"
+                aria-label="Vim mode"
+                pressed={vim}
+                onPressedChange={setVim}
+              >
+                Vim
+              </Toggle>
+            )}
             {markdown && (
               <ToggleGroup
                 type="single"
@@ -372,14 +422,17 @@ export function EditorFiles({
             editable && markdown && mdView === 'preview' ? (
               <MarkdownView text={text} />
             ) : editable ? (
-              <textarea
-                aria-label={`Edit ${file.data.path}`}
-                spellCheck={false}
-                wrap="off"
-                readOnly={saving}
+              <CodeEditor
+                key={`${checkoutPath}:${path}`}
                 value={text}
-                onChange={(event) => updateText(event.target.value)}
-                className="min-h-0 min-w-0 flex-1 resize-none overflow-auto bg-bg px-3 py-2 font-mono text-xs leading-5 text-text outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                path={file.data.path}
+                ariaLabel={`Edit ${file.data.path}`}
+                readOnly={saving}
+                vim={vim}
+                reveal={reveal}
+                onRevealed={() => setReveal(null)}
+                onChange={updateText}
+                onSave={() => void saveDraft()}
               />
             ) : markdown && mdView === 'preview' ? (
               <MarkdownView text={text} />

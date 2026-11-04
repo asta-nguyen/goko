@@ -2,11 +2,6 @@
 
 ## Changes
 
-- [Stop Goko-owned processes when the app exits](changes/2026-11-04-stop-processes-on-exit/design.md) ([tasks](changes/2026-11-04-stop-processes-on-exit/tasks.md))
-- [Project terminal workspaces, splits, and Vietnamese support](changes/2026-11-02-terminal-workspaces-vietnamese/design.md) ([tasks](changes/2026-11-02-terminal-workspaces-vietnamese/tasks.md))
-- [Git worktree management UX](changes/2026-11-02-worktree-ux/design.md) ([tasks](changes/2026-11-02-worktree-ux/tasks.md))
-- [Workspace editor and Git review](changes/git-workbench-view/design.md) ([tasks](changes/git-workbench-view/tasks.md))
-
 ## Archived changes
 
 - [s1-01 Repo init and workspaces](changes/archive/s1-01-repo-init/design.md) ([tasks](changes/archive/s1-01-repo-init/tasks.md))
@@ -23,3 +18,10 @@
 - [s1-12 UI sessions](changes/archive/s1-12-ui-session/design.md) ([tasks](changes/archive/s1-12-ui-session/tasks.md))
 - [s1-13 Acceptance](changes/archive/s1-13-acceptance/design.md) ([tasks](changes/archive/s1-13-acceptance/tasks.md))
 - [S2 Projects, agents, and sessions](changes/archive/2026-10-30-s2-projects-agents-sessions/design.md) ([tasks](changes/archive/2026-10-30-s2-projects-agents-sessions/tasks.md))
+- [Workspace editor and Git review](changes/archive/s1-12-ui-session/git-workbench-view/design.md) ([tasks](changes/archive/s1-12-ui-session/git-workbench-view/tasks.md))
+- [Project terminal workspaces, splits, and Vietnamese support](changes/archive/2026-11-02-terminal-workspaces-vietnamese/design.md) ([tasks](changes/archive/2026-11-02-terminal-workspaces-vietnamese/tasks.md))
+- [Git worktree management UX](changes/archive/2026-11-02-worktree-ux/design.md) ([tasks](changes/archive/2026-11-02-worktree-ux/tasks.md))
+- [Terminal output backpressure](changes/archive/2026-11-04-terminal-output-backpressure/design.md) ([tasks](changes/archive/2026-11-04-terminal-output-backpressure/tasks.md))
+- [Stop Goko-owned processes when the app exits](changes/archive/2026-11-04-stop-processes-on-exit/design.md) ([tasks](changes/archive/2026-11-04-stop-processes-on-exit/tasks.md))
+- [Editor: CodeMirror surface and content search](changes/archive/2026-11-04-editor-codemirror-search/design.md) ([tasks](changes/archive/2026-11-04-editor-codemirror-search/tasks.md))
+- [Agent usage and limit indicators](changes/archive/2026-11-04-agent-usage-limits/design.md) ([tasks](changes/archive/2026-11-04-agent-usage-limits/tasks.md))

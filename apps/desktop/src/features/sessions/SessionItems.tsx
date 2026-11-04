@@ -1,6 +1,8 @@
 import { memo } from 'react'
 import { cn } from '@/lib/utils'
 import type { SessionInfo } from '../../services/types'
+import { useSessionContext } from '../usage/queries'
+import { usageTone, usageToneClass } from '../usage/tone'
 import { StateDot } from './StateBadge'
 
 const sessionTitle = (session: SessionInfo) => session.title || session.argv.join(' ')
@@ -19,6 +21,9 @@ const SessionRow = memo(function SessionRow({
   const title = sessionTitle(session)
   // A Shell session is labelled "Shell" and titled "Shell"; show one, not both.
   const showLabel = label !== undefined && label.toLowerCase() !== title.toLowerCase()
+  const ended = session.state === 'exited' || session.state === 'failed'
+  const contextPct = useSessionContext(session)
+  const context = contextPct === null ? null : Math.round(contextPct)
   return (
     <li>
       <button
@@ -27,12 +32,27 @@ const SessionRow = memo(function SessionRow({
         onClick={() => onSelect(session.id)}
         className={cn(
           'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
-          selected && 'bg-bg shadow-[inset_2px_0_0_var(--accent)]',
+          ended && 'text-muted',
+          selected && 'bg-secondary/70 shadow-[inset_2px_0_0_var(--accent)]',
         )}
       >
         <StateDot state={session.state} />
-        {showLabel && <span className="shrink-0 text-xs font-medium text-muted">{label}</span>}
-        <span className="min-w-0 truncate">{title}</span>
+        {showLabel ? (
+          <>
+            <span className="shrink-0 font-medium">{label}</span>
+            <span className="min-w-0 truncate text-xs text-muted">{title}</span>
+          </>
+        ) : (
+          <span className="min-w-0 truncate font-medium">{title}</span>
+        )}
+        {contextPct !== null && (
+          <span
+            aria-label={`Claude context ${context}%`}
+            className={cn('ml-auto shrink-0 text-xs tabular-nums', usageToneClass[usageTone(contextPct)])}
+          >
+            {context}%
+          </span>
+        )}
       </button>
     </li>
   )

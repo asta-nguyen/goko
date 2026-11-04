@@ -23,6 +23,7 @@ fn webview_with(
     let app = mock_builder()
         .manage(Bridge::new(home.path().to_owned()))
         .manage(storage)
+        .manage(crate::usage::UsageState::default())
         .invoke_handler(handler())
         .build(mock_context(noop_assets()))
         .unwrap();
@@ -73,6 +74,11 @@ async fn commands_take_and_return_what_the_frontend_services_send_and_expect() {
     assert!(status["default_shell"]
         .as_str()
         .is_some_and(|shell| !shell.is_empty()));
+
+    let usage = invoke(&webview, "usage_get", json!({})).unwrap();
+    assert_eq!(usage["claude"]["five_hour"], Value::Null);
+    assert_eq!(usage["claude"]["sessions"], json!({}));
+    assert_eq!(usage["codex"]["primary"], Value::Null);
 
     // `title` omitted, as `sessionService.create` does when the caller gives none.
     let session = invoke(

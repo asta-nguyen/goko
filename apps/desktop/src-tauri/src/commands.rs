@@ -3,9 +3,11 @@
 
 use crate::agents::{self, AgentInfo};
 use crate::bridge::Bridge;
+use crate::daemon_client;
 use crate::error::{BridgeError, Code};
 use crate::git_view::{
-    self, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewStash, GitViewTree,
+    self, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewSearch, GitViewStash,
+    GitViewTree,
 };
 use crate::store::{Project, SessionMeta, Storage, Store};
 use crate::worktrees::{
@@ -207,14 +209,32 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
         return Err(invalid("`checkout` is only valid with `project_id`"));
     }
     let (argv, agent) = match &args.agent {
-        Some(agent) => (
-            agents::argv_for(
-                agent,
-                std::env::var_os("PATH").as_deref(),
-                &default_shell(std::env::var_os("SHELL")),
-            )?,
-            Some(agent.clone()),
-        ),
+        Some(agent) => {
+            let (goko_home, original_statusline) = if agent == "claude" {
+                let home = daemon_client::home_dir()?;
+                let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+                    .filter(|dir| !dir.is_empty())
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
+                    });
+                let original = config_dir
+                    .and_then(|dir| agents::original_statusline(&dir.join("settings.json")));
+                (home, original)
+            } else {
+                (PathBuf::new(), None)
+            };
+            (
+                agents::argv_for(
+                    agent,
+                    std::env::var_os("PATH").as_deref(),
+                    &default_shell(std::env::var_os("SHELL")),
+                    &goko_home,
+                    original_statusline.as_deref(),
+                )?,
+                Some(agent.clone()),
+            )
+        }
         None => {
             let command = args.command.as_ref().expect("exactly one checked above");
             (
@@ -490,6 +510,20 @@ pub fn git_view_file_list(
     checkout_path: String,
 ) -> Result<Vec<String>, BridgeError> {
     git_view::file_list(&git_view_checkout(&storage, &project_id, &checkout_path)?)
+}
+
+// `async` keeps `git grep` off the main thread; a sync command would freeze the window on a big repo.
+#[tauri::command(async)]
+pub fn git_view_search(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    query: String,
+) -> Result<GitViewSearch, BridgeError> {
+    git_view::search(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &query,
+    )
 }
 
 #[tauri::command]

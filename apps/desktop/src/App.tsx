@@ -15,6 +15,7 @@ import { useProjectList } from './features/projects/queries'
 import { useAddProjectFolder } from './features/projects/use-add-project'
 import { useDaemonStatus } from './features/sessions/queries'
 import { TerminalWorkspace } from './features/terminal/TerminalWorkspace'
+import { UsageChips } from './features/usage/UsageChips'
 import { startQuerySync } from './services/sync'
 import { checkoutContext, PANEL_LIMITS, useUi } from './stores/ui'
 
@@ -120,15 +121,15 @@ export default function App() {
             role="status"
             aria-label={status ? (disconnected ? 'Daemon disconnected' : 'Daemon connected') : 'Daemon status unknown'}
           >
-            <Badge variant={status ? (disconnected ? 'destructive' : 'success') : 'outline'} className="gap-1.5">
-              <span
-                aria-hidden
-                className={`size-1.5 rounded-full ${status ? (disconnected ? 'bg-danger' : 'bg-success') : 'bg-muted'}`}
-              />
-              {connection}
-            </Badge>
+            {connection !== 'Connected' && (
+              <Badge variant={disconnected ? 'destructive' : 'outline'} className="gap-1.5">
+                <span aria-hidden className={`size-1.5 rounded-full ${disconnected ? 'bg-danger' : 'bg-muted'}`} />
+                {connection}
+              </Badge>
+            )}
           </span>
           <div className="ml-auto flex items-center gap-2">
+            <UsageChips />
             <ThemeToggle />
           </div>
         </header>

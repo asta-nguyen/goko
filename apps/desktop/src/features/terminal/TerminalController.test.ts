@@ -26,8 +26,10 @@ const h = vi.hoisted(() => {
       this.dataListeners.add(cb)
       return { dispose: () => void this.dataListeners.delete(cb) }
     }
-    write(d: unknown) {
+    write(d: unknown, cb?: () => void) {
       this.written.push(d)
+      // Like xterm, parsing finishes before the callback — synchronously is a valid fast case.
+      cb?.()
     }
     dispose() {
       this.disposed = true
@@ -64,6 +66,7 @@ let unsub: ReturnType<typeof vi.fn>
 const service = {
   resize: vi.fn(async () => void state.calls.push('resize')),
   write: vi.fn(async (_id: string, _data: string) => {}),
+  ack: vi.fn(async (_id: string, _uptoSeq: number) => {}),
   subscribe: vi.fn(async (_id: string, cb: typeof onBytes) => {
     state.calls.push('subscribe')
     onBytes = cb
@@ -401,6 +404,68 @@ describe('TerminalController IME', () => {
     await flush()
     expect(written()).toEqual(['a', 'b'])
     c.dispose()
+  })
+})
+
+describe('TerminalController acks', () => {
+  const K64 = 64 * 1024
+
+  it('sends one ack per 64 KiB parsed, with the absolute end offset', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+
+    onBytes(0, new Uint8Array(K64 - 1))
+    expect(service.ack).not.toHaveBeenCalled()
+
+    // Crossing the threshold once acks exactly once, at the end of the last parsed chunk.
+    onBytes(K64 - 1, new Uint8Array(2))
+    expect(service.ack).toHaveBeenCalledTimes(1)
+    expect(service.ack).toHaveBeenCalledWith('s1', K64 + 1)
+
+    // The counter restarts below the threshold.
+    onBytes(K64 + 1, new Uint8Array(100))
+    expect(service.ack).toHaveBeenCalledTimes(1)
+    onBytes(K64 + 101, new Uint8Array(K64 - 100))
+    expect(service.ack).toHaveBeenCalledTimes(2)
+    expect(service.ack).toHaveBeenLastCalledWith('s1', 2 * K64 + 1)
+    c.dispose()
+  })
+
+  it('one big chunk still sends a single ack', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    onBytes(0, new Uint8Array(3 * K64 + 7))
+    expect(service.ack).toHaveBeenCalledTimes(1)
+    expect(service.ack).toHaveBeenCalledWith('s1', 3 * K64 + 7)
+    c.dispose()
+  })
+
+  it('ignores an ack failure and keeps parsing', async () => {
+    service.ack.mockRejectedValueOnce(new Error('daemon gone'))
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    onBytes(0, new Uint8Array(K64))
+    onBytes(K64, new Uint8Array(K64))
+    expect(service.ack).toHaveBeenCalledTimes(2)
+    expect(service.ack).toHaveBeenLastCalledWith('s1', 2 * K64)
+    expect(text(state.terms[0])).not.toContain('[goko]')
+    c.dispose()
+  })
+
+  it('a hidden pane keeps parsing and acking', async () => {
+    const c = new TerminalController('hidden', service)
+    await c.mount(element(), false)
+    onBytes(0, new Uint8Array(K64))
+    expect(service.ack).toHaveBeenCalledWith('hidden', K64)
+    c.dispose()
+  })
+
+  it('sends nothing after dispose', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    c.dispose()
+    onBytes(0, new Uint8Array(3 * K64))
+    expect(service.ack).not.toHaveBeenCalled()
   })
 })
 

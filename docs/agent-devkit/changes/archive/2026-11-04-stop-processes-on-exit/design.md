@@ -74,4 +74,4 @@ exit.
 
 ## Related context
 
-- [Architecture overview](../../../llm/architecture/overview.md)
+- [Architecture overview](../../../../llm/architecture/overview.md)

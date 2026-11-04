@@ -29,7 +29,7 @@ export function StateBadge({ state }: { state: SessionState }) {
 /** Compact state marker for tree rows; the state text stays available to assistive tech. */
 export function StateDot({ state }: { state: SessionState }) {
   return (
-    <span title={text(state)} className={`size-2 shrink-0 rounded-full ${DOT[state] ?? 'bg-muted'}`}>
+    <span title={text(state)} className={`size-2.5 shrink-0 rounded-full ${DOT[state] ?? 'bg-muted'}`}>
       <span className="sr-only">{text(state)}</span>
     </span>
   )

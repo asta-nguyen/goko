@@ -7,7 +7,7 @@ import { useUi } from './stores/ui'
 import App from './App'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service, projects, agents, worktrees, gitview, log } = vi.hoisted(() => {
+const { handlers, listen, service, projects, agents, worktrees, gitview, usageService, log } = vi.hoisted(() => {
   const handlers = new Map<string, Set<Handler>>()
   const listen = vi.fn(async (name: string, cb: Handler) => {
     if (!handlers.has(name)) handlers.set(name, new Set())
@@ -23,6 +23,7 @@ const { handlers, listen, service, projects, agents, worktrees, gitview, log } =
     agents: { list: vi.fn() },
     worktrees: { list: vi.fn(), branches: vi.fn(), create: vi.fn(), envCandidates: vi.fn(), envCopy: vi.fn(), remove: vi.fn() },
     gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
+    usageService: { get: vi.fn() },
   }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen }))
@@ -32,6 +33,10 @@ vi.mock('./services/projects', () => ({ projectService: projects }))
 vi.mock('./services/agents', () => ({ agentService: agents }))
 vi.mock('./services/worktrees', () => ({ worktreeService: worktrees }))
 vi.mock('./services/git-view', () => ({ gitViewService: gitview }))
+vi.mock('./services/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./services/usage')>()),
+  usageService,
+}))
 // jsdom has no layout, so the xterm-based controller is replaced; its own tests cover it.
 vi.mock('./features/terminal/TerminalController', () => ({
   TerminalController: class {
@@ -98,6 +103,10 @@ beforeEach(async () => {
   Object.values(projects).forEach((f) => f.mockReset())
   agents.list.mockReset().mockResolvedValue([])
   Object.values(worktrees).forEach((f) => f.mockReset())
+  usageService.get.mockReset().mockResolvedValue({
+    claude: { five_hour: null, seven_day: null, sessions: {}, updated_at: null },
+    codex: { primary: null, secondary: null, updated_at: null },
+  })
   worktrees.list.mockResolvedValue({ repo: false, worktrees: [] })
   worktrees.branches.mockResolvedValue({ branches: [], bases: [] })
   worktrees.envCandidates.mockResolvedValue([])
@@ -142,7 +151,7 @@ describe('App', () => {
 
   it('shows the banner and disables controls while disconnected, and recovers', async () => {
     renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(3))
+    await vi.waitFor(() => expect(listeners()).toBe(4))
     fireEvent.click(await screen.findByRole('button', { name: /title-a/ }))
     const stop = screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement
     expect(stop.disabled).toBe(false)
@@ -162,7 +171,7 @@ describe('App', () => {
   it('shows no sessions after reconnecting to a daemon with an empty session list', async () => {
     renderApp()
     await waitFor(() => expect(sessionButtons()).toHaveLength(2))
-    await waitFor(() => expect(listeners()).toBe(3))
+    await waitFor(() => expect(listeners()).toBe(4))
 
     service.list.mockResolvedValue([])
     emit('daemon://status', { connected: false })
@@ -176,7 +185,7 @@ describe('App', () => {
 
   it('applies pushed session events to the list', async () => {
     renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(3))
+    await vi.waitFor(() => expect(listeners()).toBe(4))
     await screen.findAllByRole('button', { name: /title-/ })
     emit('session://updated', session('c'))
     expect(await screen.findByRole('button', { name: /title-c/ })).toBeTruthy()
@@ -184,7 +193,7 @@ describe('App', () => {
 
   it('stops the event sync on unmount', async () => {
     const { unmount } = renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(3))
+    await vi.waitFor(() => expect(listeners()).toBe(4))
     unmount()
     await vi.waitFor(() => expect(listeners()).toBe(0))
   })

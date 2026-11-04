@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { makeQueryClient, queryKeys } from '../../queryClient'
 import type { GitViewChanges, Project, WorktreeInfo } from '../../services/types'
 import { useUi } from '../../stores/ui'
 import { EditorWorkspace } from './EditorWorkspace'
 
-const { service, worktrees } = vi.hoisted(() => ({
+const { service, settings, worktrees } = vi.hoisted(() => ({
   service: {
     changes: vi.fn(),
     diff: vi.fn(),
@@ -14,13 +14,49 @@ const { service, worktrees } = vi.hoisted(() => ({
     tree: vi.fn(),
     fileList: vi.fn(),
     file: vi.fn(),
+    search: vi.fn(),
     stashes: vi.fn(),
     stashDiff: vi.fn(),
   },
+  settings: { get: vi.fn(), set: vi.fn() },
   worktrees: { list: vi.fn() },
 }))
 vi.mock('../../services/git-view', () => ({ gitViewService: service }))
+vi.mock('../../services/settings', () => ({ settingsService: settings }))
 vi.mock('../../services/worktrees', () => ({ worktreeService: worktrees }))
+vi.mock('./CodeEditor', () => ({
+  CodeEditor: ({
+    value,
+    ariaLabel,
+    readOnly,
+    vim,
+    reveal,
+    onRevealed,
+    onChange,
+  }: {
+    value: string
+    ariaLabel: string
+    readOnly: boolean
+    vim: boolean
+    reveal: { line: number; nonce: number } | null
+    onRevealed?: () => void
+    onChange: (value: string) => void
+  }) => (
+    <>
+      <textarea
+        aria-label={ariaLabel}
+        data-vim={String(vim)}
+        data-reveal-line={reveal?.line}
+        data-reveal-nonce={reveal?.nonce}
+        value={value}
+        readOnly={readOnly}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {/* Stands in for the real editor finishing the cursor jump. */}
+      <button type="button" data-testid="reveal-done" onClick={onRevealed} />
+    </>
+  ),
+}))
 
 const project = (over: Partial<Project> = {}): Project => ({
   id: 'p1',
@@ -59,8 +95,11 @@ const renderEditor = (checkoutPath = '/work/p1', proj: Project | null = project(
   render(<EditorWorkspace project={proj} projectId="p1" checkoutPath={checkoutPath} />, { wrapper })
 
 beforeEach(() => {
+  vi.useRealTimers()
   qc = makeQueryClient()
   Object.values(service).forEach((fn) => fn.mockReset().mockResolvedValue(undefined))
+  settings.get.mockReset().mockResolvedValue(null)
+  settings.set.mockReset().mockResolvedValue(undefined)
   service.changes.mockImplementation((_p: string, co: string) => Promise.resolve(changesData(co)))
   service.diff.mockImplementation((_p: string, _co: string, req: { layer: string; path?: string; commit?: string }) =>
     Promise.resolve({ label: `${req.layer} diff`, patch: `patch ${req.path ?? req.commit}`, truncated: false, files: [] }),
@@ -85,11 +124,16 @@ beforeEach(() => {
   )
   service.file.mockResolvedValue({ path: 'src/app.ts', kind: 'text', text: 'line one\nline two', truncated: false, size: 17 })
   service.fileList.mockResolvedValue(['src/app.ts', 'README.md', 'docs/guide.md'])
+  service.search.mockResolvedValue({ matches: [], truncated: false })
   service.stashes.mockResolvedValue([{ index: 0, id: 'stashoid', message: 'saved work', branch: 'main', time: 1 }])
   service.stashDiff.mockResolvedValue({ label: 'stash@{0}', patch: 'stash patch', truncated: false, files: [{ path: 'f.txt', orig_path: null, status: 'modified' as const }] })
   worktrees.list.mockReset().mockResolvedValue({ repo: true, worktrees: [ROOT, FEATURE] })
   useUi.getState().reset()
   useUi.getState().setActiveView('editor')
+})
+
+const waitForSearchDebounce = () => act(async () => {
+  await new Promise((resolve) => window.setTimeout(resolve, 270))
 })
 
 describe('shell', () => {
@@ -262,6 +306,25 @@ describe('sections', () => {
     expect(document.activeElement).toBe(screen.getByLabelText('Filter changed files'))
   })
 
+  it('leaves Cmd+F inside CodeMirror to its search panel and focuses the Files filter from the tree', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    const filter = await screen.findByLabelText('Filter files')
+    const editor = document.createElement('div')
+    editor.className = 'cm-editor'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+    const event = new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true })
+    editor.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(editor)
+
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'src' }), { key: 'f', metaKey: true })
+    expect(document.activeElement).toBe(filter)
+    editor.remove()
+  })
+
   it('moves between list rows with j and k', async () => {
     renderEditor()
     const staged = await screen.findByRole('region', { name: 'Staged files' })
@@ -287,6 +350,124 @@ describe('sections', () => {
     expect(screen.queryByRole('button', { name: /docs\/guide\.md/ })).toBeNull()
     fireEvent.click(match)
     await waitFor(() => expect(service.file).toHaveBeenCalledWith('p1', '/work/p1', 'README.md'))
+  })
+
+  it('debounces content search, reveals a result in the open file, and restores name filtering', async () => {
+    service.search.mockResolvedValue({
+      matches: [{ path: 'src/app.ts', line: 2, text: 'line two' }],
+      truncated: true,
+    })
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+    await screen.findByRole('textbox', { name: 'Edit src/app.ts' })
+    const fileCalls = service.file.mock.calls.length
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Content' }))
+    const input = screen.getByLabelText('Search file contents')
+    fireEvent.change(input, { target: { value: 'a' } })
+    await waitForSearchDebounce()
+    expect(service.search).not.toHaveBeenCalled()
+
+    fireEvent.change(input, { target: { value: 'read' } })
+    await waitForSearchDebounce()
+    await waitFor(() => expect(service.search).toHaveBeenCalledWith('p1', '/work/p1', 'read'))
+    const result = await screen.findByRole('button', { name: /src\/app\.ts:2.*line two/ })
+    expect(screen.getByText('Showing first 500 matches.')).toBeTruthy()
+    fireEvent.click(result)
+
+    const editor = screen.getByRole('textbox', { name: 'Edit src/app.ts' })
+    expect(editor.getAttribute('data-reveal-line')).toBe('2')
+    expect(editor.getAttribute('data-reveal-nonce')).toBe('1')
+    expect(service.file).toHaveBeenCalledTimes(fileCalls)
+
+    // Once the editor has moved the cursor the request is dropped, so a remount cannot replay it.
+    fireEvent.click(screen.getByTestId('reveal-done'))
+    expect(editor.getAttribute('data-reveal-line')).toBeNull()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Name' }))
+    fireEvent.change(screen.getByLabelText('Filter files'), { target: { value: 'readme' } })
+    expect(await screen.findByRole('button', { name: 'README.md' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'docs/guide.md' })).toBeNull()
+  })
+
+  it('dims the previous content results while the next query loads', async () => {
+    let resolveNext: (value: unknown) => void = () => {}
+    service.search
+      .mockResolvedValueOnce({ matches: [{ path: 'src/app.ts', line: 2, text: 'first answer' }], truncated: false })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNext = resolve }))
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    await screen.findByLabelText('Filter files')
+    fireEvent.click(screen.getByRole('radio', { name: 'Content' }))
+    const input = screen.getByLabelText('Search file contents')
+    fireEvent.change(input, { target: { value: 'read' } })
+    await waitForSearchDebounce()
+    const first = await screen.findByRole('button', { name: /first answer/ })
+    expect(first.closest('[aria-busy]')?.getAttribute('aria-busy')).toBe('false')
+
+    fireEvent.change(input, { target: { value: 'reads' } })
+    await waitForSearchDebounce()
+    await waitFor(() => expect(service.search).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: /first answer/ }).closest('[aria-busy]')?.getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => {
+      resolveNext({ matches: [{ path: 'src/app.ts', line: 5, text: 'second answer' }], truncated: false })
+    })
+    const second = await screen.findByRole('button', { name: /second answer/ })
+    expect(second.closest('[aria-busy]')?.getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('routes content-result navigation through the dirty-draft guard', async () => {
+    service.file.mockImplementation((_projectId: string, _checkoutPath: string, path: string) =>
+      Promise.resolve({ path, kind: 'text' as const, text: 'line one\nline two', truncated: false, size: 17 }),
+    )
+    service.search.mockResolvedValue({
+      matches: [{ path: 'README.md', line: 4, text: 'target text' }],
+      truncated: false,
+    })
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    await screen.findByLabelText('Filter files')
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' })
+    fireEvent.change(editor, { target: { value: 'edited draft' } })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Content' }))
+    fireEvent.change(screen.getByLabelText('Search file contents'), { target: { value: 'target' } })
+    await waitForSearchDebounce()
+    const result = await screen.findByRole('button', { name: /README\.md:4.*target text/ })
+    fireEvent.click(result)
+
+    expect(useUi.getState().editorGuardOpen).toBe(true)
+    expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' })).toBeTruthy()
+    expect(service.file).not.toHaveBeenCalledWith('p1', '/work/p1', 'README.md')
+
+    act(() => useUi.getState().continueEditorNavigation(true))
+    const nextEditor = await screen.findByRole('textbox', { name: 'Edit README.md' })
+    expect(nextEditor.getAttribute('data-reveal-line')).toBe('4')
+    expect(useUi.getState().editorDraft).toBeNull()
+  })
+
+  it('shows the empty state and an ErrorPane for content-search outcomes', async () => {
+    service.search
+      .mockResolvedValueOnce({ matches: [], truncated: false })
+      .mockRejectedValueOnce(new Error('search failed'))
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    await screen.findByLabelText('Filter files')
+    fireEvent.click(screen.getByRole('radio', { name: 'Content' }))
+    const input = screen.getByLabelText('Search file contents')
+    fireEvent.change(input, { target: { value: 'empty' } })
+    await waitForSearchDebounce()
+    expect(await screen.findByText('No matches.')).toBeTruthy()
+
+    fireEvent.change(input, { target: { value: 'error' } })
+    await waitForSearchDebounce()
+    expect(await screen.findByText('search failed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
   it('opens Markdown source for editing and allows switching to preview', async () => {
@@ -323,6 +504,18 @@ describe('sections', () => {
     const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' }) as HTMLTextAreaElement
     expect(editor.value).toBe('line one\nline two')
     expect(screen.queryByRole('radiogroup', { name: 'Markdown view' })).toBeNull()
+  })
+
+  it('loads the persisted Vim setting and passes it to the editor', async () => {
+    settings.get.mockResolvedValue('1')
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+
+    const toggle = await screen.findByRole('button', { name: 'Vim mode' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect((await screen.findByRole('textbox', { name: 'Edit src/app.ts' })).getAttribute('data-vim')).toBe('true')
   })
 
   it('filters changed files by path across the groups', async () => {

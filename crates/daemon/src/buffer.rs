@@ -50,6 +50,11 @@ impl RingBuffer {
         start_seq
     }
 
+    /// The offset the next appended byte will have.
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
     /// Return the oldest retained offset, retained bytes, and next append offset.
     pub fn snapshot(&self) -> (u64, Vec<u8>, u64) {
         (

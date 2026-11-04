@@ -1,12 +1,14 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '../../queryClient'
 import type { BridgeError } from '../../services/errors'
 import { gitViewService, type GitDiffRequest } from '../../services/git-view'
+import { settingsService } from '../../services/settings'
 import type {
   GitViewChanges,
   GitViewDiff,
   GitViewFile,
   GitViewHistory,
+  GitViewSearch,
   GitViewStash,
   GitViewTree,
 } from '../../services/types'
@@ -19,6 +21,20 @@ export const GIT_VIEW_POLL_MS = 3000
 // (and a failed refresh keeps it behind a stale indicator). Polling pauses
 // while the window is in the background; regaining focus refetches at once.
 const READ = { staleTime: 0, refetchOnWindowFocus: true, refetchIntervalInBackground: false } as const
+
+export function useEditorVim() {
+  const queryClient = useQueryClient()
+  const setting = useQuery<string | null, BridgeError>({
+    queryKey: queryKeys.editorVim,
+    queryFn: () => settingsService.get('editor.vim'),
+    staleTime: Infinity,
+  })
+  const write = useMutation({
+    mutationFn: (enabled: boolean) => settingsService.set('editor.vim', enabled ? '1' : '0'),
+    onSuccess: (_result, enabled) => queryClient.setQueryData(queryKeys.editorVim, enabled ? '1' : '0'),
+  })
+  return [setting.data === '1' && !setting.isError, write.mutate] as const
+}
 
 export function useGitChanges(projectId: string, checkoutPath: string, enabled: boolean, poll = enabled) {
   return useQuery<GitViewChanges, BridgeError>({
@@ -68,6 +84,17 @@ export function useGitFileList(projectId: string, checkoutPath: string, enabled:
     queryKey: queryKeys.gitFileList(projectId, checkoutPath),
     queryFn: () => gitViewService.fileList(projectId, checkoutPath),
     enabled,
+    ...READ,
+  })
+}
+
+export function useGitSearch(projectId: string, checkoutPath: string, query: string, enabled: boolean) {
+  return useQuery<GitViewSearch, BridgeError>({
+    queryKey: queryKeys.gitSearch(projectId, checkoutPath, query),
+    queryFn: () => gitViewService.search(projectId, checkoutPath, query),
+    enabled,
+    placeholderData: (previous) => previous,
+    gcTime: 30_000,
     ...READ,
   })
 }

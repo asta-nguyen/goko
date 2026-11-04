@@ -107,9 +107,11 @@ describe('tree', () => {
     await screen.findByRole('button', { name: /title-a/ })
 
     const p1 = projectButton('p1').closest('li')!
-    expect(within(p1).getByLabelText('2 sessions')).toBeTruthy()
+    expect(within(p1).queryByLabelText(/^\d+ sessions$/)).toBeNull() // the count shows only while collapsed
     expect(within(p1).getByRole('button', { name: /Claude Code.*title-a/ })).toBeTruthy()
     expect(within(p1).getByRole('button', { name: /Custom.*title-b/ })).toBeTruthy()
+    fireEvent.click(within(p1).getAllByRole('button', { name: /^Collapse .* sessions$/ })[0])
+    expect(within(p1).getByLabelText('2 sessions')).toBeTruthy()
     const p2 = projectButton('p2').closest('li')!
     expect(within(p2).queryByLabelText(/^\d+ sessions$/)).toBeNull()
     expect(within(p2).queryByRole('list')).toBeNull()
@@ -345,10 +347,12 @@ describe('worktrees', () => {
     session.create.mockResolvedValue(makeSession('new-feature'))
 
     renderTree()
-    await screen.findByRole('button', { name: /feature.*feature.*\/work\/p1-worktrees\/feature/ })
+    await screen.findByRole('button', { name: /feature.*\/work\/p1-worktrees\/feature/ })
     const featureRow = screen.getByText('feature').closest('li')!
-    expect(within(featureRow).getByLabelText('1 sessions')).toBeTruthy()
     expect(within(featureRow).getByRole('button', { name: /Claude Code.*title-feature-session/ })).toBeTruthy()
+    fireEvent.click(within(featureRow).getByRole('button', { name: 'Collapse feature sessions' }))
+    expect(within(featureRow).getByLabelText('1 sessions')).toBeTruthy()
+    fireEvent.click(within(featureRow).getByRole('button', { name: 'Expand feature sessions' }))
     expect(within(projectButton('p1').closest('li')!).getByRole('button', { name: /Shell.*title-root-session/ })).toBeTruthy()
 
     fireEvent.keyDown(await within(featureRow).findByRole('button', { name: 'New session in name-p1 · feature' }), { key: 'ArrowDown' })
@@ -393,7 +397,7 @@ describe('worktrees', () => {
     })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
     closeActions()
-    expect(within(screen.getByText('feature').closest('li')!).getByLabelText('1 sessions')).toBeTruthy()
+    expect(within(screen.getByText('feature').closest('li')!).getByLabelText('1 sessions')).toBeTruthy() // attached but listed under p2, so the count stays visible
     expect(within(projectButton('p2').closest('li')!).getByRole('button', { name: /title-external/ })).toBeTruthy()
     expect(within(screen.getByText('feature').closest('li')!).queryByRole('button', { name: /title-external/ })).toBeNull()
   })
