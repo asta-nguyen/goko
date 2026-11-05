@@ -27,7 +27,11 @@ pub fn adopt_login_shell_path(shell: &str) {
         return;
     };
     let text = String::from_utf8_lossy(&output.stdout);
-    if let Some(path) = text.split("__GOKO__").nth(1).filter(|path| !path.is_empty()) {
+    if let Some(path) = text
+        .split("__GOKO__")
+        .nth(1)
+        .filter(|path| !path.is_empty())
+    {
         std::env::set_var("PATH", path);
     }
 }
@@ -137,14 +141,36 @@ pub fn argv_for(
                 )
                 .with_hint("check permissions for GOKO_HOME")
             })?;
+            let activity_dir = goko_home.join("activity/claude");
+            fs::create_dir_all(&activity_dir).map_err(|error| {
+                BridgeError::new(
+                    Code::Storage,
+                    format!("cannot create Claude activity directory: {error}"),
+                )
+                .with_hint("check permissions for GOKO_HOME")
+            })?;
             let statusline = claude_statusline_command(
                 &usage_dir.join(format!("{session_id}.json")),
                 original_statusline,
             )?;
+            let activity_file = activity_dir.join(&session_id);
+            let hook = |word: &str| -> Result<Value, BridgeError> {
+                Ok(json!([{
+                    "hooks": [{
+                        "type": "command",
+                        "command": claude_hook_command(&activity_file, word)?,
+                    }]
+                }]))
+            };
             let settings = json!({
                 "statusLine": {
                     "type": "command",
                     "command": statusline,
+                },
+                "hooks": {
+                    "UserPromptSubmit": hook("working")?,
+                    "Notification": hook("waiting")?,
+                    "Stop": hook("done")?,
                 }
             });
             Ok(vec![
@@ -167,21 +193,29 @@ pub(crate) fn original_statusline(settings_path: &Path) -> Option<String> {
 }
 
 fn claude_statusline_command(path: &Path, original: Option<&str>) -> Result<String, BridgeError> {
-    let quote = |value: &str| {
-        shlex::try_quote(value)
-            .map(|value| value.into_owned())
-            .map_err(|_| {
-                BridgeError::new(
-                    Code::Daemon(ErrorCode::InvalidArgument),
-                    "Claude statusline command cannot be shell-quoted",
-                )
-            })
-    };
+    let quote = |value: &str| shell_quote(value, "statusline");
     let path = quote(&path.display().to_string())?;
     Ok(match original {
         Some(command) => format!("tee {path} | sh -c {}", quote(command)?),
         None => format!("tee {path} >/dev/null"),
     })
+}
+
+/// A Claude event hook: write `word` to `path`, print nothing, always exit 0.
+fn claude_hook_command(path: &Path, word: &str) -> Result<String, BridgeError> {
+    let path = shell_quote(&path.display().to_string(), "activity hook")?;
+    Ok(format!("printf %s {word} >{path} 2>/dev/null; exit 0"))
+}
+
+fn shell_quote(value: &str, what: &str) -> Result<String, BridgeError> {
+    shlex::try_quote(value)
+        .map(|value| value.into_owned())
+        .map_err(|_| {
+            BridgeError::new(
+                Code::Daemon(ErrorCode::InvalidArgument),
+                format!("Claude {what} command cannot be shell-quoted"),
+            )
+        })
 }
 
 /// The first `name` under `path_var` that is an executable file.
@@ -349,6 +383,67 @@ mod tests {
                     .to_string(),
                 ">/dev/null".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn claude_argv_injects_activity_hooks_for_the_session() {
+        let dir = TempDir::new("agents-claude-hooks");
+        fake_bin(&dir, "claude", 0o755);
+        let path = path_var(&[dir.path()]);
+
+        let argv = argv_for("claude", Some(&path), "/bin/zsh", dir.path(), None).unwrap();
+        let id = &argv[2];
+        let settings: Value = serde_json::from_str(&argv[4]).unwrap();
+        let file = dir.path().join("activity/claude").join(id);
+
+        assert!(dir.path().join("activity/claude").is_dir());
+        for (event, word) in [
+            ("UserPromptSubmit", "working"),
+            ("Notification", "waiting"),
+            ("Stop", "done"),
+        ] {
+            let hook = settings
+                .pointer(&format!("/hooks/{event}/0/hooks/0"))
+                .unwrap_or_else(|| panic!("missing hook for {event}"));
+            assert_eq!(hook.pointer("/type").unwrap(), "command");
+            let command = hook.pointer("/command").unwrap().as_str().unwrap();
+            assert!(
+                command.starts_with(&format!("printf %s {word} >"))
+                    && command.contains(&file.display().to_string())
+                    && command.ends_with(" 2>/dev/null; exit 0"),
+                "unexpected hook command for {event}: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_activity_hook_writes_its_word_and_always_exits_zero() {
+        let dir = TempDir::new("agents-claude-hook-run");
+        fake_bin(&dir, "claude", 0o755);
+        let path = path_var(&[dir.path()]);
+        let home = dir.path().join("goko home");
+        fs::create_dir_all(&home).unwrap();
+
+        let argv = argv_for("claude", Some(&path), "/bin/zsh", &home, None).unwrap();
+        let settings: Value = serde_json::from_str(&argv[4]).unwrap();
+        let command = settings
+            .pointer("/hooks/Stop/0/hooks/0/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        assert_eq!(
+            fs::read_to_string(home.join("activity/claude").join(&argv[2])).unwrap(),
+            "done"
         );
     }
 

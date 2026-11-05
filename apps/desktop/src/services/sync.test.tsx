@@ -1,25 +1,34 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { useActivity } from '../features/activity/queries'
 import { useUsage } from '../features/usage/queries'
 import { useDaemonStatus, useSessionList } from '../features/sessions/queries'
 import { makeQueryClient, queryKeys } from '../queryClient'
 import { startQuerySync } from './sync'
+import type { ActivityMap } from './activity'
 import type { UsageSnapshot } from './usage'
 import type { DaemonStatus, SessionInfo } from './types'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service, usageService } = vi.hoisted(() => {
+const { handlers, listen, service, usageService, activityService } = vi.hoisted(() => {
   const handlers = new Map<string, Set<Handler>>()
   const listen = vi.fn(async (name: string, cb: Handler) => {
     if (!handlers.has(name)) handlers.set(name, new Set())
     handlers.get(name)!.add(cb)
     return () => void handlers.get(name)!.delete(cb)
   })
-  return { handlers, listen, service: { list: vi.fn(), status: vi.fn() }, usageService: { get: vi.fn() } }
+  return {
+    handlers,
+    listen,
+    service: { list: vi.fn(), status: vi.fn() },
+    usageService: { get: vi.fn() },
+    activityService: { get: vi.fn() },
+  }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen }))
 vi.mock('./session', () => ({ sessionService: service }))
+vi.mock('./activity', () => ({ activityService }))
 vi.mock('./usage', () => ({
   usageService,
   claudeSessionId: (argv: string[]) => {
@@ -53,6 +62,7 @@ beforeEach(async () => {
   listen.mockClear()
   Object.values(service).forEach((f) => f.mockReset())
   usageService.get.mockReset()
+  activityService.get.mockReset()
   stop = startQuerySync(qc)
   await settle()
 })
@@ -77,6 +87,20 @@ describe('startQuerySync', () => {
 
     await waitFor(() => expect(result.current.data).toEqual(next))
     expect(qc.getQueryData(queryKeys.usage)).toEqual(next)
+  })
+
+  it('updates useActivity from activity://updated', async () => {
+    const initial: ActivityMap = { s1: 'working' }
+    const next: ActivityMap = { s1: 'done', s2: 'waiting' }
+    activityService.get.mockResolvedValue(initial)
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    const { result } = renderHook(() => useActivity(), { wrapper })
+    await waitFor(() => expect(result.current.data).toEqual(initial))
+
+    act(() => emit('activity://updated', next))
+
+    await waitFor(() => expect(result.current.data).toEqual(next))
+    expect(qc.getQueryData(queryKeys.activity)).toEqual(next)
   })
 
   it('updates one session without replacing the others', async () => {
@@ -155,11 +179,11 @@ describe('startQuerySync', () => {
     stopOther()
   })
 
-  it('registers four listeners once, and stop removes them all', async () => {
-    expect(listeners()).toBe(4)
+  it('registers five listeners once, and stop removes them all', async () => {
+    expect(listeners()).toBe(5)
     expect(startQuerySync(qc)).toBe(stop)
     await settle()
-    expect(listen).toHaveBeenCalledTimes(4)
+    expect(listen).toHaveBeenCalledTimes(5)
 
     stop()
     await settle()
@@ -171,6 +195,6 @@ describe('startQuerySync', () => {
     const stopOther = startQuerySync(other)
     stopOther() // before `listen` resolved
     await settle()
-    expect(listeners()).toBe(4) // only the beforeEach client's
+    expect(listeners()).toBe(5) // only the beforeEach client's
   })
 })

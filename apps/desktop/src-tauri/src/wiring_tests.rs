@@ -24,6 +24,7 @@ fn webview_with(
         .manage(Bridge::new(home.path().to_owned()))
         .manage(storage)
         .manage(crate::usage::UsageState::default())
+        .manage(crate::activity::ActivityState::default())
         .invoke_handler(handler())
         .build(mock_context(noop_assets()))
         .unwrap();
@@ -79,6 +80,11 @@ async fn commands_take_and_return_what_the_frontend_services_send_and_expect() {
     assert_eq!(usage["claude"]["five_hour"], Value::Null);
     assert_eq!(usage["claude"]["sessions"], json!({}));
     assert_eq!(usage["codex"]["primary"], Value::Null);
+
+    assert_eq!(
+        invoke(&webview, "activity_get", json!({})).unwrap(),
+        json!({})
+    );
 
     // `title` omitted, as `sessionService.create` does when the caller gives none.
     let session = invoke(

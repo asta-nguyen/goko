@@ -2,6 +2,8 @@
 
 ## Changes
 
+- [Agent activity: working, needs you, done](changes/2026-11-05-agent-activity/design.md) ([tasks](changes/2026-11-05-agent-activity/tasks.md))
+
 ## Archived changes
 
 - [Multi-theme support](changes/archive/2026-11-05-multi-theme/delta.md)

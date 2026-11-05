@@ -26,8 +26,9 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
   receives terminal bytes on a Tauri `Channel`.
 - Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
   holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
-  the app-owned `goko.db` (0600), and `usage/claude/<session-id>.json` captures
-  (JSON files older than seven days are pruned at app startup).
+  the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures, and
+  `activity/claude/<session-id>` hook files holding `working`, `waiting`, or `done`
+  (files older than seven days are pruned at app startup).
 
 ## App-owned project metadata (S2)
 

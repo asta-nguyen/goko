@@ -11,6 +11,11 @@ vi.mock('../../services/usage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/usage')>()),
   usageService,
 }))
+const activityService = vi.hoisted(() => ({ get: vi.fn() }))
+vi.mock('../../services/activity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/activity')>()),
+  activityService,
+}))
 
 const session = (argv: string[]): SessionInfo => ({
   id: 'daemon-session',
@@ -49,6 +54,7 @@ function renderRows(value: UsageSnapshot, argv: string[]) {
 beforeEach(() => {
   qc = makeQueryClient()
   usageService.get.mockReset()
+  activityService.get.mockReset().mockResolvedValue({})
 })
 
 describe('SessionItems usage context', () => {
@@ -68,5 +74,32 @@ describe('SessionItems usage context', () => {
     await waitFor(() => expect(qc.getQueryData(queryKeys.usage)).toEqual(value))
     expect(screen.queryByLabelText(/Claude context/)).toBeNull()
     expect(screen.queryByText(/%$/)).toBeNull()
+  })
+})
+
+describe('SessionItems activity', () => {
+  it('shows the activity on the state dot for a running session', async () => {
+    activityService.get.mockResolvedValue({ 'daemon-session': 'working' })
+    renderRows(snapshot(), ['claude'])
+
+    expect(await screen.findByTitle('running · working')).toBeDefined()
+  })
+
+  it('keeps the plain state title when the session is not running', async () => {
+    activityService.get.mockResolvedValue({ 'daemon-session': 'working' })
+    usageService.get.mockResolvedValue(snapshot())
+    render(
+      <SessionItems
+        sessions={[{ ...session(['claude']), state: 'exited' }]}
+        labelOf={() => undefined}
+        selectedId={null}
+        workspaceId="workspace"
+        onSelect={() => {}}
+      />,
+      { wrapper },
+    )
+
+    expect(await screen.findByTitle('exited')).toBeDefined()
+    expect(screen.queryByTitle('exited · working')).toBeNull()
   })
 })

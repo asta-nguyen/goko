@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import { cn } from '@/lib/utils'
 import type { SessionInfo } from '../../services/types'
+import { useSessionActivity } from '../activity/queries'
 import { useSessionContext } from '../usage/queries'
 import { usageTone, usageToneClass } from '../usage/tone'
 import { StateDot } from './StateBadge'
@@ -24,6 +25,7 @@ const SessionRow = memo(function SessionRow({
   const ended = session.state === 'exited' || session.state === 'failed'
   const contextPct = useSessionContext(session)
   const context = contextPct === null ? null : Math.round(contextPct)
+  const activity = useSessionActivity(session)
   return (
     <li>
       <button
@@ -36,7 +38,7 @@ const SessionRow = memo(function SessionRow({
           selected && 'bg-accent/10 text-accent',
         )}
       >
-        <StateDot state={session.state} />
+        <StateDot state={session.state} activity={activity} />
         {showLabel ? (
           <>
             <span className="shrink-0 font-medium">{label}</span>

@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { listen } from '@tauri-apps/api/event'
 import { queryKeys, upsertSession } from '../queryClient'
+import type { ActivityMap } from './activity'
 import type { UsageSnapshot } from './usage'
 import type { DaemonStatus, SessionInfo } from './types'
 
@@ -26,6 +27,9 @@ export function startQuerySync(qc: QueryClient): () => void {
     }),
     listen<UsageSnapshot>('usage://updated', ({ payload }) => {
       qc.setQueryData(queryKeys.usage, payload)
+    }),
+    listen<ActivityMap>('activity://updated', ({ payload }) => {
+      qc.setQueryData(queryKeys.activity, payload)
     }),
   ]
 

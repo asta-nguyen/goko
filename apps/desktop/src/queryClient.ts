@@ -30,6 +30,7 @@ export const queryKeys = {
   editorVim: ['settings', 'editor.vim'] as const,
   daemonStatus: ['daemon-status'],
   usage: ['usage'],
+  activity: ['activity'] as const,
 } as const
 
 // The daemon pushes changes and the bridge already reconnects, so never refetch on our own.

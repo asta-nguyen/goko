@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod agents;
 pub mod bridge;
 pub mod commands;
@@ -84,6 +85,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::project_list,
         commands::project_remove,
         commands::agent_list,
+        activity::activity_get,
         commands::session_meta_list,
         commands::settings_get,
         commands::settings_set,
@@ -107,6 +109,11 @@ pub fn run() {
             let emit: events::Emit = Arc::new(move |name, payload| {
                 let _ = app_handle.emit(name, payload);
             });
+            app.manage(activity::spawn_poller(
+                bridge.clone(),
+                home.clone(),
+                Arc::clone(&emit),
+            ));
             app.manage(usage::spawn_poller(home, Arc::clone(&emit)));
             events::spawn_pump(bridge, emit);
             Ok(())

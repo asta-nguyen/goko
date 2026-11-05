@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::State;
 
-const CODEX_TAIL_BYTES: u64 = 64 * 1024;
+pub(crate) const CODEX_TAIL_BYTES: u64 = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CLAUDE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -280,7 +280,10 @@ fn read_codex(codex_home: Option<&Path>, previous: &CodexUsage) -> CodexUsage {
     }
 }
 
-fn codex_home_from(codex_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+pub(crate) fn codex_home_from(
+    codex_home: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
     codex_home
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -301,7 +304,7 @@ fn newest_rollout(dir: &Path) -> Option<(PathBuf, SystemTime)> {
         .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)))
 }
 
-fn collect_recent_days(dir: &Path, days: &mut Vec<PathBuf>) {
+pub(crate) fn collect_recent_days(dir: &Path, days: &mut Vec<PathBuf>) {
     if days.len() >= 2 {
         return;
     }
@@ -325,7 +328,7 @@ fn collect_recent_days(dir: &Path, days: &mut Vec<PathBuf>) {
     }
 }
 
-fn rollouts_in(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+pub(crate) fn rollouts_in(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
