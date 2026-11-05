@@ -1,6 +1,6 @@
 //! Local agent adapters resolved on `PATH` at launch time.
 //!
-//! An adapter is just an argv0 name: `claude`, `codex`, `opencode`, or the user's
+//! An adapter is just an argv0 name: `claude`, `codex`, `opencode`, `devin`, or the user's
 //! default shell, which is always available. Resolution happens when a session is
 //! created, never earlier, so a binary that appears or disappears between `agent_list`
 //! and Start is handled on the launch path.
@@ -14,6 +14,23 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+/// A Finder-launched app gets launchd's bare `PATH`, so `claude`/`codex` are not found.
+/// Ask the user's login shell for its `PATH` and adopt it; the daemon and every
+/// session inherit it. Markers skip any noise printed by rc files.
+pub fn adopt_login_shell_path(shell: &str) {
+    let Ok(output) = std::process::Command::new(shell)
+        .args(["-ilc", "printf '__GOKO__%s__GOKO__' \"$PATH\""])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    if let Some(path) = text.split("__GOKO__").nth(1).filter(|path| !path.is_empty()) {
+        std::env::set_var("PATH", path);
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentInfo {
@@ -50,6 +67,11 @@ const ADAPTERS: &[Adapter] = &[
         id: "opencode",
         label: "OpenCode",
         bin: Some("opencode"),
+    },
+    Adapter {
+        id: "devin",
+        label: "Devin",
+        bin: Some("devin"),
     },
 ];
 

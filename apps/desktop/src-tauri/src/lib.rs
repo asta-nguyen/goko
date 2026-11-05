@@ -94,6 +94,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
 }
 
 pub fn run() {
+    agents::adopt_login_shell_path(&commands::default_shell(std::env::var_os("SHELL")));
     let shutdown = Arc::new(ShutdownState::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

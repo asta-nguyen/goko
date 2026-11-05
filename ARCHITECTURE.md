@@ -69,7 +69,7 @@ title, created_at)`, and `settings(key, value)`.
   shrinks with the available width; a narrower window keeps the minimums and scrolls
   horizontally. Widths live in UI memory across workspaces and Editor sections and reset to
   defaults when Goko restarts.
-- Agent adapters (`shell`, `claude`, `codex`, `opencode`) are discovered from `PATH` by the
+- Agent adapters (`shell`, `claude`, `codex`, `opencode`, `devin`) are discovered from `PATH` by the
   app. Launch resolves the executable again and sends an argv array through the bridge; the
   daemon remains the only PTY and child-process authority.
 - On daemon restart, live sessions are gone while metadata rows remain in SQLite. The app

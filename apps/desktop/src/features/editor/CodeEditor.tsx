@@ -3,7 +3,7 @@ import { LanguageDescription } from '@codemirror/language'
 import { EditorView } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
 import { languages } from '@codemirror/language-data'
-import { Vim, vim } from '@replit/codemirror-vim'
+import { getCM, Vim, vim } from '@replit/codemirror-vim'
 import { useEffect, useRef } from 'react'
 import { codeTheme } from './code-theme'
 
@@ -19,6 +19,17 @@ export interface CodeEditorProps {
   onChange: (text: string) => void
   onSave: () => void
 }
+
+/**
+ * macOS Telex in WKWebView inserts the typed key from an `input` event that lands before the
+ * keydown Vim can preventDefault, so `j` would move *and* type. Placed after `vim()`, this only
+ * sees text Vim declined, and outside insert mode no text is ever wanted.
+ */
+const dropTextOutsideInsertMode = EditorView.inputHandler.of((view) => {
+  const state = getCM(view)?.state.vim
+  return !!state && !state.insertMode
+})
+const vimExtensions = () => [vim(), dropTextOutsideInsertMode]
 
 const externalValue = Annotation.define<boolean>()
 let saveMountedEditor: (() => void) | null = null
@@ -52,7 +63,7 @@ export function CodeEditor({ value, path, ariaLabel, readOnly, vim: vimEnabled, 
       doc: value,
       parent: parentElement,
       extensions: [
-        vimCompartment.of(vimEnabled ? vim() : []),
+        vimCompartment.of(vimEnabled ? vimExtensions() : []),
         basicSetup,
         languageCompartment.of([]),
         editableCompartment.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
@@ -119,7 +130,7 @@ export function CodeEditor({ value, path, ariaLabel, readOnly, vim: vimEnabled, 
   useEffect(() => {
     const editorView = view.current
     const compartment = vimMode.current
-    if (editorView && compartment) editorView.dispatch({ effects: compartment.reconfigure(vimEnabled ? vim() : []) })
+    if (editorView && compartment) editorView.dispatch({ effects: compartment.reconfigure(vimEnabled ? vimExtensions() : []) })
   }, [vimEnabled])
 
   useEffect(() => {

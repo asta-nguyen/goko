@@ -70,6 +70,17 @@ describe('CodeEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
   })
 
+  it('swallows typed text in Vim normal mode but not in insert mode', async () => {
+    const { container } = render(<CodeEditor {...baseProps} vim />)
+    await waitFor(() => expect(container.querySelector('.cm-vimMode')).toBeTruthy())
+    const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)!
+    const insertText = () => view.state.facet(EditorView.inputHandler).some((handler) => handler(view, 0, 0, 'j', () => view.state.update({})))
+
+    expect(insertText()).toBe(true)
+    Vim.handleKey(getCM(view)! as Parameters<typeof Vim.handleKey>[0], 'i', 'user')
+    expect(insertText()).toBe(false)
+  })
+
   it('reports a reveal once and does not repeat it on re-render', async () => {
     const onRevealed = vi.fn()
     const reveal = { line: 2, nonce: 1 }
