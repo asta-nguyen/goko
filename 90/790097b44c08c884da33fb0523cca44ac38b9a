@@ -1,0 +1,29 @@
+apps/desktop/src-tauri/src/lib.rs
+  s_51b1b5a37299f5::t_5ea250032179c2 97
+apps/desktop/src/features/editor/CodeEditor.test.tsx
+  s_51b1b5a37299f5::t_618e7c42bcbc4a 73-83
+ARCHITECTURE.md
+  s_51b1b5a37299f5::t_4d7fd64f2399da 72
+apps/desktop/src/features/editor/CodeEditor.tsx
+  s_51b1b5a37299f5::t_618e7c42bcbc4a 6,23-33,66,133
+apps/desktop/src-tauri/src/agents.rs
+  s_51b1b5a37299f5::t_5ea250032179c2 18-34
+  s_51b1b5a37299f5::t_4d7fd64f2399da 3,71-74
+  s_51b1b5a37299f5::t_ab39791cf486ce 75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "90790097b44c08c884da33fb0523cca44ac38b9a",
+  "prompts": {},
+  "sessions": {
+    "s_51b1b5a37299f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fdd4255-2331-4028-baff-64e4f1085547",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
