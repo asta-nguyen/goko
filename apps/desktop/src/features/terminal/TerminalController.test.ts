@@ -91,6 +91,7 @@ beforeEach(() => {
   state.terms.length = 0
   state.observers.length = 0
   state.calls.length = 0
+  delete document.documentElement.dataset.theme
   state.fitSize = { cols: 100, rows: 30 }
   unsub = vi.fn()
   Object.values(service).forEach((f) => f.mockClear())
@@ -193,6 +194,29 @@ describe('TerminalController mount', () => {
     c.setVisible(true)
     await vi.waitFor(() => expect(service.resize).toHaveBeenCalledWith('hidden', 100, 30))
     c.dispose()
+  })
+
+  it('recolors a mounted terminal when the app theme changes', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    const before = state.terms[0].options.theme
+
+    document.documentElement.dataset.theme = 'dracula'
+    await flush()
+    expect(state.terms[0].options.theme).not.toBe(before)
+    expect(state.terms[0].options.theme).toHaveProperty('background')
+    c.dispose()
+  })
+
+  it('stops recoloring after dispose', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    c.dispose()
+    const before = state.terms[0].options.theme
+
+    document.documentElement.dataset.theme = 'dracula'
+    await flush()
+    expect(state.terms[0].options.theme).toBe(before)
   })
 })
 

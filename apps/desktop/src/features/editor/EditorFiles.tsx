@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Toggle } from '@/components/ui/toggle'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { queryKeys } from '../../queryClient'
@@ -148,7 +147,7 @@ export function EditorFiles({
   const [reveal, setReveal] = useState<{ line: number; nonce: number } | null>(null)
   const [mdView, setMdView] = useState<'preview' | 'raw'>('raw')
   const [saving, setSaving] = useState(false)
-  const [vim, setVim] = useEditorVim()
+  const [vim] = useEditorVim()
   const editorDraft = useUi((state) => state.editorDraft)
   const editorSaveError = useUi((state) => state.editorSaveError)
   const setEditorDraft = useUi((state) => state.setEditorDraft)
@@ -376,17 +375,6 @@ export function EditorFiles({
             {draft && <Badge variant="warning">Unsaved</Badge>}
             {draftTooLarge && <Badge variant="warning">over 1 MiB</Badge>}
             {draftHasNul && <Badge variant="warning">binary NUL</Badge>}
-            {editable && (
-              <Toggle
-                variant="outline"
-                size="sm"
-                aria-label="Vim mode"
-                pressed={vim}
-                onPressedChange={setVim}
-              >
-                Vim
-              </Toggle>
-            )}
             {markdown && (
               <ToggleGroup
                 type="single"

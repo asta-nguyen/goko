@@ -506,15 +506,13 @@ describe('sections', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Markdown view' })).toBeNull()
   })
 
-  it('loads the persisted Vim setting and passes it to the editor', async () => {
+  it('passes the persisted Vim setting to the editor', async () => {
     settings.get.mockResolvedValue('1')
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     fireEvent.click(await screen.findByRole('button', { name: 'src' }))
     fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
 
-    const toggle = await screen.findByRole('button', { name: 'Vim mode' })
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
     expect((await screen.findByRole('textbox', { name: 'Edit src/app.ts' })).getAttribute('data-vim')).toBe('true')
   })
 

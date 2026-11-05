@@ -32,11 +32,11 @@ The system SHALL persist the optional Vim mode under `editor.vim` and route Vim 
 
 #### Scenario: Save from Vim mode
 
-- GIVEN Vim mode is enabled in the Files editor
+- GIVEN Vim mode is enabled on the Settings page
 - WHEN the user runs `:w`
 - THEN the active editor invokes the same save action as the Save button
 
-Evidence: `apps/desktop/src/features/editor/queries.ts`, `apps/desktop/src/features/editor/EditorFiles.tsx`, `apps/desktop/src/features/editor/CodeEditor.tsx`, `apps/desktop/src/features/editor/queries.test.tsx`, `apps/desktop/src/features/editor/CodeEditor.test.tsx`
+Evidence: `apps/desktop/src/features/editor/queries.ts`, `apps/desktop/src/features/settings/SettingsPage.tsx`, `apps/desktop/src/features/editor/CodeEditor.tsx`, `apps/desktop/src/features/editor/queries.test.tsx`, `apps/desktop/src/features/editor/CodeEditor.test.tsx`
 
 ## Flow
 
@@ -44,7 +44,7 @@ Files mode keeps the existing filename filter and tree. Content mode trims and d
 
 ## State changes
 
-The Vim toggle reads and writes the existing settings key `editor.vim` as `"1"` or `"0"`; missing, unreadable, or other values leave Vim off. Editing continues to use the existing draft state and save path. Content search is read-only and does not change checkout files.
+The Vim mode switch on the Settings page reads and writes the existing settings key `editor.vim` as `"1"` or `"0"`; missing, unreadable, or other values leave Vim off. Editing continues to use the existing draft state and save path. Content search is read-only and does not change checkout files.
 
 ## Side effects
 
@@ -84,6 +84,7 @@ No matches produce an empty result. Git exit code 1 with empty stderr is treated
 - `apps/desktop/src/features/editor/code-theme.ts`
 - `apps/desktop/src/features/editor/queries.ts`
 - `apps/desktop/src/features/editor/queries.test.tsx`
+- `apps/desktop/src/features/settings/SettingsPage.tsx`
 - `apps/desktop/src/queryClient.ts`
 - `apps/desktop/src/services/git-view.ts`
 - `apps/desktop/src/services/git-view.test.ts`

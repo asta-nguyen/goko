@@ -4,14 +4,18 @@ import { tags } from '@lezer/highlight'
 import { EditorView } from '@codemirror/view'
 
 const syntax = HighlightStyle.define([
-  { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.operatorKeyword], color: 'var(--syntax-keyword)' },
+  { tag: [tags.keyword, tags.definitionKeyword, tags.operatorKeyword], color: 'var(--syntax-keyword)' },
+  { tag: tags.controlKeyword, color: 'var(--syntax-control)' },
   { tag: [tags.string, tags.docString, tags.character, tags.regexp, tags.escape], color: 'var(--syntax-string)' },
-  { tag: [tags.number, tags.bool], color: 'var(--syntax-number)' },
+  { tag: tags.number, color: 'var(--syntax-number)' },
+  { tag: [tags.bool, tags.null], color: 'var(--syntax-keyword)' },
   { tag: tags.function(tags.variableName), color: 'var(--syntax-function)' },
+  { tag: tags.variableName, color: 'var(--syntax-variable)' },
+  { tag: tags.constant(tags.variableName), color: 'var(--syntax-constant)' },
   { tag: [tags.typeName, tags.className, tags.namespace], color: 'var(--syntax-tag)' },
   { tag: [tags.propertyName, tags.attributeName], color: 'var(--syntax-attr)' },
   { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--syntax-comment)', fontStyle: 'italic' },
-  { tag: [tags.operator, tags.punctuation], color: 'var(--muted)' },
+  { tag: [tags.operator, tags.punctuation], color: 'var(--text)' },
 ])
 
 export const codeTheme: Extension = [

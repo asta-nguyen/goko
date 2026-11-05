@@ -7,7 +7,7 @@ import { useUi } from './stores/ui'
 import App from './App'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service, projects, agents, worktrees, gitview, usageService, log } = vi.hoisted(() => {
+const { handlers, listen, service, projects, agents, worktrees, gitview, settings, usageService, log } = vi.hoisted(() => {
   const handlers = new Map<string, Set<Handler>>()
   const listen = vi.fn(async (name: string, cb: Handler) => {
     if (!handlers.has(name)) handlers.set(name, new Set())
@@ -23,6 +23,7 @@ const { handlers, listen, service, projects, agents, worktrees, gitview, usageSe
     agents: { list: vi.fn() },
     worktrees: { list: vi.fn(), branches: vi.fn(), create: vi.fn(), envCandidates: vi.fn(), envCopy: vi.fn(), remove: vi.fn() },
     gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
+    settings: { get: vi.fn(), set: vi.fn() },
     usageService: { get: vi.fn() },
   }
 })
@@ -33,6 +34,7 @@ vi.mock('./services/projects', () => ({ projectService: projects }))
 vi.mock('./services/agents', () => ({ agentService: agents }))
 vi.mock('./services/worktrees', () => ({ worktreeService: worktrees }))
 vi.mock('./services/git-view', () => ({ gitViewService: gitview }))
+vi.mock('./services/settings', () => ({ settingsService: settings }))
 vi.mock('./services/usage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./services/usage')>()),
   usageService,
@@ -113,6 +115,8 @@ beforeEach(async () => {
   worktrees.envCopy.mockResolvedValue({ copied: [], skipped: [], failed: [] })
   worktrees.remove.mockResolvedValue(undefined)
   Object.values(gitview).forEach((f) => f.mockReset().mockResolvedValue(undefined))
+  settings.get.mockReset().mockResolvedValue(null)
+  settings.set.mockReset().mockResolvedValue(undefined)
   gitview.changes.mockResolvedValue({ branch: 'main', head: 'x', conflicts: [], staged: [], unstaged: [], untracked: [] })
   service.list.mockResolvedValue([session('a'), session('b')])
   service.meta.mockResolvedValue([])
@@ -122,6 +126,20 @@ beforeEach(async () => {
 })
 
 describe('App', () => {
+  it('opens the Settings page from the header gear and via Cmd+,', async () => {
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(useUi.getState().activeView).toBe('settings')
+
+    act(() => useUi.getState().setActiveView('terminal'))
+    fireEvent.keyDown(window, { key: ',', metaKey: true })
+    expect(useUi.getState().activeView).toBe('settings')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(useUi.getState().activeView).toBe('terminal')
+  })
+
   it('adds a project from the empty workspace', async () => {
     vi.mocked(open).mockResolvedValue('/w/one')
     projects.add.mockResolvedValue(project('p1', { root: '/w/one' }))

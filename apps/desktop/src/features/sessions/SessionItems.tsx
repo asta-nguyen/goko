@@ -33,7 +33,7 @@ const SessionRow = memo(function SessionRow({
         className={cn(
           'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
           ended && 'text-muted',
-          selected && 'bg-secondary/70 shadow-[inset_2px_0_0_var(--accent)]',
+          selected && 'bg-accent/10 text-accent',
         )}
       >
         <StateDot state={session.state} />

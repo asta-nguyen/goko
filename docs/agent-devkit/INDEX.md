@@ -4,6 +4,9 @@
 
 ## Archived changes
 
+- [Multi-theme support](changes/archive/2026-11-05-multi-theme/delta.md)
+- [Theme control moves to Settings](changes/archive/2026-11-05-theme-to-settings/delta.md)
+- [Settings page](changes/archive/2026-11-05-settings-page/delta.md)
 - [s1-01 Repo init and workspaces](changes/archive/s1-01-repo-init/design.md) ([tasks](changes/archive/s1-01-repo-init/tasks.md))
 - [s1-02 UI shell](changes/archive/s1-02-ui-shell/design.md) ([tasks](changes/archive/s1-02-ui-shell/tasks.md))
 - [s1-03 Protocol crate](changes/archive/s1-03-protocol/design.md) ([tasks](changes/archive/s1-03-protocol/tasks.md))

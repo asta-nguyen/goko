@@ -27,6 +27,7 @@ export class TerminalController {
   private element?: HTMLElement
   private fit = new FitAddon()
   private observer?: ResizeObserver
+  private themeObserver?: MutationObserver
   private timer?: ReturnType<typeof setTimeout>
   private onData?: { dispose(): void }
   private imeCleanup?: () => void
@@ -70,6 +71,9 @@ export class TerminalController {
       this.timer = setTimeout(() => void this.syncSize(), RESIZE_DEBOUNCE_MS)
     })
     this.observer.observe(element)
+    // Theme tokens are read at mount; re-read them when the app theme flips.
+    this.themeObserver = new MutationObserver(() => this.updateTheme())
+    this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
     if (this.visible) await this.syncSize()
     if (this.disposed) return
@@ -93,11 +97,17 @@ export class TerminalController {
     this.disposed = true
     clearTimeout(this.timer)
     this.observer?.disconnect()
+    this.themeObserver?.disconnect()
     this.imeCleanup?.()
     this.unsubscribe?.()
     this.onData?.dispose()
     this.fit.dispose()
     this.term?.dispose()
+  }
+
+  private updateTheme(): void {
+    if (!this.term) return
+    this.term.options.theme = { background: token('--bg'), foreground: token('--text'), cursor: token('--accent') }
   }
 
   setVisible(visible: boolean): void {
