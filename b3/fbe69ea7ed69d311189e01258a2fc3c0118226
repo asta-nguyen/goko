@@ -1,0 +1,115 @@
+apps/desktop/src/features/sessions/SessionItems.test.tsx
+  s_0b2f6471bcf33c::t_8f3153ac99548f 79-105
+  s_0b2f6471bcf33c::t_66f39fe009fa28 57
+  s_0b2f6471bcf33c::t_86623053b94fb1 14-18
+docs/llm/architecture/overview.md
+  s_51b1b5a37299f5::t_dd41ca6279af38 28-30,54-55,63-65,93-118,145,151-152,157,161-162
+docs/agent-devkit/changes/2026-11-05-agent-activity/tasks.md
+  s_51b1b5a37299f5::t_fe98a2f6c4d543 65-66
+  s_51b1b5a37299f5::t_4bfae66a6d4e35 94
+  s_51b1b5a37299f5::t_a4762fcc30c135 1-37,40-46,49-55,58-64,67-73,76-93,95-98
+  s_51b1b5a37299f5::t_69a13f10283940 47-48,74-75
+  s_51b1b5a37299f5::t_4ba30ff39b7bc6 38-39
+  s_51b1b5a37299f5::t_738e928d1eadab 56-57
+apps/desktop/src-tauri/src/activity.rs
+  s_ba09d69a3d24c6::t_872e9fb76eb891 90,205-206
+  s_ba09d69a3d24c6::t_0cf6b157ef8094 5,7,9-10,14,18-89,91-204,325-326,348-613,772-773
+  s_51b1b5a37299f5::t_5dfe7e5fb23ec5 1-4,6,8,11-13,15-17,207-324,327-347,614-708,710-771
+  s_51b1b5a37299f5::t_473196644f7133 709
+apps/desktop/src-tauri/src/agents.rs
+  s_5d81aec1935384::t_e61c10fdad719f 144-151,156-164,169-173
+  s_5d81aec1935384::t_06cddcdce4da6d 389-449
+  s_5d81aec1935384::t_c945b67d276318 196,204-219
+  s_5d81aec1935384::t_14e84f2054eb40 30-34,220
+apps/desktop/src/features/sessions/StateBadge.tsx
+  s_0b2f6471bcf33c::t_2390b81379e0be 38-39,43
+  s_0b2f6471bcf33c::t_1face6e40305cf 1
+  s_0b2f6471bcf33c::t_3423274bb65b00 30-35,37,41-42,44-45
+apps/desktop/src/services/activity.ts
+  s_0b2f6471bcf33c::t_e8720831cf2945 1-8
+docs/agent-devkit/INDEX.md
+  s_51b1b5a37299f5::t_4bfae66a6d4e35 5-6
+apps/desktop/src/features/activity/queries.test.tsx
+  s_0b2f6471bcf33c::t_fde0164d854ebd 1-62
+apps/desktop/src/services/sync.test.tsx
+  s_0b2f6471bcf33c::t_cf712048c3d31d 4,9,14,21-27,31
+  s_0b2f6471bcf33c::t_55f1a595cff40e 92-105
+  s_0b2f6471bcf33c::t_a5ab9d1a068bf1 198
+  s_0b2f6471bcf33c::t_0a8a986a627a75 65
+  s_0b2f6471bcf33c::t_575163d2b56a48 182-183,186
+apps/desktop/src/queryClient.ts
+  s_0b2f6471bcf33c::t_00c240c50d98c3 33
+apps/desktop/src/services/sync.ts
+  s_0b2f6471bcf33c::t_05cf1391cac6a7 4
+  s_0b2f6471bcf33c::t_d5299fa14f66d2 31-33
+apps/desktop/src/App.test.tsx
+  s_0b2f6471bcf33c::t_bd5d0c7befd25c 10-11
+  s_0b2f6471bcf33c::t_5a723817bf4ba9 179,213,221
+  s_0b2f6471bcf33c::t_0077e6947f1856 44-47
+  s_0b2f6471bcf33c::t_54f5c1b0b45f8a 114
+  s_0b2f6471bcf33c::t_162cb76e98d281 199
+  s_0b2f6471bcf33c::t_270e5be7a6dbb5 12-30
+apps/desktop/src-tauri/src/usage.rs
+  s_ba09d69a3d24c6::t_323783429b3c6e 307
+  s_ba09d69a3d24c6::t_78884ba34bb66f 13
+  s_ba09d69a3d24c6::t_872e9fb76eb891 283-286
+  s_ba09d69a3d24c6::t_02496872eb3c6f 331
+ARCHITECTURE.md
+  s_51b1b5a37299f5::t_dd41ca6279af38 29-31
+docs/agent-devkit/changes/2026-11-05-agent-activity/design.md
+  s_51b1b5a37299f5::t_c7b66f72e6eaef 1-87
+apps/desktop/src/features/sessions/SessionItems.tsx
+  s_0b2f6471bcf33c::t_05575790bee683 41
+  s_0b2f6471bcf33c::t_13bd174829fbe6 28
+  s_0b2f6471bcf33c::t_883e719f03d71f 4
+apps/desktop/src-tauri/src/lib.rs
+  s_51b1b5a37299f5::t_5dfe7e5fb23ec5 88,112-116
+  s_ba09d69a3d24c6::t_0a052fcc974d14 1
+apps/desktop/src-tauri/src/wiring_tests.rs
+  s_51b1b5a37299f5::t_5dfe7e5fb23ec5 27,84-87
+  s_51b1b5a37299f5::t_4244236aa814a8 88
+apps/desktop/src/features/sessions/StateBadge.test.tsx
+  s_0b2f6471bcf33c::t_462b97d9017fd7 1-49
+apps/desktop/src/features/activity/queries.ts
+  s_0b2f6471bcf33c::t_ab1302a7554aab 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b3fbe69ea7ed69d311189e01258a2fc3c0118226",
+  "prompts": {},
+  "sessions": {
+    "s_0b2f6471bcf33c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "wooden-booklet",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_51b1b5a37299f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fdd4255-2331-4028-baff-64e4f1085547",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_5d81aec1935384": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "brawny-maize",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_ba09d69a3d24c6": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "yellow-capybara",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
