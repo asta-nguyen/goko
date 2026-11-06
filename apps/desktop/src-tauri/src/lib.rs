@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod agents;
 pub mod bridge;
 pub mod commands;
@@ -7,6 +8,7 @@ pub mod events;
 pub mod git_view;
 pub mod store;
 pub mod terminal;
+pub mod usage;
 pub mod worktrees;
 
 #[cfg(test)]
@@ -64,6 +66,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::git_view_diff,
         commands::git_view_history,
         commands::git_view_file_list,
+        commands::git_view_search,
         commands::git_view_tree,
         commands::git_view_file,
         commands::git_view_file_save,
@@ -74,6 +77,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::session_stop,
         commands::session_delete,
         commands::session_list,
+        usage::usage_get,
         commands::terminal_write,
         commands::terminal_resize,
         commands::daemon_status,
@@ -81,15 +85,18 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::project_list,
         commands::project_remove,
         commands::agent_list,
+        activity::activity_get,
         commands::session_meta_list,
         commands::settings_get,
         commands::settings_set,
         terminal::terminal_subscribe,
         terminal::terminal_unsubscribe,
+        terminal::terminal_ack,
     ]
 }
 
 pub fn run() {
+    agents::adopt_login_shell_path(&commands::default_shell(std::env::var_os("SHELL")));
     let shutdown = Arc::new(ShutdownState::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -98,13 +105,17 @@ pub fn run() {
             let bridge = Bridge::new(home.clone());
             app.manage(bridge.clone());
             app.manage(store::Storage::open(&home));
-            let app = app.handle().clone();
-            events::spawn_pump(
-                bridge,
-                Arc::new(move |name, payload| {
-                    let _ = app.emit(name, payload);
-                }),
-            );
+            let app_handle = app.handle().clone();
+            let emit: events::Emit = Arc::new(move |name, payload| {
+                let _ = app_handle.emit(name, payload);
+            });
+            app.manage(activity::spawn_poller(
+                bridge.clone(),
+                home.clone(),
+                Arc::clone(&emit),
+            ));
+            app.manage(usage::spawn_poller(home, Arc::clone(&emit)));
+            events::spawn_pump(bridge, emit);
             Ok(())
         })
         .invoke_handler(handler())

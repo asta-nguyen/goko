@@ -7,24 +7,28 @@ import { useUi } from './stores/ui'
 import App from './App'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service, projects, agents, worktrees, gitview, log } = vi.hoisted(() => {
-  const handlers = new Map<string, Set<Handler>>()
-  const listen = vi.fn(async (name: string, cb: Handler) => {
-    if (!handlers.has(name)) handlers.set(name, new Set())
-    handlers.get(name)!.add(cb)
-    return () => void handlers.get(name)!.delete(cb)
+const { handlers, listen, service, projects, agents, worktrees, gitview, settings, usageService, activityService, log } =
+  vi.hoisted(() => {
+    const handlers = new Map<string, Set<Handler>>()
+    const listen = vi.fn(async (name: string, cb: Handler) => {
+      if (!handlers.has(name)) handlers.set(name, new Set())
+      handlers.get(name)!.add(cb)
+      return () => void handlers.get(name)!.delete(cb)
+    })
+    return {
+      handlers,
+      listen,
+      log: [] as string[],
+      service: { list: vi.fn(), status: vi.fn(), create: vi.fn(), stop: vi.fn(), delete: vi.fn(), meta: vi.fn() },
+      projects: { list: vi.fn(), add: vi.fn(), remove: vi.fn() },
+      agents: { list: vi.fn() },
+      worktrees: { list: vi.fn(), branches: vi.fn(), create: vi.fn(), envCandidates: vi.fn(), envCopy: vi.fn(), remove: vi.fn() },
+      gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
+      settings: { get: vi.fn(), set: vi.fn() },
+      usageService: { get: vi.fn() },
+      activityService: { get: vi.fn() },
+    }
   })
-  return {
-    handlers,
-    listen,
-    log: [] as string[],
-    service: { list: vi.fn(), status: vi.fn(), create: vi.fn(), stop: vi.fn(), delete: vi.fn(), meta: vi.fn() },
-    projects: { list: vi.fn(), add: vi.fn(), remove: vi.fn() },
-    agents: { list: vi.fn() },
-    worktrees: { list: vi.fn(), branches: vi.fn(), create: vi.fn(), envCandidates: vi.fn(), envCopy: vi.fn(), remove: vi.fn() },
-    gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
-  }
-})
 vi.mock('@tauri-apps/api/event', () => ({ listen }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('./services/session', () => ({ sessionService: service }))
@@ -32,6 +36,15 @@ vi.mock('./services/projects', () => ({ projectService: projects }))
 vi.mock('./services/agents', () => ({ agentService: agents }))
 vi.mock('./services/worktrees', () => ({ worktreeService: worktrees }))
 vi.mock('./services/git-view', () => ({ gitViewService: gitview }))
+vi.mock('./services/settings', () => ({ settingsService: settings }))
+vi.mock('./services/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./services/usage')>()),
+  usageService,
+}))
+vi.mock('./services/activity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./services/activity')>()),
+  activityService,
+}))
 // jsdom has no layout, so the xterm-based controller is replaced; its own tests cover it.
 vi.mock('./features/terminal/TerminalController', () => ({
   TerminalController: class {
@@ -98,12 +111,19 @@ beforeEach(async () => {
   Object.values(projects).forEach((f) => f.mockReset())
   agents.list.mockReset().mockResolvedValue([])
   Object.values(worktrees).forEach((f) => f.mockReset())
+  activityService.get.mockReset().mockResolvedValue({})
+  usageService.get.mockReset().mockResolvedValue({
+    claude: { five_hour: null, seven_day: null, sessions: {}, updated_at: null },
+    codex: { primary: null, secondary: null, updated_at: null },
+  })
   worktrees.list.mockResolvedValue({ repo: false, worktrees: [] })
   worktrees.branches.mockResolvedValue({ branches: [], bases: [] })
   worktrees.envCandidates.mockResolvedValue([])
   worktrees.envCopy.mockResolvedValue({ copied: [], skipped: [], failed: [] })
   worktrees.remove.mockResolvedValue(undefined)
   Object.values(gitview).forEach((f) => f.mockReset().mockResolvedValue(undefined))
+  settings.get.mockReset().mockResolvedValue(null)
+  settings.set.mockReset().mockResolvedValue(undefined)
   gitview.changes.mockResolvedValue({ branch: 'main', head: 'x', conflicts: [], staged: [], unstaged: [], untracked: [] })
   service.list.mockResolvedValue([session('a'), session('b')])
   service.meta.mockResolvedValue([])
@@ -113,6 +133,20 @@ beforeEach(async () => {
 })
 
 describe('App', () => {
+  it('opens the Settings page from the header gear and via Cmd+,', async () => {
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(useUi.getState().activeView).toBe('settings')
+
+    act(() => useUi.getState().setActiveView('terminal'))
+    fireEvent.keyDown(window, { key: ',', metaKey: true })
+    expect(useUi.getState().activeView).toBe('settings')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(useUi.getState().activeView).toBe('terminal')
+  })
+
   it('adds a project from the empty workspace', async () => {
     vi.mocked(open).mockResolvedValue('/w/one')
     projects.add.mockResolvedValue(project('p1', { root: '/w/one' }))
@@ -142,7 +176,7 @@ describe('App', () => {
 
   it('shows the banner and disables controls while disconnected, and recovers', async () => {
     renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(3))
+    await vi.waitFor(() => expect(listeners()).toBe(6))
     fireEvent.click(await screen.findByRole('button', { name: /title-a/ }))
     const stop = screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement
     expect(stop.disabled).toBe(false)
@@ -162,7 +196,7 @@ describe('App', () => {
   it('shows no sessions after reconnecting to a daemon with an empty session list', async () => {
     renderApp()
     await waitFor(() => expect(sessionButtons()).toHaveLength(2))
-    await waitFor(() => expect(listeners()).toBe(3))
+    await waitFor(() => expect(listeners()).toBe(6))
 
     service.list.mockResolvedValue([])
     emit('daemon://status', { connected: false })
@@ -176,7 +210,7 @@ describe('App', () => {
 
   it('applies pushed session events to the list', async () => {
     renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(3))
+    await vi.waitFor(() => expect(listeners()).toBe(6))
     await screen.findAllByRole('button', { name: /title-/ })
     emit('session://updated', session('c'))
     expect(await screen.findByRole('button', { name: /title-c/ })).toBeTruthy()
@@ -184,7 +218,7 @@ describe('App', () => {
 
   it('stops the event sync on unmount', async () => {
     const { unmount } = renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(3))
+    await vi.waitFor(() => expect(listeners()).toBe(6))
     unmount()
     await vi.waitFor(() => expect(listeners()).toBe(0))
   })

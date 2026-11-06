@@ -16,6 +16,7 @@ describe('gitViewService commands', () => {
     await gitViewService.history('p1', '/co', 100)
     await gitViewService.tree('p1', '/co', 'dir')
     await gitViewService.file('p1', '/co', 'dir/f.txt')
+    await gitViewService.search('p1', '/co', 'needle')
     await gitViewService.stashes('p1', '/co')
     await gitViewService.stashDiff('p1', '/co', 'oid')
     expect(invoke.mock.calls).toEqual([
@@ -25,6 +26,7 @@ describe('gitViewService commands', () => {
       ['git_view_history', { projectId: 'p1', checkoutPath: '/co', skip: 100 }],
       ['git_view_tree', { projectId: 'p1', checkoutPath: '/co', directory: 'dir' }],
       ['git_view_file', { projectId: 'p1', checkoutPath: '/co', path: 'dir/f.txt' }],
+      ['git_view_search', { projectId: 'p1', checkoutPath: '/co', query: 'needle' }],
       ['git_view_stashes', { projectId: 'p1', checkoutPath: '/co' }],
       ['git_view_stash_diff', { projectId: 'p1', checkoutPath: '/co', stashId: 'oid' }],
     ])

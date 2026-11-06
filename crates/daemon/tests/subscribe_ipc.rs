@@ -5,7 +5,7 @@ use protocol::session::{SessionId, SessionState};
 use protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
@@ -35,6 +35,30 @@ async fn subscribe(client: &mut Client, id: &Value) -> (u64, u64) {
             .expect("replay_from"),
         reply["result"]["next_seq"].as_u64().expect("next_seq"),
     )
+}
+
+/// Subscribe with `flow: true` and return `(replay_from, next_seq)`.
+async fn subscribe_flow(client: &mut Client, id: &Value) -> (u64, u64) {
+    let reply = client
+        .request(json!({"type": "terminal.subscribe", "session_id": id, "flow": true}))
+        .await;
+    (
+        reply["result"]["replay_from"]
+            .as_u64()
+            .expect("replay_from"),
+        reply["result"]["next_seq"].as_u64().expect("next_seq"),
+    )
+}
+
+/// Send `terminal.ack` for `upto_seq` and return the response.
+async fn ack(client: &mut Client, id: &Value, upto_seq: u64) -> Value {
+    client
+        .request(json!({
+            "type": "terminal.ack",
+            "session_id": id,
+            "upto_seq": upto_seq,
+        }))
+        .await
 }
 
 /// Output frames until none arrives for `quiet`. The first frame must start at
@@ -322,4 +346,276 @@ async fn the_response_arrives_before_any_output_frame() {
         panic!("the retained output follows the response");
     };
     assert_eq!(seq, response["result"]["replay_from"].as_u64().unwrap());
+}
+
+/// The flow window and the one in-flight read the reader may overshoot by.
+const WINDOW: u64 = 256 * 1024;
+const READ_OVERRUN: u64 = 16 * 1024;
+const MEBIBYTE: usize = 1024 * 1024;
+
+/// Poll `condition` until it holds or `limit` passes, then panic naming `what`.
+async fn wait_until(what: &str, limit: Duration, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// The `PtyProcess` behind a created session id.
+fn server_pty(server: &TestServer, id: &Value) -> Arc<daemon::pty::PtyProcess> {
+    server
+        .sessions
+        .pty(session_id(id))
+        .expect("session process")
+}
+
+/// Spawn a session whose producer is done, leaving a full 1 MiB replay buffer.
+async fn finished_producer(
+    server: &TestServer,
+    client: &mut Client,
+) -> (Value, Arc<daemon::pty::PtyProcess>) {
+    let created = client
+        .request(create(&["sh", "-c", "yes | head -c 2097152"]))
+        .await;
+    let id = created["result"]["id"].clone();
+    let pty = server_pty(server, &id);
+    pty.wait_exit().await.expect("the producer exits");
+    wait_until("the replay buffer to fill", Duration::from_secs(10), || {
+        pty.buffer().1.len() == MEBIBYTE
+    })
+    .await;
+    (id, pty)
+}
+
+#[tokio::test]
+async fn a_flow_subscribe_stops_at_the_window_until_an_ack() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let created = client.request(create(&["yes"])).await;
+    let id = created["result"]["id"].clone();
+    let pty = server_pty(&server, &id);
+    wait_until("enough retained output", Duration::from_secs(10), || {
+        pty.buffer().1.len() >= 600 * 1024
+    })
+    .await;
+
+    let (replay_from, _) = subscribe_flow(&mut client, &id).await;
+    let first = collect_output(&mut client, replay_from, Duration::from_millis(700)).await;
+    assert_eq!(
+        first.len() as u64,
+        WINDOW,
+        "a flow stream stops after one window without acks"
+    );
+
+    let reply = ack(&mut client, &id, replay_from + first.len() as u64).await;
+    assert_eq!(reply["result"], json!({}));
+    let second = collect_output(
+        &mut client,
+        replay_from + first.len() as u64,
+        Duration::from_millis(700),
+    )
+    .await;
+    assert_eq!(
+        second.len() as u64,
+        WINDOW,
+        "the ack releases exactly one more window of output"
+    );
+}
+
+#[tokio::test]
+async fn an_ack_without_a_flow_subscribe_is_accepted_and_delivers_normally() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let created = client.request(create(&["cat"])).await;
+    let id = created["result"]["id"].clone();
+    let pty = server_pty(&server, &id);
+    let (replay_from, _) = subscribe(&mut client, &id).await;
+
+    let reply = ack(&mut client, &id, 8192).await;
+    assert_eq!(reply["result"], json!({}));
+
+    // The subscription was not flow-controlled, so the ack gates nothing.
+    pty.write(b"ping\n").expect("write to cat");
+    let stream = collect_output(&mut client, replay_from, Duration::from_millis(500)).await;
+    assert!(
+        String::from_utf8_lossy(&stream).contains("ping"),
+        "the non-flow stream kept delivering"
+    );
+}
+
+#[tokio::test]
+async fn an_ack_for_an_unknown_session_is_not_found() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+
+    let reply = client
+        .request(json!({
+            "type": "terminal.ack",
+            "session_id": "00000000-0000-4000-8000-000000000000",
+            "upto_seq": 1,
+        }))
+        .await;
+
+    assert_eq!(reply["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn a_flow_subscribe_paces_replay_by_the_same_window() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let (id, pty) = finished_producer(&server, &mut client).await;
+
+    let (replay_from, _) = subscribe_flow(&mut client, &id).await;
+    let mut received = collect_output(&mut client, replay_from, Duration::from_millis(600)).await;
+    assert_eq!(
+        received.len() as u64,
+        WINDOW,
+        "replay stops after one window without acks"
+    );
+
+    let mut upto = replay_from + received.len() as u64;
+    while received.len() < MEBIBYTE {
+        let reply = ack(&mut client, &id, upto).await;
+        assert_eq!(reply["result"], json!({}));
+        let more = collect_output(&mut client, upto, Duration::from_millis(600)).await;
+        assert!(!more.is_empty(), "the ack did not release more replay");
+        received.extend_from_slice(&more);
+        upto += more.len() as u64;
+    }
+
+    let (_, retained, _) = pty.buffer();
+    assert_eq!(
+        received, retained,
+        "the paced replay missed or repeated bytes"
+    );
+}
+
+#[tokio::test]
+async fn a_flow_resubscribe_after_acking_next_seq_gets_the_whole_snapshot() {
+    let server = TestServer::start();
+    let mut first = server.authenticated().await;
+    let (id, pty) = finished_producer(&server, &mut first).await;
+
+    let (replay_from, next_seq) = subscribe_flow(&mut first, &id).await;
+    let reply = ack(&mut first, &id, next_seq).await;
+    assert_eq!(reply["result"], json!({}));
+
+    // A new mount acknowledges nothing, yet the acknowledged offset already
+    // covers every snapshot piece, so nothing waits.
+    let mut second = server.authenticated().await;
+    let (replay_from2, _) = subscribe_flow(&mut second, &id).await;
+    assert_eq!(replay_from2, replay_from);
+    let stream = collect_output(&mut second, replay_from2, Duration::from_millis(600)).await;
+
+    let (_, retained, _) = pty.buffer();
+    assert_eq!(stream, retained, "the resubscribe withheld paced bytes");
+}
+
+#[tokio::test]
+async fn a_flow_resubscribe_after_a_partial_ack_paces_from_that_offset() {
+    let server = TestServer::start();
+    let mut first = server.authenticated().await;
+    let (id, _) = finished_producer(&server, &mut first).await;
+
+    let (replay_from, _) = subscribe_flow(&mut first, &id).await;
+    let piece = 64 * 1024_u64;
+    let reply = ack(&mut first, &id, replay_from + piece).await;
+    assert_eq!(reply["result"], json!({}));
+
+    let mut second = server.authenticated().await;
+    let (replay_from2, _) = subscribe_flow(&mut second, &id).await;
+    assert_eq!(replay_from2, replay_from);
+    let stream = collect_output(&mut second, replay_from2, Duration::from_millis(600)).await;
+    assert_eq!(
+        stream.len() as u64,
+        piece + WINDOW,
+        "the second snapshot delivers up to the acknowledged offset plus one window"
+    );
+
+    // The stream waits on credit, not on a closed producer: one more ack
+    // releases one more window.
+    let upto = replay_from2 + stream.len() as u64;
+    let reply = ack(&mut second, &id, upto).await;
+    assert_eq!(reply["result"], json!({}));
+    let more = collect_output(&mut second, upto, Duration::from_millis(600)).await;
+    assert_eq!(more.len() as u64, WINDOW);
+}
+
+#[tokio::test]
+async fn a_remount_with_a_far_ahead_offset_gets_one_burst_plus_a_live_window() {
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let created = client
+        .request(create(&["sh", "-c", "stty -echo -icanon; cat"]))
+        .await;
+    let id = created["result"]["id"].clone();
+    let pty = server_pty(&server, &id);
+
+    // Wait for cat to own the pty settings, then drive over a megabyte through
+    // it with no subscriber attached.
+    pty.write(b"probe\n").expect("write to cat");
+    wait_until("cat to take over the pty", Duration::from_secs(5), || {
+        pty.buffer().2 > 0
+    })
+    .await;
+    let feed = vec![b'x'; 1_400_000];
+    tokio::task::spawn_blocking({
+        let pty = Arc::clone(&pty);
+        move || pty.write(&feed)
+    })
+    .await
+    .expect("the feed task")
+    .expect("write to cat");
+    wait_until("the replay buffer to roll", Duration::from_secs(10), || {
+        pty.buffer().1.len() == MEBIBYTE
+    })
+    .await;
+    let published = pty.buffer().2;
+
+    // The previous mount acknowledged everything it received before going away.
+    let reply = ack(&mut client, &id, published).await;
+    assert_eq!(reply["result"], json!({}));
+
+    // The remount's acknowledged offset covers the whole retained snapshot, so
+    // the megabyte arrives as one burst without pacing waits.
+    let (replay_from, next_seq) = subscribe_flow(&mut client, &id).await;
+    let burst = collect_output(&mut client, replay_from, Duration::from_millis(700)).await;
+    assert_eq!(
+        burst.len() as u64,
+        next_seq - replay_from,
+        "the remount burst is not the whole retained snapshot"
+    );
+    assert!(burst.len() >= MEBIBYTE - 64 * 1024);
+    let mut upto = next_seq;
+
+    // Live output continues into one window past the acknowledged offset, then
+    // the gate stops it. The feed blocks behind the gated reader.
+    let live = vec![b'y'; 400 * 1024];
+    let feeder = tokio::task::spawn_blocking({
+        let pty = Arc::clone(&pty);
+        move || pty.write(&live)
+    });
+    let window = collect_output(&mut client, upto, Duration::from_millis(800)).await;
+    upto += window.len() as u64;
+    assert!(
+        window.len() as u64 <= WINDOW + READ_OVERRUN,
+        "live output past the acknowledged offset exceeds one window plus a read"
+    );
+    assert!(upto > published, "no live output followed the burst");
+    assert_eq!(
+        pty.buffer().2,
+        upto,
+        "the reader published past the gated window"
+    );
+
+    // An ack reopens the window and the rest of the feed arrives.
+    let reply = ack(&mut client, &id, upto).await;
+    assert_eq!(reply["result"], json!({}));
+    feeder.await.expect("the feed task").expect("write to cat");
+    let rest = collect_output(&mut client, upto, Duration::from_millis(800)).await;
+    assert!(!rest.is_empty(), "the ack did not resume live output");
 }

@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Diffs, text reads, and file saves are capped at 1 MiB.
 const CAP: usize = 1024 * 1024;
+const SEARCH_OUTPUT_CAP: usize = 256 * 1024;
+const SEARCH_MATCH_CAP: usize = 500;
+const SEARCH_PREVIEW_CHARS: usize = 300;
 static TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 /// Commits per History page.
 const HISTORY_PAGE: u64 = 100;
@@ -103,6 +106,19 @@ pub struct GitViewFile {
     pub truncated: bool,
     /// File size in bytes.
     pub size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewSearchMatch {
+    pub path: String,
+    pub line: u64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewSearch {
+    pub matches: Vec<GitViewSearchMatch>,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -362,6 +378,76 @@ pub fn file_list(checkout: &Path) -> Result<Vec<String>, BridgeError> {
     Ok(paths)
 }
 
+/// Search tracked and non-ignored untracked text files without changing the checkout.
+pub fn search(checkout: &Path, query: &str) -> Result<GitViewSearch, BridgeError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(invalid(
+            "the search query must contain at least one character",
+        ));
+    }
+    if query.contains('\0') {
+        return Err(invalid("the search query cannot contain a NUL character"));
+    }
+
+    let mut args = vec!["grep", "-n", "-I", "-F", "--untracked", "--no-color", "-z"];
+    if !query.chars().any(char::is_uppercase) {
+        args.push("-i");
+    }
+    args.extend(["-e", query]);
+    let output = worktrees::run_bounded(checkout, &args, SEARCH_OUTPUT_CAP)?;
+    if !output.status.success() && !output.truncated {
+        if output.status.code() == Some(1) && output.stderr.is_empty() {
+            return Ok(GitViewSearch {
+                matches: Vec::new(),
+                truncated: false,
+            });
+        }
+        return Err(worktrees::git_error(&output.stderr));
+    }
+
+    let mut matches = Vec::new();
+    let mut truncated = output.truncated;
+    let mut remaining = output.stdout.as_slice();
+    while !remaining.is_empty() {
+        let Some(path_end) = remaining.iter().position(|byte| *byte == 0) else {
+            break;
+        };
+        let path = &remaining[..path_end];
+        remaining = &remaining[path_end + 1..];
+        let Some(line_end) = remaining.iter().position(|byte| *byte == 0) else {
+            break;
+        };
+        let line = &remaining[..line_end];
+        remaining = &remaining[line_end + 1..];
+        let (text, next) = if let Some(text_end) = remaining.iter().position(|byte| *byte == b'\n')
+        {
+            (&remaining[..text_end], &remaining[text_end + 1..])
+        } else if output.truncated {
+            (remaining, &[][..])
+        } else {
+            truncated = true;
+            break;
+        };
+        remaining = next;
+
+        let Ok(line) = std::str::from_utf8(line).unwrap_or("").parse::<u64>() else {
+            continue;
+        };
+        if matches.len() == SEARCH_MATCH_CAP {
+            truncated = true;
+            break;
+        }
+        let text = lossy(text).chars().take(SEARCH_PREVIEW_CHARS).collect();
+        matches.push(GitViewSearchMatch {
+            path: lossy(path),
+            line,
+            text,
+        });
+    }
+    Ok(GitViewSearch { matches, truncated })
+}
+
 /// One directory level of tracked files plus non-ignored untracked files.
 /// `.git` and ignored paths are never listed. `directory` is checkout-relative
 /// (`""` for the root) and cannot escape the checkout.
@@ -388,7 +474,6 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
         "-z",
         "--cached",
         "--others",
-        "--exclude-standard",
         "--",
         &pathspec,
     ];
@@ -413,7 +498,6 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
 
     let directory_path = checkout.join(&prefix);
     let mut directories = Vec::new();
-    let mut ignored_input = Vec::new();
     for item in std::fs::read_dir(&directory_path).map_err(|error| {
         BridgeError::new(
             Code::Daemon(ErrorCode::Internal),
@@ -441,33 +525,9 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
             continue;
         }
         let path = format!("{prefix}{name}");
-        ignored_input.extend_from_slice(path.as_bytes());
-        ignored_input.push(0);
         directories.push((path, name));
     }
-    let ignored_output = if ignored_input.is_empty() {
-        Vec::new()
-    } else {
-        let ignored = worktrees::run_with_input(
-            checkout,
-            &["check-ignore", "-z", "--stdin"],
-            &ignored_input,
-        )?;
-        if ignored.status.success() || ignored.status.code() == Some(1) {
-            ignored.stdout
-        } else {
-            return Err(worktrees::git_error(&ignored.stderr));
-        }
-    };
-    let ignored: std::collections::BTreeSet<String> = ignored_output
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(lossy)
-        .collect();
     for (path, name) in directories {
-        if ignored.contains(&path) {
-            continue;
-        }
         entries.entry(path.clone()).or_insert(GitViewTreeEntry {
             path,
             name,
@@ -1242,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_lists_one_level_and_excludes_git_and_ignored() {
+    fn tree_lists_one_level_and_excludes_git_but_keeps_ignored() {
         let (_t, root) = repository("tree");
         fs::create_dir_all(root.join("sub/mix")).unwrap();
         commit(&root, "sub/mix/tracked.txt", "t\n");
@@ -1262,7 +1322,7 @@ mod tests {
             .filter(|e| e.kind == "dir")
             .map(|e| e.name.as_str())
             .collect();
-        assert_eq!(dirs, vec!["sub"]);
+        assert_eq!(dirs, vec!["ignored", "sub"]);
         let files: Vec<&str> = top
             .entries
             .iter()
@@ -1276,7 +1336,7 @@ mod tests {
         assert!(!top
             .entries
             .iter()
-            .any(|e| e.name == ".git" || e.name == "ignored"));
+            .any(|e| e.name == ".git"));
 
         let sub = tree(&root, "sub").unwrap();
         let names: Vec<(&str, &str)> = sub
@@ -1434,10 +1494,88 @@ mod tests {
         diff(&root, "commit", None, Some(&head(&root))).unwrap();
         history(&root, 0).unwrap();
         tree(&root, "").unwrap();
+        search(&root, "second").unwrap();
         file(&root, "second.txt").unwrap();
         let stack = stashes(&root).unwrap();
         stash_diff(&root, &stack[0].id).unwrap();
         assert_eq!(before, snapshot(&root));
+    }
+
+    #[test]
+    fn search_includes_untracked_text_and_skips_ignored_and_binary_files() {
+        let (_t, root) = repository("search-scope");
+        fs::write(root.join("tracked.txt"), "needle\n").unwrap();
+        fs::write(root.join("untracked.txt"), "needle\n").unwrap();
+        fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(root.join("ignored.txt"), "needle\n").unwrap();
+        fs::write(root.join("binary.bin"), b"needle\0binary").unwrap();
+
+        let mut paths: Vec<_> = search(&root, "needle")
+            .unwrap()
+            .matches
+            .into_iter()
+            .map(|matched| matched.path)
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["tracked.txt", "untracked.txt"]);
+    }
+
+    #[test]
+    fn search_is_fixed_string_and_smart_case_and_no_matches_are_empty() {
+        let (_t, root) = repository("search-literals");
+        fs::write(root.join("cases.txt"), "Foo\nfoo\na.b*\n-n\n").unwrap();
+        git_ok(&root, &["add", "cases.txt"]);
+
+        let uppercase = search(&root, "Foo").unwrap();
+        assert_eq!(
+            uppercase.matches.iter().map(|m| m.line).collect::<Vec<_>>(),
+            [1]
+        );
+        let lowercase = search(&root, "foo").unwrap();
+        assert_eq!(
+            lowercase.matches.iter().map(|m| m.line).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(search(&root, "a.b*").unwrap().matches[0].text, "a.b*");
+        assert_eq!(search(&root, "-n").unwrap().matches[0].text, "-n");
+        assert!(search(&root, "no such text").unwrap().matches.is_empty());
+        assert!(search(&root, "  \t ").is_err());
+        assert!(search(&root, "bad\0query").is_err());
+    }
+
+    #[test]
+    fn search_caps_matches_previews_and_output() {
+        let (_t, root) = repository("search-caps");
+        let lines = (0..600).map(|_| "needle").collect::<Vec<_>>().join("\n");
+        fs::write(root.join("many.txt"), lines).unwrap();
+        let many = search(&root, "needle").unwrap();
+        assert_eq!(many.matches.len(), SEARCH_MATCH_CAP);
+        assert!(many.truncated);
+
+        fs::write(
+            root.join("many.txt"),
+            format!("needle{}\n", "x".repeat(1_000)),
+        )
+        .unwrap();
+        let preview = search(&root, "needle").unwrap();
+        assert_eq!(
+            preview.matches[0].text.chars().count(),
+            SEARCH_PREVIEW_CHARS
+        );
+        assert!(!preview.truncated);
+
+        fs::write(
+            root.join("many.txt"),
+            format!("needle{}\n", "x".repeat(300 * 1024)),
+        )
+        .unwrap();
+        let bounded = search(&root, "needle").unwrap();
+        assert!(bounded.truncated);
+        assert_eq!(bounded.matches.len(), 1);
+        assert_eq!(
+            bounded.matches[0].text.chars().count(),
+            SEARCH_PREVIEW_CHARS
+        );
     }
 
     #[test]

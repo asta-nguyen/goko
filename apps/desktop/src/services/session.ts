@@ -22,6 +22,8 @@ export const sessionService = {
   meta: () => call<SessionMeta[]>('session_meta_list'),
   write: (id: string, data: string) => call<void>('terminal_write', { id, data }),
   resize: (id: string, cols: number, rows: number) => call<void>('terminal_resize', { id, cols, rows }),
+  /** `uptoSeq` is the absolute stream offset up to which output was parsed. */
+  ack: (id: string, uptoSeq: number) => call<void>('terminal_ack', { id, uptoSeq }),
   status: () => call<DaemonStatus>('daemon_status'),
 
   /** Output frames are `[u64 BE seq][bytes]`; the returned function unsubscribes (once). */

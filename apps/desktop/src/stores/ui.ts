@@ -70,7 +70,7 @@ export interface TerminalWorkspaceState {
 }
 
 /** The main-area mode of the active workspace; never persisted. */
-export type WorkspaceView = 'terminal' | 'editor'
+export type WorkspaceView = 'terminal' | 'editor' | 'settings'
 export type DiffView = 'unified' | 'split'
 
 export interface EditorDraft {
@@ -154,7 +154,7 @@ function collectPanes(layout: PaneLayout): TerminalPane[] {
   return layout.kind === 'pane' ? [layout] : [...collectPanes(layout.first), ...collectPanes(layout.second)]
 }
 
-function focusedSession(workspace?: TerminalWorkspaceState): string | null {
+export function focusedSession(workspace?: TerminalWorkspaceState): string | null {
   const tab = workspace?.tabs.find((item) => item.id === workspace.activeTabId)
   return tab ? collectPanes(tab.layout).find((item) => item.id === tab.activePaneId)?.sessionId ?? null : null
 }
@@ -282,11 +282,13 @@ export const useUi = create<UiState>((set, get) => ({
     set((state) => ({ panelWidths: { ...state.panelWidths, [panel]: width } })),
   setDiffView: (diffView) => set({ diffView }),
   activateWorkspace: (id) => {
-    if (get().activeWorkspaceId === id) return
+    // Picking a workspace is the way out of Settings, even the one already active.
+    if (get().activeWorkspaceId === id && get().activeView !== 'settings') return
     get().requestEditorNavigation(() =>
       set((state) => {
         const workspaces = state.workspaces[id] ? state.workspaces : { ...state.workspaces, [id]: emptyWorkspace() }
-        return { activeWorkspaceId: id, selectedId: focusedSession(workspaces[id]), workspaces }
+        const activeView = state.activeView === 'settings' ? 'terminal' : state.activeView
+        return { activeWorkspaceId: id, selectedId: focusedSession(workspaces[id]), workspaces, activeView }
       }),
     )
   },

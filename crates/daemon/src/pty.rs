@@ -6,14 +6,23 @@ use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
 const MAX_DIMENSION: u16 = 1000;
 const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
 /// Chunks a subscriber may have queued before it is dropped as lagging.
 const SUBSCRIBER_QUEUE: usize = 256;
+/// Unacknowledged output bytes at which the reader pauses while a flow
+/// subscriber is attached.
+pub(crate) const FLOW_WINDOW: u64 = 256 * 1024;
+/// Longest reader pause without the acknowledged offset moving before flow
+/// subscribers are dropped through the lag path.
+const FLOW_STALL: Duration = Duration::from_secs(5);
+/// How often a paused reader re-checks the flow gate at the latest.
+const FLOW_RECHECK: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub enum PtyError {
@@ -76,12 +85,24 @@ pub enum StreamItem {
     Closed,
 }
 
+/// An attached subscriber. `flow` marks one whose unacknowledged output
+/// gates the reader.
+struct Subscriber {
+    sender: mpsc::Sender<StreamItem>,
+    flow: bool,
+}
+
 /// The replay buffer and its subscribers behind one lock, so a snapshot and a
 /// registration are atomic with respect to the reader's append and fan-out.
 struct Shared {
     buffer: RingBuffer,
-    subscribers: Vec<mpsc::Sender<StreamItem>>,
+    subscribers: Vec<Subscriber>,
     closed: bool,
+    /// Highest output offset the session's consumer has acknowledged. It is
+    /// session-scoped and never decreases.
+    acknowledged: u64,
+    /// Mirrors `acknowledged` so `stream_output` can wait for credit.
+    acknowledged_watch: watch::Sender<u64>,
 }
 
 impl Shared {
@@ -94,11 +115,12 @@ impl Shared {
         let bytes: Arc<[u8]> = Arc::from(bytes);
         self.subscribers.retain(|subscriber| {
             // Each queue has one slot beyond SUBSCRIBER_QUEUE, kept for the final item.
-            if subscriber.capacity() <= 1 {
-                let _ = subscriber.try_send(StreamItem::Lagged);
+            if subscriber.sender.capacity() <= 1 {
+                let _ = subscriber.sender.try_send(StreamItem::Lagged);
                 return false;
             }
             subscriber
+                .sender
                 .try_send(StreamItem::Chunk {
                     seq,
                     bytes: Arc::clone(&bytes),
@@ -107,10 +129,44 @@ impl Shared {
         });
     }
 
+    /// Whether the reader must pause: a live flow subscriber exists and the
+    /// unacknowledged output has reached the window. A subscriber whose
+    /// receiver is gone does not count.
+    fn flow_blocked(&self) -> bool {
+        self.buffer.next_seq().saturating_sub(self.acknowledged) >= FLOW_WINDOW
+            && self
+                .subscribers
+                .iter()
+                .any(|subscriber| subscriber.flow && !subscriber.sender.is_closed())
+    }
+
+    /// Raise the acknowledged offset toward `upto_seq`, capped at the
+    /// published offset. It never decreases; returns whether it moved.
+    fn raise_acknowledged(&mut self, upto_seq: u64) -> bool {
+        let offset = upto_seq.min(self.buffer.next_seq());
+        if offset <= self.acknowledged {
+            return false;
+        }
+        self.acknowledged = offset;
+        self.acknowledged_watch.send_replace(offset);
+        true
+    }
+
+    /// Send `Lagged` to every flow subscriber and remove it, the same final
+    /// notice a full queue produces.
+    fn lag_flow_subscribers(&mut self) {
+        self.subscribers.retain(|subscriber| {
+            if subscriber.flow {
+                let _ = subscriber.sender.try_send(StreamItem::Lagged);
+            }
+            !subscriber.flow
+        });
+    }
+
     fn close(&mut self) {
         self.closed = true;
         for subscriber in self.subscribers.drain(..) {
-            let _ = subscriber.try_send(StreamItem::Closed);
+            let _ = subscriber.sender.try_send(StreamItem::Closed);
         }
     }
 }
@@ -124,6 +180,7 @@ pub struct PtyProcess {
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     writer: Mutex<PtyWriter>,
     shared: Arc<Mutex<Shared>>,
+    gate: Arc<Condvar>,
     exit_state: watch::Receiver<ExitState>,
 }
 
@@ -192,8 +249,11 @@ impl PtyProcess {
             buffer: RingBuffer::new(),
             subscribers: Vec::new(),
             closed: false,
+            acknowledged: 0,
+            acknowledged_watch: watch::channel(0).0,
         }));
-        if let Err(error) = spawn_reader(reader, Arc::clone(&shared)) {
+        let gate = Arc::new(Condvar::new());
+        if let Err(error) = spawn_reader(reader, Arc::clone(&shared), Arc::clone(&gate)) {
             let _ = signal_group(pid, libc::SIGKILL);
             let _ = child.wait();
             return Err(PtyError::Io(format!(
@@ -214,6 +274,7 @@ impl PtyProcess {
             master: Mutex::new(master),
             writer: Mutex::new(writer),
             shared,
+            gate,
             exit_state,
         })
     }
@@ -284,7 +345,10 @@ impl PtyProcess {
         if shared.closed {
             let _ = sender.try_send(StreamItem::Closed);
         } else {
-            shared.subscribers.push(sender);
+            shared.subscribers.push(Subscriber {
+                sender,
+                flow: false,
+            });
         }
         let snapshot = Snapshot {
             replay_from,
@@ -292,6 +356,53 @@ impl PtyProcess {
             next_seq,
         };
         (snapshot, receiver)
+    }
+
+    /// Attach a flow-controlled subscriber: same snapshot contract as
+    /// `subscribe`, but the reader pauses while unacknowledged output stays
+    /// at or above `FLOW_WINDOW` and the subscriber is dropped through the
+    /// `Lagged` path when no ack arrives for `FLOW_STALL`. The acknowledged
+    /// offset is raised to the snapshot's `replay_from` when lower, so bytes
+    /// already evicted are never treated as acknowledged; it never decreases
+    /// and is never set to `next_seq`.
+    pub fn subscribe_flow(&self) -> (Snapshot, mpsc::Receiver<StreamItem>) {
+        let mut shared = lock_unpoisoned(&self.shared);
+        let (replay_from, bytes, next_seq) = shared.buffer.snapshot();
+        let raised = shared.raise_acknowledged(replay_from);
+        let (sender, receiver) = mpsc::channel(SUBSCRIBER_QUEUE + 1);
+        if shared.closed {
+            let _ = sender.try_send(StreamItem::Closed);
+        } else {
+            shared.subscribers.push(Subscriber { sender, flow: true });
+        }
+        drop(shared);
+        if raised {
+            self.gate.notify_all();
+        }
+        (
+            Snapshot {
+                replay_from,
+                bytes,
+                next_seq,
+            },
+            receiver,
+        )
+    }
+
+    /// Record that the consumer finished parsing output through `upto_seq`, an
+    /// absolute end offset. The acknowledged offset never decreases and is
+    /// capped at the published offset, and a raise wakes a reader paused on
+    /// the window.
+    pub fn ack(&self, upto_seq: u64) {
+        let raised = lock_unpoisoned(&self.shared).raise_acknowledged(upto_seq);
+        if raised {
+            self.gate.notify_all();
+        }
+    }
+
+    /// Observe the session's acknowledged offset, which never decreases.
+    pub fn acknowledged_offset(&self) -> watch::Receiver<u64> {
+        lock_unpoisoned(&self.shared).acknowledged_watch.subscribe()
     }
 
     /// Number of attached subscribers; one whose receiver was dropped leaves on the next
@@ -474,12 +585,14 @@ pub(crate) fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
 fn spawn_reader(
     mut reader: PtyReader,
     shared: Arc<Mutex<Shared>>,
+    gate: Arc<Condvar>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("gokod-pty-reader".to_owned())
         .spawn(move || {
             let mut chunk = [0_u8; 16 * 1024];
             loop {
+                wait_for_flow_credit(&shared, &gate);
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(count) => lock_unpoisoned(&shared).publish(&chunk[..count]),
@@ -487,6 +600,33 @@ fn spawn_reader(
             }
             lock_unpoisoned(&shared).close();
         })
+}
+
+/// Pause before the next read while a live flow subscriber has a full window
+/// of unacknowledged output. The `Shared` lock is not held across the wait and
+/// the state is re-checked at least every `FLOW_RECHECK`. When `FLOW_STALL`
+/// passes without the acknowledged offset moving, the flow subscribers are
+/// dropped through the usual `Lagged` path and reading continues.
+fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
+    let mut shared = lock_unpoisoned(shared_mutex);
+    // (when the current wait began, acknowledged offset it began at); an ack
+    // move restarts the stall clock.
+    let mut waiting: Option<(Instant, u64)> = None;
+    while shared.flow_blocked() {
+        match waiting {
+            Some((since, baseline)) if shared.acknowledged == baseline => {
+                if since.elapsed() >= FLOW_STALL {
+                    shared.lag_flow_subscribers();
+                    break;
+                }
+            }
+            _ => waiting = Some((Instant::now(), shared.acknowledged)),
+        }
+        let (guard, _) = gate
+            .wait_timeout(shared, FLOW_RECHECK)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared = guard;
+    }
 }
 
 fn spawn_waiter(

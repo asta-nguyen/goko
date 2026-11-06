@@ -1,4 +1,4 @@
-import { TerminalController, textareaEdit } from './TerminalController'
+import { pasteToSession, TerminalController, textareaEdit } from './TerminalController'
 
 const h = vi.hoisted(() => {
   const state = {
@@ -22,12 +22,19 @@ const h = vi.hoisted(() => {
     }
     open = vi.fn((el: HTMLElement) => el.append(this.textarea)) // xterm's textarea lives inside the element
     attachCustomKeyEventHandler = vi.fn()
+    pasted: string[] = []
+    focus = vi.fn()
+    paste(d: string) {
+      this.pasted.push(d)
+    }
     onData(cb: (d: string) => void) {
       this.dataListeners.add(cb)
       return { dispose: () => void this.dataListeners.delete(cb) }
     }
-    write(d: unknown) {
+    write(d: unknown, cb?: () => void) {
       this.written.push(d)
+      // Like xterm, parsing finishes before the callback — synchronously is a valid fast case.
+      cb?.()
     }
     dispose() {
       this.disposed = true
@@ -53,10 +60,28 @@ const h = vi.hoisted(() => {
       this.observing = false
     }
   }
-  return { state, FakeTerminal, FakeFit, FakeResizeObserver }
+  class FakeWebgl {
+    static failOnCreate = false
+    static instances: FakeWebgl[] = []
+    lost?: () => void
+    disposed = false
+    constructor() {
+      if (FakeWebgl.failOnCreate) throw new Error('WebGL2 not supported')
+      FakeWebgl.instances.push(this)
+    }
+    activate() {}
+    onContextLoss(cb: () => void) {
+      this.lost = cb
+    }
+    dispose() {
+      this.disposed = true
+    }
+  }
+  return { state, FakeTerminal, FakeFit, FakeResizeObserver, FakeWebgl }
 })
 vi.mock('@xterm/xterm', () => ({ Terminal: h.FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: h.FakeFit }))
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: h.FakeWebgl }))
 
 const { state } = h
 let onBytes: (seq: number, data: Uint8Array) => void
@@ -64,6 +89,7 @@ let unsub: ReturnType<typeof vi.fn>
 const service = {
   resize: vi.fn(async () => void state.calls.push('resize')),
   write: vi.fn(async (_id: string, _data: string) => {}),
+  ack: vi.fn(async (_id: string, _uptoSeq: number) => {}),
   subscribe: vi.fn(async (_id: string, cb: typeof onBytes) => {
     state.calls.push('subscribe')
     onBytes = cb
@@ -88,6 +114,9 @@ beforeEach(() => {
   state.terms.length = 0
   state.observers.length = 0
   state.calls.length = 0
+  h.FakeWebgl.failOnCreate = false
+  h.FakeWebgl.instances.length = 0
+  delete document.documentElement.dataset.theme
   state.fitSize = { cols: 100, rows: 30 }
   unsub = vi.fn()
   Object.values(service).forEach((f) => f.mockClear())
@@ -190,6 +219,76 @@ describe('TerminalController mount', () => {
     c.setVisible(true)
     await vi.waitFor(() => expect(service.resize).toHaveBeenCalledWith('hidden', 100, 30))
     c.dispose()
+  })
+
+  it('recolors a mounted terminal when the app theme changes', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    const before = state.terms[0].options.theme
+
+    document.documentElement.dataset.theme = 'dracula'
+    await flush()
+    expect(state.terms[0].options.theme).not.toBe(before)
+    expect(state.terms[0].options.theme).toHaveProperty('background')
+    c.dispose()
+  })
+
+  it('stops recoloring after dispose', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    c.dispose()
+    const before = state.terms[0].options.theme
+
+    document.documentElement.dataset.theme = 'dracula'
+    await flush()
+    expect(state.terms[0].options.theme).toBe(before)
+  })
+})
+
+describe('TerminalController renderer', () => {
+  it('draws with WebGL and drops it when the context is lost', async () => {
+    const c = new TerminalController('gl', service)
+    await c.mount(element())
+    const [webgl] = h.FakeWebgl.instances
+    expect(webgl.disposed).toBe(false)
+    webgl.lost?.()
+    expect(webgl.disposed).toBe(true)
+    c.dispose()
+  })
+
+  it('keeps working on the DOM renderer when WebGL is unavailable', async () => {
+    h.FakeWebgl.failOnCreate = true
+    const c = new TerminalController('nogl', service)
+    await c.mount(element())
+    onBytes(0, bytes('hi'))
+    expect(text(state.terms[0])).toBe('hi')
+    c.dispose()
+  })
+})
+
+describe('pasteToSession', () => {
+  it('pastes into the mounted terminal of that session, and into none after dispose', async () => {
+    const c = new TerminalController('p1', service)
+    await c.mount(element())
+    expect(pasteToSession('p1', '/a\\ b.png ')).toBe(true)
+    expect(state.terms[0].pasted).toEqual(['/a\\ b.png '])
+    expect(state.terms[0].focus).toHaveBeenCalled()
+    expect(pasteToSession('other', 'x')).toBe(false)
+
+    c.dispose()
+    expect(pasteToSession('p1', 'x')).toBe(false)
+  })
+
+  it('keeps the newer controller registered when an older one for the same session is disposed', async () => {
+    const older = new TerminalController('p2', service)
+    await older.mount(element())
+    const newer = new TerminalController('p2', service)
+    await newer.mount(element())
+
+    older.dispose()
+    expect(pasteToSession('p2', 'x')).toBe(true)
+    expect(state.terms[1].pasted).toEqual(['x'])
+    newer.dispose()
   })
 })
 
@@ -401,6 +500,68 @@ describe('TerminalController IME', () => {
     await flush()
     expect(written()).toEqual(['a', 'b'])
     c.dispose()
+  })
+})
+
+describe('TerminalController acks', () => {
+  const K64 = 64 * 1024
+
+  it('sends one ack per 64 KiB parsed, with the absolute end offset', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+
+    onBytes(0, new Uint8Array(K64 - 1))
+    expect(service.ack).not.toHaveBeenCalled()
+
+    // Crossing the threshold once acks exactly once, at the end of the last parsed chunk.
+    onBytes(K64 - 1, new Uint8Array(2))
+    expect(service.ack).toHaveBeenCalledTimes(1)
+    expect(service.ack).toHaveBeenCalledWith('s1', K64 + 1)
+
+    // The counter restarts below the threshold.
+    onBytes(K64 + 1, new Uint8Array(100))
+    expect(service.ack).toHaveBeenCalledTimes(1)
+    onBytes(K64 + 101, new Uint8Array(K64 - 100))
+    expect(service.ack).toHaveBeenCalledTimes(2)
+    expect(service.ack).toHaveBeenLastCalledWith('s1', 2 * K64 + 1)
+    c.dispose()
+  })
+
+  it('one big chunk still sends a single ack', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    onBytes(0, new Uint8Array(3 * K64 + 7))
+    expect(service.ack).toHaveBeenCalledTimes(1)
+    expect(service.ack).toHaveBeenCalledWith('s1', 3 * K64 + 7)
+    c.dispose()
+  })
+
+  it('ignores an ack failure and keeps parsing', async () => {
+    service.ack.mockRejectedValueOnce(new Error('daemon gone'))
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    onBytes(0, new Uint8Array(K64))
+    onBytes(K64, new Uint8Array(K64))
+    expect(service.ack).toHaveBeenCalledTimes(2)
+    expect(service.ack).toHaveBeenLastCalledWith('s1', 2 * K64)
+    expect(text(state.terms[0])).not.toContain('[goko]')
+    c.dispose()
+  })
+
+  it('a hidden pane keeps parsing and acking', async () => {
+    const c = new TerminalController('hidden', service)
+    await c.mount(element(), false)
+    onBytes(0, new Uint8Array(K64))
+    expect(service.ack).toHaveBeenCalledWith('hidden', K64)
+    c.dispose()
+  })
+
+  it('sends nothing after dispose', async () => {
+    const c = new TerminalController('s1', service)
+    await c.mount(element())
+    c.dispose()
+    onBytes(0, new Uint8Array(3 * K64))
+    expect(service.ack).not.toHaveBeenCalled()
   })
 })
 

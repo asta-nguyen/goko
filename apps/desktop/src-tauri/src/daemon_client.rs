@@ -210,6 +210,10 @@ impl DaemonClient {
         supports_live_cwd(&self.daemon_version)
     }
 
+    pub fn supports_flow_control(&self) -> bool {
+        supports_flow_control(&self.daemon_version)
+    }
+
     fn routes<T>(&self, use_routes: impl FnOnce(&mut Routes) -> T) -> Result<T, BridgeError> {
         let mut shared = self.shared.lock().unwrap();
         shared.as_mut().map(use_routes).ok_or_else(disconnected)
@@ -325,6 +329,14 @@ async fn handshake(stream: &mut UnixStream, token: String) -> Result<String, Bri
 }
 
 fn supports_live_cwd(version: &str) -> bool {
+    version_at_least(version, (0, 1, 1))
+}
+
+fn supports_flow_control(version: &str) -> bool {
+    version_at_least(version, (0, 1, 2))
+}
+
+fn version_at_least(version: &str, want: (u64, u64, u64)) -> bool {
     let mut components = version.split('.');
     let (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) = (
         components.next().map(str::parse::<u64>),
@@ -334,7 +346,7 @@ fn supports_live_cwd(version: &str) -> bool {
     ) else {
         return false;
     };
-    (major, minor, patch) >= (0, 1, 1)
+    (major, minor, patch) >= want
 }
 
 async fn read_loop(mut reader: BufReader<tokio::net::unix::OwnedReadHalf>, shared: Shared) {

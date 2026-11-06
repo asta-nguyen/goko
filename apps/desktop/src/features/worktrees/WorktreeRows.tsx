@@ -19,6 +19,31 @@ function Count({ count }: { count: number }) {
   return <Badge variant="secondary" aria-label={`${count} sessions`} className="min-w-6 justify-center px-1.5 tabular-nums">{count}</Badge>
 }
 
+const Dot = ({ className, text }: { className: string; text: string }) => (
+  <span title={text} className={`size-1.5 shrink-0 rounded-full ${className}`}>
+    <span className="sr-only">{text}</span>
+  </span>
+)
+
+/** Missing checkout -> badge; otherwise a quiet dot for changed / unknown git status. */
+export function CheckoutStatus({ checkout }: { checkout: WorktreeInfo }) {
+  if (checkout.missing)
+    return (
+      <Badge variant="warning" className="gap-1">
+        <AlertTriangleIcon aria-hidden />
+        missing
+      </Badge>
+    )
+  if (checkout.dirty === true)
+    return <Dot className="bg-warning" text={`Changed${checkout.changed === null ? '' : ` · ${checkout.changed}`}`} />
+  if (checkout.dirty === null) return <Dot className="bg-muted" text="Status unknown" />
+  return null
+}
+
+/** Row actions appear on hover/focus, or while their menu is open. */
+export const REVEAL =
+  'opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 has-[[aria-expanded=true]]:opacity-100'
+
 export function sessionsForCheckout(checkouts: WorktreeInfo[], sessions: SessionInfo[], checkoutPath: string) {
   return sessions.filter((session) => checkoutForCwd(checkouts, session.cwd) === checkoutPath)
 }
@@ -119,6 +144,7 @@ export function WorktreeRows({
                             ? 'Close all sessions in this checkout first.'
                             : null
         const workspaceId = checkoutKey(project.id, worktree.path)
+        const branchLabel = worktree.branch ?? `detached ${worktree.head.slice(0, 8)}`
         const custom = customPath === worktree.path
         return (
           <li key={worktree.path}>
@@ -134,6 +160,8 @@ export function WorktreeRows({
               </button>
               <button
                 type="button"
+                aria-label={`${worktree.name} ${worktree.path}`}
+                title={worktree.path}
                 aria-pressed={activeWorkspaceId === workspaceId}
                 onClick={() => activateWorkspace(workspaceId)}
                 className={cn('flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', activeWorkspaceId === workspaceId && 'bg-secondary/70')}
@@ -142,15 +170,14 @@ export function WorktreeRows({
                 <span className="min-w-0 flex-1 overflow-hidden">
                   <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                     <span className="min-w-12 truncate text-sm font-medium">{worktree.name}</span>
-                    {worktree.missing ? <Badge variant="warning" className="gap-1"><AlertTriangleIcon aria-hidden />missing</Badge> : null}
-                    {dirty ? <Badge variant="warning">Changed{worktree.changed === null ? '' : ` · ${worktree.changed}`}</Badge> : null}
-                    {unknownStatus && !worktree.missing ? <Badge variant="outline">Status unknown</Badge> : null}
+                    <CheckoutStatus checkout={worktree} />
                   </span>
-                  <span dir="ltr" className="block truncate text-[11px] text-muted" title={worktree.path}>{worktree.branch ?? `detached ${worktree.head.slice(0, 8)}`} · {worktree.path}</span>
+                  {branchLabel !== worktree.name && <span dir="ltr" className="block truncate text-[11px] text-muted">{branchLabel}</span>}
                 </span>
               </button>
-              {attachedSessions.length > 0 && <Count count={attachedSessions.length} />}
-              <span className="flex shrink-0 items-center">
+              {/* Shown when collapsed, or when sessions from another project are attached but not listed below. */}
+              {attachedSessions.length > 0 && (!isExpanded || attachedSessions.length > checkoutSessions.length) && <Count count={attachedSessions.length} />}
+              <span className={cn('flex shrink-0 items-center', REVEAL)}>
                 <NewSessionMenu
                   label={`New session in ${project.name} · ${worktree.name}`}
                   agents={agents}

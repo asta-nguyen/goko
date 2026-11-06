@@ -1,23 +1,41 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { useActivity } from '../features/activity/queries'
+import { useUsage } from '../features/usage/queries'
 import { useDaemonStatus, useSessionList } from '../features/sessions/queries'
 import { makeQueryClient, queryKeys } from '../queryClient'
 import { startQuerySync } from './sync'
+import type { ActivityMap } from './activity'
+import type { UsageSnapshot } from './usage'
 import type { DaemonStatus, SessionInfo } from './types'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service } = vi.hoisted(() => {
+const { handlers, listen, service, usageService, activityService } = vi.hoisted(() => {
   const handlers = new Map<string, Set<Handler>>()
   const listen = vi.fn(async (name: string, cb: Handler) => {
     if (!handlers.has(name)) handlers.set(name, new Set())
     handlers.get(name)!.add(cb)
     return () => void handlers.get(name)!.delete(cb)
   })
-  return { handlers, listen, service: { list: vi.fn(), status: vi.fn() } }
+  return {
+    handlers,
+    listen,
+    service: { list: vi.fn(), status: vi.fn() },
+    usageService: { get: vi.fn() },
+    activityService: { get: vi.fn() },
+  }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen }))
 vi.mock('./session', () => ({ sessionService: service }))
+vi.mock('./activity', () => ({ activityService }))
+vi.mock('./usage', () => ({
+  usageService,
+  claudeSessionId: (argv: string[]) => {
+    const flag = argv.indexOf('--session-id')
+    return flag === -1 ? null : (argv[flag + 1] ?? null)
+  },
+}))
 
 const emit = (name: string, payload: unknown) => handlers.get(name)?.forEach((cb) => cb({ payload }))
 const listeners = () => [...handlers.values()].reduce((n, set) => n + set.size, 0)
@@ -43,12 +61,48 @@ beforeEach(async () => {
   handlers.clear()
   listen.mockClear()
   Object.values(service).forEach((f) => f.mockReset())
+  usageService.get.mockReset()
+  activityService.get.mockReset()
   stop = startQuerySync(qc)
   await settle()
 })
 afterEach(() => stop())
 
 describe('startQuerySync', () => {
+  it('updates useUsage from usage://updated', async () => {
+    const initial: UsageSnapshot = {
+      claude: { five_hour: null, seven_day: null, sessions: {}, updated_at: null },
+      codex: { primary: null, secondary: null, updated_at: null },
+    }
+    const next: UsageSnapshot = {
+      ...initial,
+      codex: { primary: { used_pct: 56, resets_at: 200, window_minutes: 300 }, secondary: null, updated_at: 100 },
+    }
+    usageService.get.mockResolvedValue(initial)
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    const { result } = renderHook(() => useUsage(), { wrapper })
+    await waitFor(() => expect(result.current.data).toEqual(initial))
+
+    act(() => emit('usage://updated', next))
+
+    await waitFor(() => expect(result.current.data).toEqual(next))
+    expect(qc.getQueryData(queryKeys.usage)).toEqual(next)
+  })
+
+  it('updates useActivity from activity://updated', async () => {
+    const initial: ActivityMap = { s1: 'working' }
+    const next: ActivityMap = { s1: 'done', s2: 'waiting' }
+    activityService.get.mockResolvedValue(initial)
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    const { result } = renderHook(() => useActivity(), { wrapper })
+    await waitFor(() => expect(result.current.data).toEqual(initial))
+
+    act(() => emit('activity://updated', next))
+
+    await waitFor(() => expect(result.current.data).toEqual(next))
+    expect(qc.getQueryData(queryKeys.activity)).toEqual(next)
+  })
+
   it('updates one session without replacing the others', async () => {
     const [a, b] = [session('a'), session('b')]
     qc.setQueryData(queryKeys.sessions, [a, b])
@@ -125,11 +179,11 @@ describe('startQuerySync', () => {
     stopOther()
   })
 
-  it('registers three listeners once, and stop removes them all', async () => {
-    expect(listeners()).toBe(3)
+  it('registers five listeners once, and stop removes them all', async () => {
+    expect(listeners()).toBe(5)
     expect(startQuerySync(qc)).toBe(stop)
     await settle()
-    expect(listen).toHaveBeenCalledTimes(3)
+    expect(listen).toHaveBeenCalledTimes(5)
 
     stop()
     await settle()
@@ -141,6 +195,6 @@ describe('startQuerySync', () => {
     const stopOther = startQuerySync(other)
     stopOther() // before `listen` resolved
     await settle()
-    expect(listeners()).toBe(3) // only the beforeEach client's
+    expect(listeners()).toBe(5) // only the beforeEach client's
   })
 })

@@ -1,15 +1,26 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { toBridgeError } from '../../services/errors'
 import type { SessionService } from '../../services/session'
 
-type Service = Pick<SessionService, 'subscribe' | 'write' | 'resize'>
+type Service = Pick<SessionService, 'subscribe' | 'write' | 'resize' | 'ack'>
 
 const RESIZE_DEBOUNCE_MS = 100
+const ACK_THRESHOLD = 64 * 1024
 const BACKSPACE = '\x7f'
 const noop = () => {}
 // Colours come from the theme tokens (CSS variables), read once at mount.
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined
+
+const mounted = new Map<string, TerminalController>()
+
+/** Pastes into a session's terminal (bracketed when the program asked for it). False if none is mounted. */
+export const pasteToSession = (id: string, text: string): boolean => {
+  const controller = mounted.get(id)
+  controller?.paste(text)
+  return controller !== undefined
+}
 
 /** What the terminal must receive to turn `before` into `after`: erase the changed tail, type the new one. */
 export const textareaEdit = (before: string, after: string): string => {
@@ -26,6 +37,7 @@ export class TerminalController {
   private element?: HTMLElement
   private fit = new FitAddon()
   private observer?: ResizeObserver
+  private themeObserver?: MutationObserver
   private timer?: ReturnType<typeof setTimeout>
   private onData?: { dispose(): void }
   private imeCleanup?: () => void
@@ -34,6 +46,7 @@ export class TerminalController {
   private disposed = false
   private visible = true
   private writes: Promise<void> = Promise.resolve()
+  private parsed = 0
 
   constructor(
     private sessionId: string,
@@ -53,8 +66,10 @@ export class TerminalController {
       theme: { background: token('--bg'), foreground: token('--text'), cursor: token('--accent') },
     }))
     this.element = element
+    mounted.set(id, this)
     term.loadAddon(this.fit)
     term.open(element)
+    this.useWebgl(term)
     this.attachIme(term, element)
     // Writes to an exited session are rejected by the daemon; the view's banner shows why.
     this.onData = term.onData((data) => {
@@ -68,12 +83,18 @@ export class TerminalController {
       this.timer = setTimeout(() => void this.syncSize(), RESIZE_DEBOUNCE_MS)
     })
     this.observer.observe(element)
+    // Theme tokens are read at mount; re-read them when the app theme flips.
+    this.themeObserver = new MutationObserver(() => this.updateTheme())
+    this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 
     if (this.visible) await this.syncSize()
     if (this.disposed) return
     try {
-      const unsubscribe = await service.subscribe(id, (_seq, data) => {
-        if (!this.disposed) term.write(data)
+      const unsubscribe = await service.subscribe(id, (seq, data) => {
+        if (this.disposed) return
+        // The write callback runs once xterm parsed the chunk: that is what the
+        // daemon's window needs to hear about, not the bytes handed to `write`.
+        term.write(data, () => this.parsedChunk(id, seq, data.length))
       })
       if (this.disposed) unsubscribe() // disposed while subscribing
       else this.unsubscribe = unsubscribe
@@ -86,13 +107,40 @@ export class TerminalController {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    if (mounted.get(this.sessionId) === this) mounted.delete(this.sessionId)
     clearTimeout(this.timer)
     this.observer?.disconnect()
+    this.themeObserver?.disconnect()
     this.imeCleanup?.()
     this.unsubscribe?.()
     this.onData?.dispose()
     this.fit.dispose()
     this.term?.dispose()
+  }
+
+  /**
+   * The default DOM renderer rebuilds every row on each full-screen redraw (agent TUIs do dozens a
+   * second), and WebKit frees that garbage only on GC: hundreds of MB. WebGL draws to a canvas.
+   * Without WebGL, or after its context is lost, xterm falls back to the DOM renderer.
+   */
+  private useWebgl(term: Terminal): void {
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
+    } catch {
+      // keep the DOM renderer
+    }
+  }
+
+  private updateTheme(): void {
+    if (!this.term) return
+    this.term.options.theme = { background: token('--bg'), foreground: token('--text'), cursor: token('--accent') }
+  }
+
+  paste(text: string): void {
+    this.term?.focus()
+    this.term?.paste(text)
   }
 
   setVisible(visible: boolean): void {
@@ -138,6 +186,18 @@ export class TerminalController {
     this.imeCleanup = () => {
       for (const [type, listener] of Object.entries(listeners)) element.removeEventListener(type, listener, true)
     }
+  }
+
+  /**
+   * One ack per 64 KiB xterm actually parsed, carrying the absolute end offset of the last
+   * parsed chunk. Acks are cheap hints: a failure is ignored, nothing is sent after dispose,
+   * and hidden panes keep acking so their stream never stalls.
+   */
+  private parsedChunk(id: string, seq: number, length: number): void {
+    this.parsed += length
+    if (this.disposed || this.parsed < ACK_THRESHOLD) return
+    this.parsed = 0
+    void this.service.ack(id, seq + length).catch(noop)
   }
 
   /** Writes stay ordered: each one starts after the previous invoke settles. */

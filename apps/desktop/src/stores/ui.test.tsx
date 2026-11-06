@@ -55,6 +55,16 @@ describe('useSelectedId', () => {
 })
 
 describe('useUi', () => {
+  it('leaves Settings when a workspace is activated, even the active one', () => {
+    act(() => useUi.getState().activateWorkspace('p1'))
+    for (const id of ['p1', 'p2']) {
+      act(() => useUi.getState().setActiveView('settings'))
+      act(() => useUi.getState().activateWorkspace(id))
+      expect(useUi.getState().activeView).toBe('terminal')
+      expect(useUi.getState().activeWorkspaceId).toBe(id)
+    }
+  })
+
   it('stores project-keyed tabs and focuses an existing session instead of duplicating it', () => {
     act(() => {
       useUi.getState().activateWorkspace('p1')

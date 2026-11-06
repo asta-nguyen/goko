@@ -1,3 +1,4 @@
+import type { Activity } from '../../services/activity'
 import type { SessionState } from '../../services/types'
 
 const TONE: Partial<Record<SessionState, string>> = {
@@ -26,11 +27,22 @@ export function StateBadge({ state }: { state: SessionState }) {
   )
 }
 
+const ACTIVITY_DOT: Record<Activity, string> = {
+  working: 'bg-warning animate-pulse',
+  waiting: 'bg-danger',
+  done: 'bg-success',
+}
+
 /** Compact state marker for tree rows; the state text stays available to assistive tech. */
-export function StateDot({ state }: { state: SessionState }) {
+export function StateDot({ state, activity }: { state: SessionState; activity?: Activity | null }) {
+  const shown = state === 'running' ? activity : null
+  const label = shown ? `${text(state)} · ${shown}` : text(state)
   return (
-    <span title={text(state)} className={`size-2 shrink-0 rounded-full ${DOT[state] ?? 'bg-muted'}`}>
-      <span className="sr-only">{text(state)}</span>
+    <span
+      title={label}
+      className={`size-2.5 shrink-0 rounded-full ${shown ? ACTIVITY_DOT[shown] : (DOT[state] ?? 'bg-muted')}`}
+    >
+      <span className="sr-only">{label}</span>
     </span>
   )
 }

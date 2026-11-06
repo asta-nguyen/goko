@@ -203,6 +203,17 @@ export interface GitViewFile {
   size: number
 }
 
+export interface GitViewSearchMatch {
+  path: string
+  line: number
+  text: string
+}
+
+export interface GitViewSearch {
+  matches: GitViewSearchMatch[]
+  truncated: boolean
+}
+
 export interface GitViewStash {
   /** `stash@{N}` position. */
   index: number

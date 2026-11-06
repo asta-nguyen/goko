@@ -4,7 +4,9 @@ use crate::daemon_client::DaemonClient;
 use crate::error::{BridgeError, Code};
 use crate::terminal;
 use protocol::message::{ErrorCode, Request};
+use protocol::session::SessionId;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::{DirBuilder, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
@@ -13,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 
 /// A cheap handle: clones share one connection.
@@ -30,6 +32,10 @@ struct Inner {
     worktree_operations: tokio::sync::RwLock<()>,
     /// Started by the first terminal subscription.
     terminals: OnceLock<mpsc::UnboundedSender<terminal::Command>>,
+    /// Per-session watch carrying every `terminal_ack` offset. The watch is an
+    /// event signal: a later send always counts, even a lower offset, while the
+    /// daemon keeps the maximum itself.
+    acks: Mutex<HashMap<SessionId, watch::Sender<u64>>>,
 }
 
 pub(crate) struct WorktreeOperationGuard(std::fs::File);
@@ -50,6 +56,7 @@ impl Bridge {
             shutting_down: AtomicBool::new(false),
             worktree_operations: tokio::sync::RwLock::new(()),
             terminals: OnceLock::new(),
+            acks: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -59,6 +66,30 @@ impl Bridge {
 
     pub(crate) fn terminals(&self) -> &OnceLock<mpsc::UnboundedSender<terminal::Command>> {
         &self.0.terminals
+    }
+
+    /// Subscribe to `session`'s ack events. The receiver sees the current offset as
+    /// already read, so `changed` fires only on an ack published after this call.
+    pub(crate) fn ack_events(&self, session: SessionId) -> watch::Receiver<u64> {
+        self.0
+            .acks
+            .lock()
+            .unwrap()
+            .entry(session)
+            .or_insert_with(|| watch::channel(0).0)
+            .subscribe()
+    }
+
+    /// Record one `terminal.ack` the webview sent for `session`; an offset is never
+    /// dropped for being lower than the last one.
+    pub(crate) fn publish_ack(&self, session: SessionId, upto_seq: u64) {
+        self.0
+            .acks
+            .lock()
+            .unwrap()
+            .entry(session)
+            .or_insert_with(|| watch::channel(0).0)
+            .send_replace(upto_seq);
     }
 
     pub(crate) fn worktree_operations(&self) -> &tokio::sync::RwLock<()> {

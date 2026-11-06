@@ -5,7 +5,7 @@
   --color-panel: var(--panel);
   --color-text: var(--text);
   --color-muted: var(--muted);
-  --color-accent: var(--accent);
+  --color-accent: var(--accent-text);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
@@ -18,11 +18,11 @@
   --color-popover: var(--panel);
   --color-popover-foreground: var(--text);
   --color-primary: var(--accent);
-  --color-primary-foreground: var(--bg);
+  --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--panel);
   --color-secondary-foreground: var(--text);
   --color-muted-foreground: var(--muted);
-  --color-accent-foreground: var(--bg);
+  --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--danger);
   --color-destructive-foreground: var(--bg);
   --color-input: var(--border);
@@ -147,7 +147,7 @@ body {
 }
 
 .hljs-link {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
 }
 

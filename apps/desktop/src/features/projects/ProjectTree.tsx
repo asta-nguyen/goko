@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertTriangleIcon, ChevronRightIcon, FolderIcon, PlusIcon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -25,7 +25,7 @@ import {
 import { useProjectList, useRemoveProject } from './queries'
 import { useAddProjectFolder } from './use-add-project'
 import { useWorktreeList } from '../worktrees/queries'
-import { sessionsForCheckout, WorktreeRows } from '../worktrees/WorktreeRows'
+import { CheckoutStatus, REVEAL, sessionsForCheckout, WorktreeRows } from '../worktrees/WorktreeRows'
 import { WorktreeCreateDialog, type WorktreeEnvResult } from '../worktrees/WorktreeCreateDialog'
 import { useEnvCopy } from '../worktrees/queries'
 
@@ -166,6 +166,7 @@ function ProjectNode({
         <button
           type="button"
           aria-label={`${project.name} ${project.root}`}
+          title={project.root}
           aria-pressed={active}
           onClick={onActivate}
           className={cn(
@@ -177,24 +178,24 @@ function ProjectNode({
           <span className="min-w-0 flex-1 overflow-hidden">
             <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
               <span className="min-w-12 truncate text-sm font-medium">{project.name}</span>
-              {isGitProject && root?.branch === null && root && <Badge variant="secondary">detached {root.head.slice(0, 8)}</Badge>}
-              {root?.dirty === true && <Badge variant="warning">Changed{root.changed === null ? '' : ` · ${root.changed}`}</Badge>}
-              {root?.dirty === null && !root.missing && <Badge variant="outline">Status unavailable</Badge>}
-              {project.missing && (
+              {project.missing ? (
                 <Badge variant="warning" className="gap-1">
                   <AlertTriangleIcon aria-hidden />
                   missing
                 </Badge>
+              ) : (
+                root && <CheckoutStatus checkout={root} />
               )}
             </span>
-            <span dir="ltr" className="block truncate text-[11px] text-muted" title={project.root}>
-              {root?.branch ? `${root.branch} · ` : ''}
-              {project.root}
-            </span>
+            {isGitProject && root && (
+              <span dir="ltr" className="block truncate text-[11px] text-muted">
+                {root.branch ?? `detached ${root.head.slice(0, 8)}`}
+              </span>
+            )}
           </span>
         </button>
-        {rootSessions.length > 0 && <Count count={rootSessions.length} />}
-        <span className="flex shrink-0 items-center">
+        {!expanded && sessions.length > 0 && <Count count={sessions.length} />}
+        <span className={cn('flex shrink-0 items-center', REVEAL)}>
           <NewSessionMenu
             label={`New session in ${project.name}`}
             agents={agents}
@@ -239,6 +240,15 @@ function ProjectNode({
         />
       )}
       {worktreeQuery.error && <p role="alert" className="ml-10 m-0 text-xs text-danger">{worktreeQuery.error.message}</p>}
+      {expanded && rootSessions.length > 0 && (
+        <SessionItems
+          sessions={rootSessions}
+          labelOf={labelOf}
+          selectedId={selectedId}
+          workspaceId={checkoutKey(project.id, project.root)}
+          onSelect={onSelect}
+        />
+      )}
       {expanded && isGitProject && root && (
         <WorktreeRows
           project={project}
@@ -257,15 +267,6 @@ function ProjectNode({
           hasLiveSessions={hasLiveSessions}
           hasUnknownSessionCwd={hasUnknownSessionCwd}
           liveCwdSupported={liveCwdSupported}
-        />
-      )}
-      {expanded && rootSessions.length > 0 && (
-        <SessionItems
-          sessions={rootSessions}
-          labelOf={labelOf}
-          selectedId={selectedId}
-          workspaceId={checkoutKey(project.id, project.root)}
-          onSelect={onSelect}
         />
       )}
       {expanded && otherSessions.length > 0 && (
@@ -432,7 +433,7 @@ export function ProjectTree() {
             }}
             disabled={adding}
           >
-            <PlusIcon data-icon="inline-start" />
+            <FolderPlusIcon data-icon="inline-start" />
             Add Project
           </Button>
         </header>

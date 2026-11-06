@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertCircleIcon, FolderPlusIcon, PlusIcon } from 'lucide-react'
+import { AlertCircleIcon, FolderPlusIcon, PlusIcon, SettingsIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { ThemeToggle } from './components/theme-toggle'
+import { useTheme } from './components/use-theme'
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
@@ -11,16 +11,40 @@ import { ResizableSplit } from './components/ui/resizable-split'
 import { TooltipProvider } from './components/ui/tooltip'
 import { EditorWorkspace } from './features/editor/EditorWorkspace'
 import { ProjectTree } from './features/projects/ProjectTree'
+import { SettingsPage } from './features/settings/SettingsPage'
 import { useProjectList } from './features/projects/queries'
 import { useAddProjectFolder } from './features/projects/use-add-project'
 import { useDaemonStatus } from './features/sessions/queries'
+import { pasteToSession } from './features/terminal/TerminalController'
 import { TerminalWorkspace } from './features/terminal/TerminalWorkspace'
+import { UsageChips } from './features/usage/UsageChips'
+import { startFileDrop } from './services/fileDrop'
 import { startQuerySync } from './services/sync'
-import { checkoutContext, PANEL_LIMITS, useUi } from './stores/ui'
+import { checkoutContext, focusedSession, PANEL_LIMITS, useUi } from './stores/ui'
 
 export default function App() {
+  useTheme() // mounted at the root so the stored `goko.theme` applies on startup
   const qc = useQueryClient()
   useEffect(() => startQuerySync(qc), [qc]) // returns its stop function
+  useEffect(
+    () =>
+      startFileDrop((text) => {
+        const { activeWorkspaceId, activeView, workspaces } = useUi.getState()
+        const id = activeView === 'terminal' && activeWorkspaceId ? focusedSession(workspaces[activeWorkspaceId]) : null
+        if (id) pasteToSession(id, text)
+      }),
+    [],
+  )
+  useEffect(() => {
+    const openSettings = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ',') {
+        event.preventDefault()
+        useUi.getState().setActiveView('settings')
+      }
+    }
+    window.addEventListener('keydown', openSettings)
+    return () => window.removeEventListener('keydown', openSettings)
+  }, [])
   const { data: status } = useDaemonStatus()
   const { data: projects } = useProjectList()
   const { addProject, error: addError, pending: adding } = useAddProjectFolder()
@@ -37,9 +61,10 @@ export default function App() {
   const workspaceIds = [...new Set([...Object.keys(workspaces), ...(activeWorkspaceId ? [activeWorkspaceId] : [])])]
   const activeContext = activeWorkspaceId ? checkoutContext(activeWorkspaceId) : null
   const activeProject = activeContext ? (projects?.find((project) => project.id === activeContext.projectId) ?? null) : null
-  // Every terminal workspace stays mounted while Editor covers the main area,
-  // so tabs, splits, and running sessions survive a view switch untouched.
+  // Every terminal workspace stays mounted while another view covers the main
+  // area, so tabs, splits, and running sessions survive a view switch untouched.
   const editorMode = activeView === 'editor' && activeContext !== null
+  const settingsMode = activeView === 'settings'
   const disconnected = status?.connected === false
   const connection = status ? (disconnected ? 'Disconnected' : 'Connected') : 'Connecting'
 
@@ -101,7 +126,7 @@ export default function App() {
         </Dialog>
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel px-4">
           <div className="flex items-center gap-2.5">
-            <span className="grid size-7 shrink-0 place-items-center rounded-md bg-accent text-bg" aria-hidden>
+            <span className="grid size-7 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground" aria-hidden>
               <svg viewBox="112 128 288 256" className="size-4">
                 <path
                   d="m142 164 92 92-92 92"
@@ -120,16 +145,25 @@ export default function App() {
             role="status"
             aria-label={status ? (disconnected ? 'Daemon disconnected' : 'Daemon connected') : 'Daemon status unknown'}
           >
-            <Badge variant={status ? (disconnected ? 'destructive' : 'success') : 'outline'} className="gap-1.5">
-              <span
-                aria-hidden
-                className={`size-1.5 rounded-full ${status ? (disconnected ? 'bg-danger' : 'bg-success') : 'bg-muted'}`}
-              />
-              {connection}
-            </Badge>
+            {connection !== 'Connected' && (
+              <Badge variant={disconnected ? 'destructive' : 'outline'} className="gap-1.5">
+                <span aria-hidden className={`size-1.5 rounded-full ${disconnected ? 'bg-danger' : 'bg-muted'}`} />
+                {connection}
+              </Badge>
+            )}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <ThemeToggle />
+            <UsageChips />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Settings"
+              aria-pressed={settingsMode}
+              title="Settings (Cmd+,)"
+              onClick={() => useUi.getState().setActiveView(settingsMode ? 'terminal' : 'settings')}
+            >
+              <SettingsIcon />
+            </Button>
           </div>
         </header>
         {disconnected && (
@@ -154,7 +188,7 @@ export default function App() {
               <TerminalWorkspace
                 key={workspaceId}
                 workspaceId={workspaceId}
-                active={workspaceId === activeWorkspaceId && !editorMode}
+                active={workspaceId === activeWorkspaceId && activeView === 'terminal'}
                 project={projects?.find((project) => project.id === checkoutContext(workspaceId)?.projectId) ?? null}
                 checkoutPath={checkoutContext(workspaceId)?.checkoutPath}
               />
@@ -166,7 +200,9 @@ export default function App() {
                 checkoutPath={activeContext.checkoutPath}
               />
             )}
+            {settingsMode && <SettingsPage />}
             {activeWorkspaceId === null &&
+              !settingsMode &&
               (projects?.length === 0 ? (
                 <Empty>
                   <EmptyHeader>
