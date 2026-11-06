@@ -1,0 +1,21 @@
+apps/desktop/src-tauri/src/git_view.rs
+  s_03e9d97646aa5a::t_b00c342d38a968 1305,1325,1339
+apps/desktop/src/features/editor/code-theme.ts
+  s_03e9d97646aa5a::t_ce8ac993ac3f9a 31-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c7fdc66e0861f8b5315ecefff04d359a6e806cee",
+  "prompts": {},
+  "sessions": {
+    "s_03e9d97646aa5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d250b2a-feee-48d4-896e-388e5494c71e",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
