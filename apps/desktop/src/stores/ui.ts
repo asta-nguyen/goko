@@ -154,7 +154,7 @@ function collectPanes(layout: PaneLayout): TerminalPane[] {
   return layout.kind === 'pane' ? [layout] : [...collectPanes(layout.first), ...collectPanes(layout.second)]
 }
 
-function focusedSession(workspace?: TerminalWorkspaceState): string | null {
+export function focusedSession(workspace?: TerminalWorkspaceState): string | null {
   const tab = workspace?.tabs.find((item) => item.id === workspace.activeTabId)
   return tab ? collectPanes(tab.layout).find((item) => item.id === tab.activePaneId)?.sessionId ?? null : null
 }

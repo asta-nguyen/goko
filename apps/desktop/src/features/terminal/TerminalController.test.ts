@@ -1,4 +1,4 @@
-import { TerminalController, textareaEdit } from './TerminalController'
+import { pasteToSession, TerminalController, textareaEdit } from './TerminalController'
 
 const h = vi.hoisted(() => {
   const state = {
@@ -22,6 +22,11 @@ const h = vi.hoisted(() => {
     }
     open = vi.fn((el: HTMLElement) => el.append(this.textarea)) // xterm's textarea lives inside the element
     attachCustomKeyEventHandler = vi.fn()
+    pasted: string[] = []
+    focus = vi.fn()
+    paste(d: string) {
+      this.pasted.push(d)
+    }
     onData(cb: (d: string) => void) {
       this.dataListeners.add(cb)
       return { dispose: () => void this.dataListeners.delete(cb) }
@@ -258,6 +263,32 @@ describe('TerminalController renderer', () => {
     onBytes(0, bytes('hi'))
     expect(text(state.terms[0])).toBe('hi')
     c.dispose()
+  })
+})
+
+describe('pasteToSession', () => {
+  it('pastes into the mounted terminal of that session, and into none after dispose', async () => {
+    const c = new TerminalController('p1', service)
+    await c.mount(element())
+    expect(pasteToSession('p1', '/a\\ b.png ')).toBe(true)
+    expect(state.terms[0].pasted).toEqual(['/a\\ b.png '])
+    expect(state.terms[0].focus).toHaveBeenCalled()
+    expect(pasteToSession('other', 'x')).toBe(false)
+
+    c.dispose()
+    expect(pasteToSession('p1', 'x')).toBe(false)
+  })
+
+  it('keeps the newer controller registered when an older one for the same session is disposed', async () => {
+    const older = new TerminalController('p2', service)
+    await older.mount(element())
+    const newer = new TerminalController('p2', service)
+    await newer.mount(element())
+
+    older.dispose()
+    expect(pasteToSession('p2', 'x')).toBe(true)
+    expect(state.terms[1].pasted).toEqual(['x'])
+    newer.dispose()
   })
 })
 

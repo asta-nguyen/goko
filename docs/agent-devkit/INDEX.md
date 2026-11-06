@@ -6,6 +6,7 @@
 
 ## Archived changes
 
+- [Editor go-to-definition](changes/archive/2026-11-06-editor-go-to-definition/delta.md)
 - [Multi-theme support](changes/archive/2026-11-05-multi-theme/delta.md)
 - [Theme control moves to Settings](changes/archive/2026-11-05-theme-to-settings/delta.md)
 - [Settings page](changes/archive/2026-11-05-settings-page/delta.md)

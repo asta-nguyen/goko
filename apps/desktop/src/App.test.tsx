@@ -176,7 +176,7 @@ describe('App', () => {
 
   it('shows the banner and disables controls while disconnected, and recovers', async () => {
     renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(5))
+    await vi.waitFor(() => expect(listeners()).toBe(6))
     fireEvent.click(await screen.findByRole('button', { name: /title-a/ }))
     const stop = screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement
     expect(stop.disabled).toBe(false)
@@ -196,7 +196,7 @@ describe('App', () => {
   it('shows no sessions after reconnecting to a daemon with an empty session list', async () => {
     renderApp()
     await waitFor(() => expect(sessionButtons()).toHaveLength(2))
-    await waitFor(() => expect(listeners()).toBe(5))
+    await waitFor(() => expect(listeners()).toBe(6))
 
     service.list.mockResolvedValue([])
     emit('daemon://status', { connected: false })
@@ -210,7 +210,7 @@ describe('App', () => {
 
   it('applies pushed session events to the list', async () => {
     renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(5))
+    await vi.waitFor(() => expect(listeners()).toBe(6))
     await screen.findAllByRole('button', { name: /title-/ })
     emit('session://updated', session('c'))
     expect(await screen.findByRole('button', { name: /title-c/ })).toBeTruthy()
@@ -218,7 +218,7 @@ describe('App', () => {
 
   it('stops the event sync on unmount', async () => {
     const { unmount } = renderApp()
-    await vi.waitFor(() => expect(listeners()).toBe(5))
+    await vi.waitFor(() => expect(listeners()).toBe(6))
     unmount()
     await vi.waitFor(() => expect(listeners()).toBe(0))
   })

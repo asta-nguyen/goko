@@ -13,6 +13,15 @@ const noop = () => {}
 // Colours come from the theme tokens (CSS variables), read once at mount.
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined
 
+const mounted = new Map<string, TerminalController>()
+
+/** Pastes into a session's terminal (bracketed when the program asked for it). False if none is mounted. */
+export const pasteToSession = (id: string, text: string): boolean => {
+  const controller = mounted.get(id)
+  controller?.paste(text)
+  return controller !== undefined
+}
+
 /** What the terminal must receive to turn `before` into `after`: erase the changed tail, type the new one. */
 export const textareaEdit = (before: string, after: string): string => {
   const old = [...before.normalize('NFC')]
@@ -57,6 +66,7 @@ export class TerminalController {
       theme: { background: token('--bg'), foreground: token('--text'), cursor: token('--accent') },
     }))
     this.element = element
+    mounted.set(id, this)
     term.loadAddon(this.fit)
     term.open(element)
     this.useWebgl(term)
@@ -97,6 +107,7 @@ export class TerminalController {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    if (mounted.get(this.sessionId) === this) mounted.delete(this.sessionId)
     clearTimeout(this.timer)
     this.observer?.disconnect()
     this.themeObserver?.disconnect()
@@ -125,6 +136,11 @@ export class TerminalController {
   private updateTheme(): void {
     if (!this.term) return
     this.term.options.theme = { background: token('--bg'), foreground: token('--text'), cursor: token('--accent') }
+  }
+
+  paste(text: string): void {
+    this.term?.focus()
+    this.term?.paste(text)
   }
 
   setVisible(visible: boolean): void {

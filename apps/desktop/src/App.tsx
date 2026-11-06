@@ -15,15 +15,26 @@ import { SettingsPage } from './features/settings/SettingsPage'
 import { useProjectList } from './features/projects/queries'
 import { useAddProjectFolder } from './features/projects/use-add-project'
 import { useDaemonStatus } from './features/sessions/queries'
+import { pasteToSession } from './features/terminal/TerminalController'
 import { TerminalWorkspace } from './features/terminal/TerminalWorkspace'
 import { UsageChips } from './features/usage/UsageChips'
+import { startFileDrop } from './services/fileDrop'
 import { startQuerySync } from './services/sync'
-import { checkoutContext, PANEL_LIMITS, useUi } from './stores/ui'
+import { checkoutContext, focusedSession, PANEL_LIMITS, useUi } from './stores/ui'
 
 export default function App() {
   useTheme() // mounted at the root so the stored `goko.theme` applies on startup
   const qc = useQueryClient()
   useEffect(() => startQuerySync(qc), [qc]) // returns its stop function
+  useEffect(
+    () =>
+      startFileDrop((text) => {
+        const { activeWorkspaceId, activeView, workspaces } = useUi.getState()
+        const id = activeView === 'terminal' && activeWorkspaceId ? focusedSession(workspaces[activeWorkspaceId]) : null
+        if (id) pasteToSession(id, text)
+      }),
+    [],
+  )
   useEffect(() => {
     const openSettings = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {

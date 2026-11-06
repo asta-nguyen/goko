@@ -1,4 +1,4 @@
-import { LanguageDescription } from '@codemirror/language'
+import { LanguageDescription, syntaxTree } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
 import { EditorView } from '@codemirror/view'
 import { getCM, Vim, vim } from '@replit/codemirror-vim'
@@ -104,5 +104,115 @@ describe('CodeEditor', () => {
     await waitFor(() => expect(document.getSelection()?.toString()).not.toBe('last'))
     rerender(<CodeEditor {...baseProps} value={'first\nsecond\nlast'} reveal={{ line: 99, nonce: 2 }} />)
     await waitFor(() => expect(document.getSelection()?.toString()).toBe('last'))
+  })
+})
+
+describe('CodeEditor go to', () => {
+  const source = "import { x } from './util'\nconst y = sumAll(x) // sumAll"
+  const onGoTo = vi.fn()
+  const mount = (props: Partial<Parameters<typeof CodeEditor>[0]> = {}) => {
+    const { container } = render(<CodeEditor {...baseProps} value={source} path="a.ts" onGoTo={onGoTo} {...props} />)
+    const content = container.querySelector('.cm-content') as HTMLElement
+    const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)!
+    const at = (needle: string, nth = 0, offset = 1) => {
+      let from = -1
+      for (let i = 0; i <= nth; i += 1) from = source.indexOf(needle, from + 1)
+      vi.spyOn(view, 'posAtCoords').mockReturnValue(from + offset)
+    }
+    return { container, content, at, view }
+  }
+  beforeEach(() => onGoTo.mockReset())
+  afterEach(() => vi.restoreAllMocks())
+
+  it('reports an import specifier and a name on Ctrl+click, and consumes the click', async () => {
+    const { content, at } = mount()
+    await waitFor(() => expect(content.querySelectorAll('.cm-line')).toHaveLength(2))
+
+    at("'./util'", 0, 4)
+    expect(fireEvent.mouseDown(content, { button: 0, ctrlKey: true })).toBe(false) // preventDefault was called
+    expect(onGoTo).toHaveBeenLastCalledWith({ kind: 'import', specifier: './util' })
+
+    at('sumAll', 0, 2)
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    expect(onGoTo).toHaveBeenLastCalledWith({ kind: 'name', name: 'sumAll' })
+    expect(onGoTo).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores plain clicks, other buttons, one-letter names, blank space and comments', async () => {
+    const { content, at } = mount({ path: 'a.unknownext' })
+    await waitFor(() => expect(content.querySelectorAll('.cm-line')).toHaveLength(2))
+
+    at('sumAll', 0, 2)
+    fireEvent.mouseDown(content, { button: 0 })
+    fireEvent.mouseDown(content, { button: 0, metaKey: true }) // Cmd is not the modifier off macOS
+    fireEvent.mouseDown(content, { button: 2, ctrlKey: true })
+    at('(x)', 0, 1)
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    at(' //', 0, 0)
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    expect(onGoTo).not.toHaveBeenCalled()
+  })
+
+  it('skips names inside comments and strings once the language is loaded, but not import strings', async () => {
+    const { content, view } = mount({ value: "import a from './util'\nconst s = 'sumAll' // sumAll\nsumAll(a)" })
+    await waitFor(() => expect(syntaxTree(view.state).topNode.name).toBe('Script'))
+    const doc = view.state.doc.toString()
+    const at2 = (index: number) => vi.spyOn(view, 'posAtCoords').mockReturnValue(index + 2)
+
+    at2(doc.indexOf("'sumAll'") + 1) // inside the string
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    at2(doc.indexOf('// sumAll') + 3) // inside the comment
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    expect(onGoTo).not.toHaveBeenCalled()
+
+    at2(doc.lastIndexOf('sumAll'))
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    at2(doc.indexOf('./util'))
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    expect(onGoTo.mock.calls).toEqual([[{ kind: 'name', name: 'sumAll' }], [{ kind: 'import', specifier: './util' }]])
+  })
+
+  it('does nothing without a handler', async () => {
+    const { content, at } = mount({ onGoTo: undefined })
+    await waitFor(() => expect(content.querySelectorAll('.cm-line')).toHaveLength(2))
+    at('sumAll', 0, 2)
+    expect(() => fireEvent.mouseDown(content, { button: 0, ctrlKey: true })).not.toThrow()
+  })
+
+  it('uses Cmd, not Ctrl, on macOS', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Macintosh; Intel Mac OS X)')
+    const { content, at } = mount()
+    await waitFor(() => expect(content.querySelectorAll('.cm-line')).toHaveLength(2))
+    at('sumAll', 0, 2)
+
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    expect(onGoTo).not.toHaveBeenCalled()
+    fireEvent.mouseDown(content, { button: 0, metaKey: true })
+    expect(onGoTo).toHaveBeenCalledWith({ kind: 'name', name: 'sumAll' })
+  })
+
+  it('underlines the token under a held modifier and clears it on leave', async () => {
+    const { container, content, at } = mount()
+    await waitFor(() => expect(content.querySelectorAll('.cm-line')).toHaveLength(2))
+    at('sumAll', 0, 2)
+
+    fireEvent.mouseMove(content, { ctrlKey: true })
+    await waitFor(() => expect(container.querySelector('.cm-goto')?.textContent).toBe('sumAll'))
+    fireEvent.mouseMove(content) // modifier released
+    await waitFor(() => expect(container.querySelector('.cm-goto')).toBeNull())
+
+    fireEvent.mouseMove(content, { ctrlKey: true })
+    await waitFor(() => expect(container.querySelector('.cm-goto')).not.toBeNull())
+    fireEvent.mouseLeave(content)
+    await waitFor(() => expect(container.querySelector('.cm-goto')).toBeNull())
+  })
+
+  it('handles the click ahead of Vim', async () => {
+    const { content, at } = mount({ vim: true })
+    await waitFor(() => expect(content.querySelectorAll('.cm-line')).toHaveLength(2))
+    at('sumAll', 0, 2)
+
+    fireEvent.mouseDown(content, { button: 0, ctrlKey: true })
+    expect(onGoTo).toHaveBeenCalledWith({ kind: 'name', name: 'sumAll' })
   })
 })

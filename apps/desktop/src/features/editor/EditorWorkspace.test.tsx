@@ -33,6 +33,7 @@ vi.mock('./CodeEditor', () => ({
     reveal,
     onRevealed,
     onChange,
+    onGoTo,
   }: {
     value: string
     ariaLabel: string
@@ -41,6 +42,7 @@ vi.mock('./CodeEditor', () => ({
     reveal: { line: number; nonce: number } | null
     onRevealed?: () => void
     onChange: (value: string) => void
+    onGoTo?: (target: { kind: 'import'; specifier: string } | { kind: 'name'; name: string }) => void
   }) => (
     <>
       <textarea
@@ -54,6 +56,11 @@ vi.mock('./CodeEditor', () => ({
       />
       {/* Stands in for the real editor finishing the cursor jump. */}
       <button type="button" data-testid="reveal-done" onClick={onRevealed} />
+      {/* Stand in for Cmd/Ctrl+click on a token. */}
+      <button type="button" data-testid="go-relative" onClick={() => onGoTo?.({ kind: 'import', specifier: './util' })} />
+      <button type="button" data-testid="go-alias" onClick={() => onGoTo?.({ kind: 'import', specifier: '@/stores/ui' })} />
+      <button type="button" data-testid="go-package" onClick={() => onGoTo?.({ kind: 'import', specifier: 'react' })} />
+      <button type="button" data-testid="go-name" onClick={() => onGoTo?.({ kind: 'name', name: 'Foo' })} />
     </>
   ),
 }))
@@ -449,6 +456,128 @@ describe('sections', () => {
     const nextEditor = await screen.findByRole('textbox', { name: 'Edit README.md' })
     expect(nextEditor.getAttribute('data-reveal-line')).toBe('4')
     expect(useUi.getState().editorDraft).toBeNull()
+  })
+
+  describe('go to definition', () => {
+    const openApp = async () => {
+      service.file.mockImplementation((_projectId: string, _checkoutPath: string, path: string) =>
+        Promise.resolve({
+          path,
+          kind: 'text' as const,
+          text: path === 'tsconfig.json' ? '{ // aliases\n "compilerOptions": { "paths": { "@/*": ["./src/*"], }, }, }' : 'line one\nline two',
+          truncated: false,
+          size: 17,
+        }),
+      )
+      service.fileList.mockResolvedValue(['tsconfig.json', 'src/app.ts', 'src/util.ts', 'src/stores/ui.ts'])
+      renderEditor()
+      fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+      await screen.findByRole('textbox', { name: 'Edit src/app.ts' })
+    }
+
+    it('opens a relative import and an aliased import from tsconfig paths', async () => {
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-relative'))
+      expect(await screen.findByRole('textbox', { name: 'Edit src/util.ts' })).toBeTruthy()
+      expect(service.fileList).toHaveBeenCalledWith('p1', '/work/p1')
+
+      fireEvent.click(screen.getByTestId('go-alias'))
+      expect(await screen.findByRole('textbox', { name: 'Edit src/stores/ui.ts' })).toBeTruthy()
+      expect(service.file).toHaveBeenCalledWith('p1', '/work/p1', 'tsconfig.json')
+    })
+
+    it('shows a short notice for a package or a missing file and keeps the current file', async () => {
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-package'))
+      expect((await screen.findByRole('status')).textContent).toBe("No file for 'react' in this checkout")
+      expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' })).toBeTruthy()
+    })
+
+    it('jumps to the only declaration of a name and reveals its line', async () => {
+      service.search.mockResolvedValue({
+        matches: [
+          { path: 'src/util.ts', line: 7, text: 'export function Foo() {' },
+          { path: 'src/app.ts', line: 1, text: '<Foo />' },
+        ],
+        truncated: false,
+      })
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-name'))
+      const editor = await screen.findByRole('textbox', { name: 'Edit src/util.ts' })
+      expect(editor.getAttribute('data-reveal-line')).toBe('7')
+      expect(service.search).toHaveBeenCalledWith('p1', '/work/p1', 'Foo')
+    })
+
+    it('prefers a declaration in the open file', async () => {
+      service.search.mockResolvedValue({
+        matches: [
+          { path: 'src/app.ts', line: 2, text: 'const Foo = () => 1' },
+          { path: 'src/util.ts', line: 7, text: 'export function Foo() {' },
+        ],
+        truncated: false,
+      })
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-name'))
+      await waitFor(() => expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' }).getAttribute('data-reveal-line')).toBe('2'))
+    })
+
+    it('opens Content search for the name when no single declaration is found', async () => {
+      service.search.mockResolvedValue({
+        matches: [
+          { path: 'src/util.ts', line: 7, text: 'export function Foo() {' },
+          { path: 'src/stores/ui.ts', line: 3, text: 'export class Foo {' },
+        ],
+        truncated: false,
+      })
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-name'))
+      expect((await screen.findByLabelText('Search file contents') as HTMLInputElement).value).toBe('Foo')
+      expect(screen.getByRole('radio', { name: 'Content' }).getAttribute('aria-checked')).toBe('true')
+      expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' })).toBeTruthy()
+    })
+
+    it('shows a search failure as a notice', async () => {
+      service.search.mockRejectedValue({ code: 'internal', message: 'git exploded' })
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-name'))
+      expect((await screen.findByRole('status')).textContent).toContain('git exploded')
+    })
+
+    it('drops a slow lookup once a newer click has run', async () => {
+      let resolveSearch!: (value: unknown) => void
+      service.search.mockReturnValue(new Promise((resolve) => { resolveSearch = resolve }))
+      await openApp()
+
+      fireEvent.click(screen.getByTestId('go-name')) // search still pending
+      fireEvent.click(screen.getByTestId('go-relative'))
+      await screen.findByRole('textbox', { name: 'Edit src/util.ts' })
+
+      await act(async () => {
+        resolveSearch({ matches: [{ path: 'src/stores/ui.ts', line: 3, text: 'export class Foo {' }], truncated: false })
+      })
+      expect(screen.getByRole('textbox', { name: 'Edit src/util.ts' })).toBeTruthy()
+      expect(screen.queryByRole('textbox', { name: 'Edit src/stores/ui.ts' })).toBeNull()
+    })
+
+    it('goes through the dirty-draft guard before leaving an edited file', async () => {
+      await openApp()
+      fireEvent.change(screen.getByRole('textbox', { name: 'Edit src/app.ts' }), { target: { value: 'edited draft' } })
+
+      fireEvent.click(screen.getByTestId('go-relative'))
+      await waitFor(() => expect(useUi.getState().editorGuardOpen).toBe(true))
+      expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' })).toBeTruthy()
+
+      act(() => useUi.getState().continueEditorNavigation(true))
+      expect(await screen.findByRole('textbox', { name: 'Edit src/util.ts' })).toBeTruthy()
+    })
   })
 
   it('shows the empty state and an ErrorPane for content-search outcomes', async () => {

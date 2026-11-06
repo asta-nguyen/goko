@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { ChevronRightIcon, FileIcon, FileWarningIcon, FolderIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -15,6 +15,7 @@ import { CodeView, EmptyPane, ErrorPane, FilterInput, LoadingPane, matchesQuery,
 import { MarkdownView, isMarkdownPath } from './MarkdownView'
 import { useEditorVim, useGitChanges, useGitFile, useGitFileList, useGitTree } from './queries'
 import { CodeEditor } from './CodeEditor'
+import { configCandidates, parseTsconfigPaths, pickDefinition, resolveImport, type GoToTarget, type PathAlias } from './go-to-definition'
 import { EditorSearch } from './EditorSearch'
 
 const sizeLabel = (size: number) => (size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.round(size / 1024))} KiB`)
@@ -147,6 +148,9 @@ export function EditorFiles({
   const [reveal, setReveal] = useState<{ line: number; nonce: number } | null>(null)
   const [mdView, setMdView] = useState<'preview' | 'raw'>('raw')
   const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const lookup = useRef({ id: 0, scope: '' })
+  lookup.current.scope = `${projectId}\0${checkoutPath}`
   const [vim] = useEditorVim()
   const editorDraft = useUi((state) => state.editorDraft)
   const editorSaveError = useUi((state) => state.editorSaveError)
@@ -264,6 +268,66 @@ export function EditorFiles({
       setPath(nextPath)
       setReveal(line === undefined ? null : (current) => ({ line, nonce: (current?.nonce ?? 0) + 1 }))
     })
+  }
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  /** `paths` aliases from the nearest config that defines any; unreadable configs are skipped. */
+  const loadAliases = async (files: ReadonlySet<string>, fromPath: string): Promise<PathAlias[]> => {
+    for (const config of configCandidates(fromPath).filter((candidate) => files.has(candidate))) {
+      const file = await queryClient.fetchQuery({
+        queryKey: queryKeys.gitFile(projectId, checkoutPath, config),
+        queryFn: () => gitViewService.file(projectId, checkoutPath, config),
+        staleTime: 30_000,
+      })
+      const aliases = file.kind === 'text' && file.text !== null ? parseTsconfigPaths(file.text, config) : []
+      if (aliases.length) return aliases
+    }
+    return []
+  }
+
+  /** Cmd/Ctrl+click: open the imported file, or the one declaration of the name, else search for the name. */
+  const goTo = async (target: GoToTarget) => {
+    if (path === null) return
+    const { scope } = lookup.current
+    const id = ++lookup.current.id
+    const stale = () => id !== lookup.current.id || scope !== lookup.current.scope
+    setNotice(null)
+    try {
+      if (target.kind === 'import') {
+        const files = new Set(
+          await queryClient.fetchQuery({
+            queryKey: queryKeys.gitFileList(projectId, checkoutPath),
+            queryFn: () => gitViewService.fileList(projectId, checkoutPath),
+            staleTime: 30_000,
+          }),
+        )
+        const resolved = resolveImport(files, path, target.specifier, await loadAliases(files, path))
+        if (stale()) return
+        if (resolved) selectPath(resolved)
+        else setNotice(`No file for '${target.specifier}' in this checkout`)
+        return
+      }
+      const result = await queryClient.fetchQuery({
+        queryKey: queryKeys.gitSearch(projectId, checkoutPath, target.name),
+        queryFn: () => gitViewService.search(projectId, checkoutPath, target.name),
+        staleTime: 30_000,
+      })
+      if (stale()) return
+      const hit = pickDefinition(result.matches, target.name, path)
+      if (hit) {
+        selectPath(hit.path, hit.line)
+      } else {
+        setSearchMode('content')
+        setFilter(target.name)
+      }
+    } catch (error) {
+      if (!stale()) setNotice(toBridgeError(error).message)
+    }
   }
 
   const updateText = (nextText: string) => {
@@ -400,6 +464,9 @@ export function EditorFiles({
               </Button>
             )}
           </header>
+          {notice && (
+            <div role="status" className="shrink-0 border-b border-border bg-panel px-3 py-1 text-xs text-muted">{notice}</div>
+          )}
           {editorSaveError && (
             <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border bg-danger/10 px-3 py-1.5 text-xs text-danger">
               <span className="min-w-0 flex-1">{editorSaveError}</span>
@@ -421,6 +488,7 @@ export function EditorFiles({
                 onRevealed={() => setReveal(null)}
                 onChange={updateText}
                 onSave={() => void saveDraft()}
+                onGoTo={(target) => void goTo(target)}
               />
             ) : markdown && mdView === 'preview' ? (
               <MarkdownView text={text} />

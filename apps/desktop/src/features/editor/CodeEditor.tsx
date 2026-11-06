@@ -1,11 +1,12 @@
-import { Annotation, Compartment, EditorState } from '@codemirror/state'
-import { LanguageDescription } from '@codemirror/language'
-import { EditorView } from '@codemirror/view'
+import { Annotation, Compartment, EditorState, Prec, StateEffect, StateField } from '@codemirror/state'
+import { LanguageDescription, syntaxTree } from '@codemirror/language'
+import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
 import { languages } from '@codemirror/language-data'
 import { getCM, Vim, vim } from '@replit/codemirror-vim'
 import { useEffect, useRef } from 'react'
 import { codeTheme } from './code-theme'
+import { tokenAt, type GoToTarget, type GoToToken } from './go-to-definition'
 
 export interface CodeEditorProps {
   value: string
@@ -18,6 +19,8 @@ export interface CodeEditorProps {
   onRevealed?: () => void
   onChange: (text: string) => void
   onSave: () => void
+  /** Cmd+click (macOS) or Ctrl+click on an import specifier or a name. */
+  onGoTo?: (target: GoToTarget) => void
 }
 
 /**
@@ -31,11 +34,75 @@ const dropTextOutsideInsertMode = EditorView.inputHandler.of((view) => {
 })
 const vimExtensions = () => [vim(), dropTextOutsideInsertMode]
 
+// Ctrl+click is a right click on macOS, so go-to there is Cmd+click.
+const goToModifier = (event: MouseEvent) => (/Macintosh/.test(navigator.userAgent) ? event.metaKey : event.ctrlKey)
+
+/** The token under the pointer; a name inside a comment or string is not worth a lookup. */
+function tokenUnder(view: EditorView, event: MouseEvent): GoToToken | null {
+  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+  if (pos === null) return null
+  const line = view.state.doc.lineAt(pos)
+  const token = tokenAt(line.text, pos - line.from)
+  if (!token) return null
+  if (token.target.kind === 'name' && /Comment|String/.test(syntaxTree(view.state).resolveInner(pos, -1).name)) return null
+  // A click in the blank space after a line still maps to its last position; it is not on the token.
+  const end = view.coordsAtPos(line.from + token.to, -1)
+  if (end && event.clientX > end.right + 1) return null
+  return { ...token, from: line.from + token.from, to: line.from + token.to }
+}
+
+const setHover = StateEffect.define<{ from: number; to: number } | null>()
+const goToMark = Decoration.mark({ class: 'cm-goto' })
+const hoverField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decorations, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setHover)) return effect.value ? Decoration.set([goToMark.range(effect.value.from, effect.value.to)]) : Decoration.none
+    }
+    return transaction.docChanged ? Decoration.none : decorations
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
+const goToTheme = EditorView.baseTheme({ '.cm-goto': { textDecoration: 'underline', cursor: 'pointer' } })
+
+/** Placed ahead of `vim()` so the modified click never starts a Vim selection. */
+const goToExtensions = (handler: () => ((target: GoToTarget) => void) | undefined) => {
+  let hovered = ''
+  const hover = (view: EditorView, token: GoToToken | null) => {
+    const key = token ? `${token.from}-${token.to}` : ''
+    if (key === hovered) return
+    hovered = key
+    view.dispatch({ effects: setHover.of(token && { from: token.from, to: token.to }) })
+  }
+  return [
+    hoverField,
+    goToTheme,
+    Prec.highest(
+      EditorView.domEventHandlers({
+        mousedown(event, view) {
+          const onGoTo = handler()
+          const token = onGoTo && event.button === 0 && goToModifier(event) ? tokenUnder(view, event) : null
+          if (!token || !onGoTo) return false
+          event.preventDefault()
+          onGoTo(token.target)
+          return true
+        },
+        mousemove(event, view) {
+          hover(view, handler() && goToModifier(event) ? tokenUnder(view, event) : null)
+        },
+        mouseleave(_event, view) {
+          hover(view, null)
+        },
+      }),
+    ),
+  ]
+}
+
 const externalValue = Annotation.define<boolean>()
 let saveMountedEditor: (() => void) | null = null
 Vim.defineEx('write', 'w', () => saveMountedEditor?.())
 
-export function CodeEditor({ value, path, ariaLabel, readOnly, vim: vimEnabled, reveal, onRevealed, onChange, onSave }: CodeEditorProps) {
+export function CodeEditor({ value, path, ariaLabel, readOnly, vim: vimEnabled, reveal, onRevealed, onChange, onSave, onGoTo }: CodeEditorProps) {
   const parent = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
   const language = useRef<Compartment | null>(null)
@@ -44,9 +111,11 @@ export function CodeEditor({ value, path, ariaLabel, readOnly, vim: vimEnabled, 
   const onChangeRef = useRef(onChange)
   const onSaveRef = useRef(onSave)
   const onRevealedRef = useRef(onRevealed)
+  const onGoToRef = useRef(onGoTo)
   onChangeRef.current = onChange
   onRevealedRef.current = onRevealed
   onSaveRef.current = onSave
+  onGoToRef.current = onGoTo
 
   useEffect(() => {
     const parentElement = parent.current
@@ -63,6 +132,7 @@ export function CodeEditor({ value, path, ariaLabel, readOnly, vim: vimEnabled, 
       doc: value,
       parent: parentElement,
       extensions: [
+        goToExtensions(() => onGoToRef.current),
         vimCompartment.of(vimEnabled ? vimExtensions() : []),
         basicSetup,
         languageCompartment.of([]),
