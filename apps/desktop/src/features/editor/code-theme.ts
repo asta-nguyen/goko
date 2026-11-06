@@ -28,7 +28,10 @@ export const codeTheme: Extension = [
     '.cm-activeLineGutter': { color: 'var(--text)', backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)' },
     '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--accent) 7%, transparent)' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
-    '.cm-selectionBackground, ::selection': { backgroundColor: 'color-mix(in srgb, var(--accent) 28%, transparent)' },
+    // The focused rule matches basicSetup's specificity, which otherwise overrides ours with a fixed grey.
+    '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, ::selection': {
+      backgroundColor: 'color-mix(in srgb, var(--accent) 45%, transparent)',
+    },
     '.cm-searchMatch': { backgroundColor: 'color-mix(in srgb, var(--warning) 38%, transparent)' },
     '.cm-searchMatch-selected': { backgroundColor: 'color-mix(in srgb, var(--warning) 62%, transparent)' },
     '.cm-panels': { color: 'var(--text)', backgroundColor: 'var(--panel)' },

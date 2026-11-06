@@ -474,7 +474,6 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
         "-z",
         "--cached",
         "--others",
-        "--exclude-standard",
         "--",
         &pathspec,
     ];
@@ -499,7 +498,6 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
 
     let directory_path = checkout.join(&prefix);
     let mut directories = Vec::new();
-    let mut ignored_input = Vec::new();
     for item in std::fs::read_dir(&directory_path).map_err(|error| {
         BridgeError::new(
             Code::Daemon(ErrorCode::Internal),
@@ -527,33 +525,9 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
             continue;
         }
         let path = format!("{prefix}{name}");
-        ignored_input.extend_from_slice(path.as_bytes());
-        ignored_input.push(0);
         directories.push((path, name));
     }
-    let ignored_output = if ignored_input.is_empty() {
-        Vec::new()
-    } else {
-        let ignored = worktrees::run_with_input(
-            checkout,
-            &["check-ignore", "-z", "--stdin"],
-            &ignored_input,
-        )?;
-        if ignored.status.success() || ignored.status.code() == Some(1) {
-            ignored.stdout
-        } else {
-            return Err(worktrees::git_error(&ignored.stderr));
-        }
-    };
-    let ignored: std::collections::BTreeSet<String> = ignored_output
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(lossy)
-        .collect();
     for (path, name) in directories {
-        if ignored.contains(&path) {
-            continue;
-        }
         entries.entry(path.clone()).or_insert(GitViewTreeEntry {
             path,
             name,
@@ -1328,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_lists_one_level_and_excludes_git_and_ignored() {
+    fn tree_lists_one_level_and_excludes_git_but_keeps_ignored() {
         let (_t, root) = repository("tree");
         fs::create_dir_all(root.join("sub/mix")).unwrap();
         commit(&root, "sub/mix/tracked.txt", "t\n");
@@ -1348,7 +1322,7 @@ mod tests {
             .filter(|e| e.kind == "dir")
             .map(|e| e.name.as_str())
             .collect();
-        assert_eq!(dirs, vec!["sub"]);
+        assert_eq!(dirs, vec!["ignored", "sub"]);
         let files: Vec<&str> = top
             .entries
             .iter()
@@ -1362,7 +1336,7 @@ mod tests {
         assert!(!top
             .entries
             .iter()
-            .any(|e| e.name == ".git" || e.name == "ignored"));
+            .any(|e| e.name == ".git"));
 
         let sub = tree(&root, "sub").unwrap();
         let names: Vec<(&str, &str)> = sub
