@@ -99,16 +99,20 @@ Goko session id to `working | waiting | done` in `activity://updated` only when 
 changed; `activity_get` returns the current map. If the daemon list fails, or a source
 cannot be read this tick, the previous value is kept.
 
-- Claude: the launch `--settings` also carries `hooks`. `UserPromptSubmit` writes
-  `working`, `Notification` writes `waiting`, `Stop` writes `done` to
+- Claude: the launch `--settings` also carries `hooks`. `UserPromptSubmit` and
+  `PostToolUse` write `working`, `Notification` writes `waiting`, `Stop` writes `done` to
   `$GOKO_HOME/activity/claude/<claude-session-id>`; each hook command is silent and
   always exits 0. A session is recognized by `--session-id` in its argv.
+- Claude interrupts run no hook. `terminal_write` notes a lone Esc (`\x1b`) or input with
+  Ctrl+C (`\x03`); if that session's delivered terminal output contains `Interrupted`
+  within 2 s, the interrupt time is recorded and a `working` hook file written before it
+  reads as `done`. Esc that only closes a menu prints no `Interrupted` and changes nothing.
 - Codex: a session whose argv is a lone path with stem `codex` is matched to a rollout
   (`rollout-*.jsonl` in the two newest day directories under `$CODEX_HOME/sessions`, or
   `~/.codex/sessions`) with the same `cwd` as the rollout's `session_meta`, started no
   earlier than 5 s before the session. Sessions claim in start order and a rollout is
-  claimed once. The last `task_started` or `task_complete` in the final 64 KiB gives
-  `working` or `done`. Codex has no waiting event, so an approval prompt stays `working`,
+  claimed once. The last `task_started`, `task_complete`, or `turn_aborted` in the final
+  64 KiB gives `working`, `done`, or `done`. Codex has no waiting event, so an approval prompt stays `working`,
   and two sessions in one directory can be mismatched when a rollout is missing.
 - Shell, OpenCode, and Devin sessions have no activity and keep the plain `running` dot.
 
@@ -143,6 +147,8 @@ The sidebar dot for a `running` session with an activity pulses in the warning t
 - `apps/desktop/src-tauri/src/agents.rs`
 - `apps/desktop/src-tauri/src/usage.rs`
 - `apps/desktop/src-tauri/src/activity.rs`
+- `apps/desktop/src-tauri/src/terminal.rs`
+- `apps/desktop/src/features/terminal/TerminalController.ts`
 - `apps/desktop/src-tauri/src/wiring_tests.rs`
 - `apps/desktop/src-tauri/src/store.rs`
 - `apps/desktop/src/App.tsx`

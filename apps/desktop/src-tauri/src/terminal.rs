@@ -309,10 +309,17 @@ fn fresh(delivered: &mut Option<u64>, chunk: Output) -> Option<Vec<u8>> {
 #[tauri::command]
 pub async fn terminal_subscribe(
     bridge: State<'_, Bridge>,
+    activity: State<'_, crate::activity::ActivityState>,
     id: SessionId,
     on_output: Channel,
 ) -> Result<(), BridgeError> {
-    let sink: Sink = Box::new(move |frame| on_output.send(InvokeResponseBody::Raw(frame)).is_ok());
+    let activity = activity.inner().clone();
+    let session = id.as_uuid().to_string();
+    // Frames are an 8-byte `seq` followed by the output bytes.
+    let sink: Sink = Box::new(move |frame| {
+        activity.note_output(&session, frame.get(8..).unwrap_or_default());
+        on_output.send(InvokeResponseBody::Raw(frame)).is_ok()
+    });
     bridge.terminal_subscribe(id, sink).await
 }
 

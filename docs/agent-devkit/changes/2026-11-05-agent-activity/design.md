@@ -26,15 +26,20 @@ Out:
 
 Activity is one of `working`, `waiting` (needs the user), `done` (turn finished).
 
-- Claude: `UserPromptSubmit` → `working`, `Notification` → `waiting`, `Stop` → `done`. Each hook
+- Claude: `UserPromptSubmit` and `PostToolUse` → `working`, `Notification` → `waiting`, `Stop` → `done`. Each hook
   command writes that word to `<GOKO_HOME>/activity/claude/<claude-session-id>`. The id is the
   `--session-id` Goko already passes. The hook command always exits 0 and prints nothing, so it
   can never block or break Claude.
+- Claude interrupt: Claude runs no hook when the user interrupts a turn. When the webview writes a
+  lone Esc (`\x1b`) or any input containing Ctrl+C (`\x03`) to a session, and that session's
+  terminal output contains `Interrupted` within 2 s, the app records the interrupt time. A
+  `working` hook file last written before that time reads as `done`; a later hook write wins.
+  Esc that only closes a menu prints no `Interrupted`, so the dot stays `working`.
 - Codex: for a running session whose argv0 is `codex`, find the newest rollout in the two newest
   day directories whose `session_meta.cwd` equals the session `cwd` and whose
   `session_meta.timestamp` is not earlier than `started_at` minus 5 s. A rollout is claimed by at
   most one session; sessions claim in `started_at` order. The last `task_started` /
-  `task_complete` event in the final 64 KiB gives `working` / `done`. Codex has no `waiting`
+  `task_complete` / `turn_aborted` event in the final 64 KiB gives `working` / `done` / `done`. Codex has no `waiting`
   event, so an approval prompt stays `working` (known limit).
 - The poller ticks every second, lists the running sessions through the existing bridge, and
   emits `activity://updated` with the full `{goko_session_id: activity}` map only when it changed.
@@ -60,6 +65,9 @@ Activity is one of `working`, `waiting` (needs the user), `done` (turn finished)
 - App restart while Claude is mid-turn: the file persists, so the state is restored when the
   session is shown again; an exited process is ignored because its state is not `running`.
 - Daemon unreachable: the poller keeps the previous map and retries next tick.
+- `Interrupted` split across two output chunks is missed; the dot then stays `working` until the
+  next hook, as before this rule (known limit).
+- After a permission prompt is approved, `PostToolUse` returns the dot from `waiting` to `working`.
 
 ## Interfaces
 

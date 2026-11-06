@@ -9,7 +9,9 @@
 - No change to `crates/protocol` or `crates/daemon`; `SessionState` is untouched.
 - Activity values are exactly `working`, `waiting`, `done`; only a session whose state is `running` carries one.
 - Claude hook commands write one word to `<GOKO_HOME>/activity/claude/<claude-session-id>`, print nothing, and always exit 0.
-- Hooks: `UserPromptSubmit` → `working`, `Notification` → `waiting`, `Stop` → `done`.
+- Hooks: `UserPromptSubmit` and `PostToolUse` → `working`, `Notification` → `waiting`, `Stop` → `done`.
+- Claude interrupt: lone `\x1b` or input containing `\x03`, confirmed by `Interrupted` in that session's output within 2 s; a `working` hook file older than the confirmed time reads as `done`.
+- Codex `turn_aborted` reads as `done`.
 - Codex match: same `cwd`, `session_meta.timestamp` not earlier than `started_at` minus 5 s, each rollout claimed once, sessions claim in `started_at` order, state from the last `task_started` / `task_complete` in the final 64 KiB; no `waiting` for Codex.
 - Poller ticks every 1 s and emits `activity://updated` only when the map changes; `activity_get` returns the same map keyed by Goko session id.
 - Dot tones for a `running` session: `working` pulsing warning, `waiting` solid danger, `done` solid success, none keeps today's dot; `created`, `starting`, `stopping`, `exited`, `failed` render as today.
@@ -83,6 +85,15 @@ Verify: on the installed app, a Claude session shows working after a prompt, don
 Progress: todo
 Result: none
 
+### Task 7 — Interrupts end a turn (Claude keys + output, Codex `turn_aborted`)
+
+Files: `apps/desktop/src-tauri/src/agents.rs::argv_for` (add `PostToolUse` hook), `apps/desktop/src-tauri/src/activity.rs::{Interrupts, compute_activity, codex_activity_from_tail}`, `apps/desktop/src-tauri/src/commands.rs::terminal_write`, `apps/desktop/src-tauri/src/terminal.rs::terminal_subscribe`
+Interfaces: consumes `ActivityState` (task 4); `terminal_write` and `terminal_subscribe` gain an `ActivityState` state parameter (no IPC argument change).
+Change: per Global Constraints and the design's interrupt rule.
+Verify: unit tests: lone Esc then output with `Interrupted` within 2 s turns a `working` file written earlier into `done`; Esc with no `Interrupted` keeps `working`; `Interrupted` without a key, or after 2 s, is ignored; a hook write after the interrupt wins; arrow-key `\x1b[A` is not an interrupt; Ctrl+C counts; Codex tail ending in `turn_aborted` → done; settings JSON has a `PostToolUse` → `working` hook. `cargo test --workspace`, clippy `-D warnings`, fmt pass. Manual: Esc mid-turn turns the dot green within about 1 s; `/` then Esc keeps it yellow.
+Progress: done
+Result: `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace` — 283 passed, 0 failed; new: `codex_tail_ending_in_turn_aborted_is_done`, `esc_confirmed_by_interrupted_output_ends_a_working_turn` (Esc and Ctrl+C), `esc_without_interrupted_output_or_a_non_interrupt_key_keeps_working` (menu Esc, `\x1b[A`, plain key), `interrupted_output_after_the_window_is_ignored`, `a_hook_written_after_the_interrupt_wins`; `PostToolUse` in the hook-injection test. PTY run of Claude 2.1.311: Esc printed `Interrupted · What should Claude do instead?` and ran no hook; `/` then Esc ran `PostToolUse` and `Stop`, no `Interrupted`. Manual check on the app: cannot verify yet.
+
 ## Files inspected, no change
 
 - `apps/desktop/src-tauri/src/events.rs` — session events already reach the webview; activity uses its own event.
@@ -95,4 +106,16 @@ Status: approved
 
 ## Decision Log
 
-None.
+### D1 — Detect interrupts
+
+Question: Claude runs no hook on Esc and Codex records `turn_aborted`, so the dot stayed `working`.
+Decision: Claude: lone Esc or Ctrl+C confirmed by `Interrupted` in the output within 2 s; add `PostToolUse` → `working`. Codex: `turn_aborted` → `done`. Reading the Claude transcript was rejected: interactive sessions wrote no `.jsonl` on this machine.
+Impact: design Behavior and Edge cases, Global Constraints, new task 7.
+Confirmed by user: 2026-11-06
+
+### D2 — Devin stays out of scope
+
+Question: Devin CLI has its own hook system (`.devin/hooks.v1.json`).
+Decision: not in this change; injecting hooks per session without editing user config needs its own investigation.
+Impact: none for this change.
+Confirmed by user: not yet — proposed as a follow-up

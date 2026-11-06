@@ -171,6 +171,7 @@ pub fn argv_for(
                     "UserPromptSubmit": hook("working")?,
                     "Notification": hook("waiting")?,
                     "Stop": hook("done")?,
+                    "PostToolUse": hook("working")?,
                 }
             });
             Ok(vec![
@@ -402,6 +403,7 @@ mod tests {
             ("UserPromptSubmit", "working"),
             ("Notification", "waiting"),
             ("Stop", "done"),
+            ("PostToolUse", "working"),
         ] {
             let hook = settings
                 .pointer(&format!("/hooks/{event}/0/hooks/0"))

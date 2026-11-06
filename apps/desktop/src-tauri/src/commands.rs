@@ -617,9 +617,11 @@ pub async fn session_list(bridge: State<'_, Bridge>) -> Result<Vec<SessionInfo>,
 #[tauri::command]
 pub async fn terminal_write(
     bridge: State<'_, Bridge>,
+    activity: State<'_, crate::activity::ActivityState>,
     id: SessionId,
     data: String,
 ) -> Result<(), BridgeError> {
+    activity.note_input(&id.as_uuid().to_string(), &data);
     bridge.terminal_write(id, &data).await
 }
 

@@ -8,12 +8,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::State;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CLAUDE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// How long after an Esc or Ctrl+C the session's output may show Claude's `Interrupted`.
+const INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,7 +49,7 @@ pub fn codex_activity_from_tail(bytes: &[u8]) -> Option<Activity> {
             }
             match line.pointer("/payload/type").and_then(Value::as_str) {
                 Some("task_started") => Some(Activity::Working),
-                Some("task_complete") => Some(Activity::Done),
+                Some("task_complete" | "turn_aborted") => Some(Activity::Done),
                 _ => None,
             }
         })
@@ -207,11 +209,23 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 #[derive(Clone, Default)]
-pub struct ActivityState(Arc<RwLock<HashMap<String, Activity>>>);
+pub struct ActivityState {
+    map: Arc<RwLock<HashMap<String, Activity>>>,
+    interrupts: Arc<Mutex<Interrupts>>,
+}
+
+/// Claude runs no hook when the user interrupts a turn. An Esc or Ctrl+C is only a
+/// candidate (Esc also closes menus); it counts once the same session prints `Interrupted`
+/// within `INTERRUPT_WINDOW`. Keyed by Goko session id.
+#[derive(Default)]
+struct Interrupts {
+    keys: HashMap<String, Instant>,
+    confirmed: HashMap<String, SystemTime>,
+}
 
 impl ActivityState {
     fn snapshot(&self) -> HashMap<String, Activity> {
-        self.0
+        self.map
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -219,9 +233,49 @@ impl ActivityState {
 
     fn replace(&self, activity: HashMap<String, Activity>) {
         *self
-            .0
+            .map
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = activity;
+    }
+
+    fn interrupts(&self) -> std::sync::MutexGuard<'_, Interrupts> {
+        self.interrupts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Input the webview wrote to `session`. A lone `\x1b` is Esc (arrow keys and Alt
+    /// combinations arrive as one longer write); `\x03` is Ctrl+C.
+    pub fn note_input(&self, session: &str, data: &str) {
+        if data == "\x1b" || data.contains('\x03') {
+            self.interrupts()
+                .keys
+                .insert(session.to_owned(), Instant::now());
+        }
+    }
+
+    /// Output delivered for `session`. Only scanned while an interrupt key is pending.
+    // ponytail: `Interrupted` split across two chunks is missed; the dot then waits for the next hook.
+    pub fn note_output(&self, session: &str, bytes: &[u8]) {
+        let mut interrupts = self.interrupts();
+        let Some(pressed) = interrupts.keys.get(session).copied() else {
+            return;
+        };
+        if pressed.elapsed() > INTERRUPT_WINDOW {
+            interrupts.keys.remove(session);
+        } else if bytes
+            .windows(b"Interrupted".len())
+            .any(|window| window == b"Interrupted")
+        {
+            interrupts.keys.remove(session);
+            interrupts
+                .confirmed
+                .insert(session.to_owned(), SystemTime::now());
+        }
+    }
+
+    fn interrupted(&self) -> HashMap<String, SystemTime> {
+        self.interrupts().confirmed.clone()
     }
 }
 
@@ -245,11 +299,13 @@ fn is_codex(argv: &[String]) -> bool {
 
 /// Goko session id -> activity, for running Claude and Codex sessions only. A session whose
 /// source cannot be read this tick keeps its `previous` value, so a hook file caught
-/// mid-write or a rollout between turns never flickers the dot.
+/// mid-write or a rollout between turns never flickers the dot. A Claude `working` file
+/// written before the session's confirmed interrupt reads as `done`.
 pub fn compute_activity(
     sessions: &[SessionInfo],
     goko_home: &Path,
     codex_home: Option<&Path>,
+    interrupted: &HashMap<String, SystemTime>,
     previous: &HashMap<String, Activity>,
 ) -> HashMap<String, Activity> {
     let running: Vec<(String, &SessionInfo)> = sessions
@@ -261,9 +317,23 @@ pub fn compute_activity(
     let mut codex = Vec::new();
     for (id, session) in &running {
         if let Some(claude_id) = claude_session_id(&session.argv) {
-            let read = fs::read_to_string(goko_home.join("activity/claude").join(claude_id))
+            let path = goko_home.join("activity/claude").join(claude_id);
+            let read = fs::read_to_string(&path)
                 .ok()
-                .and_then(|text| parse_claude_activity(&text));
+                .and_then(|text| parse_claude_activity(&text))
+                .map(|activity| {
+                    let ended = activity == Activity::Working
+                        && interrupted.get(id).is_some_and(|at| {
+                            fs::metadata(&path)
+                                .and_then(|metadata| metadata.modified())
+                                .is_ok_and(|written| written < *at)
+                        });
+                    if ended {
+                        Activity::Done
+                    } else {
+                        activity
+                    }
+                });
             if let Some(activity) = read.or_else(|| previous.get(id).copied()) {
                 next.insert(id.clone(), activity);
             }
@@ -338,7 +408,13 @@ pub fn spawn_poller(bridge: Bridge, goko_home: PathBuf, emit: Emit) -> ActivityS
             let Ok(sessions) = bridge.session_list().await else {
                 continue;
             };
-            let next = compute_activity(&sessions, &goko_home, codex_home.as_deref(), &current);
+            let next = compute_activity(
+                &sessions,
+                &goko_home,
+                codex_home.as_deref(),
+                &poll_state.interrupted(),
+                &current,
+            );
             apply(next, &mut current, &poll_state, &emit);
         }
     });
@@ -655,11 +731,17 @@ mod tests {
         let sessions = [session.clone()];
 
         write_hook(home.path(), "c1", "working");
-        let first = compute_activity(&sessions, home.path(), None, &HashMap::new());
+        let first = compute_activity(
+            &sessions,
+            home.path(),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(first, HashMap::from([(sid(&session), Activity::Working)]));
 
         write_hook(home.path(), "c1", "done");
-        let second = compute_activity(&sessions, home.path(), None, &first);
+        let second = compute_activity(&sessions, home.path(), None, &HashMap::new(), &first);
         assert_eq!(second, HashMap::from([(sid(&session), Activity::Done)]));
     }
 
@@ -670,14 +752,21 @@ mod tests {
         let sessions = [session.clone()];
         let previous = HashMap::from([(sid(&session), Activity::Waiting)]);
 
-        assert!(compute_activity(&sessions, home.path(), None, &HashMap::new()).is_empty());
+        assert!(compute_activity(
+            &sessions,
+            home.path(),
+            None,
+            &HashMap::new(),
+            &HashMap::new()
+        )
+        .is_empty());
         assert_eq!(
-            compute_activity(&sessions, home.path(), None, &previous),
+            compute_activity(&sessions, home.path(), None, &HashMap::new(), &previous),
             previous
         );
         write_hook(home.path(), "c2", "banana");
         assert_eq!(
-            compute_activity(&sessions, home.path(), None, &previous),
+            compute_activity(&sessions, home.path(), None, &HashMap::new(), &previous),
             previous
         );
     }
@@ -696,7 +785,14 @@ mod tests {
             running(&["/bin/sh", "--session-id", "../../etc/passwd"], "/p", 0),
         ];
 
-        assert!(compute_activity(&sessions, home.path(), None, &HashMap::new()).is_empty());
+        assert!(compute_activity(
+            &sessions,
+            home.path(),
+            None,
+            &HashMap::new(),
+            &HashMap::new()
+        )
+        .is_empty());
     }
 
     #[test]
@@ -718,6 +814,7 @@ mod tests {
             &[late.clone(), early.clone()],
             home.path(),
             Some(home.path()),
+            &HashMap::new(),
             &HashMap::new(),
         );
 
@@ -769,5 +866,79 @@ mod tests {
         prune_activity(dir.path(), CLAUDE_RETENTION);
 
         assert!(!old.exists() && fresh.exists());
+    }
+
+    #[test]
+    fn codex_tail_ending_in_turn_aborted_is_done() {
+        let bytes = tail(&[event("task_started"), event("turn_aborted")]);
+        assert_eq!(codex_activity_from_tail(&bytes), Some(Activity::Done));
+    }
+
+    fn interrupt_case(input: &str, output: &[u8]) -> Activity {
+        let home = crate::test_support::TempDir::new("act-int");
+        let session = claude("i1");
+        let key = sid(&session);
+        write_hook(home.path(), "i1", "working");
+        std::thread::sleep(Duration::from_millis(20));
+        let state = ActivityState::default();
+        state.note_input(&key, input);
+        state.note_output(&key, output);
+        compute_activity(
+            &[session],
+            home.path(),
+            None,
+            &state.interrupted(),
+            &HashMap::new(),
+        )[&key]
+    }
+
+    #[test]
+    fn esc_confirmed_by_interrupted_output_ends_a_working_turn() {
+        assert_eq!(
+            interrupt_case("\x1b", b"\x1b[2K  Interrupted \xc2\xb7 What"),
+            Activity::Done
+        );
+        assert_eq!(interrupt_case("\x03", b"Interrupted"), Activity::Done);
+    }
+
+    #[test]
+    fn esc_without_interrupted_output_or_a_non_interrupt_key_keeps_working() {
+        assert_eq!(interrupt_case("\x1b", b"menu closed"), Activity::Working);
+        assert_eq!(interrupt_case("\x1b[A", b"Interrupted"), Activity::Working);
+        assert_eq!(interrupt_case("x", b"Interrupted"), Activity::Working);
+    }
+
+    #[test]
+    fn interrupted_output_after_the_window_is_ignored() {
+        let state = ActivityState::default();
+        state.note_input("s", "\x1b");
+        state.interrupts().keys.insert(
+            "s".to_owned(),
+            Instant::now() - INTERRUPT_WINDOW - Duration::from_millis(1),
+        );
+        state.note_output("s", b"Interrupted");
+        assert!(state.interrupted().is_empty());
+    }
+
+    #[test]
+    fn a_hook_written_after_the_interrupt_wins() {
+        let home = crate::test_support::TempDir::new("act-after");
+        let session = claude("i2");
+        let key = sid(&session);
+        let state = ActivityState::default();
+        state.note_input(&key, "\x1b");
+        state.note_output(&key, b"Interrupted");
+        std::thread::sleep(Duration::from_millis(20));
+        write_hook(home.path(), "i2", "working");
+
+        let activity = compute_activity(
+            &[session],
+            home.path(),
+            None,
+            &state.interrupted(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(activity[&key], Activity::Working);
     }
 }

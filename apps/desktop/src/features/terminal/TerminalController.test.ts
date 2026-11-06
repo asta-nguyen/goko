@@ -55,10 +55,28 @@ const h = vi.hoisted(() => {
       this.observing = false
     }
   }
-  return { state, FakeTerminal, FakeFit, FakeResizeObserver }
+  class FakeWebgl {
+    static failOnCreate = false
+    static instances: FakeWebgl[] = []
+    lost?: () => void
+    disposed = false
+    constructor() {
+      if (FakeWebgl.failOnCreate) throw new Error('WebGL2 not supported')
+      FakeWebgl.instances.push(this)
+    }
+    activate() {}
+    onContextLoss(cb: () => void) {
+      this.lost = cb
+    }
+    dispose() {
+      this.disposed = true
+    }
+  }
+  return { state, FakeTerminal, FakeFit, FakeResizeObserver, FakeWebgl }
 })
 vi.mock('@xterm/xterm', () => ({ Terminal: h.FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: h.FakeFit }))
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: h.FakeWebgl }))
 
 const { state } = h
 let onBytes: (seq: number, data: Uint8Array) => void
@@ -91,6 +109,8 @@ beforeEach(() => {
   state.terms.length = 0
   state.observers.length = 0
   state.calls.length = 0
+  h.FakeWebgl.failOnCreate = false
+  h.FakeWebgl.instances.length = 0
   delete document.documentElement.dataset.theme
   state.fitSize = { cols: 100, rows: 30 }
   unsub = vi.fn()
@@ -217,6 +237,27 @@ describe('TerminalController mount', () => {
     document.documentElement.dataset.theme = 'dracula'
     await flush()
     expect(state.terms[0].options.theme).toBe(before)
+  })
+})
+
+describe('TerminalController renderer', () => {
+  it('draws with WebGL and drops it when the context is lost', async () => {
+    const c = new TerminalController('gl', service)
+    await c.mount(element())
+    const [webgl] = h.FakeWebgl.instances
+    expect(webgl.disposed).toBe(false)
+    webgl.lost?.()
+    expect(webgl.disposed).toBe(true)
+    c.dispose()
+  })
+
+  it('keeps working on the DOM renderer when WebGL is unavailable', async () => {
+    h.FakeWebgl.failOnCreate = true
+    const c = new TerminalController('nogl', service)
+    await c.mount(element())
+    onBytes(0, bytes('hi'))
+    expect(text(state.terms[0])).toBe('hi')
+    c.dispose()
   })
 })
 

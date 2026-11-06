@@ -1,4 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { toBridgeError } from '../../services/errors'
 import type { SessionService } from '../../services/session'
@@ -58,6 +59,7 @@ export class TerminalController {
     this.element = element
     term.loadAddon(this.fit)
     term.open(element)
+    this.useWebgl(term)
     this.attachIme(term, element)
     // Writes to an exited session are rejected by the daemon; the view's banner shows why.
     this.onData = term.onData((data) => {
@@ -103,6 +105,21 @@ export class TerminalController {
     this.onData?.dispose()
     this.fit.dispose()
     this.term?.dispose()
+  }
+
+  /**
+   * The default DOM renderer rebuilds every row on each full-screen redraw (agent TUIs do dozens a
+   * second), and WebKit frees that garbage only on GC: hundreds of MB. WebGL draws to a canvas.
+   * Without WebGL, or after its context is lost, xterm falls back to the DOM renderer.
+   */
+  private useWebgl(term: Terminal): void {
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
+    } catch {
+      // keep the DOM renderer
+    }
   }
 
   private updateTheme(): void {
