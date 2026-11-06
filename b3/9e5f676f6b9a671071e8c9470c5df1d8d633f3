@@ -1,0 +1,67 @@
+apps/desktop/src/services/fileDrop.ts
+  s_77f2242a400d8a::t_e906f746024f3d 1-17
+apps/desktop/src/features/terminal/TerminalController.test.ts
+  s_77f2242a400d8a::t_70dfd027ff2a46 1,25-29,269-292
+  s_77f2242a400d8a::t_dca5f52a1e2914 293-294
+apps/desktop/src/features/editor/go-to-definition.test.ts
+  s_77f2242a400d8a::t_88a888a55624a2 70-71
+  s_77f2242a400d8a::t_9a53856dc4ef41 1-69,72-189
+docs/agent-devkit/INDEX.md
+  s_77f2242a400d8a::t_182fab667dc97a 9
+apps/desktop/src/stores/ui.ts
+  s_77f2242a400d8a::t_4bb20152dfcb2f 157
+apps/desktop/src/features/editor/EditorWorkspace.test.tsx
+  s_77f2242a400d8a::t_523a662940ea48 554-569
+  s_77f2242a400d8a::t_f874b2423c817e 36,45,59-63,461-553,570-580
+  s_77f2242a400d8a::t_30d7d7ab507951 581-582
+apps/desktop/src/App.test.tsx
+  s_77f2242a400d8a::t_70dfd027ff2a46 179,199,213,221
+apps/desktop/src/features/editor/CodeEditor.tsx
+  s_77f2242a400d8a::t_3c13109355e92d 1-3,9
+  s_77f2242a400d8a::t_6f499619b78239 22-23
+  s_77f2242a400d8a::t_ade88766e20fb0 38
+  s_77f2242a400d8a::t_529b60536935cf 105
+  s_77f2242a400d8a::t_c662f8fa9cd107 135
+  s_77f2242a400d8a::t_cf6ed232ac94d3 37,39-41,43-45,52-100
+  s_77f2242a400d8a::t_eed9899558a7c5 42,46-51
+  s_77f2242a400d8a::t_10fd016e0dae2c 114,118
+apps/desktop/src/features/editor/EditorFiles.tsx
+  s_77f2242a400d8a::t_c7d4f5374b341c 3,18,151-153,273-332,467-469,491
+apps/desktop/src/features/editor/go-to-definition.ts
+  s_77f2242a400d8a::t_8d8dc1c8909a7a 1-162
+apps/desktop/src/services/fileDrop.test.ts
+  s_77f2242a400d8a::t_d8fd98ed8a8955 17
+  s_77f2242a400d8a::t_70dfd027ff2a46 1-16,18-36
+apps/desktop/src/App.tsx
+  s_77f2242a400d8a::t_0a7167bdf07153 18,21,23
+  s_77f2242a400d8a::t_1fcf3243f939d5 29-37
+apps/desktop/src/features/terminal/TerminalController.ts
+  s_77f2242a400d8a::t_00a94a9f95260f 69
+  s_77f2242a400d8a::t_65e90163513335 110
+  s_77f2242a400d8a::t_d1cb42c0fa34b5 16-24
+  s_77f2242a400d8a::t_c3f2d27962cdb2 141-145
+apps/desktop/src/features/editor/CodeEditor.test.tsx
+  s_77f2242a400d8a::t_57ef74dd18f457 1,122,154-156,158-172
+  s_77f2242a400d8a::t_f874b2423c817e 157
+  s_77f2242a400d8a::t_4c8c2e727e09d0 109-121,123-153,173-218
+docs/agent-devkit/changes/archive/2026-11-06-editor-go-to-definition/delta.md
+  s_77f2242a400d8a::t_ea91b1493c1c8f 1-40
+docs/llm/architecture/editor.md
+  s_77f2242a400d8a::t_fce0783cb2e759 29-52,69-70,77,84,89,96,113-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b39e5f676f6b9a671071e8c9470c5df1d8d633f3",
+  "prompts": {},
+  "sessions": {
+    "s_77f2242a400d8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c900838-48f6-4738-986d-cfdee959ae7b",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
