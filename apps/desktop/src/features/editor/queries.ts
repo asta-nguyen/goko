@@ -1,9 +1,14 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '../../queryClient'
+import { acpService } from '../../services/acp'
 import type { BridgeError } from '../../services/errors'
 import { gitViewService, type GitDiffRequest } from '../../services/git-view'
+import { gitWriteService, type GitDiscardLayer } from '../../services/git-write'
 import { settingsService } from '../../services/settings'
 import type {
+  AcpAgent,
+  AcpOverride,
+  AcpStatusMap,
   GitViewChanges,
   GitViewDiff,
   GitViewFile,
@@ -15,6 +20,9 @@ import type {
 
 /** Changes status/diff and the stash list poll at this rate while their section is visible. */
 export const GIT_VIEW_POLL_MS = 3000
+
+/** ACP connection status polls at this rate while its consumer is visible. */
+export const ACP_STATUS_POLL_MS = 3000
 
 // Every git-view query overrides the global infinite staleTime: entering a
 // section fetches fresh data while the last successful result stays visible
@@ -139,4 +147,125 @@ export function useGitStashDiff(projectId: string, checkoutPath: string, stashId
     enabled: enabled && stashId !== null,
     ...READ,
   })
+}
+
+// A successful write changed the index or worktree, so the changes list and
+// every open diff for that checkout are stale; a failure changed nothing.
+function useGitWriteInvalidation(projectId: string, checkoutPath: string) {
+  const queryClient = useQueryClient()
+  return {
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.gitChanges(projectId, checkoutPath) }),
+        queryClient.invalidateQueries({ queryKey: ['git-diff', projectId, checkoutPath] }),
+      ]),
+  }
+}
+
+export function useStage(projectId: string, checkoutPath: string) {
+  return useMutation({
+    mutationFn: ({ paths }: { paths: string[] | null }) => gitWriteService.stage(projectId, checkoutPath, paths),
+    ...useGitWriteInvalidation(projectId, checkoutPath),
+  })
+}
+
+export function useUnstage(projectId: string, checkoutPath: string) {
+  return useMutation({
+    mutationFn: ({ paths }: { paths: string[] | null }) =>
+      gitWriteService.unstage(projectId, checkoutPath, paths),
+    ...useGitWriteInvalidation(projectId, checkoutPath),
+  })
+}
+
+export function useDiscard(projectId: string, checkoutPath: string) {
+  return useMutation({
+    mutationFn: ({ layer, path }: { layer: GitDiscardLayer; path: string }) =>
+      gitWriteService.discard(projectId, checkoutPath, layer, path),
+    ...useGitWriteInvalidation(projectId, checkoutPath),
+  })
+}
+
+export function useCommit(projectId: string, checkoutPath: string) {
+  return useMutation({
+    mutationFn: (message: string) => gitWriteService.commit(projectId, checkoutPath, message),
+    ...useGitWriteInvalidation(projectId, checkoutPath),
+  })
+}
+
+export function usePush(projectId: string, checkoutPath: string) {
+  return useMutation({
+    mutationFn: () => gitWriteService.push(projectId, checkoutPath),
+    ...useGitWriteInvalidation(projectId, checkoutPath),
+  })
+}
+
+export function useAcpAgents() {
+  return useQuery<AcpAgent[], BridgeError>({
+    queryKey: queryKeys.acpAgents,
+    queryFn: () => acpService.agents(),
+    staleTime: Infinity,
+  })
+}
+
+export function useSetAcpAgents() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (overrides: AcpOverride[]) => acpService.setAgents(overrides),
+    onSuccess: (agents) => {
+      queryClient.setQueryData(queryKeys.acpAgents, agents)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.acpStatus })
+    },
+  })
+}
+
+export function useAcpStatus(enabled: boolean) {
+  return useQuery<AcpStatusMap, BridgeError>({
+    queryKey: queryKeys.acpStatus,
+    queryFn: () => acpService.status(),
+    enabled,
+    refetchInterval: enabled ? ACP_STATUS_POLL_MS : false,
+    staleTime: 0,
+    refetchIntervalInBackground: false,
+  })
+}
+
+// Status refetches on settle, not just success: a failed connect still lands
+// the agent in `error`, and disconnect always returns it to `disconnected`.
+export function useAcpConnect() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (agentId: string) => acpService.connect(agentId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.acpStatus }),
+  })
+}
+
+export function useAcpDisconnect() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (agentId: string) => acpService.disconnect(agentId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.acpStatus }),
+  })
+}
+
+export function useGenerateMessage(projectId: string, checkoutPath: string) {
+  const queryClient = useQueryClient()
+  const generate = useMutation({
+    mutationFn: (agentId: string) => acpService.generateCommitMessage(projectId, checkoutPath, agentId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.acpStatus }),
+  })
+  return { ...generate, cancel: () => acpService.cancel(projectId, checkoutPath) }
+}
+
+export function useCommitAgent() {
+  const queryClient = useQueryClient()
+  const setting = useQuery<string | null, BridgeError>({
+    queryKey: queryKeys.commitAgent,
+    queryFn: () => settingsService.get('commit.agent'),
+    staleTime: Infinity,
+  })
+  const write = useMutation({
+    mutationFn: (agentId: string) => settingsService.set('commit.agent', agentId),
+    onSuccess: (_result, agentId) => queryClient.setQueryData(queryKeys.commitAgent, agentId),
+  })
+  return [setting.data ?? null, write.mutate] as const
 }

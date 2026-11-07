@@ -220,7 +220,7 @@ fn shell_quote(value: &str, what: &str) -> Result<String, BridgeError> {
 }
 
 /// The first `name` under `path_var` that is an executable file.
-fn resolve(name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn resolve(name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path_var?).find_map(|dir| {
         let hit = dir.join(name);
         executable(&hit).then(|| fs::canonicalize(&hit).unwrap_or(hit))

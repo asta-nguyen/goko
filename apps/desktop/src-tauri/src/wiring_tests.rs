@@ -23,6 +23,7 @@ fn webview_with(
     let app = mock_builder()
         .manage(Bridge::new(home.path().to_owned()))
         .manage(storage)
+        .manage(crate::acp::AcpHub::new())
         .manage(crate::usage::UsageState::default())
         .manage(crate::activity::ActivityState::default())
         .invoke_handler(handler())
@@ -552,6 +553,7 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
         "staged",
         "unstaged",
         "untracked",
+        "ahead",
     ] {
         assert!(
             changes.get(key).is_some(),
@@ -559,6 +561,8 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
         );
     }
     assert_eq!(changes["branch"], "main");
+    // No upstream yet: `ahead` is present but null, as `number | null` allows.
+    assert_eq!(changes["ahead"], Value::Null);
     let entry = &changes["unstaged"][0];
     for key in ["path", "orig_path", "status"] {
         assert!(entry.get(key).is_some(), "StatusEntry lacks {key}: {entry}");
@@ -623,7 +627,7 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
     )
     .unwrap();
     let dir = &tree["entries"][0];
-    for key in ["path", "name", "kind"] {
+    for key in ["path", "name", "kind", "ignored"] {
         assert!(
             dir.get(key).is_some(),
             "GitViewTreeEntry lacks {key}: {dir}"
@@ -665,6 +669,120 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
     .unwrap();
     assert_eq!(stash_diff["label"], "stash@{0}");
     assert!(stash_diff["patch"].as_str().unwrap().contains("+loose"));
+
+    // `gitWriteService`: stage the unstaged change, then commit it.
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_write_stage",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "paths": ["tracked.txt"]
+            }),
+        ),
+        Ok(Value::Null)
+    );
+    let staged = invoke(&webview, "git_view_changes", checkout.clone()).unwrap();
+    assert_eq!(staged["staged"][0]["path"], "tracked.txt");
+
+    let commit = invoke(
+        &webview,
+        "git_write_commit",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "message": "wire commit"
+        }),
+    )
+    .unwrap();
+    for key in ["head", "branch"] {
+        assert!(
+            commit.get(key).is_some(),
+            "GitCommitResult lacks {key}: {commit}"
+        );
+    }
+    assert_eq!(commit["branch"], "main");
+
+    // Stage all / unstage all take `paths: null`; discard restores the file.
+    fs::write(root.join("tracked.txt"), "one\nunstaged\nagain\n").unwrap();
+    for (cmd, args) in [
+        (
+            "git_write_stage",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "paths": null
+            }),
+        ),
+        (
+            "git_write_unstage",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "paths": null
+            }),
+        ),
+        (
+            "git_write_discard",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "layer": "unstaged",
+                "path": "tracked.txt"
+            }),
+        ),
+    ] {
+        assert_eq!(invoke(&webview, cmd, args), Ok(Value::Null), "{cmd}");
+    }
+    fs::write(root.join("loose2.txt"), "loose\n").unwrap();
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_write_discard",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "layer": "untracked",
+                "path": "loose2.txt"
+            }),
+        ),
+        Ok(Value::Null)
+    );
+    assert!(!root.join("loose2.txt").exists());
+    let cleaned = invoke(&webview, "git_view_changes", checkout.clone()).unwrap();
+    assert!(cleaned["staged"].as_array().unwrap().is_empty());
+    assert!(cleaned["unstaged"].as_array().unwrap().is_empty());
+
+    // Push against a local bare remote: no upstream yet, so `-u origin HEAD`.
+    let remote = home.path().join("gv-remote");
+    fs::create_dir_all(&remote).unwrap();
+    git_ok(&remote, &["init", "--bare", "-b", "main"]);
+    git_ok(
+        &root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.display().to_string().as_str(),
+        ],
+    );
+    let push = invoke(
+        &webview,
+        "git_write_push",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string()
+        }),
+    )
+    .unwrap();
+    assert!(
+        push.get("summary").is_some(),
+        "GitPushResult lacks summary: {push}"
+    );
+    // The new upstream makes `ahead` a number: 0 unpushed commits.
+    let pushed = invoke(&webview, "git_view_changes", checkout.clone()).unwrap();
+    assert_eq!(pushed["ahead"], json!(0));
 
     // Rejections: unregistered project, non-Git project, non-checkout path,
     // escaping paths.
@@ -719,6 +837,42 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
         .unwrap_err()["code"],
         "invalid_argument"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acp_commands_match_the_frontend_wire_shapes() {
+    let home = Home::new("wire-acp");
+    let (_app, webview) = webview(&home);
+
+    let agents = invoke(&webview, "acp_agents_get", json!({})).unwrap();
+    let agents = agents.as_array().unwrap();
+    assert_eq!(agents.len(), 5);
+    let ids: Vec<&str> = agents.iter().map(|a| a["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["devin", "opencode", "claude", "codex", "gemini"]);
+    for agent in agents {
+        for key in [
+            "id",
+            "label",
+            "enabled",
+            "command",
+            "prompt",
+            "available",
+            "is_default",
+        ] {
+            assert!(agent.get(key).is_some(), "AcpAgent lacks {key}: {agent}");
+        }
+    }
+
+    let status = invoke(&webview, "acp_status", json!({})).unwrap();
+    let status = status.as_object().unwrap();
+    assert_eq!(status.len(), 5);
+    for id in ["devin", "opencode", "claude", "codex", "gemini"] {
+        let slot = &status[id];
+        assert!(slot.get("state").is_some(), "{id} lacks state: {slot}");
+        assert!(slot.get("message").is_some(), "{id} lacks message: {slot}");
+        assert_eq!(slot["state"], "disconnected");
+        assert_eq!(slot["message"], Value::Null);
+    }
 }
 
 fn git_ok(root: &Path, args: &[&str]) {

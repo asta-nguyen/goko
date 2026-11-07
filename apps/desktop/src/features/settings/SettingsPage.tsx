@@ -7,10 +7,12 @@ import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import { resolveTheme, THEME_OPTIONS, THEME_SWATCH, type Theme, useTheme } from '../../components/use-theme'
 import { useEditorVim } from '../editor/queries'
+import { AcpAgentsSection } from './AcpAgentsSection'
 
 const SECTIONS = [
   { id: 'editor', label: 'Editor' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'acp-agents', label: 'ACP agents' },
 ] as const
 type SettingsSectionId = (typeof SECTIONS)[number]['id']
 
@@ -139,6 +141,7 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
+          {section === 'acp-agents' && <AcpAgentsSection />}
         </div>
       </div>
     </section>

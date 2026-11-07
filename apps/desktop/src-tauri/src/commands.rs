@@ -1,6 +1,7 @@
 //! The request/response commands the webview calls. Each is a thin wrapper over a `Bridge`
 //! method so tests can call the method directly.
 
+use crate::acp::{self, AcpAgent, AcpHub, AcpOverride, AcpStatus};
 use crate::agents::{self, AgentInfo};
 use crate::bridge::Bridge;
 use crate::daemon_client;
@@ -9,6 +10,7 @@ use crate::git_view::{
     self, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewSearch, GitViewStash,
     GitViewTree,
 };
+use crate::git_write::{self, GitCommitResult, GitPushResult};
 use crate::store::{Project, SessionMeta, Storage, Store};
 use crate::worktrees::{
     self, EnvCopyReport, EnvFileCandidate, WorktreeBranches, WorktreeInfo, WorktreeList,
@@ -20,6 +22,7 @@ use protocol::session::{SessionId, SessionInfo};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tauri::State;
@@ -592,6 +595,84 @@ pub fn git_view_stash_diff(
 }
 
 #[tauri::command]
+pub fn git_write_stage(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    paths: Option<Vec<String>>,
+) -> Result<(), BridgeError> {
+    git_write::stage(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        paths.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn git_write_unstage(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    paths: Option<Vec<String>>,
+) -> Result<(), BridgeError> {
+    git_write::unstage(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        paths.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn git_write_discard(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    layer: String,
+    path: String,
+) -> Result<(), BridgeError> {
+    git_write::discard(
+        &git_view_checkout(&storage, &project_id, &checkout_path)?,
+        &layer,
+        &path,
+    )
+}
+
+// `async` on a blocking thread keeps hooks and the network off the async runtime.
+#[tauri::command]
+pub async fn git_write_commit(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    message: String,
+) -> Result<GitCommitResult, BridgeError> {
+    let checkout = git_view_checkout(&storage, &project_id, &checkout_path)?;
+    tokio::task::spawn_blocking(move || git_write::commit(&checkout, &message))
+        .await
+        .map_err(|error| {
+            BridgeError::new(
+                Code::Daemon(ErrorCode::Internal),
+                format!("git commit could not run: {error}"),
+            )
+        })?
+}
+
+// `async` on a blocking thread keeps the push (and its 120 s deadline) off the async runtime.
+#[tauri::command]
+pub async fn git_write_push(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+) -> Result<GitPushResult, BridgeError> {
+    let checkout = git_view_checkout(&storage, &project_id, &checkout_path)?;
+    tokio::task::spawn_blocking(move || git_write::push(&checkout))
+        .await
+        .map_err(|error| {
+            BridgeError::new(
+                Code::Daemon(ErrorCode::Internal),
+                format!("git push could not run: {error}"),
+            )
+        })?
+}
+
+#[tauri::command]
 pub async fn session_stop(
     bridge: State<'_, Bridge>,
     id: SessionId,
@@ -696,6 +777,64 @@ pub async fn settings_set(
     value: String,
 ) -> Result<(), BridgeError> {
     storage.get()?.set_setting(&key, &value)
+}
+
+#[tauri::command]
+pub async fn acp_agents_get(storage: State<'_, Storage>) -> Result<Vec<AcpAgent>, BridgeError> {
+    acp::agents_get(&storage)
+}
+
+#[tauri::command]
+pub async fn acp_agents_set(
+    hub: State<'_, AcpHub>,
+    storage: State<'_, Storage>,
+    overrides: Vec<AcpOverride>,
+) -> Result<Vec<AcpAgent>, BridgeError> {
+    acp::agents_set(&storage, &hub, overrides).await
+}
+
+#[tauri::command]
+pub async fn acp_connect(
+    hub: State<'_, AcpHub>,
+    storage: State<'_, Storage>,
+    agent_id: String,
+) -> Result<(), BridgeError> {
+    let config = acp::agent_config(&storage, &agent_id)?;
+    hub.connect(&config).await
+}
+
+#[tauri::command]
+pub async fn acp_disconnect(hub: State<'_, AcpHub>, agent_id: String) -> Result<(), BridgeError> {
+    hub.disconnect(&agent_id).await
+}
+
+#[tauri::command]
+pub fn acp_status(hub: State<'_, AcpHub>) -> BTreeMap<String, AcpStatus> {
+    hub.status()
+}
+
+#[tauri::command]
+pub async fn acp_generate_commit_message(
+    hub: State<'_, AcpHub>,
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+    agent_id: String,
+) -> Result<String, BridgeError> {
+    let config = acp::agent_config(&storage, &agent_id)?;
+    let checkout = git_view_checkout(&storage, &project_id, &checkout_path)?;
+    hub.generate_commit_message(config, project_id, checkout_path, checkout)
+        .await
+}
+
+#[tauri::command]
+pub fn acp_cancel(
+    hub: State<'_, AcpHub>,
+    project_id: String,
+    checkout_path: String,
+) -> Result<(), BridgeError> {
+    hub.cancel(&project_id, &checkout_path);
+    Ok(())
 }
 
 #[cfg(test)]
