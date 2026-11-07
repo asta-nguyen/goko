@@ -26,6 +26,12 @@ export const statusLabel = (status: GitViewStatusEntry['status']) =>
 export const entryName = (entry: GitViewStatusEntry) =>
   entry.orig_path ? `${entry.orig_path} → ${entry.path}` : entry.path
 
+export const refBadge = (ref: string) => {
+  if (ref.startsWith('tag:')) return { label: ref.slice(4).trim(), variant: 'warning' as const }
+  if (ref.startsWith('remotes/')) return { label: ref.slice(8), variant: 'outline' as const }
+  return { label: ref, variant: 'secondary' as const }
+}
+
 /** Section body: a resizable navigation/list column and the detail pane. */
 export function SplitPane({ aside, children }: { aside: React.ReactNode; children: React.ReactNode }) {
   const width = useUi((state) => state.panelWidths.editorList)
@@ -332,6 +338,12 @@ export function ChangedFiles({ files }: { files: GitViewStatusEntry[] }) {
             {file.orig_path && <span className="text-muted">{file.orig_path} → </span>}
             {file.path}
           </span>
+          {typeof file.added === 'number' && (
+            <span className="ml-auto flex shrink-0 gap-1.5">
+              <span className="text-success">+{file.added}</span>
+              <span className="text-danger">−{file.removed ?? 0}</span>
+            </span>
+          )}
         </li>
       ))}
     </ul>

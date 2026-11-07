@@ -9,6 +9,7 @@ import type {
   AcpAgent,
   AcpOverride,
   AcpStatusMap,
+  GitViewBranch,
   GitViewChanges,
   GitViewDiff,
   GitViewFile,
@@ -76,12 +77,21 @@ export function useGitDiff(
   })
 }
 
-export function useGitHistory(projectId: string, checkoutPath: string, enabled: boolean) {
+export function useGitHistory(projectId: string, checkoutPath: string, branch: string | null, enabled: boolean) {
   return useInfiniteQuery<GitViewHistory, BridgeError>({
-    queryKey: queryKeys.gitHistory(projectId, checkoutPath),
-    queryFn: ({ pageParam }) => gitViewService.history(projectId, checkoutPath, pageParam as number),
+    queryKey: queryKeys.gitHistory(projectId, checkoutPath, branch),
+    queryFn: ({ pageParam }) => gitViewService.history(projectId, checkoutPath, pageParam as number, branch),
     initialPageParam: 0,
     getNextPageParam: (last) => last.next_skip ?? undefined,
+    enabled,
+    ...READ,
+  })
+}
+
+export function useGitBranches(projectId: string, checkoutPath: string, enabled: boolean) {
+  return useQuery<GitViewBranch[], BridgeError>({
+    queryKey: queryKeys.gitBranches(projectId, checkoutPath),
+    queryFn: () => gitViewService.branches(projectId, checkoutPath),
     enabled,
     ...READ,
   })

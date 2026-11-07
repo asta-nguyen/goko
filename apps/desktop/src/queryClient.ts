@@ -14,7 +14,11 @@ export const queryKeys = {
   gitChanges: (projectId: string, checkoutPath: string) => ['git-changes', projectId, checkoutPath] as const,
   gitDiff: (projectId: string, checkoutPath: string, layer: string | null, path: string | null, commit: string | null) =>
     ['git-diff', projectId, checkoutPath, layer, path, commit] as const,
-  gitHistory: (projectId: string, checkoutPath: string) => ['git-history', projectId, checkoutPath] as const,
+  gitHistory: (projectId: string, checkoutPath: string, branch?: string | null) =>
+    branch === undefined
+      ? (['git-history', projectId, checkoutPath] as const)
+      : (['git-history', projectId, checkoutPath, branch ?? 'all'] as const),
+  gitBranches: (projectId: string, checkoutPath: string) => ['git-branches', projectId, checkoutPath] as const,
   gitTree: (projectId: string, checkoutPath: string, directory: string) =>
     ['git-tree', projectId, checkoutPath, directory] as const,
   gitFileList: (projectId: string, checkoutPath: string) => ['git-file-list', projectId, checkoutPath] as const,

@@ -14,6 +14,8 @@ describe('gitViewService commands', () => {
     await gitViewService.diff('p1', '/co', { layer: 'staged', path: 'a.txt' })
     await gitViewService.diff('p1', '/co', { layer: 'commit', commit: 'abc' })
     await gitViewService.history('p1', '/co', 100)
+    await gitViewService.history('p1', '/co', 0, 'refs/heads/x')
+    await gitViewService.branches('p1', '/co')
     await gitViewService.tree('p1', '/co', 'dir')
     await gitViewService.file('p1', '/co', 'dir/f.txt')
     await gitViewService.search('p1', '/co', 'needle')
@@ -23,7 +25,9 @@ describe('gitViewService commands', () => {
       ['git_view_changes', { projectId: 'p1', checkoutPath: '/co' }],
       ['git_view_diff', { projectId: 'p1', checkoutPath: '/co', layer: 'staged', path: 'a.txt', commit: null }],
       ['git_view_diff', { projectId: 'p1', checkoutPath: '/co', layer: 'commit', path: null, commit: 'abc' }],
-      ['git_view_history', { projectId: 'p1', checkoutPath: '/co', skip: 100 }],
+      ['git_view_history', { projectId: 'p1', checkoutPath: '/co', skip: 100, branch: null }],
+      ['git_view_history', { projectId: 'p1', checkoutPath: '/co', skip: 0, branch: 'refs/heads/x' }],
+      ['git_view_branches', { projectId: 'p1', checkoutPath: '/co' }],
       ['git_view_tree', { projectId: 'p1', checkoutPath: '/co', directory: 'dir' }],
       ['git_view_file', { projectId: 'p1', checkoutPath: '/co', path: 'dir/f.txt' }],
       ['git_view_search', { projectId: 'p1', checkoutPath: '/co', query: 'needle' }],

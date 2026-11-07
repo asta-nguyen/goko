@@ -132,6 +132,10 @@ export interface GitViewStatusEntry {
   /** Rename or copy source path, when Git reported one. */
   orig_path: string | null
   status: GitViewStatus
+  /** Lines added from `git diff --numstat`; `null` outside commit diffs and for binary files. */
+  added?: number | null
+  /** Lines removed from `git diff --numstat`; `null` outside commit diffs and for binary files. */
+  removed?: number | null
 }
 
 export interface GitViewChanges {
@@ -149,6 +153,17 @@ export interface GitViewChanges {
 
 export type GitViewDiffLayer = 'staged' | 'unstaged' | 'untracked' | 'conflict' | 'commit'
 
+export interface GitViewCommitDetail {
+  /** Author email address. */
+  author_email: string
+  /** Committer display name; shown only when it differs from the author. */
+  committer: string
+  /** Committer email address. */
+  committer_email: string
+  /** Message body (`%b`), without the subject line. */
+  body: string
+}
+
 export interface GitViewDiff {
   /** Human-readable layer label, e.g. `HEAD → index` or `stash@{2}`. */
   label: string
@@ -157,6 +172,8 @@ export interface GitViewDiff {
   truncated: boolean
   /** Changed files for commit and stash layers; empty for per-file layers. */
   files: GitViewStatusEntry[]
+  /** Commit identity and message body; `null` outside `layer = commit`. */
+  detail?: GitViewCommitDetail | null
 }
 
 export interface GitViewCommit {
@@ -177,6 +194,17 @@ export interface GitViewHistory {
   commits: GitViewCommit[]
   /** Skip offset for the next page; `null` at the end. */
   next_skip: number | null
+}
+
+export interface GitViewBranch {
+  /** Full ref (`refs/heads/…` or `refs/remotes/…`) — the value `history` accepts as its branch filter. */
+  ref_name: string
+  /** Short display name (`main`, `origin/main`). */
+  name: string
+  /** `true` for remote-tracking refs under `refs/remotes/`. */
+  remote: boolean
+  /** `true` for the branch this checkout has checked out. */
+  current: boolean
 }
 
 export interface GitViewTreeEntry {

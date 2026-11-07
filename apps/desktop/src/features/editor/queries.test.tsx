@@ -13,6 +13,7 @@ import {
   useDiscard,
   useEditorVim,
   useGenerateMessage,
+  useGitBranches,
   useGitChanges,
   useGitDiff,
   useGitFile,
@@ -28,6 +29,7 @@ import {
 } from './queries'
 
 const service = vi.hoisted(() => ({
+  branches: vi.fn(),
   changes: vi.fn(),
   diff: vi.fn(),
   history: vi.fn(),
@@ -109,6 +111,20 @@ describe('Vim setting', () => {
 })
 
 describe('checkout-scoped queries', () => {
+  it('scopes the branch list to the checkout', async () => {
+    service.branches.mockResolvedValue([])
+    const { rerender } = renderHook(
+      ({ checkout }) => useGitBranches('p1', checkout, true),
+      { initialProps: { checkout: '/a' }, wrapper },
+    )
+    await waitFor(() => expect(service.branches).toHaveBeenCalledWith('p1', '/a'))
+
+    rerender({ checkout: '/b' })
+    await waitFor(() => expect(service.branches).toHaveBeenCalledWith('p1', '/b'))
+    expect(qc.getQueryCache().findAll({ queryKey: ['git-branches', 'p1', '/a'] })).toHaveLength(1)
+    expect(qc.getQueryCache().findAll({ queryKey: ['git-branches', 'p1', '/b'] })).toHaveLength(1)
+  })
+
   it('keeps each checkout in its own entry and reuses only its own cache', async () => {
     service.changes.mockImplementation((_p: string, co: string) => Promise.resolve(changes(co)))
     const { result, rerender } = renderHook(
@@ -140,7 +156,7 @@ describe('checkout-scoped queries', () => {
 
     renderHook(() => {
       useGitDiff('p1', '/a', { layer: 'unstaged', path: 'f.txt' }, { enabled: true })
-      useGitHistory('p1', '/a', true)
+      useGitHistory('p1', '/a', null, true)
       useGitTree('p1', '/a', '', true)
       useGitFile('p1', '/a', 'f.txt', true)
     }, { wrapper })
@@ -162,7 +178,8 @@ describe('checkout-scoped queries', () => {
     renderHook(() => {
       useGitChanges('p1', '/a', false)
       useGitDiff('p1', '/a', { layer: 'staged', path: 'f' }, { enabled: false })
-      useGitHistory('p1', '/a', false)
+      useGitHistory('p1', '/a', null, false)
+      useGitBranches('p1', '/a', false)
       useGitTree('p1', '/a', '', false)
       useGitFile('p1', '/a', 'f', false)
       useGitSearch('p1', '/a', 'ab', false)
@@ -278,7 +295,7 @@ describe('polling', () => {
     service.file.mockResolvedValue({ path: 'f', kind: 'text', text: 'x', truncated: false, size: 1 })
     service.stashDiff.mockResolvedValue({ label: 'l', patch: 'p', truncated: false, files: [] })
     renderHook(() => {
-      useGitHistory('p1', '/a', true)
+      useGitHistory('p1', '/a', null, true)
       useGitFile('p1', '/a', 'f.txt', true)
       useGitStashDiff('p1', '/a', 'oid', true)
     }, { wrapper })
@@ -327,17 +344,32 @@ describe('history paging', () => {
     service.history
       .mockResolvedValueOnce({ commits: [commit('a')], next_skip: 100 })
       .mockResolvedValueOnce({ commits: [commit('b')], next_skip: null })
-    const { result } = renderHook(() => useGitHistory('p1', '/a', true), { wrapper })
+    const { result } = renderHook(() => useGitHistory('p1', '/a', null, true), { wrapper })
     await waitFor(() => expect(result.current.data?.pages[0].commits[0].id).toBe('a'))
 
     await act(async () => {
       await result.current.fetchNextPage()
     })
-    expect(service.history.mock.calls[1]).toEqual(['p1', '/a', 100])
+    expect(service.history.mock.calls[1]).toEqual(['p1', '/a', 100, null])
     await waitFor(() =>
       expect(result.current.data?.pages.flatMap((page) => page.commits).map((c) => c.id)).toEqual(['a', 'b']),
     )
     expect(result.current.hasNextPage).toBe(false)
+  })
+
+  it('restarts paging at skip 0 when the branch filter changes', async () => {
+    service.history.mockResolvedValue({ commits: [], next_skip: null })
+    const { rerender } = renderHook(
+      ({ branch }) => useGitHistory('p1', '/a', branch, true),
+      { initialProps: { branch: null as string | null }, wrapper },
+    )
+    await waitFor(() => expect(service.history).toHaveBeenCalledWith('p1', '/a', 0, null))
+
+    rerender({ branch: 'refs/heads/x' })
+    await waitFor(() => expect(service.history).toHaveBeenCalledWith('p1', '/a', 0, 'refs/heads/x'))
+    expect(service.history).toHaveBeenCalledTimes(2)
+    expect(qc.getQueryData(queryKeys.gitHistory('p1', '/a', null))).toBeTruthy()
+    expect(qc.getQueryData(queryKeys.gitHistory('p1', '/a', 'refs/heads/x'))).toBeTruthy()
   })
 })
 

@@ -590,7 +590,8 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
         json!({
             "projectId": project_id,
             "checkoutPath": root.display().to_string(),
-            "skip": 0
+            "skip": 0,
+            "branch": null
         }),
     )
     .unwrap();
@@ -602,6 +603,50 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
         );
     }
     assert!(history.get("next_skip").is_some());
+
+    // `branch` is a full ref the branch list returned; anything else rejects
+    // before `git log` runs.
+    let scoped = invoke(
+        &webview,
+        "git_view_history",
+        json!({
+            "projectId": project_id,
+            "checkoutPath": root.display().to_string(),
+            "skip": 0,
+            "branch": "refs/heads/main"
+        }),
+    )
+    .unwrap();
+    assert!(!scoped["commits"].as_array().unwrap().is_empty());
+    assert_eq!(
+        invoke(
+            &webview,
+            "git_view_history",
+            json!({
+                "projectId": project_id,
+                "checkoutPath": root.display().to_string(),
+                "skip": 0,
+                "branch": "HEAD"
+            })
+        )
+        .unwrap_err()["code"],
+        "invalid_argument"
+    );
+
+    let branches = invoke(&webview, "git_view_branches", checkout.clone()).unwrap();
+    let main = branches
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|branch| branch["ref_name"] == "refs/heads/main")
+        .expect("the checked-out branch is listed");
+    for key in ["ref_name", "name", "remote", "current"] {
+        assert!(main.get(key).is_some(), "GitViewBranch lacks {key}: {main}");
+    }
+    assert_eq!(main["name"], "main");
+    assert_eq!(main["remote"], false);
+    assert_eq!(main["current"], true);
+
     let oid = commit["id"].as_str().unwrap().to_owned();
     let commit_diff = invoke(
         &webview,
@@ -615,6 +660,22 @@ async fn git_view_commands_match_the_frontend_wire_shapes() {
     )
     .unwrap();
     assert_eq!(commit_diff["files"][0]["status"], "added");
+    for key in ["author_email", "committer", "committer_email", "body"] {
+        assert!(
+            commit_diff["detail"].get(key).is_some(),
+            "GitViewCommitDetail lacks {key}: {}",
+            commit_diff["detail"]
+        );
+    }
+    for key in ["added", "removed"] {
+        assert!(
+            commit_diff["files"][0].get(key).is_some(),
+            "StatusEntry lacks {key}: {}",
+            commit_diff["files"][0]
+        );
+    }
+    assert!(commit_diff["files"][0]["added"].is_number());
+    assert!(commit_diff["files"][0]["removed"].is_number());
 
     let tree = invoke(
         &webview,

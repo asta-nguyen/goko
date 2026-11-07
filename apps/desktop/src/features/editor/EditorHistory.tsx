@@ -1,135 +1,201 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { GitCommitHorizontalIcon, HistoryIcon } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { cn } from '@/lib/utils'
+import { ResizableHandle } from '@/components/ui/resizable-handle'
 import { queryKeys } from '../../queryClient'
-import type { GitViewCommit } from '../../services/types'
-import { ChangedFiles, DiffPatch, DiffViewToggle, EmptyPane, ErrorPane, FilterInput, formatTime, LoadingPane, matchesQuery, RefreshButton, SplitPane, StaleNotice } from './panes'
-import { useGitDiff, useGitHistory } from './queries'
+import { CommitDetail, UncommittedDetail } from './CommitDetail'
+import { HistoryTable, type HistoryTableHandle } from './HistoryTable'
+import { LAYOUT_LIMITS, useHistoryLayout } from './history-layout'
+import { EmptyPane, ErrorPane, FilterInput, LoadingPane, matchesQuery, RefreshButton, StaleNotice } from './panes'
+import { useGitBranches, useGitChanges, useGitDiff, useGitHistory } from './queries'
 
-const ROW_H = 44
-const LANE_W = 12
-const GRAPH_PAD = 8
-
-type LaneRow = { lane: number; before: (string | null)[]; after: (string | null)[]; parents: string[] }
-
-// A lane holds the commit id expected next; parents fan out into free lanes.
-function laneLayout(commits: GitViewCommit[]): LaneRow[] {
-  const lanes: (string | null)[] = []
-  return commits.map((commit) => {
-    const before = [...lanes]
-    let lane = lanes.indexOf(commit.id)
-    if (lane < 0) {
-      lane = lanes.indexOf(null)
-      if (lane < 0) {
-        lanes.push(commit.id)
-        lane = lanes.length - 1
-      } else {
-        lanes[lane] = commit.id
-      }
-    }
-    lanes[lane] = commit.parents[0] ?? null
-    for (const parent of commit.parents.slice(1)) {
-      if (lanes.includes(parent)) continue
-      const free = lanes.indexOf(null)
-      if (free < 0) lanes.push(parent)
-      else lanes[free] = parent
-    }
-    while (lanes.length > 0 && lanes.at(-1) === null) lanes.pop()
-    return { lane, before, after: [...lanes], parents: commit.parents }
-  })
-}
-
-function Graph({ rows }: { rows: LaneRow[] }) {
-  const lanes = Math.max(1, ...rows.map((row) => Math.max(row.lane + 1, row.after.length)))
-  const width = GRAPH_PAD + lanes * LANE_W
-  const height = rows.length * ROW_H
-  const x = (lane: number) => GRAPH_PAD + lane * LANE_W + LANE_W / 2
-  return (
-    <svg width={width} height={height} className="shrink-0 text-accent" aria-hidden>
-      {rows.map((row, i) => {
-        const cy = i * ROW_H + ROW_H / 2
-        const elements = []
-        row.before.forEach((expected, lane) => {
-          if (expected === null) return
-          if (lane === row.lane) {
-            elements.push(<line key={`in-${lane}`} x1={x(lane)} y1={i * ROW_H} x2={x(lane)} y2={cy} stroke="currentColor" strokeOpacity={0.6} />)
-          } else {
-            elements.push(<line key={`th-${lane}`} x1={x(lane)} y1={i * ROW_H} x2={x(lane)} y2={(i + 1) * ROW_H} stroke="currentColor" strokeOpacity={0.6} />)
-          }
-        })
-        row.parents.forEach((parent, index) => {
-          const lane = row.after.indexOf(parent)
-          if (lane < 0) return
-          elements.push(
-            <line
-              key={`out-${index}`}
-              x1={x(row.lane)}
-              y1={cy}
-              x2={x(lane)}
-              y2={Math.min(cy + ROW_H, height)}
-              stroke="currentColor"
-              strokeOpacity={0.6}
-            />,
-          )
-        })
-        elements.push(<circle key="dot" cx={x(row.lane)} cy={cy} r={3} fill="currentColor" />)
-        return <g key={i}>{elements}</g>
-      })}
-    </svg>
-  )
-}
-
-const refBadge = (ref: string) => {
-  if (ref.startsWith('tag:')) return { label: ref.slice(4).trim(), variant: 'warning' as const }
-  if (ref.startsWith('remotes/')) return { label: ref.slice(8), variant: 'outline' as const }
-  return { label: ref, variant: 'secondary' as const }
-}
+const TABLE_MIN_HEIGHT = 120
+const DETAIL_HANDLE_HEIGHT = 8
+// Until the container is measured the detail may grow to any sane height.
+const UNMEASURED_DETAIL_MAX = 100_000
 
 export function EditorHistory({
   projectId,
   checkoutPath,
   active,
+  onOpenChanges,
 }: {
   projectId: string
   checkoutPath: string
   active: boolean
+  onOpenChanges: () => void
 }) {
   const queryClient = useQueryClient()
-  const history = useGitHistory(projectId, checkoutPath, active)
-  const commits = useMemo(() => history.data?.pages.flatMap((page) => page.commits) ?? [], [history.data])
-  const rows = useMemo(() => laneLayout(commits), [commits])
+  const { layout, setColumn, setDetailHeight, reset } = useHistoryLayout()
+  const [branch, setBranch] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  const [uncommittedChosen, setUncommittedChosen] = useState(false)
   const [filter, setFilter] = useState('')
-  const visible = useMemo(
+  const tableRef = useRef<HistoryTableHandle>(null)
+  const [container, setContainer] = useState<HTMLDivElement | null>(null)
+  const [containerHeight, setContainerHeight] = useState<number | null>(null)
+
+  const history = useGitHistory(projectId, checkoutPath, branch, active)
+  const branches = useGitBranches(projectId, checkoutPath, active)
+  const changes = useGitChanges(projectId, checkoutPath, active, false)
+  const commits = useMemo(() => history.data?.pages.flatMap((page) => page.commits) ?? [], [history.data])
+
+  useEffect(() => {
+    if (!container || typeof ResizeObserver === 'undefined') return
+    const update = () => {
+      const height = container.getBoundingClientRect().height
+      if (height) setContainerHeight(Math.round(height))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [container])
+
+  const matches = useMemo(
     () =>
       filter.trim()
-        ? commits.filter((commit) => matchesQuery(`${commit.id} ${commit.subject} ${commit.author}`, filter))
-        : commits,
+        ? new Set(
+            commits
+              .filter((commit) => matchesQuery(`${commit.id} ${commit.subject} ${commit.author}`, filter))
+              .map((commit) => commit.id),
+          )
+        : null,
     [commits, filter],
   )
 
+  const commit = commits.find((item) => item.id === selected) ?? null
+  const loadedIds = useMemo(() => new Set(commits.map((item) => item.id)), [commits])
+  const diff = useGitDiff(projectId, checkoutPath, selected ? { layer: 'commit', commit: selected } : null, {
+    enabled: active,
+  })
+
+  const uncommittedEntries = useMemo(() => {
+    const data = changes.data
+    return data ? [...data.conflicts, ...data.staged, ...data.unstaged, ...data.untracked] : []
+  }, [changes.data])
+  const uncommittedVisible = uncommittedEntries.length > 0 && commits.some((item) => item.head)
+  // A chosen row that disappears (changes committed elsewhere) stops counting as chosen.
+  const uncommittedSelected = uncommittedChosen && uncommittedVisible
+  const uncommitted = uncommittedVisible ? { count: uncommittedEntries.length, selected: uncommittedSelected } : null
+
   useEffect(() => {
-    if (selected === null && commits.length > 0) {
+    if (selected === null && !uncommittedSelected && commits.length > 0) {
       setSelected(commits.find((commit) => commit.head)?.id ?? commits[0].id)
     }
-  }, [commits, selected])
+  }, [commits, selected, uncommittedSelected])
 
-  const commit = commits.find((item) => item.id === selected) ?? null
-  const diff = useGitDiff(projectId, checkoutPath, selected ? { layer: 'commit', commit: selected } : null, { enabled: active })
+  const selectCommit = (id: string) => {
+    setUncommittedChosen(false)
+    setSelected(id)
+  }
+  const selectUncommitted = () => {
+    setSelected(null)
+    setUncommittedChosen(true)
+  }
+
+  const jumpToMatch = (direction: 1 | -1) => {
+    if (matches === null || matches.size === 0 || commits.length === 0) return
+    const current = commits.findIndex((item) => item.id === selected)
+    const start = current === -1 ? (direction === 1 ? -1 : commits.length) : current
+    for (let step = 1; step <= commits.length; step++) {
+      const index = (((start + direction * step) % commits.length) + commits.length) % commits.length
+      const id = commits[index].id
+      if (!matches.has(id)) continue
+      selectCommit(id)
+      tableRef.current?.scrollTo(id)
+      return
+    }
+  }
+
+  const onFilterKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter') return
+    jumpToMatch(event.shiftKey ? -1 : 1)
+  }
+
+  const headCommit = commits.find((item) => item.head) ?? null
+  const jumpToHead = () => {
+    if (headCommit === null) return
+    selectCommit(headCommit.id)
+    tableRef.current?.scrollTo(headCommit.id)
+  }
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.gitHistory(projectId, checkoutPath) })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.gitBranches(projectId, checkoutPath) })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.gitChanges(projectId, checkoutPath) })
     void queryClient.invalidateQueries({ queryKey: ['git-diff', projectId, checkoutPath] })
   }
 
-  if (history.isPending) return <LoadingPane label="Loading history…" />
-  if (history.isError && !history.data) return <ErrorPane error={history.error} onRetry={() => void history.refetch()} />
+  const locals = (branches.data ?? []).filter((item) => !item.remote)
+  const remotes = (branches.data ?? []).filter((item) => item.remote)
 
-  if (commits.length === 0) {
+  const toolbar = (
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1">
+      <select
+        aria-label="Branch"
+        value={branch ?? ''}
+        onChange={(event) => {
+          setBranch(event.target.value === '' ? null : event.target.value)
+          setSelected(null)
+          setUncommittedChosen(false)
+          setFilter('')
+        }}
+        className="h-6 w-32 shrink-0 truncate rounded-md border border-input bg-bg px-1.5 text-xs text-text outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <option value="">All branches</option>
+        <optgroup label="Local">
+          {locals.map((item) => (
+            <option key={item.ref_name} value={item.ref_name}>
+              {item.name}
+            </option>
+          ))}
+        </optgroup>
+        <optgroup label="Remote">
+          {remotes.map((item) => (
+            <option key={item.ref_name} value={item.ref_name}>
+              {item.name}
+            </option>
+          ))}
+        </optgroup>
+      </select>
+      <div className="min-w-0 flex-1" onKeyDown={onFilterKeyDown}>
+        <FilterInput label="Filter commits" value={filter} onChange={setFilter} />
+      </div>
+      <Button variant="outline" size="sm" className="shrink-0" disabled={headCommit === null} onClick={jumpToHead}>
+        Jump to HEAD
+      </Button>
+      <RefreshButton label="Refresh history" isFetching={history.isFetching} onClick={refresh} />
+    </div>
+  )
+
+  const detailMin = LAYOUT_LIMITS.detailHeight.min
+  const detailMax =
+    containerHeight === null
+      ? UNMEASURED_DETAIL_MAX
+      : Math.max(detailMin, containerHeight - TABLE_MIN_HEIGHT - DETAIL_HANDLE_HEIGHT)
+  const detailHeight = Math.max(detailMin, Math.min(detailMax, layout.detailHeight))
+
+  const detail = uncommittedSelected ? (
+    <UncommittedDetail entries={uncommittedEntries} onOpenChanges={onOpenChanges} />
+  ) : commit === null ? (
+    <EmptyPane icon={<GitCommitHorizontalIcon className="size-4" />} title="Select a commit to see its patch" />
+  ) : diff.isPending ? (
+    <LoadingPane label="Loading commit…" />
+  ) : diff.isError && !diff.data ? (
+    <ErrorPane error={diff.error} onRetry={() => void diff.refetch()} />
+  ) : diff.data ? (
+    <CommitDetail
+      commit={commit}
+      diff={diff.data}
+      stale={diff.isError ? diff.error : null}
+      loadedIds={loadedIds}
+      onSelectParent={selectCommit}
+    />
+  ) : null
+
+  if (!history.isPending && !(history.isError && !history.data) && commits.length === 0 && branch === null) {
     return (
       <EmptyPane icon={<HistoryIcon className="size-4" />} title="No commits yet">
         <p className="m-0">This repository has no commits on its local, remote-tracking, or tag refs.</p>
@@ -139,99 +205,47 @@ export function EditorHistory({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {history.isError && <StaleNotice error={history.error} />}
-      <SplitPane
-        aside={
-          <>
-            <header className="flex shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">History</span>
-              <RefreshButton label="Refresh history" isFetching={history.isFetching} onClick={refresh} />
-            </header>
-            <div className="shrink-0 border-b border-border px-2 py-1">
-              <FilterInput label="Filter commits" value={filter} onChange={setFilter} />
-            </div>
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="flex">
-                {filter.trim() === '' && <Graph rows={rows} />}
-                <ul className="m-0 min-w-0 flex-1 list-none p-0">
-                  {visible.length === 0 && (
-                    <li className="px-2 py-2 text-xs text-muted">No commits match.</li>
-                  )}
-                  {visible.map((item) => (
-                    <li key={item.id}>
-                      <button
-                        type="button"
-                        data-nav-item
-                        aria-pressed={selected === item.id}
-                        onClick={() => setSelected(item.id)}
-                        className={cn(
-                          'flex h-11 w-full flex-col justify-center gap-0.5 border-b border-border/50 px-2 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                          selected === item.id && 'bg-secondary/70',
-                        )}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          {item.head && (
-                            <Badge variant="default" className="shrink-0 px-1 py-0 text-[10px]">HEAD</Badge>
-                          )}
-                          <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.subject}</span>
-                        </span>
-                        <span className="flex min-w-0 items-center gap-1 text-[11px] text-muted">
-                          <span className="shrink-0">{item.author}</span>
-                          <span aria-hidden>·</span>
-                          <span className="shrink-0">{formatTime(item.time)}</span>
-                          {item.refs.map((ref) => {
-                            const badge = refBadge(ref)
-                            return (
-                              <Badge key={ref} variant={badge.variant} className="max-w-28 truncate px-1 py-0 text-[10px]">
-                                {badge.label}
-                              </Badge>
-                            )
-                          })}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                  {history.hasNextPage && (
-                    <li className="p-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        disabled={history.isFetchingNextPage}
-                        onClick={() => void history.fetchNextPage()}
-                      >
-                        {history.isFetchingNextPage ? 'Loading…' : 'Load more commits'}
-                      </Button>
-                    </li>
-                  )}
-                </ul>
-              </div>
-            </ScrollArea>
-          </>
-        }
-      >
-        {commit === null ? (
-          <EmptyPane icon={<GitCommitHorizontalIcon className="size-4" />} title="Select a commit to see its patch" />
-        ) : diff.isPending ? (
-          <LoadingPane label="Loading commit…" />
-        ) : diff.isError && !diff.data ? (
-          <ErrorPane error={diff.error} onRetry={() => void diff.refetch()} />
-        ) : diff.data ? (
-          <>
-            {diff.isError && <StaleNotice error={diff.error} />}
-            <header className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-1.5">
-              <span className="min-w-0 flex-1 truncate text-xs font-medium" title={commit.subject}>
-                <span className="font-mono">{commit.id.slice(0, 8)}</span> {commit.subject}
-              </span>
-              <span className="shrink-0 text-xs text-muted">{commit.author} · {formatTime(commit.time)}</span>
-              <DiffViewToggle />
-            </header>
-            <ChangedFiles files={diff.data.files} />
-            <DiffPatch patch={diff.data.patch} truncated={diff.data.truncated} />
-          </>
-        ) : null}
-      </SplitPane>
+    <div ref={setContainer} className="flex min-h-0 flex-1 flex-col">
+      {toolbar}
+      {history.isPending ? (
+        <LoadingPane label="Loading history…" />
+      ) : history.isError && !history.data ? (
+        <ErrorPane error={history.error} onRetry={() => void history.refetch()} />
+      ) : (
+        <>
+          {history.isError && <StaleNotice error={history.error} />}
+          <div className="flex min-h-0 flex-1 flex-col" style={{ minHeight: TABLE_MIN_HEIGHT }}>
+            <HistoryTable
+              ref={tableRef}
+              commits={commits}
+              selected={selected}
+              onSelect={selectCommit}
+              matches={matches}
+              hasNextPage={history.hasNextPage}
+              isFetchingNextPage={history.isFetchingNextPage}
+              onLoadMore={() => void history.fetchNextPage()}
+              uncommitted={uncommitted}
+              onSelectUncommitted={selectUncommitted}
+              layout={layout}
+              onColumn={setColumn}
+              onResetColumn={reset}
+            />
+          </div>
+          <ResizableHandle
+            orientation="horizontal"
+            label="Resize history table and detail"
+            invert
+            value={detailHeight}
+            min={detailMin}
+            max={detailMax}
+            onChange={setDetailHeight}
+            onReset={() => reset('detailHeight')}
+          />
+          <div className="flex shrink-0 flex-col overflow-hidden" style={{ height: detailHeight }}>
+            {detail}
+          </div>
+        </>
+      )}
     </div>
   )
 }

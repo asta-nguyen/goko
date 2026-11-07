@@ -69,6 +69,7 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::git_view_changes,
         commands::git_view_diff,
         commands::git_view_history,
+        commands::git_view_branches,
         commands::git_view_file_list,
         commands::git_view_search,
         commands::git_view_tree,

@@ -32,6 +32,12 @@ pub struct StatusEntry {
     /// `modified`, `added`, `deleted`, `renamed`, `copied`, `typechange`,
     /// `unmerged`, or `untracked`.
     pub status: &'static str,
+    /// Lines added, from `git diff --numstat`; `None` outside commit diffs
+    /// and for binary files.
+    pub added: Option<u64>,
+    /// Lines removed, from `git diff --numstat`; `None` outside commit diffs
+    /// and for binary files.
+    pub removed: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -58,6 +64,20 @@ pub struct GitViewDiff {
     pub truncated: bool,
     /// Changed files for commit and stash layers; empty for per-file layers.
     pub files: Vec<StatusEntry>,
+    /// Commit identity and message body; `Some` only for `layer = commit`.
+    pub detail: Option<GitViewCommitDetail>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewCommitDetail {
+    /// Author email address.
+    pub author_email: String,
+    /// Committer display name; shown only when it differs from the author.
+    pub committer: String,
+    /// Committer email address.
+    pub committer_email: String,
+    /// Message body (`%b`), without the subject line.
+    pub body: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -80,6 +100,19 @@ pub struct GitViewHistory {
     pub commits: Vec<GitViewCommit>,
     /// Skip offset for the next page; `None` at the end.
     pub next_skip: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewBranch {
+    /// Full ref (`refs/heads/…` or `refs/remotes/…`) — the value `history`
+    /// accepts as its branch filter.
+    pub ref_name: String,
+    /// Short display name (`main`, `origin/main`).
+    pub name: String,
+    /// `true` for remote-tracking refs under `refs/remotes/`.
+    pub remote: bool,
+    /// `true` for the branch this checkout has checked out.
+    pub current: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -215,6 +248,7 @@ pub fn diff(
                 patch: String::from_utf8_lossy(&patch).into_owned(),
                 truncated,
                 files: Vec::new(),
+                detail: None,
             })
         }
         "untracked" => {
@@ -245,6 +279,7 @@ pub fn diff(
                 patch,
                 truncated: out.truncated,
                 files: Vec::new(),
+                detail: None,
             })
         }
         "commit" => {
@@ -277,10 +312,11 @@ fn commit_diff(checkout: &Path, oid: &str) -> Result<GitViewDiff, BridgeError> {
     )?
     .status
     .success();
-    let (names, patch, mut truncated) = if has_parent {
+    let (names, numstat, patch, mut truncated) = if has_parent {
         let names = worktrees::git(checkout, &["diff", "--name-status", "-z", &parent, oid])?;
+        let numstat = worktrees::git(checkout, &["diff", "--numstat", "-z", &parent, oid])?;
         let (patch, truncated) = worktrees::git_bounded(checkout, &["diff", &parent, oid], CAP)?;
-        (names, patch, truncated)
+        (names, numstat, patch, truncated)
     } else {
         let names = worktrees::git(
             checkout,
@@ -294,38 +330,93 @@ fn commit_diff(checkout: &Path, oid: &str) -> Result<GitViewDiff, BridgeError> {
                 oid,
             ],
         )?;
+        let numstat = worktrees::git(
+            checkout,
+            &[
+                "diff-tree",
+                "--root",
+                "-r",
+                "--numstat",
+                "-z",
+                "--no-commit-id",
+                oid,
+            ],
+        )?;
         let (patch, truncated) = worktrees::git_bounded(
             checkout,
             &["diff-tree", "--root", "-r", "-p", "--no-commit-id", oid],
             CAP,
         )?;
-        (names, patch, truncated)
+        (names, numstat, patch, truncated)
     };
     let (patch, combined_truncated) = bounded(patch);
     truncated |= combined_truncated;
+    let mut files = parse_name_status(&names);
+    let counts = parse_numstat(&numstat);
+    for file in &mut files {
+        if let Some(&(added, removed)) = counts.get(file.path.as_str()) {
+            file.added = added;
+            file.removed = removed;
+        }
+    }
     Ok(GitViewDiff {
         label: format!("commit {}", &oid[..8]),
         patch,
         truncated,
-        files: parse_name_status(&names),
+        files,
+        detail: Some(commit_detail(checkout, oid)?),
     })
 }
 
-/// One page of commits reachable from local branches, remote-tracking refs,
-/// and tags — never stash or other internal refs.
-pub fn history(checkout: &Path, skip: u64) -> Result<GitViewHistory, BridgeError> {
+/// Author email, committer identity, and message body for one commit.
+fn commit_detail(checkout: &Path, oid: &str) -> Result<GitViewCommitDetail, BridgeError> {
     let out = worktrees::git(
         checkout,
-        &[
-            "log",
-            "--branches",
-            "--tags",
-            "--remotes",
-            "--format=%H%x00%P%x00%an%x00%at%x00%D%x00%s",
-            &format!("--skip={skip}"),
-            &format!("--max-count={}", HISTORY_PAGE + 1),
-        ],
+        &["log", "-1", "--format=%ae%x00%cn%x00%ce%x00%b", oid],
     )?;
+    let mut fields = out.splitn(4, |b| *b == 0);
+    let field = |bytes: Option<&[u8]>| bytes.map(lossy).unwrap_or_default();
+    let author_email = field(fields.next());
+    let committer = field(fields.next());
+    let committer_email = field(fields.next());
+    let body = fields
+        .next()
+        .map(|body| lossy(body).trim_end_matches(['\r', '\n']).to_owned())
+        .unwrap_or_default();
+    Ok(GitViewCommitDetail {
+        author_email,
+        committer,
+        committer_email,
+        body,
+    })
+}
+
+/// One page of commits. `branch: None` walks local branches, remote-tracking
+/// refs, and tags — never stash or other internal refs. `Some` must be a full
+/// `refs/heads/` or `refs/remotes/` ref that resolves to a commit, and walks
+/// only the commits reachable from it.
+pub fn history(
+    checkout: &Path,
+    skip: u64,
+    branch: Option<&str>,
+) -> Result<GitViewHistory, BridgeError> {
+    let skip_arg = format!("--skip={skip}");
+    let max_arg = format!("--max-count={}", HISTORY_PAGE + 1);
+    let mut args = vec![
+        "log",
+        "--format=%H%x00%P%x00%an%x00%at%x00%D%x00%s",
+        skip_arg.as_str(),
+        max_arg.as_str(),
+    ];
+    match branch {
+        Some(branch) => {
+            verify_branch_ref(checkout, branch)?;
+            args.push("--end-of-options");
+            args.push(branch);
+        }
+        None => args.extend(["--branches", "--tags", "--remotes"]),
+    }
+    let out = worktrees::git(checkout, &args)?;
     let head = worktrees::run(checkout, &["rev-parse", "HEAD"], None)?;
     let head_oid = if head.status.success() {
         trim_str(&head.stdout).to_owned()
@@ -363,6 +454,95 @@ pub fn history(checkout: &Path, skip: u64) -> Result<GitViewHistory, BridgeError
         None
     };
     Ok(GitViewHistory { commits, next_skip })
+}
+
+/// Local and remote-tracking branches for the History filter, in
+/// `for-each-ref` order. Remote `*/HEAD` aliases are skipped; `current` marks
+/// the branch this checkout has checked out (none when HEAD is detached).
+pub fn branches(checkout: &Path) -> Result<Vec<GitViewBranch>, BridgeError> {
+    let out = worktrees::git(
+        checkout,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let head = worktrees::run(checkout, &["symbolic-ref", "--quiet", "HEAD"], None)?;
+    let current = if head.status.success() {
+        Some(trim_str(&head.stdout).to_owned())
+    } else {
+        None
+    };
+    let mut list = Vec::new();
+    for line in out.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let ref_name = lossy(line);
+        let remote = ref_name.starts_with("refs/remotes/");
+        if remote && is_remote_head(&ref_name) {
+            continue;
+        }
+        let name = ref_name
+            .strip_prefix("refs/heads/")
+            .or_else(|| ref_name.strip_prefix("refs/remotes/"))
+            .unwrap_or(&ref_name)
+            .to_owned();
+        list.push(GitViewBranch {
+            current: current.as_deref() == Some(ref_name.as_str()),
+            remote,
+            ref_name,
+            name,
+        });
+    }
+    Ok(list)
+}
+
+/// `refs/remotes/<remote>/HEAD` aliases point at a remote's default branch;
+/// they are not branches the History filter can select.
+fn is_remote_head(ref_name: &str) -> bool {
+    ref_name
+        .strip_prefix("refs/remotes/")
+        .is_some_and(|rest| rest.rsplit('/').next() == Some("HEAD"))
+}
+
+/// A History branch filter is a trust boundary: only a full ref under
+/// `refs/heads/` or `refs/remotes/` that `rev-parse` resolves to a commit is
+/// accepted. Anything else is `invalid` before `git log` runs.
+fn verify_branch_ref(checkout: &Path, branch: &str) -> Result<(), BridgeError> {
+    if !(branch.starts_with("refs/heads/") || branch.starts_with("refs/remotes/"))
+        || branch.contains('\0')
+        || branch.starts_with('-')
+    {
+        return Err(invalid(
+            "the branch must be a full refs/heads/ or refs/remotes/ ref",
+        ));
+    }
+    // `rev-parse` alone also accepts revision syntax such as `main~1` or
+    // `main@{0}`; a valid full ref name is the only thing the filter takes.
+    let name = worktrees::run(checkout, &["check-ref-format", branch], None)?;
+    if !name.status.success() {
+        return Err(invalid(format!("'{branch}' is not a valid ref name")));
+    }
+    let resolved = worktrees::run(
+        checkout,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{branch}^{{commit}}"),
+        ],
+        None,
+    )?;
+    if !resolved.status.success() {
+        return Err(invalid(format!(
+            "the branch '{branch}' does not resolve to a commit"
+        )));
+    }
+    Ok(())
 }
 
 /// Every tracked and untracked (non-ignored) path, sorted, for the Files filter.
@@ -846,6 +1026,7 @@ pub fn stash_diff(checkout: &Path, stash_id: &str) -> Result<GitViewDiff, Bridge
         patch,
         truncated,
         files,
+        detail: None,
     })
 }
 
@@ -929,6 +1110,8 @@ fn entry(path: String, orig_path: Option<String>, status: &'static str) -> Statu
         path,
         orig_path,
         status,
+        added: None,
+        removed: None,
     }
 }
 
@@ -953,6 +1136,44 @@ fn parse_name_status(bytes: &[u8]) -> Vec<StatusEntry> {
         }
     }
     files
+}
+
+/// `git diff --numstat -z` → per-path `(added, removed)` counts keyed by the
+/// path shown in the name-status list. Records are `added\tremoved\tpath\0`;
+/// a rename/copy is `added\tremoved\t\0old\0new\0` and its counts attach to
+/// the new path. `-\t-` marks a binary file, which has no counts.
+fn parse_numstat(bytes: &[u8]) -> BTreeMap<String, (Option<u64>, Option<u64>)> {
+    let records: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
+    let mut counts = BTreeMap::new();
+    let mut i = 0;
+    while i < records.len() {
+        let record = records[i];
+        i += 1;
+        if record.is_empty() {
+            continue;
+        }
+        let mut fields = record.splitn(3, |b| *b == b'\t');
+        let added = numstat_count(fields.next().unwrap_or(b""));
+        let removed = numstat_count(fields.next().unwrap_or(b""));
+        let path = fields.next().unwrap_or(b"");
+        if path.is_empty() {
+            // Rename/copy: the next two records are the old then the new path.
+            if let Some(new) = records.get(i + 1) {
+                counts.insert(lossy(new), (added, removed));
+            }
+            i += 2;
+        } else {
+            counts.insert(lossy(path), (added, removed));
+        }
+    }
+    counts
+}
+
+fn numstat_count(field: &[u8]) -> Option<u64> {
+    if field == b"-" {
+        return None;
+    }
+    std::str::from_utf8(field).ok()?.parse().ok()
 }
 
 /// `%D` decoration → label list, minus the synthetic `HEAD`/`HEAD -> ` wrapper.
@@ -1266,7 +1487,7 @@ mod tests {
         git_ok(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
         let oid = head(&root);
 
-        let page = history(&root, 0).unwrap();
+        let page = history(&root, 0, None).unwrap();
         assert_eq!(page.commits.len(), 2);
         assert_eq!(page.next_skip, None);
         let top = &page.commits[0];
@@ -1291,10 +1512,10 @@ mod tests {
                 &["commit", "-q", "--allow-empty", "-m", &format!("c{i}")],
             );
         }
-        let page0 = history(&root, 0).unwrap();
+        let page0 = history(&root, 0, None).unwrap();
         assert_eq!(page0.commits.len(), 100);
         assert_eq!(page0.next_skip, Some(100));
-        let page1 = history(&root, 100).unwrap();
+        let page1 = history(&root, 100, None).unwrap();
         // 105 new commits plus the init commit on the second page.
         assert_eq!(page1.commits.len(), 6);
         assert_eq!(page1.next_skip, None);
@@ -1302,8 +1523,185 @@ mod tests {
         let dir = TempDir::new("empty-history");
         let empty = dir.path().canonicalize().unwrap();
         git_ok(&empty, &["init", "-b", "main"]);
-        let page = history(&empty, 0).unwrap();
+        let page = history(&empty, 0, None).unwrap();
         assert!(page.commits.is_empty() && page.next_skip.is_none());
+    }
+
+    #[test]
+    fn history_scoped_to_branch() {
+        let (_t, root) = repository("branch-scope");
+        git_ok(&root, &["checkout", "-qb", "side"]);
+        commit(&root, "side.txt", "side\n");
+        git_ok(&root, &["checkout", "-q", "main"]);
+        commit(&root, "main.txt", "main\n");
+        git_ok(
+            &root,
+            &["update-ref", "refs/remotes/origin/side", "refs/heads/side"],
+        );
+        let side_tip = lossy(&git_ok(&root, &["rev-parse", "refs/heads/side"]))
+            .trim_end_matches('\n')
+            .to_owned();
+        let main_tip = head(&root);
+
+        // Only commits reachable from the branch are listed; refs still
+        // decorate every row and HEAD keeps marking the checkout tip.
+        let page = history(&root, 0, Some("refs/heads/side")).unwrap();
+        assert_eq!(page.commits.len(), 2);
+        assert_eq!(page.commits[0].id, side_tip);
+        assert!(!page.commits[0].head);
+        assert!(page.commits[1].parents.is_empty());
+        assert!(!page.commits.iter().any(|c| c.id == main_tip));
+
+        // Remote-tracking refs scope the walk the same way.
+        let remote = history(&root, 0, Some("refs/remotes/origin/side")).unwrap();
+        assert_eq!(remote.commits.len(), 2);
+        assert_eq!(remote.commits[0].id, side_tip);
+    }
+
+    #[test]
+    fn history_rejects_unsafe_branch() {
+        let (_t, root) = repository("branch-guard");
+        git_ok(&root, &["tag", "v1"]);
+        for branch in [
+            "-x",
+            "--all",
+            "HEAD",
+            "main",
+            "refs/tags/v1",
+            "refs/heads/missing",
+            "refs/heads/",
+            "refs/remotes/",
+            "refs/heads/bad\0name",
+            // Revision syntax is not a ref name even when it resolves to a commit.
+            "refs/heads/main~1",
+            "refs/heads/main^",
+            "refs/heads/main^{tree}",
+            "refs/heads/main@{0}",
+            "refs/heads/main..refs/heads/main",
+            "refs/heads/../tags/v1",
+            "refs/heads/with space",
+        ] {
+            let error = history(&root, 0, Some(branch)).unwrap_err();
+            assert_eq!(
+                error.code,
+                Code::Daemon(ErrorCode::InvalidArgument),
+                "branch {branch:?} must be rejected as invalid input"
+            );
+        }
+    }
+
+    #[test]
+    fn branches_lists_local_remote_and_current() {
+        let (_t, root) = repository("branch-list");
+        git_ok(&root, &["branch", "feature"]);
+        git_ok(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git_ok(&root, &["update-ref", "refs/remotes/origin/dev", "HEAD"]);
+        git_ok(
+            &root,
+            &[
+                "update-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+
+        let list = branches(&root).unwrap();
+        let by_ref: std::collections::BTreeMap<_, _> = list
+            .iter()
+            .map(|branch| (branch.ref_name.as_str(), branch))
+            .collect();
+        assert_eq!(list.len(), 4);
+        let main = by_ref["refs/heads/main"];
+        assert_eq!(main.name, "main");
+        assert!(!main.remote && main.current);
+        let feature = by_ref["refs/heads/feature"];
+        assert_eq!(feature.name, "feature");
+        assert!(!feature.remote && !feature.current);
+        let remote = by_ref["refs/remotes/origin/main"];
+        assert_eq!(remote.name, "origin/main");
+        assert!(remote.remote && !remote.current);
+        assert!(by_ref.contains_key("refs/remotes/origin/dev"));
+        // Remote HEAD aliases are not selectable branches.
+        assert!(!list.iter().any(|b| b.ref_name.ends_with("/HEAD")));
+
+        // A detached HEAD marks no branch as current.
+        git_ok(&root, &["checkout", "-q", "--detach", "HEAD"]);
+        assert!(branches(&root).unwrap().iter().all(|b| !b.current));
+    }
+
+    #[test]
+    fn commit_detail_has_body_email_and_committer() {
+        let (_t, root) = repository("commit-detail");
+        fs::write(root.join("detail.txt"), "d\n").unwrap();
+        git_ok(&root, &["add", "detail.txt"]);
+        git_ok(
+            &root,
+            &[
+                "-c",
+                "user.name=Committer",
+                "-c",
+                "user.email=committer@example.com",
+                "commit",
+                "--author=Author <author@example.com>",
+                "-qm",
+                "subject line",
+                "-m",
+                "body line one",
+                "-m",
+                "body line two",
+            ],
+        );
+        let oid = head(&root);
+        let view = diff(&root, "commit", None, Some(&oid)).unwrap();
+        let detail = view.detail.as_ref().expect("commit diffs carry detail");
+        assert_eq!(detail.author_email, "author@example.com");
+        assert_eq!(detail.committer, "Committer");
+        assert_eq!(detail.committer_email, "committer@example.com");
+        assert!(detail.body.contains("body line one"));
+        assert!(detail.body.contains("body line two"));
+        assert!(!detail.body.contains("subject line"));
+
+        // File layers never carry commit detail.
+        fs::write(root.join("detail.txt"), "d\nmore\n").unwrap();
+        git_ok(&root, &["add", "detail.txt"]);
+        let staged = diff(&root, "staged", Some("detail.txt"), None).unwrap();
+        assert!(staged.detail.is_none());
+    }
+
+    #[test]
+    fn numstat_counts_text_binary_rename_and_root() {
+        let (_t, root) = repository("numstat");
+        fs::write(root.join("tracked.txt"), "tracked\nmore\n").unwrap();
+        fs::write(root.join("bin.dat"), [0x00u8, 0x9f, 0x41]).unwrap();
+        git_ok(&root, &["mv", "second.txt", "renamed.txt"]);
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-qm", "change"]);
+        let oid = head(&root);
+
+        let view = diff(&root, "commit", None, Some(&oid)).unwrap();
+        let tracked = find(&view.files, "tracked.txt");
+        assert_eq!(tracked.added, Some(1));
+        assert_eq!(tracked.removed, Some(0));
+        let binary = find(&view.files, "bin.dat");
+        assert_eq!(binary.status, "added");
+        assert_eq!(binary.added, None);
+        assert_eq!(binary.removed, None);
+        // A rename reports its counts against the new path.
+        let renamed = find(&view.files, "renamed.txt");
+        assert_eq!(renamed.status, "renamed");
+        assert_eq!(renamed.orig_path.as_deref(), Some("second.txt"));
+        assert_eq!(renamed.added, Some(0));
+        assert_eq!(renamed.removed, Some(0));
+
+        // The root commit gets its counts from `diff-tree --root`.
+        let root_oid = lossy(&git_ok(&root, &["rev-list", "--max-parents=0", "HEAD"]))
+            .trim_end_matches('\n')
+            .to_owned();
+        let root_view = diff(&root, "commit", None, Some(&root_oid)).unwrap();
+        let added = find(&root_view.files, "tracked.txt");
+        assert_eq!(added.status, "added");
+        assert_eq!(added.added, Some(1));
+        assert_eq!(added.removed, Some(0));
     }
 
     #[test]
@@ -1504,7 +1902,7 @@ mod tests {
         assert!(stashes(&root).unwrap().len() == 1);
         // Stash commits are never surfaced in History: `refs/stash` is not a
         // branch, remote-tracking ref, or tag.
-        let page = history(&root, 0).unwrap();
+        let page = history(&root, 0, None).unwrap();
         assert!(!page.commits.iter().any(|c| c.id == list[0].id));
     }
 
@@ -1526,7 +1924,7 @@ mod tests {
         diff(&root, "unstaged", Some("second.txt"), None).unwrap();
         diff(&root, "untracked", Some("loose.txt"), None).unwrap();
         diff(&root, "commit", None, Some(&head(&root))).unwrap();
-        history(&root, 0).unwrap();
+        history(&root, 0, None).unwrap();
         tree(&root, "").unwrap();
         search(&root, "second").unwrap();
         file(&root, "second.txt").unwrap();

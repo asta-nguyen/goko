@@ -179,6 +179,7 @@ export function EditorWorkspace({
                     projectId={projectId}
                     checkoutPath={checkoutPath}
                     active={section === 'history'}
+                    onOpenChanges={() => setSection('changes')}
                   />
                 )}
                 {item.id === 'stashes' && (
