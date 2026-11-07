@@ -11,6 +11,7 @@ const { service, settings, worktrees } = vi.hoisted(() => ({
     changes: vi.fn(),
     diff: vi.fn(),
     history: vi.fn(),
+    branches: vi.fn(),
     tree: vi.fn(),
     fileList: vi.fn(),
     file: vi.fn(),
@@ -104,6 +105,7 @@ const renderEditor = (checkoutPath = '/work/p1', proj: Project | null = project(
 beforeEach(() => {
   vi.useRealTimers()
   qc = makeQueryClient()
+  localStorage.clear()
   Object.values(service).forEach((fn) => fn.mockReset().mockResolvedValue(undefined))
   settings.get.mockReset().mockResolvedValue(null)
   settings.set.mockReset().mockResolvedValue(undefined)
@@ -118,6 +120,10 @@ beforeEach(() => {
     ],
     next_skip: null,
   })
+  service.branches.mockResolvedValue([
+    { ref_name: 'refs/heads/main', name: 'main', remote: false, current: true },
+    { ref_name: 'refs/remotes/origin/main', name: 'origin/main', remote: true, current: false },
+  ])
   service.tree.mockImplementation((_p: string, _co: string, dir: string) =>
     Promise.resolve({
       entries:
@@ -664,8 +670,12 @@ describe('sections', () => {
 
     fireEvent.change(screen.getByLabelText('Filter commits'), { target: { value: 'bob' } })
 
-    expect(screen.queryByRole('button', { name: /second commit/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /first commit/ })).toBeTruthy()
+    // Rows are never hidden: the non-matching row stays but dims, the match stays full strength.
+    const dimmed = screen.getByRole('button', { name: /second commit/ })
+    const match = screen.getByRole('button', { name: /first commit/ })
+    expect(dimmed.className).toContain('opacity-40')
+    expect(match.className).not.toContain('opacity-40')
+    expect(screen.getByText('1 match')).toBeTruthy()
   })
 
   it('keeps cached file tree and editor content visible with stale notices after refresh failures', async () => {
@@ -708,11 +718,11 @@ describe('sections', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'History' }))
 
     await waitFor(() => expect(service.diff).toHaveBeenCalledWith('p1', '/work/p1', { layer: 'commit', commit: 'aaa111' }))
-    expect(await screen.findByText('second commit')).toBeTruthy()
-    expect(screen.getByText('first commit')).toBeTruthy()
     expect(await screen.findByText('commit patch')).toBeTruthy()
     expect(within(screen.getByRole('list', { name: 'Changed files' })).getByText('f.txt')).toBeTruthy()
     const headRow = screen.getByRole('button', { name: /second commit/ })
+    expect(within(headRow).getByText('second commit')).toBeTruthy()
+    expect(screen.getByText('first commit')).toBeTruthy()
     expect(within(headRow).getByText('HEAD')).toBeTruthy()
     expect(within(headRow).getByText('main')).toBeTruthy()
   })
@@ -722,6 +732,194 @@ describe('sections', () => {
     renderEditor()
     fireEvent.click(screen.getByRole('tab', { name: 'History' }))
     expect(await screen.findByText('No commits yet')).toBeTruthy()
+    expect(screen.queryByLabelText('Branch')).toBeNull()
+  })
+
+  it('branch dropdown passes the full ref to history and resets selection', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    await screen.findByRole('button', { name: /second commit/ })
+    const branchSelect = screen.getByLabelText('Branch') as HTMLSelectElement
+    expect(within(branchSelect).getByRole('option', { name: 'main' })).toBeTruthy()
+    expect(within(branchSelect).getByRole('option', { name: 'origin/main' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /first commit/ }))
+    fireEvent.change(screen.getByLabelText('Filter commits'), { target: { value: 'bob' } })
+    fireEvent.change(branchSelect, { target: { value: 'refs/remotes/origin/main' } })
+
+    await waitFor(() =>
+      expect(service.history).toHaveBeenCalledWith('p1', '/work/p1', 0, 'refs/remotes/origin/main'),
+    )
+    // The new page restarts with a clean slate: no filter, HEAD auto-selected again.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /second commit/ }).getAttribute('aria-pressed')).toBe('true'),
+    )
+    expect((screen.getByLabelText('Filter commits') as HTMLInputElement).value).toBe('')
+    expect(branchSelect.value).toBe('refs/remotes/origin/main')
+  })
+
+  it('a failing branch shows the error pane and All branches recovers', async () => {
+    service.history.mockImplementation(
+      (_p: string, _co: string, _skip: number, branch: string | null) =>
+        branch === null
+          ? Promise.resolve({
+              commits: [
+                { id: 'aaa111', parents: ['bbb222'], refs: ['main'], head: true, author: 'Ada', time: 1, subject: 'second commit' },
+                { id: 'bbb222', parents: [], refs: [], head: false, author: 'Bob', time: 1, subject: 'first commit' },
+              ],
+              next_skip: null,
+            })
+          : Promise.reject(new Error(`unknown branch ${branch}`)),
+    )
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    await screen.findByRole('button', { name: /second commit/ })
+
+    fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'refs/remotes/origin/main' } })
+
+    expect(await screen.findByText('unknown branch refs/remotes/origin/main')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    // The toolbar stays usable so the user can switch back without leaving the pane.
+    expect(screen.getByLabelText('Branch')).toBeTruthy()
+    expect(screen.getByLabelText('Filter commits')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Branch'), { target: { value: '' } })
+    expect(await screen.findByRole('button', { name: /second commit/ })).toBeTruthy()
+  })
+
+  it('Enter in the filter selects the next match', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    await screen.findByRole('button', { name: /second commit/ })
+    const filter = screen.getByLabelText('Filter commits')
+    fireEvent.change(filter, { target: { value: 'commit' } })
+    expect(await screen.findByText('2 matches')).toBeTruthy()
+
+    const second = screen.getByRole('button', { name: /second commit/ })
+    const first = screen.getByRole('button', { name: /first commit/ })
+    expect(second.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(filter, { key: 'Enter' })
+    await waitFor(() => expect(first.getAttribute('aria-pressed')).toBe('true'))
+
+    // At the last match Enter wraps around to the first.
+    fireEvent.keyDown(filter, { key: 'Enter' })
+    await waitFor(() => expect(second.getAttribute('aria-pressed')).toBe('true'))
+
+    fireEvent.keyDown(filter, { key: 'Enter', shiftKey: true })
+    await waitFor(() => expect(first.getAttribute('aria-pressed')).toBe('true'))
+  })
+
+  it('Jump to HEAD selects and is disabled when HEAD is absent', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    const headRow = await screen.findByRole('button', { name: /second commit/ })
+    const jump = screen.getByRole('button', { name: 'Jump to HEAD' }) as HTMLButtonElement
+    expect(jump.disabled).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: /first commit/ }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /first commit/ }).getAttribute('aria-pressed')).toBe('true'),
+    )
+    fireEvent.click(jump)
+    await waitFor(() => expect(headRow.getAttribute('aria-pressed')).toBe('true'))
+
+    service.history.mockResolvedValue({
+      commits: [{ id: 'ccc333', parents: [], refs: [], head: false, author: 'Cy', time: 1, subject: 'detached commit' }],
+      next_skip: null,
+    })
+    await qc.invalidateQueries({ queryKey: queryKeys.gitHistory('p1', '/work/p1') })
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Jump to HEAD' }) as HTMLButtonElement).disabled).toBe(true),
+    )
+  })
+
+  it('uncommitted row appears with changes and Open in Changes switches the tab', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    await waitFor(() =>
+      expect(service.diff).toHaveBeenCalledWith('p1', '/work/p1', { layer: 'commit', commit: 'aaa111' }),
+    )
+    const row = await screen.findByRole('button', { name: /Uncommitted changes/ })
+    expect(row.textContent).toContain('(3)')
+
+    const diffCalls = service.diff.mock.calls.length
+    fireEvent.click(row)
+    expect(row.getAttribute('aria-pressed')).toBe('true')
+
+    const entries = await screen.findByRole('list', { name: 'Uncommitted entries' })
+    expect(within(entries).getAllByText('src/app.ts')).toHaveLength(2)
+    expect(within(entries).getByText('notes.txt')).toBeTruthy()
+    // The working tree has no commit diff to fetch.
+    expect(service.diff.mock.calls.length).toBe(diffCalls)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Changes' }))
+    expect(screen.getByRole('tab', { name: 'Changes' }).getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByRole('region', { name: 'Staged files' })).toBeTruthy()
+  })
+
+  it('falls back to a commit when the selected uncommitted changes disappear', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Uncommitted changes/ }))
+    expect(await screen.findByRole('list', { name: 'Uncommitted entries' })).toBeTruthy()
+
+    // The changes are committed elsewhere: the row goes away and the detail must not stay empty.
+    service.changes.mockResolvedValue({ ...changesData('/work/p1'), staged: [], unstaged: [], untracked: [], conflicts: [] })
+    await qc.invalidateQueries({ queryKey: queryKeys.gitChanges('p1', '/work/p1') })
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Uncommitted changes/ })).toBeNull())
+    expect(screen.queryByRole('list', { name: 'Uncommitted entries' })).toBeNull()
+    await waitFor(() => expect(screen.getByRole('button', { name: /second commit/ }).getAttribute('aria-pressed')).toBe('true'))
+  })
+
+  it('detail shows body, parents and counts for the selected commit', async () => {
+    service.diff.mockImplementation((_p: string, _co: string, req: { layer: string; path?: string; commit?: string }) =>
+      Promise.resolve(
+        req.layer === 'commit'
+          ? {
+              label: `commit ${req.commit}`,
+              patch: 'commit patch',
+              truncated: false,
+              detail: {
+                author_email: 'ada@example.com',
+                committer: 'Ada Lovelace',
+                committer_email: 'ada@example.com',
+                body: 'First body line\nSecond body line',
+              },
+              files: [{ path: 'f.txt', orig_path: null, status: 'modified' as const, added: 3, removed: 1 }],
+            }
+          : { label: `${req.layer} diff`, patch: `patch ${req.path ?? ''}`, truncated: false, files: [] },
+      ),
+    )
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+
+    expect(await screen.findByText(/Ada <ada@example\.com>/)).toBeTruthy()
+    expect(screen.getByText(/Committer: Ada Lovelace/)).toBeTruthy()
+    expect(screen.getByText(/First body line/)).toBeTruthy()
+
+    const files = screen.getByRole('list', { name: 'Changed files' })
+    expect(within(files).getByText('+3')).toBeTruthy()
+    expect(within(files).getByText('−1')).toBeTruthy()
+
+    const parent = screen.getByRole('button', { name: 'Select parent bbb222' }) as HTMLButtonElement
+    expect(parent.disabled).toBe(false)
+    fireEvent.click(parent)
+    await waitFor(() => expect(service.diff).toHaveBeenCalledWith('p1', '/work/p1', { layer: 'commit', commit: 'bbb222' }))
+  })
+
+  it('a failed refresh keeps the table with the stale notice', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }))
+    await screen.findByRole('button', { name: /second commit/ })
+
+    service.history.mockRejectedValue(new Error('history refresh failed'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh history' }))
+
+    expect(await screen.findByText(/Refresh failed — showing the last result/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /second commit/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /first commit/ })).toBeTruthy()
   })
 
   it('labels Stashes as repository-wide and loads the newest stash patch', async () => {

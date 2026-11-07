@@ -1,5 +1,6 @@
 import { call } from './call'
 import type {
+  GitViewBranch,
   GitViewChanges,
   GitViewDiff,
   GitViewDiffLayer,
@@ -38,8 +39,10 @@ export const gitViewService = {
       path: request.path ?? null,
       commit: request.commit ?? null,
     }),
-  history: (projectId: string, checkoutPath: string, skip: number) =>
-    call<GitViewHistory>('git_view_history', { projectId, checkoutPath, skip }),
+  history: (projectId: string, checkoutPath: string, skip: number, branch: string | null = null) =>
+    call<GitViewHistory>('git_view_history', { projectId, checkoutPath, skip, branch }),
+  branches: (projectId: string, checkoutPath: string) =>
+    call<GitViewBranch[]>('git_view_branches', { projectId, checkoutPath }),
   tree: (projectId: string, checkoutPath: string, directory: string) =>
     call<GitViewTree>('git_view_tree', { projectId, checkoutPath, directory }),
   fileList: (projectId: string, checkoutPath: string) =>

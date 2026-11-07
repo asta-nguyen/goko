@@ -23,7 +23,7 @@ const { handlers, listen, service, projects, agents, worktrees, gitview, setting
       projects: { list: vi.fn(), add: vi.fn(), remove: vi.fn() },
       agents: { list: vi.fn() },
       worktrees: { list: vi.fn(), branches: vi.fn(), create: vi.fn(), envCandidates: vi.fn(), envCopy: vi.fn(), remove: vi.fn() },
-      gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
+      gitview: { changes: vi.fn(), diff: vi.fn(), history: vi.fn(), branches: vi.fn(), tree: vi.fn(), file: vi.fn(), stashes: vi.fn(), stashDiff: vi.fn() },
       settings: { get: vi.fn(), set: vi.fn() },
       usageService: { get: vi.fn() },
       activityService: { get: vi.fn() },

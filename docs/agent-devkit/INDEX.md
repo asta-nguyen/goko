@@ -6,6 +6,7 @@
 
 ## Archived changes
 
+- [Editor History: Git Graph style table](changes/archive/2026-11-06-history-git-graph/design.md) ([tasks](changes/archive/2026-11-06-history-git-graph/tasks.md))
 - [Editor go-to-definition](changes/archive/2026-11-06-editor-go-to-definition/delta.md)
 - [Multi-theme support](changes/archive/2026-11-05-multi-theme/delta.md)
 - [Theme control moves to Settings](changes/archive/2026-11-05-theme-to-settings/delta.md)

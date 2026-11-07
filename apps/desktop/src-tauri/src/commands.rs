@@ -6,8 +6,8 @@ use crate::bridge::Bridge;
 use crate::daemon_client;
 use crate::error::{BridgeError, Code};
 use crate::git_view::{
-    self, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewSearch, GitViewStash,
-    GitViewTree,
+    self, GitViewBranch, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewSearch,
+    GitViewStash, GitViewTree,
 };
 use crate::store::{Project, SessionMeta, Storage, Store};
 use crate::worktrees::{
@@ -496,11 +496,22 @@ pub fn git_view_history(
     project_id: String,
     checkout_path: String,
     skip: Option<u64>,
+    branch: Option<String>,
 ) -> Result<GitViewHistory, BridgeError> {
     git_view::history(
         &git_view_checkout(&storage, &project_id, &checkout_path)?,
         skip.unwrap_or(0),
+        branch.as_deref(),
     )
+}
+
+#[tauri::command]
+pub fn git_view_branches(
+    storage: State<'_, Storage>,
+    project_id: String,
+    checkout_path: String,
+) -> Result<Vec<GitViewBranch>, BridgeError> {
+    git_view::branches(&git_view_checkout(&storage, &project_id, &checkout_path)?)
 }
 
 #[tauri::command]
