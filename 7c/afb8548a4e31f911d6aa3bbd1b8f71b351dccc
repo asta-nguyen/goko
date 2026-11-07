@@ -1,0 +1,23 @@
+apps/desktop/src-tauri/Cargo.toml
+  s_69ade62082e298::t_f044f0c932a7af 19-20
+apps/desktop/src/features/terminal/TerminalController.test.ts
+  s_69ade62082e298::t_ec99e78004836b 259-289
+apps/desktop/src/features/terminal/TerminalController.ts
+  s_69ade62082e298::t_ec99e78004836b 39,73,126,131,133,139-143,157-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7cafb8548a4e31f911d6aa3bbd1b8f71b351dccc",
+  "prompts": {},
+  "sessions": {
+    "s_69ade62082e298": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "94d33854-e0cd-4ba9-b664-85b399e3dff7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
