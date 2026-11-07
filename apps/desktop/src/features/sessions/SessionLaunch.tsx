@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { AgentInfo } from '../../services/types'
+import { AgentIcon } from './AgentIcon'
 
 export type SessionTarget = { agent: string; title?: string } | { command: string; title?: string }
 
@@ -42,12 +43,15 @@ export function NewSessionMenu({
       <DropdownMenuContent align="end" className="w-56">
         {agents.map((agent) => (
           <DropdownMenuItem key={agent.id} disabled={disabled || !agent.available} onSelect={() => onAgent(agent.id)}>
+            <AgentIcon agent={agent.id} />
             {agent.label}
             {!agent.available && ' — not found on PATH'}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={disabled} onSelect={onCustom}>Custom command…</DropdownMenuItem>
+        <DropdownMenuItem disabled={disabled} onSelect={onCustom}>
+          <AgentIcon />
+          Custom command…</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )

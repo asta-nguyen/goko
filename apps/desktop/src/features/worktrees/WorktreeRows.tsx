@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { AlertTriangleIcon, ChevronRightIcon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon, GitBranchIcon } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -62,6 +62,7 @@ export function WorktreeRows({
   liveCwdSupported,
   disconnected,
   labelOf,
+  agentOf,
   onSelect,
   onStart,
   onRemoveFocusFallback,
@@ -79,6 +80,7 @@ export function WorktreeRows({
   liveCwdSupported: boolean
   disconnected: boolean
   labelOf: (id: string) => string | undefined
+  agentOf?: (id: string) => string | undefined
   onSelect: (id: string, workspaceId: string) => void
   onStart: (target: SessionTarget, done?: () => void, checkoutPath?: string) => void
   onRemoveFocusFallback: () => void
@@ -166,7 +168,7 @@ export function WorktreeRows({
                 onClick={() => activateWorkspace(workspaceId)}
                 className={cn('flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', activeWorkspaceId === workspaceId && 'bg-secondary/70')}
               >
-                <span className="size-2 shrink-0 rounded-full bg-accent" aria-hidden />
+                <GitBranchIcon className="size-4 shrink-0 text-accent" aria-hidden />
                 <span className="min-w-0 flex-1 overflow-hidden">
                   <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                     <span className="min-w-12 truncate text-sm font-medium">{worktree.name}</span>
@@ -217,7 +219,7 @@ export function WorktreeRows({
             </div>
             {custom && <CustomCommandForm initial={defaultShell} disabled={project.missing || worktree.missing || disconnected || remove.isPending} onStart={(command) => onStart({ command }, () => setCustomPath(null), worktree.path)} onCancel={() => setCustomPath(null)} />}
             {isExpanded && checkoutSessions.length > 0 && (
-              <SessionItems sessions={checkoutSessions} labelOf={labelOf} selectedId={selectedId} workspaceId={workspaceId} onSelect={onSelect} />
+              <SessionItems sessions={checkoutSessions} labelOf={labelOf} agentOf={agentOf} selectedId={selectedId} workspaceId={workspaceId} onSelect={onSelect} />
             )}
           </li>
         )

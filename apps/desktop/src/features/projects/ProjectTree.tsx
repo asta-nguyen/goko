@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertTriangleIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon, FolderGit2Icon, FolderIcon, FolderPlusIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -49,6 +49,7 @@ function ProjectNode({
   agents,
   defaultShell,
   labelOf,
+  agentOf,
   selectedId,
   sessionListKnown,
   hasLiveSessions,
@@ -68,6 +69,7 @@ function ProjectNode({
   agents: AgentInfo[]
   defaultShell: string
   labelOf: (id: string) => string | undefined
+  agentOf: (id: string) => string | undefined
   selectedId: string | null
   sessionListKnown: boolean
   hasLiveSessions: boolean
@@ -174,7 +176,11 @@ function ProjectNode({
             active && 'bg-secondary/70',
           )}
         >
-          <FolderIcon className="size-4 shrink-0 text-accent" aria-hidden />
+          {isGitProject ? (
+            <FolderGit2Icon className="size-4 shrink-0 text-accent" aria-hidden />
+          ) : (
+            <FolderIcon className="size-4 shrink-0 text-accent" aria-hidden />
+          )}
           <span className="min-w-0 flex-1 overflow-hidden">
             <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
               <span className="min-w-12 truncate text-sm font-medium">{project.name}</span>
@@ -244,6 +250,7 @@ function ProjectNode({
         <SessionItems
           sessions={rootSessions}
           labelOf={labelOf}
+          agentOf={agentOf}
           selectedId={selectedId}
           workspaceId={checkoutKey(project.id, project.root)}
           onSelect={onSelect}
@@ -260,6 +267,7 @@ function ProjectNode({
           selectedId={selectedId}
           disconnected={disconnected}
           labelOf={labelOf}
+          agentOf={agentOf}
           onSelect={onSelect}
           onStart={onStart}
           onRemoveFocusFallback={() => row.current?.querySelector<HTMLButtonElement>('button[aria-pressed]')?.focus()}
@@ -277,6 +285,7 @@ function ProjectNode({
           <SessionItems
             sessions={otherSessions}
             labelOf={labelOf}
+            agentOf={agentOf}
             selectedId={selectedId}
             workspaceId={checkoutKey(project.id, project.root)}
             onSelect={onSelect}
@@ -375,6 +384,7 @@ export function ProjectTree() {
     return { byProject, unassigned }
   }, [metaById, projects, sessions])
 
+  const agentOf = (sessionId: string) => metaById.get(sessionId)?.agent
   const labelOf = (sessionId: string) => {
     const agent = metaById.get(sessionId)?.agent
     return agent === undefined ? undefined : agentLabel(agents, agent)
@@ -459,6 +469,7 @@ export function ProjectTree() {
                 onStart={(target, done, checkoutPath) => start(project, target, done, checkoutPath)}
                 onRemove={() => removeProject(project)}
                 labelOf={labelOf}
+                agentOf={agentOf}
                 selectedId={selectedId}
                 sessionListKnown={sessionsQuery.data !== undefined && !sessionsError && sessionMetaQuery.data !== undefined && !sessionMetaQuery.error}
                 hasLiveSessions={hasLiveSessions}
@@ -483,6 +494,7 @@ export function ProjectTree() {
                 <SessionItems
                   sessions={unassigned}
                   labelOf={labelOf}
+                  agentOf={agentOf}
                   selectedId={selectedId}
                   workspaceId={UNASSIGNED_WORKSPACE}
                   onSelect={selectSession}
