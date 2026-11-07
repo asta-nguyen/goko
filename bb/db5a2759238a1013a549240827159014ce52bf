@@ -1,0 +1,105 @@
+apps/desktop/src-tauri/Cargo.toml
+  s_54bbc832011564::t_3ffaf278f0f767 19-20
+apps/desktop/src-tauri/src/acp.rs
+  s_54bbc832011564::t_e51086ee077382 1-2751
+apps/desktop/src-tauri/src/agents.rs
+  s_54bbc832011564::t_2b820296ef584d 223
+apps/desktop/src-tauri/src/commands.rs
+  s_54bbc832011564::t_f25b38bd365877 4,13,25,608-685,793-850
+apps/desktop/src-tauri/src/git_view.rs
+  s_54bbc832011564::t_db84d408dd1e99 53-55,126-127,215-218,661,663-687,703,741,1035,1044,1209,1252,1261,1267,1754-1760,1771,2027-2047
+apps/desktop/src-tauri/src/git_write.rs
+  s_54bbc832011564::t_e4e458a46d85cc 1-646
+apps/desktop/src-tauri/src/lib.rs
+  s_54bbc832011564::t_4a28183d782886 1,10,40,42-43,80-91,125
+apps/desktop/src-tauri/src/wiring_tests.rs
+  s_54bbc832011564::t_388ea0b870bf66 26,556,564-565,691,734-847,903-938
+apps/desktop/src-tauri/src/worktrees.rs
+  s_54bbc832011564::t_fd0923a3889009 10,15,92-104,107-115,120-133,135-158
+apps/desktop/src-tauri/tests/fixtures/fake_acp_agent.py
+  s_54bbc832011564::t_72001a96559bf3 1-206
+apps/desktop/src/App.test.tsx
+  s_54bbc832011564::t_2e2d2009e0fd51 127
+apps/desktop/src/App.tsx
+  s_54bbc832011564::t_92c266a9937da4 3,24-25,198-204
+apps/desktop/src/features/editor/CommitBox.test.tsx
+  s_54bbc832011564::t_1570c776f7b506 1-291
+apps/desktop/src/features/editor/CommitBox.tsx
+  s_54bbc832011564::t_c71e52a80a99aa 1-242
+apps/desktop/src/features/editor/EditorChanges.tsx
+  s_54bbc832011564::t_1cd708ded82d56 2,4,6-7,12,14-16,84-91,97-115,126-133,145-149,153-154,156,159-198,205,212,223-263,274,299-338
+apps/desktop/src/features/editor/EditorFiles.tsx
+  s_54bbc832011564::t_5860f2cd6bacf5 86-89,122
+apps/desktop/src/features/editor/EditorWorkspace.test.tsx
+  s_54bbc832011564::t_144162d83e6d8e 9,24-39,42-43,116,124-132,138-139,142-145,166-167,169,268-269,277,321,378,691,696,998-1104
+apps/desktop/src/features/editor/queries.test.tsx
+  s_54bbc832011564::t_f705b81a3137e3 5,7-15,25-28,42-57,60-61,71,83-84,375-572
+apps/desktop/src/features/editor/queries.ts
+  s_54bbc832011564::t_414708e9366999 3,6,9-11,25-27,161-281
+apps/desktop/src/features/projects/ProjectTree.tsx
+  s_54bbc832011564::t_e9b2300951e6f3 2,52,72,179-183,253,270,288,387,472,497
+apps/desktop/src/features/sessions/AgentIcon.tsx
+  s_54bbc832011564::t_11ca73780a12c1 1-25
+apps/desktop/src/features/sessions/SessionItems.tsx
+  s_54bbc832011564::t_5cba83519391c9 7,15,21,44-51,76,83,95
+apps/desktop/src/features/sessions/SessionLaunch.tsx
+  s_54bbc832011564::t_243c25aa238f43 14,46,52-54
+apps/desktop/src/features/sessions/StateBadge.tsx
+  s_54bbc832011564::t_53ebd909930b79 1,38-46,52
+apps/desktop/src/features/sessions/agent-logos.ts
+  s_54bbc832011564::t_b79b5adfc6846d 1-18
+apps/desktop/src/features/settings/AcpAgentsSection.tsx
+  s_54bbc832011564::t_44bbcf0261624b 1-188
+apps/desktop/src/features/settings/SettingsPage.test.tsx
+  s_54bbc832011564::t_a92d53195ea15a 2,4-5,11-45,49-52,58-64,133-318
+apps/desktop/src/features/settings/SettingsPage.tsx
+  s_54bbc832011564::t_fb0c288bd33e7b 10,15,144
+apps/desktop/src/features/terminal/TerminalController.test.ts
+  s_54bbc832011564::t_de09d16114bd40 259-289
+apps/desktop/src/features/terminal/TerminalController.ts
+  s_54bbc832011564::t_56f0283ffbdcdc 39,73,126,131,133,139-143,157-162
+apps/desktop/src/features/worktrees/WorktreeRows.tsx
+  s_54bbc832011564::t_259dcf44677ac7 2,65,83,171,222
+apps/desktop/src/queryClient.ts
+  s_54bbc832011564::t_f72ceb8ca85ad3 35-37
+apps/desktop/src/services/acp.test.ts
+  s_54bbc832011564::t_4e927daf481ed6 1-40
+apps/desktop/src/services/acp.ts
+  s_54bbc832011564::t_1b4f44c920aa14 1-17
+apps/desktop/src/services/git-write.test.ts
+  s_54bbc832011564::t_aae886dbfe4f1a 1-41
+apps/desktop/src/services/git-write.ts
+  s_54bbc832011564::t_82d9faf3a3b64c 1-21
+apps/desktop/src/services/types.ts
+  s_54bbc832011564::t_273ab5980060ef 150-151,216-217,261-306
+docs/agent-devkit/INDEX.md
+  s_54bbc832011564::t_303aa4a807e115 5
+docs/agent-devkit/changes/2026-11-06-editor-commit-acp/delta.md
+  s_54bbc832011564::t_b987f4118ee296 1-146
+docs/agent-devkit/changes/2026-11-06-editor-commit-acp/design.md
+  s_54bbc832011564::t_71e94c8a8e3e60 1-175
+docs/agent-devkit/changes/2026-11-06-editor-commit-acp/tasks.md
+  s_54bbc832011564::t_de92f632e7ee4f 1-127
+docs/llm/INDEX.md
+  s_54bbc832011564::t_a87913040250f4 9-10
+docs/llm/architecture/editor.md
+  s_54bbc832011564::t_4622841643c854 5-22,47-64,149-184,203-208,215-216,223-224,233-237,246,257-259,269,272,276,283-284,287,307,310
+docs/llm/domains/desktop-settings.md
+  s_54bbc832011564::t_a86da02e5bb872 5-28,43,47,51,57-58,61,65,79,84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bbdb5a2759238a1013a549240827159014ce52bf",
+  "prompts": {},
+  "sessions": {
+    "s_54bbc832011564": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ff03317-2ed8-4fa1-bbbf-be04e8aa0603",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
