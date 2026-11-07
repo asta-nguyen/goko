@@ -4,6 +4,7 @@ import type { SessionInfo } from '../../services/types'
 import { useSessionActivity } from '../activity/queries'
 import { useSessionContext } from '../usage/queries'
 import { usageTone, usageToneClass } from '../usage/tone'
+import { AgentIcon } from './AgentIcon'
 import { StateDot } from './StateBadge'
 
 const sessionTitle = (session: SessionInfo) => session.title || session.argv.join(' ')
@@ -11,11 +12,13 @@ const sessionTitle = (session: SessionInfo) => session.title || session.argv.joi
 const SessionRow = memo(function SessionRow({
   session,
   label,
+  agent,
   selected,
   onSelect,
 }: {
   session: SessionInfo
   label?: string
+  agent?: string
   selected: boolean
   onSelect: (id: string) => void
 }) {
@@ -38,7 +41,14 @@ const SessionRow = memo(function SessionRow({
           selected && 'bg-accent/10 text-accent',
         )}
       >
-        <StateDot state={session.state} activity={activity} />
+        <span className="relative grid size-4 shrink-0 place-items-center">
+          <AgentIcon agent={agent} />
+          <StateDot
+            state={session.state}
+            activity={activity}
+            className="absolute -bottom-0.5 -right-0.5 size-2 ring-2 ring-panel"
+          />
+        </span>
         {showLabel ? (
           <>
             <span className="shrink-0 font-medium">{label}</span>
@@ -63,12 +73,14 @@ const SessionRow = memo(function SessionRow({
 export function SessionItems({
   sessions,
   labelOf,
+  agentOf,
   selectedId,
   workspaceId,
   onSelect,
 }: {
   sessions: SessionInfo[]
   labelOf: (id: string) => string | undefined
+  agentOf?: (id: string) => string | undefined
   selectedId: string | null
   workspaceId: string
   onSelect: (id: string, workspaceId: string) => void
@@ -80,6 +92,7 @@ export function SessionItems({
           key={session.id}
           session={session}
           label={labelOf(session.id)}
+          agent={agentOf?.(session.id)}
           selected={session.id === selectedId}
           onSelect={(id) => onSelect(id, workspaceId)}
         />

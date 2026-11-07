@@ -256,6 +256,37 @@ describe('TerminalController renderer', () => {
     c.dispose()
   })
 
+  it('frees the canvas of a hidden terminal and draws again once shown', async () => {
+    const c = new TerminalController('gl', service)
+    await c.mount(element())
+    const [first] = h.FakeWebgl.instances
+    c.setVisible(false)
+    expect(first.disposed).toBe(true)
+    c.setVisible(true)
+    expect(h.FakeWebgl.instances).toHaveLength(2)
+    expect(h.FakeWebgl.instances[1].disposed).toBe(false)
+    c.dispose()
+  })
+
+  it('creates no canvas for a terminal mounted hidden until it is shown', async () => {
+    const c = new TerminalController('gl', service)
+    await c.mount(element(), false)
+    expect(h.FakeWebgl.instances).toHaveLength(0)
+    c.setVisible(true)
+    expect(h.FakeWebgl.instances).toHaveLength(1)
+    c.dispose()
+  })
+
+  it('recovers a lost context on the next show', async () => {
+    const c = new TerminalController('gl', service)
+    await c.mount(element())
+    h.FakeWebgl.instances[0].lost?.()
+    c.setVisible(false)
+    c.setVisible(true)
+    expect(h.FakeWebgl.instances).toHaveLength(2)
+    c.dispose()
+  })
+
   it('keeps working on the DOM renderer when WebGL is unavailable', async () => {
     h.FakeWebgl.failOnCreate = true
     const c = new TerminalController('nogl', service)

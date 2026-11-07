@@ -1,3 +1,4 @@
+import { cn } from '@/lib/utils'
 import type { Activity } from '../../services/activity'
 import type { SessionState } from '../../services/types'
 
@@ -34,13 +35,21 @@ const ACTIVITY_DOT: Record<Activity, string> = {
 }
 
 /** Compact state marker for tree rows; the state text stays available to assistive tech. */
-export function StateDot({ state, activity }: { state: SessionState; activity?: Activity | null }) {
+export function StateDot({
+  state,
+  activity,
+  className,
+}: {
+  state: SessionState
+  activity?: Activity | null
+  className?: string
+}) {
   const shown = state === 'running' ? activity : null
   const label = shown ? `${text(state)} · ${shown}` : text(state)
   return (
     <span
       title={label}
-      className={`size-2.5 shrink-0 rounded-full ${shown ? ACTIVITY_DOT[shown] : (DOT[state] ?? 'bg-muted')}`}
+      className={cn('size-2.5 shrink-0 rounded-full', shown ? ACTIVITY_DOT[shown] : (DOT[state] ?? 'bg-muted'), className)}
     >
       <span className="sr-only">{label}</span>
     </span>

@@ -6,8 +6,8 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 ## Pages
 
 - [Architecture overview](architecture/overview.md) — process topology, domains, and cross-domain dependencies
-- [Desktop Editor](architecture/editor.md) — CodeMirror editing, Vim mode, Git content search, and result navigation
-- [Desktop Settings](domains/desktop-settings.md) — Settings page navigation and preference controls
+- [Desktop Editor](architecture/editor.md) — CodeMirror editing, Vim mode, Git content search, result navigation, and staging, commit, push, and ACP commit messages
+- [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, and ACP agents
 - [Desktop Theme](domains/desktop-theme.md) — dark and light palettes and theme preference behavior
 
 ## Requirement prefixes

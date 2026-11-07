@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertCircleIcon, FolderPlusIcon, PlusIcon, SettingsIcon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { useTheme } from './components/use-theme'
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert'
 import { Badge } from './components/ui/badge'
@@ -9,7 +9,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty'
 import { ResizableSplit } from './components/ui/resizable-split'
 import { TooltipProvider } from './components/ui/tooltip'
-import { EditorWorkspace } from './features/editor/EditorWorkspace'
 import { ProjectTree } from './features/projects/ProjectTree'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { useProjectList } from './features/projects/queries'
@@ -21,6 +20,8 @@ import { UsageChips } from './features/usage/UsageChips'
 import { startFileDrop } from './services/fileDrop'
 import { startQuerySync } from './services/sync'
 import { checkoutContext, focusedSession, PANEL_LIMITS, useUi } from './stores/ui'
+
+const EditorWorkspace = lazy(() => import('./features/editor/EditorWorkspace').then((m) => ({ default: m.EditorWorkspace })))
 
 export default function App() {
   useTheme() // mounted at the root so the stored `goko.theme` applies on startup
@@ -194,11 +195,13 @@ export default function App() {
               />
             ))}
             {editorMode && (
-              <EditorWorkspace
-                project={activeProject}
-                projectId={activeContext.projectId}
-                checkoutPath={activeContext.checkoutPath}
-              />
+              <Suspense fallback={null}>
+                <EditorWorkspace
+                  project={activeProject}
+                  projectId={activeContext.projectId}
+                  checkoutPath={activeContext.checkoutPath}
+                />
+              </Suspense>
             )}
             {settingsMode && <SettingsPage />}
             {activeWorkspaceId === null &&

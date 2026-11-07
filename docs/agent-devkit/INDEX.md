@@ -2,6 +2,7 @@
 
 ## Changes
 
+- [Editor: stage, commit, push, and AI commit messages over ACP](changes/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/2026-11-06-editor-commit-acp/tasks.md))
 - [Agent activity: working, needs you, done](changes/2026-11-05-agent-activity/design.md) ([tasks](changes/2026-11-05-agent-activity/tasks.md))
 
 ## Archived changes

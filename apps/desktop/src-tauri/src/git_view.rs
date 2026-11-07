@@ -50,6 +50,9 @@ pub struct GitViewChanges {
     pub staged: Vec<StatusEntry>,
     pub unstaged: Vec<StatusEntry>,
     pub untracked: Vec<StatusEntry>,
+    /// Commits on HEAD not yet on its upstream; `None` without an upstream
+    /// or before the first commit.
+    pub ahead: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -120,6 +123,8 @@ pub struct GitViewTreeEntry {
     pub name: String,
     /// `dir` or `file`.
     pub kind: &'static str,
+    /// Matched by a Git ignore rule; shown dimmed rather than hidden.
+    pub ignored: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -206,6 +211,10 @@ pub fn changes(checkout: &Path) -> Result<GitViewChanges, BridgeError> {
     let head = worktrees::run(checkout, &["rev-parse", "--short=8", "HEAD"], None)?;
     if head.status.success() {
         view.head = trim_str(&head.stdout).to_owned();
+    }
+    let ahead = worktrees::run(checkout, &["rev-list", "--count", "@{u}..HEAD"], None)?;
+    if ahead.status.success() {
+        view.ahead = trim_str(&ahead.stdout).parse::<u32>().ok();
     }
     Ok(view)
 }
@@ -649,15 +658,33 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
         format!("{}/", rel.to_string_lossy())
     };
     let pathspec = format!(":(glob){}*", escape_glob_path(&prefix));
-    let args = [
-        "ls-files",
-        "-z",
-        "--cached",
-        "--others",
-        "--",
-        &pathspec,
-    ];
+    let args = ["ls-files", "-z", "--cached", "--others", "--", &pathspec];
     let out = worktrees::git(checkout, &args)?;
+    // Ignored names at this level; `--directory` collapses ignored directories to `name/`.
+    let ignored_out = worktrees::git(
+        checkout,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "--",
+            &pathspec,
+        ],
+    )?;
+    let ignored: std::collections::BTreeSet<String> = ignored_out
+        .split(|b| *b == 0)
+        .map(lossy)
+        .filter_map(|full| {
+            let rel = full
+                .strip_prefix(prefix.as_str())?
+                .trim_end_matches('/')
+                .to_owned();
+            (!rel.is_empty() && !rel.contains('/')).then_some(rel)
+        })
+        .collect();
     let mut entries: BTreeMap<String, GitViewTreeEntry> = BTreeMap::new();
     for record in out.split(|b| *b == 0) {
         if record.is_empty() {
@@ -673,6 +700,7 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
             path,
             name: name.to_owned(),
             kind,
+            ignored: ignored.contains(rel),
         });
     }
 
@@ -710,6 +738,7 @@ pub fn tree(checkout: &Path, directory: &str) -> Result<GitViewTree, BridgeError
     for (path, name) in directories {
         entries.entry(path.clone()).or_insert(GitViewTreeEntry {
             path,
+            ignored: ignored.contains(&name),
             name,
             kind: "dir",
         });
@@ -1003,7 +1032,7 @@ pub fn stash_diff(checkout: &Path, stash_id: &str) -> Result<GitViewDiff, Bridge
 
 // ---------- parsing and validation helpers ----------
 
-fn parse_status(bytes: &[u8]) -> GitViewChanges {
+pub(crate) fn parse_status(bytes: &[u8]) -> GitViewChanges {
     let records: Vec<&[u8]> = bytes.split(|b| *b == 0).filter(|r| !r.is_empty()).collect();
     let mut view = GitViewChanges {
         branch: None,
@@ -1012,6 +1041,7 @@ fn parse_status(bytes: &[u8]) -> GitViewChanges {
         staged: Vec::new(),
         unstaged: Vec::new(),
         untracked: Vec::new(),
+        ahead: None,
     };
     let mut i = 0;
     while i < records.len() {
@@ -1176,7 +1206,7 @@ fn stash_index(gd: &str) -> Option<usize> {
 /// Checkout-relative path validation: rejects absolute paths, `..` traversal,
 /// and `.git` access. Symlink escapes are caught separately by the canonical
 /// containment check in the callers that touch the filesystem.
-fn relative_path(path: &str) -> Result<PathBuf, BridgeError> {
+pub(crate) fn relative_path(path: &str) -> Result<PathBuf, BridgeError> {
     let rel = Path::new(path);
     if path.is_empty() || rel.is_absolute() {
         return Err(invalid("a checkout-relative path is required"));
@@ -1219,7 +1249,7 @@ fn bounded(out: Vec<u8>) -> (String, bool) {
     (String::from_utf8_lossy(out).into_owned(), truncated)
 }
 
-fn rel_str(rel: &Path) -> Result<&str, BridgeError> {
+pub(crate) fn rel_str(rel: &Path) -> Result<&str, BridgeError> {
     rel.to_str()
         .ok_or_else(|| invalid("the path is not valid UTF-8"))
 }
@@ -1228,13 +1258,13 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn trim_str(bytes: &[u8]) -> &str {
+pub(crate) fn trim_str(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes)
         .unwrap_or("")
         .trim_end_matches(['\r', '\n'])
 }
 
-fn invalid(message: impl Into<String>) -> BridgeError {
+pub(crate) fn invalid(message: impl Into<String>) -> BridgeError {
     BridgeError::new(Code::Daemon(ErrorCode::InvalidArgument), message.into())
 }
 
@@ -1721,6 +1751,13 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(dirs, vec!["ignored", "sub"]);
+        let flags: Vec<(&str, bool)> = top
+            .entries
+            .iter()
+            .filter(|e| e.kind == "dir")
+            .map(|e| (e.name.as_str(), e.ignored))
+            .collect();
+        assert_eq!(flags, vec![("ignored", true), ("sub", false)]);
         let files: Vec<&str> = top
             .entries
             .iter()
@@ -1731,10 +1768,7 @@ mod tests {
             files,
             vec![".gitignore", "loose.txt", "second.txt", "tracked.txt"]
         );
-        assert!(!top
-            .entries
-            .iter()
-            .any(|e| e.name == ".git"));
+        assert!(!top.entries.iter().any(|e| e.name == ".git"));
 
         let sub = tree(&root, "sub").unwrap();
         let names: Vec<(&str, &str)> = sub
@@ -1989,5 +2023,26 @@ mod tests {
         let bare_root = bare.path().canonicalize().unwrap();
         git_ok(&bare_root, &["init", "--bare", "-b", "main"]);
         assert!(repo_checkout(&bare_root).is_err());
+    }
+
+    #[test]
+    fn ahead_is_none_without_upstream_and_counts_unpushed_commits() {
+        let (_t, root) = repository("ahead");
+        // No remote and no upstream yet.
+        assert_eq!(changes(&root).unwrap().ahead, None);
+        let remote_dir = TempDir::new("ahead-remote");
+        let bare = remote_dir.path().canonicalize().unwrap();
+        git_ok(&bare, &["init", "--bare", "-b", "main"]);
+        git_ok(&root, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        git_ok(&root, &["push", "-qu", "origin", "HEAD"]);
+        assert_eq!(changes(&root).unwrap().ahead, Some(0));
+        commit(&root, "one.txt", "1\n");
+        commit(&root, "two.txt", "2\n");
+        assert_eq!(changes(&root).unwrap().ahead, Some(2));
+        // An unborn branch has no HEAD to count from.
+        let dir = TempDir::new("ahead-unborn");
+        let unborn = dir.path().canonicalize().unwrap();
+        git_ok(&unborn, &["init", "-b", "main"]);
+        assert_eq!(changes(&unborn).unwrap().ahead, None);
     }
 }

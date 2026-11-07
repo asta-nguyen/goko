@@ -124,7 +124,7 @@ beforeEach(async () => {
   Object.values(gitview).forEach((f) => f.mockReset().mockResolvedValue(undefined))
   settings.get.mockReset().mockResolvedValue(null)
   settings.set.mockReset().mockResolvedValue(undefined)
-  gitview.changes.mockResolvedValue({ branch: 'main', head: 'x', conflicts: [], staged: [], unstaged: [], untracked: [] })
+  gitview.changes.mockResolvedValue({ branch: 'main', head: 'x', conflicts: [], staged: [], unstaged: [], untracked: [], ahead: null })
   service.list.mockResolvedValue([session('a'), session('b')])
   service.meta.mockResolvedValue([])
   service.status.mockResolvedValue(status(true))

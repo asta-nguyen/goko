@@ -147,6 +147,8 @@ export interface GitViewChanges {
   staged: GitViewStatusEntry[]
   unstaged: GitViewStatusEntry[]
   untracked: GitViewStatusEntry[]
+  /** Commits on HEAD not yet on its upstream; `null` without an upstream. */
+  ahead: number | null
 }
 
 export type GitViewDiffLayer = 'staged' | 'unstaged' | 'untracked' | 'conflict' | 'commit'
@@ -211,6 +213,8 @@ export interface GitViewTreeEntry {
   /** Last path component. */
   name: string
   kind: 'dir' | 'file'
+  /** Matched by a Git ignore rule; the tree dims it instead of hiding it. */
+  ignored: boolean
 }
 
 export interface GitViewTree {
@@ -254,3 +258,49 @@ export interface GitViewStash {
   /** Stash commit time, epoch milliseconds. */
   time: number
 }
+
+// Hand-mirrored from src-tauri `git_write.rs` (the `git_write_*` commands).
+export interface GitCommitResult {
+  /** Abbreviated HEAD oid after the commit. */
+  head: string
+  /** Symbolic branch name; `null` on a detached HEAD. */
+  branch: string | null
+}
+
+export interface GitPushResult {
+  /** Git's own one-line summary of the push. */
+  summary: string
+}
+
+// Hand-mirrored from src-tauri `acp.rs` (the `acp_*` commands).
+export interface AcpAgent {
+  id: string
+  label: string
+  enabled: boolean
+  /** The raw command line: optional `NAME=value` env words, program, args. */
+  command: string
+  /** Custom commit prompt; empty means the preset default. */
+  prompt: string
+  /** The program word resolves on PATH. */
+  available: boolean
+  /** The row still matches its preset on every field. */
+  is_default: boolean
+}
+
+/** One `acp_agents_set` row: the fields that make an agent differ from its preset. */
+export interface AcpOverride {
+  id: string
+  enabled: boolean
+  command: string
+  prompt: string
+}
+
+export type AcpState = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+export interface AcpStatus {
+  state: AcpState
+  message: string | null
+}
+
+/** Per-agent status keyed by agent id; covers every preset id. */
+export type AcpStatusMap = Record<string, AcpStatus>

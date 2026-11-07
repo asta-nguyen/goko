@@ -83,7 +83,10 @@ function TreeRows({
                   aria-expanded={isOpen}
                   onClick={() => onToggle(entry.path)}
                   style={indent}
-                  className="flex w-full items-center gap-1 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring"
+                  className={cn(
+                    'flex w-full items-center gap-1 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
+                    entry.ignored && 'opacity-50',
+                  )}
                 >
                   <ChevronRightIcon className={cn('size-3.5 shrink-0 text-muted transition-transform', isOpen && 'rotate-90')} aria-hidden />
                   <FolderIcon className="size-3.5 shrink-0 text-accent" aria-hidden />
@@ -116,6 +119,7 @@ function TreeRows({
                 className={cn(
                   'flex w-full items-center gap-1.5 rounded px-1 py-1 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
                   selected === entry.path && 'bg-secondary/70',
+                  entry.ignored && 'opacity-50',
                 )}
               >
                 <FileIcon className="size-3.5 shrink-0 text-muted" aria-hidden />

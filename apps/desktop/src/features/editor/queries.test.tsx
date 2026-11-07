@@ -2,8 +2,17 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { makeQueryClient, queryKeys } from '../../queryClient'
-import type { GitViewChanges } from '../../services/types'
+import type { AcpAgent, GitViewChanges } from '../../services/types'
 import {
+  useAcpAgents,
+  useAcpConnect,
+  useAcpDisconnect,
+  useAcpStatus,
+  useCommit,
+  useCommitAgent,
+  useDiscard,
+  useEditorVim,
+  useGenerateMessage,
   useGitBranches,
   useGitChanges,
   useGitDiff,
@@ -13,7 +22,10 @@ import {
   useGitStashDiff,
   useGitStashes,
   useGitTree,
-  useEditorVim,
+  usePush,
+  useSetAcpAgents,
+  useStage,
+  useUnstage,
 } from './queries'
 
 const service = vi.hoisted(() => ({
@@ -27,8 +39,26 @@ const service = vi.hoisted(() => ({
   stashes: vi.fn(),
   stashDiff: vi.fn(),
 }))
+const gitWrite = vi.hoisted(() => ({
+  stage: vi.fn(),
+  unstage: vi.fn(),
+  discard: vi.fn(),
+  commit: vi.fn(),
+  push: vi.fn(),
+}))
+const acp = vi.hoisted(() => ({
+  agents: vi.fn(),
+  setAgents: vi.fn(),
+  connect: vi.fn(),
+  disconnect: vi.fn(),
+  status: vi.fn(),
+  generateCommitMessage: vi.fn(),
+  cancel: vi.fn(),
+}))
 const settings = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn() }))
 vi.mock('../../services/git-view', () => ({ gitViewService: service }))
+vi.mock('../../services/git-write', () => ({ gitWriteService: gitWrite }))
+vi.mock('../../services/acp', () => ({ acpService: acp }))
 vi.mock('../../services/settings', () => ({ settingsService: settings }))
 
 const changes = (head: string): GitViewChanges => ({
@@ -38,6 +68,7 @@ const changes = (head: string): GitViewChanges => ({
   staged: [],
   unstaged: [{ path: `${head}.txt`, orig_path: null, status: 'modified' }],
   untracked: [],
+  ahead: null,
 })
 
 let qc: QueryClient
@@ -49,6 +80,8 @@ beforeEach(() => {
   vi.useRealTimers()
   qc = makeQueryClient()
   Object.values(service).forEach((fn) => fn.mockReset().mockResolvedValue(undefined))
+  Object.values(gitWrite).forEach((fn) => fn.mockReset().mockResolvedValue(undefined))
+  Object.values(acp).forEach((fn) => fn.mockReset().mockResolvedValue(undefined))
   settings.get.mockReset().mockResolvedValue(null)
   settings.set.mockReset().mockResolvedValue(undefined)
 })
@@ -337,5 +370,203 @@ describe('history paging', () => {
     expect(service.history).toHaveBeenCalledTimes(2)
     expect(qc.getQueryData(queryKeys.gitHistory('p1', '/a', null))).toBeTruthy()
     expect(qc.getQueryData(queryKeys.gitHistory('p1', '/a', 'refs/heads/x'))).toBeTruthy()
+  })
+})
+
+describe('git write mutations', () => {
+  it('useStage stages the paths and invalidates the checkout git reads', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useStage('p1', '/co'), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync({ paths: ['a.txt'] })
+    })
+    expect(gitWrite.stage).toHaveBeenCalledWith('p1', '/co', ['a.txt'])
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.gitChanges('p1', '/co') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['git-diff', 'p1', '/co'] })
+  })
+
+  it('useUnstage unstages the paths and invalidates the checkout git reads', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useUnstage('p1', '/co'), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync({ paths: null })
+    })
+    expect(gitWrite.unstage).toHaveBeenCalledWith('p1', '/co', null)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.gitChanges('p1', '/co') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['git-diff', 'p1', '/co'] })
+  })
+
+  it('useDiscard discards one file and invalidates the checkout git reads', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useDiscard('p1', '/co'), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync({ layer: 'unstaged', path: 'a.txt' })
+    })
+    expect(gitWrite.discard).toHaveBeenCalledWith('p1', '/co', 'unstaged', 'a.txt')
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.gitChanges('p1', '/co') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['git-diff', 'p1', '/co'] })
+  })
+
+  it('useCommit commits the message and invalidates the checkout git reads', async () => {
+    gitWrite.commit.mockResolvedValue({ head: 'abc1234', branch: 'main' })
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useCommit('p1', '/co'), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync('a message')
+    })
+    expect(gitWrite.commit).toHaveBeenCalledWith('p1', '/co', 'a message')
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.gitChanges('p1', '/co') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['git-diff', 'p1', '/co'] })
+  })
+
+  it('usePush pushes and invalidates the checkout git reads', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => usePush('p1', '/co'), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync()
+    })
+    expect(gitWrite.push).toHaveBeenCalledWith('p1', '/co')
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.gitChanges('p1', '/co') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['git-diff', 'p1', '/co'] })
+  })
+
+  it('a failed write invalidates nothing', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    gitWrite.commit.mockRejectedValue({ code: 'internal', message: 'hook failed', hint: null })
+    const { result } = renderHook(() => useCommit('p1', '/co'), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync('a message').catch(() => undefined)
+    })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+})
+
+describe('ACP agents', () => {
+  const devin: AcpAgent = {
+    id: 'devin',
+    label: 'Devin',
+    enabled: true,
+    command: 'DEVIN_PERMISSION_MODE=auto devin acp --model swe-2-flash-max',
+    prompt: 'default prompt',
+    available: true,
+    is_default: true,
+  }
+
+  it('useAcpAgents returns the agent list', async () => {
+    acp.agents.mockResolvedValue([devin])
+    const { result } = renderHook(() => useAcpAgents(), { wrapper })
+    await waitFor(() => expect(result.current.data).toEqual([devin]))
+    expect(acp.agents).toHaveBeenCalledTimes(1)
+  })
+
+  it('useSetAcpAgents stores the returned list and invalidates status', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const overrides = [{ id: 'devin', enabled: false, command: 'devin acp', prompt: '' }]
+    const updated = [{ ...devin, enabled: false, is_default: false }]
+    acp.setAgents.mockResolvedValue(updated)
+    const { result } = renderHook(() => useSetAcpAgents(), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync(overrides)
+    })
+    expect(acp.setAgents).toHaveBeenCalledWith(overrides)
+    expect(qc.getQueryData(queryKeys.acpAgents)).toEqual(updated)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.acpStatus })
+  })
+
+  it('useAcpStatus does not fetch while disabled', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useAcpStatus(false), { wrapper })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000)
+    })
+    expect(acp.status).not.toHaveBeenCalled()
+  })
+
+  it('useAcpStatus polls every three seconds only while enabled', async () => {
+    vi.useFakeTimers()
+    acp.status.mockResolvedValue({})
+    const { rerender } = renderHook(({ enabled }) => useAcpStatus(enabled), {
+      initialProps: { enabled: true },
+      wrapper,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(acp.status).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    expect(acp.status).toHaveBeenCalledTimes(2)
+
+    rerender({ enabled: false })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000)
+    })
+    expect(acp.status).toHaveBeenCalledTimes(2)
+  })
+
+  it('useAcpConnect invalidates status on success and on a rejected connect', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    acp.connect
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce({ code: 'internal', message: 'spawn failed', hint: null })
+    const { result } = renderHook(() => useAcpConnect(), { wrapper })
+
+    await act(async () => {
+      await result.current.mutateAsync('devin')
+    })
+    expect(acp.connect).toHaveBeenCalledWith('devin')
+    expect(invalidate).toHaveBeenCalledTimes(1)
+    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: queryKeys.acpStatus })
+
+    // A rejected connect still leaves the agent in `error`, so status refetches.
+    await act(async () => {
+      await result.current.mutateAsync('devin').catch(() => undefined)
+    })
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: queryKeys.acpStatus })
+  })
+
+  it('useAcpDisconnect invalidates status', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useAcpDisconnect(), { wrapper })
+    await act(async () => {
+      await result.current.mutateAsync('devin')
+    })
+    expect(acp.disconnect).toHaveBeenCalledWith('devin')
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.acpStatus })
+  })
+
+  it('useGenerateMessage generates with the agent, invalidates status, and cancels', async () => {
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    acp.generateCommitMessage.mockResolvedValue('a commit message')
+    const { result } = renderHook(() => useGenerateMessage('p1', '/co'), { wrapper })
+
+    await act(async () => {
+      await result.current.mutateAsync('devin')
+    })
+    expect(acp.generateCommitMessage).toHaveBeenCalledWith('p1', '/co', 'devin')
+    await waitFor(() => expect(result.current.data).toBe('a commit message'))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.acpStatus })
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(acp.cancel).toHaveBeenCalledWith('p1', '/co')
+  })
+})
+
+describe('commit agent setting', () => {
+  it('useCommitAgent reads and writes commit.agent', async () => {
+    settings.get.mockResolvedValue('devin')
+    const { result } = renderHook(() => useCommitAgent(), { wrapper })
+    await waitFor(() => expect(result.current[0]).toBe('devin'))
+    expect(settings.get).toHaveBeenCalledWith('commit.agent')
+
+    act(() => result.current[1]('opencode'))
+    await waitFor(() => expect(settings.set).toHaveBeenLastCalledWith('commit.agent', 'opencode'))
+    await waitFor(() => expect(result.current[0]).toBe('opencode'))
   })
 })

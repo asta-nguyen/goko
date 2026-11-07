@@ -7,11 +7,12 @@ use protocol::session::{SessionInfo, SessionState};
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct WorktreeInfo {
@@ -88,39 +89,73 @@ pub(crate) fn run(root: &Path, args: &[&str], path: Option<&OsStr>) -> Result<Ou
     command.output().map_err(run_error)
 }
 
-pub(crate) fn run_with_input(
+pub(crate) struct TimedOutput {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// `true` when the deadline killed the child before it exited on its own.
+    pub timed_out: bool,
+}
+
+/// `run` for commands that can block on a network or a prompt: extra
+/// environment variables, both pipes drained on reader threads so a full
+/// pipe cannot deadlock the poll loop, and a wall-clock deadline after which
+/// the child is killed.
+pub(crate) fn run_timed(
     root: &Path,
     args: &[&str],
-    input: &[u8],
-) -> Result<Output, BridgeError> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .stdin(Stdio::piped())
+    envs: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<TimedOutput, BridgeError> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    for &(key, value) in envs {
+        command.env(key, value);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(run_error)?;
-    let mut stdin = child.stdin.take().expect("piped child stdin");
-    let input = input.to_vec();
-    let writer = thread::spawn(move || stdin.write_all(&input));
-    let output = child.wait_with_output().map_err(run_error)?;
-    let write = writer.join().map_err(|_| {
-        BridgeError::new(
-            Code::Daemon(ErrorCode::Internal),
-            "cannot write paths to Git.",
-        )
-    })?;
-    if let Err(error) = write {
-        if output.status.success() {
-            return Err(BridgeError::new(
-                Code::Daemon(ErrorCode::Internal),
-                format!("cannot write paths to Git: {error}"),
-            ));
+    let stdout = child.stdout.take().expect("piped child stdout");
+    let stderr = child.stderr.take().expect("piped child stderr");
+    let stdout_reader = thread::spawn(move || read_all(stdout));
+    let stderr_reader = thread::spawn(move || read_all(stderr));
+
+    let deadline = Instant::now() + timeout;
+    let (status, timed_out) = loop {
+        match child.try_wait().map_err(run_error)? {
+            Some(status) => break (status, false),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                break (child.wait().map_err(run_error)?, true);
+            }
+            None => thread::sleep(Duration::from_millis(20)),
         }
-    }
-    Ok(output)
+    };
+    let stdout = join_pipe(stdout_reader)?;
+    let stderr = join_pipe(stderr_reader)?;
+    Ok(TimedOutput {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
+fn read_all<R: Read + Send + 'static>(mut pipe: R) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    pipe.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+fn join_pipe(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> Result<Vec<u8>, BridgeError> {
+    handle
+        .join()
+        .map_err(|_| {
+            BridgeError::new(Code::Daemon(ErrorCode::Internal), "cannot read Git output.")
+        })?
+        .map_err(run_error)
 }
 
 pub(crate) struct BoundedOutput {

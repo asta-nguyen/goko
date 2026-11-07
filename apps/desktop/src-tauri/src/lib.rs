@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod activity;
 pub mod agents;
 pub mod bridge;
@@ -6,6 +7,7 @@ pub mod daemon_client;
 pub mod error;
 pub mod events;
 pub mod git_view;
+pub mod git_write;
 pub mod store;
 pub mod terminal;
 pub mod usage;
@@ -35,8 +37,10 @@ fn start_shutdown(app: &tauri::AppHandle, state: Arc<ShutdownState>) {
 
     let app = app.clone();
     let bridge = app.state::<Bridge>().inner().clone();
+    let acp = app.state::<acp::AcpHub>().inner().clone();
     tauri::async_runtime::spawn(async move {
-        match bridge.shutdown().await {
+        let (shutdown, ()) = tokio::join!(bridge.shutdown(), acp.shutdown());
+        match shutdown {
             Ok(()) => {
                 state.completed.store(true, Ordering::Release);
                 app.exit(0);
@@ -73,6 +77,18 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::git_view_file_save,
         commands::git_view_stashes,
         commands::git_view_stash_diff,
+        commands::git_write_stage,
+        commands::git_write_unstage,
+        commands::git_write_discard,
+        commands::git_write_commit,
+        commands::git_write_push,
+        commands::acp_agents_get,
+        commands::acp_agents_set,
+        commands::acp_connect,
+        commands::acp_disconnect,
+        commands::acp_status,
+        commands::acp_generate_commit_message,
+        commands::acp_cancel,
         commands::env_file_candidates,
         commands::env_copy,
         commands::session_stop,
@@ -106,6 +122,7 @@ pub fn run() {
             let bridge = Bridge::new(home.clone());
             app.manage(bridge.clone());
             app.manage(store::Storage::open(&home));
+            app.manage(acp::AcpHub::new());
             let app_handle = app.handle().clone();
             let emit: events::Emit = Arc::new(move |name, payload| {
                 let _ = app_handle.emit(name, payload);
