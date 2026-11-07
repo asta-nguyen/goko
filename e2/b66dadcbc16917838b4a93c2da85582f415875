@@ -1,0 +1,35 @@
+apps/desktop/src/features/projects/ProjectTree.tsx
+  s_9d1d2e84ebaf09::t_027fce8ceb6eb2 500
+apps/desktop/src/features/sessions/SessionItems.tsx
+  s_9d1d2e84ebaf09::t_3fef3ccfa5c589 41-43
+  s_9d1d2e84ebaf09::t_9b090446c64308 104
+  s_9d1d2e84ebaf09::t_101401c84cadc6 83,91-92
+  s_9d1d2e84ebaf09::t_306d47a833c26f 17,24
+apps/desktop/src/features/worktrees/WorktreeRows.tsx
+  s_9d1d2e84ebaf09::t_ed07e388a296c1 247-249
+  s_9d1d2e84ebaf09::t_ce0214cdc9a66c 18-19
+  s_9d1d2e84ebaf09::t_9aa2af84f81a52 93
+  s_9d1d2e84ebaf09::t_1b879e4ac781a4 2
+  s_9d1d2e84ebaf09::t_d701425f4b2473 122-139
+  s_9d1d2e84ebaf09::t_ec32fe5858efe2 121
+ARCHITECTURE.md
+  s_9d1d2e84ebaf09::t_232b1646ef460d 58
+apps/desktop/src/features/projects/ProjectTree.test.tsx
+  s_9d1d2e84ebaf09::t_723b290850a42e 470-491
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e2b66dadcbc16917838b4a93c2da85582f415875",
+  "prompts": {},
+  "sessions": {
+    "s_9d1d2e84ebaf09": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ad10c2b-1cc5-4d63-94b6-a16ae966e1de",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
