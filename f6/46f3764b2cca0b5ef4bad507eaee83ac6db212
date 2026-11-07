@@ -1,0 +1,42 @@
+docs/agent-devkit/INDEX.md
+  s_54bbc832011564::t_cbf949add24b6b 5
+docs/llm/architecture/editor.md
+  s_03e9d97646aa5a::t_2302617f9dc688 5-22,47-64,89-123
+  s_03e9d97646aa5a::t_fe32b3f7e851cf 124,143-148,153-154,159-160,167-171,176,185-187,197-199,212,215,219,222,225
+docs/agent-devkit/changes/2026-11-06-editor-commit-acp/tasks.md
+  s_03e9d97646aa5a::t_74eec8e16bc8e9 1-127
+docs/agent-devkit/changes/2026-11-06-editor-commit-acp/delta.md
+  s_03e9d97646aa5a::t_2302617f9dc688 1-2,5-146
+  s_03e9d97646aa5a::t_c4d608927b0b3e 3-4
+docs/llm/domains/desktop-settings.md
+  s_03e9d97646aa5a::t_2302617f9dc688 5-28
+  s_03e9d97646aa5a::t_c0eeb90f7935e3 43,47,51,57-58,61,65,79,84
+docs/agent-devkit/changes/2026-11-06-editor-commit-acp/design.md
+  s_03e9d97646aa5a::t_a5c6512d21d601 1-175
+docs/llm/INDEX.md
+  s_03e9d97646aa5a::t_79c8a3ecdb8b74 9-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f646f3764b2cca0b5ef4bad507eaee83ac6db212",
+  "prompts": {},
+  "sessions": {
+    "s_03e9d97646aa5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d250b2a-feee-48d4-896e-388e5494c71e",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_54bbc832011564": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ff03317-2ed8-4fa1-bbbf-be04e8aa0603",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
