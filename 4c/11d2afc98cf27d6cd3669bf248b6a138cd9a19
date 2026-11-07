@@ -1,0 +1,209 @@
+apps/desktop/src/components/ui/context-menu.tsx
+  s_d24950a7caac3f::t_c541fc3b591306 1-61
+apps/desktop/src/features/editor/history-graph.test.ts
+  s_1a77150e96e4cf::t_81840cd63c3e29 100-124
+  s_8657840ee520ca::t_ab9d28fa72a473 1-99,125
+apps/desktop/src/features/editor/HistoryTable.tsx
+  s_9ab4e7ad5d3ba4::t_e598f594624915 261
+  s_9ab4e7ad5d3ba4::t_3e65778faa746e 269
+  s_9ab4e7ad5d3ba4::t_ba57cf77daec9b 1-14,16-117,120-248,250-260,262-268,270-276,278-418,421,423-424,426,430-431
+  s_9ab4e7ad5d3ba4::t_ea63a3b603168d 249
+  s_9ab4e7ad5d3ba4::t_272377551f9b9c 277
+  s_54bbc832011564::t_f3a786f05d0561 15,118-119,419-420,422,425,427-429,432-436
+apps/desktop/src-tauri/src/commands.rs
+  s_f4180570ffc764::t_a1b5cc558cdc6c 499,504,508-514
+  s_f4180570ffc764::t_1d5ba3be201255 9-10
+  s_03e9d97646aa5a::t_87485586be385b 515-516
+apps/desktop/src/features/editor/CommitDetail.test.tsx
+  s_c106b570521a7c::t_802358191d080e 1-274
+apps/desktop/src-tauri/src/lib.rs
+  s_f4180570ffc764::t_cf7aad68a0c6cb 68
+apps/desktop/src-tauri/src/wiring_tests.rs
+  s_f4180570ffc764::t_72b428c9b016b3 589-590,602-639,641-645
+  s_f4180570ffc764::t_8db1db41c6e31e 640
+  s_f4180570ffc764::t_30733174764ecf 659-674
+apps/desktop/src/components/ui/resizable-handle.test.tsx
+  s_1a77150e96e4cf::t_8c68a2cdbf29bc 10,17,30,104-109,112-118
+  s_d24950a7caac3f::t_2b46f9a4f97205 1-9,11-16,18-29,31-103,119-120
+  s_1a77150e96e4cf::t_f9910257483d27 110-111
+apps/desktop/src-tauri/src/git_view.rs
+  s_1a77150e96e4cf::t_57a1bc9e972e64 370-372,378-380
+  s_1a77150e96e4cf::t_53a3676bbfb78c 385-410
+  s_1a77150e96e4cf::t_c142909661a1b7 1871
+  s_1a77150e96e4cf::t_ca92d4b97a0e5e 273
+  s_1a77150e96e4cf::t_39c25f3f59ac3f 1571-1575
+  s_1a77150e96e4cf::t_6c3568c3a4adac 1083-1084
+  s_1a77150e96e4cf::t_3a0a83a95ba17e 1893
+  s_1a77150e96e4cf::t_f1a83612318990 1485,1488
+  s_1a77150e96e4cf::t_dc8772b80f4df3 103-114
+  s_1a77150e96e4cf::t_5e5835cb64f1c5 383,1111-1148
+  s_1a77150e96e4cf::t_2c44fb626b1eda 35-40
+  s_1a77150e96e4cf::t_517c07034e203d 306,308,310,324-335,341,345-352,357-358,362-363,366,368-369,373-377,381
+  s_1a77150e96e4cf::t_3424bd03f4ba6e 450-538
+  s_1a77150e96e4cf::t_5fdfb70d1f4d69 1496,1500-1570,1576-1675
+  s_1a77150e96e4cf::t_b8f201e3aa6d7d 242
+  s_1a77150e96e4cf::t_f07430bfba4b0a 1460
+  s_1a77150e96e4cf::t_15483d44c7cf90 64-77,102
+  s_1a77150e96e4cf::t_9933744a27de09 1000
+  s_54bbc832011564::t_19dbff0f9b6073 382,384,1676
+apps/desktop/src/features/editor/EditorHistory.tsx
+  s_ffb538395ea830::t_a599d684a20cfb 3,5,7-11,13-16,22,27,30-31,33,35-56,59-64,68-82,84,87,89-122,126-127,131-132,134-198,208-242,246
+  s_54bbc832011564::t_174b68ad493274 243-245,247-248
+apps/desktop/src/services/git-view.test.ts
+  s_f4180570ffc764::t_dfd81b19fb38a9 17-18
+  s_f4180570ffc764::t_bbb4c3d27338d4 28-30
+apps/desktop/src/features/editor/history-layout.test.ts
+  s_d24950a7caac3f::t_12ebf4d0c67568 14
+  s_d24950a7caac3f::t_827175317ffade 1-13,15-38,42,44-115
+  s_d24950a7caac3f::t_bf4cc88d423927 39-41,43
+apps/desktop/src/components/ui/resizable-handle.tsx
+  s_d24950a7caac3f::t_7bc0f2e6789dd6 1-22,24-35,38-43,45-51,56-80,82-105
+  s_1a77150e96e4cf::t_13ceae5fdfe7ec 23,36-37,44,52-55,81
+apps/desktop/src/features/editor/history-layout.ts
+  s_d24950a7caac3f::t_6fba01e3e15664 1-49,51-74,80-82,88-90,95-98
+  s_d24950a7caac3f::t_87fef8109e80e8 50
+  s_d24950a7caac3f::t_7ce30cd8fde99b 75-79,83-87,91-94
+apps/desktop/src/services/git-view.ts
+  s_f4180570ffc764::t_8f68f34740c9e5 42-45
+  s_f4180570ffc764::t_b0e66f0579c99b 3
+apps/desktop/src/features/editor/HistoryTable.test.tsx
+  s_9ab4e7ad5d3ba4::t_b7c2991f732085 1-114,120-328
+  s_9ab4e7ad5d3ba4::t_fe0a644ce99420 115-119
+  s_54bbc832011564::t_64f01b3b936971 329
+apps/desktop/src/features/editor/history-graph.ts
+  s_8657840ee520ca::t_6990faf111dc58 1-103
+  s_54bbc832011564::t_8a5b9ba6ff5bfa 104-109
+apps/desktop/src/services/types.ts
+  s_f4180570ffc764::t_355e4d90db1585 154-164,173-174
+  s_f4180570ffc764::t_e3d0c20472c0b3 135-138
+  s_f4180570ffc764::t_2431a71e90590b 197-207
+apps/desktop/src/features/editor/queries.test.tsx
+  s_f4180570ffc764::t_5683e62aa722fe 148-149
+  s_f4180570ffc764::t_ce3fe5f3323dbf 126
+  s_f4180570ffc764::t_706ecd3557265c 81-94,340
+  s_f4180570ffc764::t_16400d4139d2af 314,320,326-339
+  s_f4180570ffc764::t_3f88d12ee2c565 7,20
+  s_f4180570ffc764::t_6de30281a4d209 265
+apps/desktop/src/features/editor/queries.ts
+  s_f4180570ffc764::t_fc8fef8edc0c6a 7
+  s_f4180570ffc764::t_7714917472ba39 72,74-75,83-86
+  s_03e9d97646aa5a::t_378eb1892940ef 87-91
+apps/desktop/src/queryClient.ts
+  s_f4180570ffc764::t_e40d24894bce63 17-21
+apps/desktop/src/features/editor/panes.tsx
+  s_c106b570521a7c::t_013b1bad268cd2 341-346
+  s_c106b570521a7c::t_b0d8f021f30861 29-34
+apps/desktop/src/App.test.tsx
+  s_f4180570ffc764::t_52966f0e650a0c 26
+apps/desktop/src/features/editor/CommitDetail.tsx
+  s_c106b570521a7c::t_ad579a9a66f0bd 1-172
+apps/desktop/src/features/editor/EditorWorkspace.test.tsx
+  s_ffb538395ea830::t_662b6926bc2ab2 108
+  s_ffb538395ea830::t_b29d5b661f539c 673-678
+  s_ffb538395ea830::t_c14aff0416e286 14
+  s_ffb538395ea830::t_899485624859fc 123-126
+  s_ffb538395ea830::t_9cf3054c1552c8 724-725
+  s_ffb538395ea830::t_b4417462510a3e 735
+  s_ffb538395ea830::t_6e3a8c59d245b1 736,738-909,911,917
+  s_54bbc832011564::t_c9c73854e0abe8 737,910,912-916,918-922
+apps/desktop/src/features/editor/EditorWorkspace.tsx
+  s_ffb538395ea830::t_7772573cd93a4f 182
+docs/agent-devkit/INDEX.md
+  s_03e9d97646aa5a::t_c972dc13709b9f 9
+docs/agent-devkit/changes/archive/2026-11-06-history-git-graph/delta.md
+  s_54bbc832011564::t_9784b27b61c6d2 1-92
+docs/agent-devkit/changes/archive/2026-11-06-history-git-graph/design.md
+  s_03e9d97646aa5a::t_5ba7de2d69d90d 1-160
+docs/agent-devkit/changes/archive/2026-11-06-history-git-graph/tasks.md
+  s_54bbc832011564::t_bcdcb08f008794 1-118
+docs/llm/architecture/editor.md
+  s_29073870c0de05::t_009de41402a08d 53-112,131-132,137-138,143-144,153-157,162-163,172-174,181-185,187-189,191-193,195,198-200,204-208,210,214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4c11d2afc98cf27d6cd3669bf248b6a138cd9a19",
+  "prompts": {},
+  "sessions": {
+    "s_03e9d97646aa5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d250b2a-feee-48d4-896e-388e5494c71e",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_1a77150e96e4cf": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "showy-panther",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_29073870c0de05": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3095a8ab-e060-40fb-9391-93f37ce8e0f3",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_54bbc832011564": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ff03317-2ed8-4fa1-bbbf-be04e8aa0603",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_8657840ee520ca": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "rainbow-sandpaper",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_9ab4e7ad5d3ba4": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "deciduous-beam",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_c106b570521a7c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "foggy-backbone",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d24950a7caac3f": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "shade-lemonade",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f4180570ffc764": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "southern-bird",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_ffb538395ea830": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "wheat-house",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
