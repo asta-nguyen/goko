@@ -36,6 +36,7 @@ export class TerminalController {
   private term?: Terminal
   private element?: HTMLElement
   private fit = new FitAddon()
+  private webgl?: WebglAddon
   private observer?: ResizeObserver
   private themeObserver?: MutationObserver
   private timer?: ReturnType<typeof setTimeout>
@@ -69,7 +70,7 @@ export class TerminalController {
     mounted.set(id, this)
     term.loadAddon(this.fit)
     term.open(element)
-    this.useWebgl(term)
+    if (visible) this.useWebgl(term)
     this.attachIme(term, element)
     // Writes to an exited session are rejected by the daemon; the view's banner shows why.
     this.onData = term.onData((data) => {
@@ -122,15 +123,22 @@ export class TerminalController {
    * The default DOM renderer rebuilds every row on each full-screen redraw (agent TUIs do dozens a
    * second), and WebKit frees that garbage only on GC: hundreds of MB. WebGL draws to a canvas.
    * Without WebGL, or after its context is lost, xterm falls back to the DOM renderer.
+   * Every terminal stays mounted, and each canvas costs tens of MB, so only visible ones keep it.
    */
   private useWebgl(term: Terminal): void {
     try {
       const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
+      webgl.onContextLoss(() => this.dropWebgl(webgl))
       term.loadAddon(webgl)
+      this.webgl = webgl
     } catch {
       // keep the DOM renderer
     }
+  }
+
+  private dropWebgl(webgl: WebglAddon): void {
+    webgl.dispose()
+    if (this.webgl === webgl) this.webgl = undefined
   }
 
   private updateTheme(): void {
@@ -146,7 +154,12 @@ export class TerminalController {
   setVisible(visible: boolean): void {
     if (this.disposed || this.visible === visible) return
     this.visible = visible
-    if (visible) void this.syncSize()
+    if (!visible) {
+      if (this.webgl) this.dropWebgl(this.webgl)
+      return
+    }
+    if (this.term && !this.webgl) this.useWebgl(this.term)
+    void this.syncSize()
   }
 
   /**
