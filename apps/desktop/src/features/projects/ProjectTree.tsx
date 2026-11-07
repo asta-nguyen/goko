@@ -497,6 +497,7 @@ export function ProjectTree() {
                   agentOf={agentOf}
                   selectedId={selectedId}
                   workspaceId={UNASSIGNED_WORKSPACE}
+                  indent={false}
                   onSelect={selectSession}
                 />
               </li>

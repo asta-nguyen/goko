@@ -55,7 +55,7 @@ title, created_at)`, and `settings(key, value)`.
   agent launch, but the project tree does not read it as a launch default. The D3 UI no
   longer reads or writes `active_project_id`; any value left by an earlier build is ignored.
 - The sidebar is a project tree: Git projects contain the registered root checkout and
-  linked worktree checkouts; sessions group by their metadata's parent project and their
+  linked worktree checkouts, listed under a collapsible **Worktrees** row; sessions group by their metadata's parent project and their
   daemon-reported `cwd`. Sessions without matching metadata appear under **Unassigned**.
   SQLite's session `cwd` remains the launch directory; checkout grouping reads the daemon's
   live `SessionInfo.cwd`.

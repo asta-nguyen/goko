@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { AlertTriangleIcon, ChevronRightIcon, GitBranchIcon } from 'lucide-react'
+import { AlertTriangleIcon, ChevronRightIcon, FolderTreeIcon, GitBranchIcon } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,8 +15,8 @@ import { useRemoveWorktree } from './queries'
 
 const message = (error: unknown) => isBridgeError(error) ? error.message : error instanceof Error ? error.message : String(error)
 
-function Count({ count }: { count: number }) {
-  return <Badge variant="secondary" aria-label={`${count} sessions`} className="min-w-6 justify-center px-1.5 tabular-nums">{count}</Badge>
+function Count({ count, label = 'sessions' }: { count: number; label?: string }) {
+  return <Badge variant="secondary" aria-label={`${count} ${label}`} className="min-w-6 justify-center px-1.5 tabular-nums">{count}</Badge>
 }
 
 const Dot = ({ className, text }: { className: string; text: string }) => (
@@ -90,6 +90,7 @@ export function WorktreeRows({
   const activeWorkspaceId = useUi((state) => state.activeWorkspaceId)
   const setActiveView = useUi((state) => state.setActiveView)
   const requestEditorNavigation = useUi((state) => state.requestEditorNavigation)
+  const [groupExpanded, setGroupExpanded] = useState(true)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [confirming, setConfirming] = useState<WorktreeInfo | null>(null)
   const [customPath, setCustomPath] = useState<string | null>(null)
@@ -117,6 +118,25 @@ export function WorktreeRows({
   if (!linked.length) return null
 
   return (
+    <ul className="m-0 ml-4 flex list-none flex-col gap-0.5 border-l border-border p-0 pl-1.5">
+      <li>
+        <button
+          type="button"
+          aria-label={`${groupExpanded ? 'Collapse' : 'Expand'} worktrees`}
+          aria-expanded={groupExpanded}
+          onClick={() => setGroupExpanded((value) => !value)}
+          className="flex w-full items-center gap-1 rounded-md px-1 py-0.5 text-left outline-none hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="grid size-7 shrink-0 place-items-center text-muted">
+            <ChevronRightIcon className={cn('size-3.5 transition-transform', groupExpanded && 'rotate-90')} aria-hidden />
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1.5">
+            <FolderTreeIcon className="size-4 shrink-0 text-muted" aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">Worktrees</span>
+            <Count count={linked.length} label="worktrees" />
+          </span>
+        </button>
+        {groupExpanded && (
     <ul className="m-0 ml-4 flex list-none flex-col gap-0.5 border-l border-border p-0 pl-1.5">
       {linked.map((worktree) => {
         const checkoutSessions = sessionsForCheckout(worktrees, sessions, worktree.path)
@@ -224,6 +244,9 @@ export function WorktreeRows({
           </li>
         )
       })}
+    </ul>
+        )}
+      </li>
 
       <Dialog open={confirming !== null} onOpenChange={(open) => { if (!open && !remove.isPending) { setConfirming(null); setError(null) } }}>
         <DialogContent onCloseAutoFocus={(event) => {

@@ -467,6 +467,28 @@ describe('worktrees', () => {
     expect(within(other.parentElement!).getByRole('button', { name: /title-outside/ })).toBeTruthy()
   })
 
+  it('groups linked worktrees under a collapsible Worktrees row', async () => {
+    worktrees.list.mockResolvedValue({ repo: true, worktrees: [root, feature] })
+    renderTree()
+
+    const group = await screen.findByRole('button', { name: 'Collapse worktrees' })
+    expect(within(group).getByLabelText('1 worktrees')).toBeTruthy()
+    expect(within(projectButton('p1').closest('li')!).getByText('feature')).toBeTruthy()
+
+    fireEvent.click(group)
+    expect(screen.queryByText('feature')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worktrees' }))
+    expect(screen.getByText('feature')).toBeTruthy()
+  })
+
+  it('shows no Worktrees row when the project has no linked worktree', async () => {
+    worktrees.list.mockResolvedValue({ repo: true, worktrees: [root] })
+    renderTree()
+
+    await screen.findByText('main')
+    expect(screen.queryByRole('button', { name: /(Collapse|Expand) worktrees/ })).toBeNull()
+  })
+
   it('refreshes the checkout list on demand', async () => {
     worktrees.list.mockResolvedValue({ repo: true, worktrees: [root, feature] })
     renderTree()

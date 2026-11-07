@@ -14,12 +14,14 @@ const SessionRow = memo(function SessionRow({
   label,
   agent,
   selected,
+  indent,
   onSelect,
 }: {
   session: SessionInfo
   label?: string
   agent?: string
   selected: boolean
+  indent: boolean
   onSelect: (id: string) => void
 }) {
   const title = sessionTitle(session)
@@ -36,7 +38,9 @@ const SessionRow = memo(function SessionRow({
         aria-current={selected}
         onClick={() => onSelect(session.id)}
         className={cn(
-          'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
+          'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-sm outline-none transition-colors hover:bg-bg/60 focus-visible:ring-2 focus-visible:ring-ring',
+          // pl-10 puts the icon under a folder row's icon (chevron cell + gap), so sessions read as its children.
+          indent ? 'pl-10 pr-2' : 'px-2',
           ended && 'text-muted',
           selected && 'bg-accent/10 text-accent',
         )}
@@ -76,6 +80,7 @@ export function SessionItems({
   agentOf,
   selectedId,
   workspaceId,
+  indent = true,
   onSelect,
 }: {
   sessions: SessionInfo[]
@@ -83,6 +88,8 @@ export function SessionItems({
   agentOf?: (id: string) => string | undefined
   selectedId: string | null
   workspaceId: string
+  /** Indent rows under a folder row; off for a list with no folder parent. */
+  indent?: boolean
   onSelect: (id: string, workspaceId: string) => void
 }) {
   return (
@@ -94,6 +101,7 @@ export function SessionItems({
           label={labelOf(session.id)}
           agent={agentOf?.(session.id)}
           selected={session.id === selectedId}
+          indent={indent}
           onSelect={(id) => onSelect(id, workspaceId)}
         />
       ))}
