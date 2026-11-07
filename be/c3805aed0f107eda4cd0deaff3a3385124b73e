@@ -1,0 +1,72 @@
+apps/desktop/src-tauri/src/acp.rs
+  s_03e9d97646aa5a::t_e1f1cd11095fc2 735
+  s_03e9d97646aa5a::t_1dc67ba0f11566 1-734,736-2751
+apps/desktop/src-tauri/src/commands.rs
+  s_0b2194ff659a09::t_5a42ebd5c21bb7 4,13,25,597-674,782-839
+apps/desktop/src-tauri/src/wiring_tests.rs
+  s_0b2194ff659a09::t_52123ef1cd4f9f 26,556,564-565,630,673-786,842-877
+apps/desktop/src-tauri/src/worktrees.rs
+  s_03e9d97646aa5a::t_ddb9ccc1ba02ad 10,15,92-104,107-115,120-133,135-158
+apps/desktop/src/App.tsx
+  s_03e9d97646aa5a::t_a32a892d9658d6 3,24-25,198-204
+apps/desktop/src/features/editor/CommitBox.test.tsx
+  s_1a77150e96e4cf::t_9b146b196e6480 1-291
+apps/desktop/src/features/editor/CommitBox.tsx
+  s_54bbc832011564::t_197a440493b722 1-242
+apps/desktop/src/features/editor/EditorFiles.tsx
+  s_03e9d97646aa5a::t_72255f706dfbbb 86-89,122
+apps/desktop/src/features/editor/EditorWorkspace.test.tsx
+  s_d24950a7caac3f::t_682474931232b1 9,23-38,41-42,115,123-131,136-137,140-143,160-161,163,262-263,271,315,372,685,690,800-906
+apps/desktop/src-tauri/src/git_view.rs
+  s_54bbc832011564::t_73a47c1dab0068 47-49,93-94,182-185,481,483-507,523,561,854,863,988,1031,1040,1046,1356-1362,1373,1629-1649
+apps/desktop/src/features/editor/EditorChanges.tsx
+  s_54bbc832011564::t_9a88c27bdf3c96 2,4,6-7,12,14-16,84-91,97-115,126-133,145-149,153-154,156,159-198,205,212,223-263,274,299-338
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bec3805aed0f107eda4cd0deaff3a3385124b73e",
+  "prompts": {},
+  "sessions": {
+    "s_03e9d97646aa5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d250b2a-feee-48d4-896e-388e5494c71e",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_0b2194ff659a09": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "false-field",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_1a77150e96e4cf": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "showy-panther",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_54bbc832011564": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ff03317-2ed8-4fa1-bbbf-be04e8aa0603",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d24950a7caac3f": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "shade-lemonade",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
