@@ -221,22 +221,8 @@ impl DaemonClient {
 }
 
 /// `GOKO_HOME`, else `~/Library/Application Support/Goko` (the same rule as the daemon).
-pub fn home_dir() -> Result<PathBuf, BridgeError> {
-    home_dir_from(std::env::var_os("GOKO_HOME"), std::env::var_os("HOME"))
-}
-
-fn home_dir_from(
-    goko_home: Option<OsString>,
-    home: Option<OsString>,
-) -> Result<PathBuf, BridgeError> {
-    if let Some(dir) = goko_home.filter(|dir| !dir.is_empty()) {
-        return Ok(dir.into());
-    }
-    let home = home.filter(|home| !home.is_empty()).ok_or_else(|| {
-        BridgeError::new(Code::DaemonUnavailable, "neither GOKO_HOME nor HOME is set")
-    })?;
-    Ok(PathBuf::from(home).join("Library/Application Support/Goko"))
-}
+/// Shared with native frontends through `app_core::home`.
+pub use app_core::home::home_dir;
 
 /// `GOKO_DAEMON_BIN`, else `gokod` beside the running executable.
 fn daemon_bin() -> Result<PathBuf, BridgeError> {

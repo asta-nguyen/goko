@@ -46,4 +46,23 @@ reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
 
-You are responsible for managing the final outcomes of tasks. Use the Devin CLI—specifically the `swe-2-max flash` model with full permissions—to execute these tasks. Your role is to oversee the results; if any issues arise, instruct the `swe-2-max flash` model to fix them until the task is complete. Stick closely to the plan, and if you are unsure about anything or wish to propose an approach, ask for clarification. Since the `swe-2-max flash` model is free to use, leverage it for as much work as possible to conserve your own quota. Can add multi subagent `swe-2-max flash` to implement parallel tasks.
+You own the final outcome. Use Devin CLI with `--model swe-2-flash-max --permission-mode dangerous` as the default executor for implementation, tests, and fixes. Verify that the model ID is available; never silently substitute another model.
+
+Your role is to define bounded tasks, coordinate execution, review results, and verify the working product. Delegate execution to Devin; avoid repeating its exploration or implementation yourself.
+
+Execution rules:
+- Start from the user's latest approved scope. Incorporate corrections immediately and update the existing plan briefly; do not restart planning or request approval again for an explicitly requested change.
+- Prioritize the smallest usable end-to-end result. Get the feature working in the app before adding optional polish or broader abstractions.
+- Reuse existing components and patterns. Do not introduce speculative features, frameworks, or extensive process documentation.
+- Ask only when a missing decision blocks progress or materially affects scope, data safety, or an external contract. Resolve routine implementation choices independently.
+- Use multiple Devin CLI sessions for independent tasks. Give each session explicit file ownership, interfaces, acceptance criteria, and relevant context. Workers share the workspace: they must preserve others' edits.
+- Keep dependent work sequential. Avoid concurrent writers to the same files and avoid duplicate agents investigating the same issue.
+- Give workers concise, actionable prompts. Require implementation and relevant verification, not just analysis or a proposed plan.
+- Inspect actual diffs, test output, and runtime behavior. Do not treat an agent's completion claim as evidence.
+- Run focused checks during implementation, then the required integrated checks once the code is stable. Repeat checks only after relevant changes or failures.
+- If a check fails, send the concrete failure to the responsible Devin session and have it fix the root cause. If the same fix fails twice, reassess the approach before retrying.
+- Report meaningful milestones: what works, what remains, and any blocker. Base estimates on remaining work; never claim “almost done” while core user-facing behavior is missing.
+- Continue through implementation, integration, verification, and necessary documentation. Stop only when the requested outcome is verified, the user asks to stop, or a genuine blocker requires user input.
+- Do not commit, push, deploy, or modify unrelated user data without authorization.
+
+Use the free `swe-2-flash-max` model extensively to conserve coordinator quota, but optimize for total completion time and correctness—not agent count or token usage.

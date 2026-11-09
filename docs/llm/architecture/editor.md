@@ -18,7 +18,7 @@ The system SHALL, only when the user presses Generate, send the staged diff to t
 - WHEN the user presses Cancel, or the agent exits, times out, or does not end its turn normally
 - THEN the session is cancelled, the connection stays, the message box keeps its text, and an error is shown for failures
 
-Evidence: `apps/desktop/src-tauri/src/acp.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`
+Evidence: `crates/app-core/src/acp.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`
 
 ### EDT-codemirror-surface
 
@@ -42,7 +42,7 @@ The system SHALL search checkout file contents literally after a trimmed query h
 - WHEN typing pauses for 250 ms and a result is selected
 - THEN the checkout search result opens in the editor with its matching line revealed
 
-Evidence: `apps/desktop/src/features/editor/EditorSearch.tsx`, `apps/desktop/src/features/editor/EditorFiles.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`, `apps/desktop/src-tauri/src/git_view.rs`
+Evidence: `apps/desktop/src/features/editor/EditorSearch.tsx`, `apps/desktop/src/features/editor/EditorFiles.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`, `crates/app-core/src/git_view.rs`
 
 ### EDT-discard-changes
 
@@ -60,7 +60,7 @@ The system SHALL discard one unstaged or untracked file only after the user conf
 - WHEN the user cancels
 - THEN the file is unchanged
 
-Evidence: `apps/desktop/src-tauri/src/git_write.rs`, `apps/desktop/src/features/editor/EditorChanges.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+Evidence: `crates/app-core/src/git_write.rs`, `apps/desktop/src/features/editor/EditorChanges.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
 
 ### EDT-go-to-definition
 
@@ -102,7 +102,7 @@ The system SHALL let the user limit History to one local or remote-tracking bran
 - WHEN the backend receives it
 - THEN it returns an invalid-input error and runs no `git log`
 
-Evidence: `apps/desktop/src-tauri/src/git_view.rs`, `apps/desktop/src/features/editor/EditorHistory.tsx`, `apps/desktop/src/features/editor/queries.ts`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+Evidence: `crates/app-core/src/git_view.rs`, `apps/desktop/src/features/editor/EditorHistory.tsx`, `apps/desktop/src/features/editor/queries.ts`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
 
 ### EDT-history-detail
 
@@ -120,7 +120,7 @@ The system SHALL show the selected commit's author with email, date, committer w
 - WHEN the user activates the parent's short hash
 - THEN the parent becomes the selected commit
 
-Evidence: `apps/desktop/src/features/editor/CommitDetail.tsx`, `apps/desktop/src/features/editor/EditorHistory.tsx`, `apps/desktop/src/features/editor/panes.tsx`, `apps/desktop/src-tauri/src/git_view.rs`, `apps/desktop/src/features/editor/CommitDetail.test.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+Evidence: `apps/desktop/src/features/editor/CommitDetail.tsx`, `apps/desktop/src/features/editor/EditorHistory.tsx`, `apps/desktop/src/features/editor/panes.tsx`, `crates/app-core/src/git_view.rs`, `apps/desktop/src/features/editor/CommitDetail.test.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
 
 ### EDT-history-table
 
@@ -144,7 +144,13 @@ The system SHALL show the Editor's History as a one-line-per-commit table with a
 - WHEN History opens with All branches selected
 - THEN an "Uncommitted changes" row sits above HEAD and offers to open the Changes tab
 
-Evidence: `apps/desktop/src/features/editor/EditorHistory.tsx`, `apps/desktop/src/features/editor/HistoryTable.tsx`, `apps/desktop/src/features/editor/CommitDetail.tsx`, `apps/desktop/src/features/editor/history-graph.ts`, `apps/desktop/src/features/editor/history-layout.ts`, `apps/desktop/src/components/ui/resizable-handle.tsx`, `apps/desktop/src/features/editor/HistoryTable.test.tsx`, `apps/desktop/src/features/editor/history-graph.test.ts`, `apps/desktop/src/features/editor/history-layout.test.ts`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+#### Scenario: Parents follow children
+
+- GIVEN commits with skewed or equal commit timestamps
+- WHEN History loads them
+- THEN every parent is listed after its children so the graph lanes connect
+
+Evidence: `apps/desktop/src/features/editor/EditorHistory.tsx`, `apps/desktop/src/features/editor/HistoryTable.tsx`, `apps/desktop/src/features/editor/CommitDetail.tsx`, `apps/desktop/src/features/editor/history-graph.ts`, `apps/desktop/src/features/editor/history-layout.ts`, `apps/desktop/src/components/ui/resizable-handle.tsx`, `apps/desktop/src/features/editor/HistoryTable.test.tsx`, `apps/desktop/src/features/editor/history-graph.test.ts`, `apps/desktop/src/features/editor/history-layout.test.ts`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`, `crates/app-core/src/git_view.rs`
 
 ### EDT-push
 
@@ -162,7 +168,7 @@ The system SHALL push the current branch from the Changes view with `git push` (
 - WHEN the user presses Push
 - THEN Git's error is shown and nothing is retried
 
-Evidence: `apps/desktop/src-tauri/src/git_write.rs`, `apps/desktop/src-tauri/src/worktrees.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`
+Evidence: `crates/app-core/src/git_write.rs`, `crates/app-core/src/worktrees.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`
 
 ### EDT-stage-commit
 
@@ -180,7 +186,7 @@ The system SHALL let the user stage and unstage files from the Editor's Changes 
 - WHEN the user presses Commit
 - THEN Git's error is shown, the message stays, and the index is unchanged
 
-Evidence: `apps/desktop/src-tauri/src/git_write.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/EditorChanges.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+Evidence: `crates/app-core/src/git_write.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/EditorChanges.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
 
 ### EDT-vim-save
 
@@ -195,6 +201,13 @@ The system SHALL persist the optional Vim mode under `editor.vim` and route Vim 
 Evidence: `apps/desktop/src/features/editor/queries.ts`, `apps/desktop/src/features/settings/SettingsPage.tsx`, `apps/desktop/src/features/editor/CodeEditor.tsx`, `apps/desktop/src/features/editor/queries.test.tsx`, `apps/desktop/src/features/editor/CodeEditor.test.tsx`
 
 ## Flow
+
+The Git, file, storage, and ACP operations described below are implemented in
+`crates/app-core`, a Tauri-free crate shared with the native Rune editor (see
+[Rune editor](../domains/rune-editor.md)); the `git_view_*`, `git_write_*`, and
+`acp_*` Tauri commands in `apps/desktop/src-tauri/src/commands.rs` open the app
+store, revalidate the registered checkout through `app-core`'s project rules,
+and delegate to those shared implementations with unchanged names and payloads.
 
 Files mode keeps the existing filename filter and tree. Content mode trims and debounces the shared input, then `useGitSearch` keys the result by project, checkout, and query; the service invokes `git_view_search`. The Tauri command revalidates the registered checkout before `git_view::search` runs Git through the bounded runner. Selecting a result uses the Files navigation path. An already open file receives a line reveal directly; changing files goes through the shared unsaved-draft guard. CodeMirror clamps the requested line to the document, selects it, scrolls it into view, and focuses the editor. `Cmd/Ctrl+F` inside CodeMirror remains available to its search panel.
 
@@ -238,6 +251,7 @@ History reads run `git log`, `git for-each-ref`, `git symbolic-ref`, `git check-
 - Vim is off by default. `:w` uses the existing save checks; no other ex command is connected to saving.
 - A History branch is accepted only as a full ref under `refs/heads/` or `refs/remotes/` with no NUL or leading `-`, a valid ref name according to `git check-ref-format`, and a commit target; revision syntax such as `main~1` or `main@{0}` is rejected as invalid input before `git log` runs, and the ref is passed after `--end-of-options`.
 - The default History scope is local branches, remote-tracking refs, and tags, in pages of 100 commits; `refs/remotes/*/HEAD` aliases are not offered in the dropdown.
+- History walks `git log --topo-order`, so a parent never lists before its children on any page; the graph lanes rely on that order.
 - Stored layout values are validated and clamped: Graph 48–320 px, Date/Author/Commit 56–360 px, detail height at least 160 px (the table keeps at least 120 px); an invalid or unreadable value falls back to the defaults (Date 120, Author 128, Commit 80, detail 320 px).
 - Numstat counts are shown only for text files; a binary file shows none, and a merge commit's files and patch are against its first parent.
 
@@ -255,9 +269,9 @@ A History page that fails with no cached data shows the existing error pane with
 - `go-to-definition` tests cover token detection, relative/extension/index/`.js` resolution, `tsconfig` paths parsing, and declaration matching and selection; `CodeEditor` tests cover the modified click, hover underline, and Vim ordering; Editor workspace tests cover opening imports and declarations, the Content fallback, notices, stale lookups, and the dirty-draft guard.
 - Query and service tests cover disabled requests, query-specific caching, and the Tauri command payload.
 - `git_write` tests, in temporary repositories, cover stage (new, modified, deleted, renamed), unstage with and without a first commit, discard (tracked, untracked, symlink, directory, escapes), commit (success, bad messages, conflicts, hook failure keeping the index), and push (with and without upstream, non-fast-forward, no origin) plus the `ahead` count.
-- `acp` tests drive a fake ACP agent (`apps/desktop/src-tauri/tests/fixtures/fake_acp_agent.py`) for connect and timeout, per-session ids and directories, chunked and fenced replies, denied permission and unknown requests, refusal and empty replies, cancel and timeout, crashes, process-group kill, and temporary-directory cleanup; hub tests cover preset and override merging, command parsing, connect/disconnect status, prompt contents and the diff cap, and job replacement and cancel. Wiring tests check the command names and JSON shapes against the frontend types.
+- `acp` tests drive a fake ACP agent (`crates/app-core/tests/fixtures/fake_acp_agent.py`) for connect and timeout, per-session ids and directories, chunked and fenced replies, denied permission and unknown requests, refusal and empty replies, cancel and timeout, crashes, process-group kill, and temporary-directory cleanup; hub tests cover preset and override merging, command parsing, connect/disconnect status, prompt contents and the diff cap, and job replacement and cancel. Wiring tests check the command names and JSON shapes against the frontend types.
 - `CommitBox` and Editor workspace tests cover the commit enable rules, `Cmd/Ctrl+Enter`, commit failure, push labels, Generate fill, discard-after-edit, cancel, unmount cancel, connect, agent fallback, row stage/unstage/discard buttons, and the discard dialog.
-- Rust `git_view` tests cover branch-scoped history, rejected unsafe branches (including revision syntax), the branch list with the current flag, the commit body, email, and committer, and numstat for text, binary, renamed, and root commits; the wiring test checks the command names and wire keys.
+- Rust `git_view` tests cover branch-scoped history, rejected unsafe branches (including revision syntax), the branch list with the current flag, the commit body, email, and committer, numstat for text, binary, renamed, and root commits, and children-before-parents ordering across History pages; the wiring test checks the command names and wire keys.
 - `history-graph`, `history-layout`, and `resizable-handle` tests cover colour continuity and lane reuse, clamped and failing storage, keyboard steps, drag clamping, and double-click reset; `HistoryTable` and `CommitDetail` tests cover rows, dimming, keyboard focus, paging, the context menu, copy feedback, parents, the collapsed body, and counts; Editor workspace tests cover the branch dropdown, match jumping, Jump to HEAD, the Uncommitted row and its fallback, and stale refreshes.
 
 ## Related
@@ -266,14 +280,9 @@ A History page that fails with no cached data shows the existing error pane with
 
 ## Sources
 
-- `apps/desktop/src-tauri/src/acp.rs`
 - `apps/desktop/src-tauri/src/commands.rs`
-- `apps/desktop/src-tauri/src/git_view.rs`
-- `apps/desktop/src-tauri/src/git_write.rs`
 - `apps/desktop/src-tauri/src/lib.rs`
 - `apps/desktop/src-tauri/src/wiring_tests.rs`
-- `apps/desktop/src-tauri/src/worktrees.rs`
-- `apps/desktop/src-tauri/tests/fixtures/fake_acp_agent.py`
 - `apps/desktop/src/App.tsx`
 - `apps/desktop/src/components/ui/context-menu.tsx`
 - `apps/desktop/src/components/ui/resizable-handle.test.tsx`
@@ -311,3 +320,11 @@ A History page that fails with no cached data shows the existing error pane with
 - `apps/desktop/src/services/settings.ts`
 - `apps/desktop/src/services/types.ts`
 - `apps/desktop/src/stores/ui.ts`
+- `crates/app-core/src/acp.rs`
+- `crates/app-core/src/git_view.rs`
+- `crates/app-core/src/git_write.rs`
+- `crates/app-core/src/projects.rs`
+- `crates/app-core/src/store.rs`
+- `crates/app-core/src/agents.rs`
+- `crates/app-core/src/worktrees.rs`
+- `crates/app-core/tests/fixtures/fake_acp_agent.py`

@@ -11,10 +11,12 @@ use crate::git_view::{
     GitViewStash, GitViewTree,
 };
 use crate::git_write::{self, GitCommitResult, GitPushResult};
-use crate::store::{Project, SessionMeta, Storage, Store};
+use crate::store::{SessionMeta, Storage, Store};
 use crate::worktrees::{
     self, EnvCopyReport, EnvFileCandidate, WorktreeBranches, WorktreeInfo, WorktreeList,
 };
+use app_core::projects;
+pub use app_core::projects::ProjectView;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use protocol::message::{ErrorCode, Request};
@@ -33,23 +35,6 @@ pub struct DaemonStatus {
     pub live_cwd_supported: Option<bool>,
     pub default_shell: String,
     pub home: String,
-}
-
-/// A project as the webview sees it: the stored row plus `missing`, computed at read time.
-#[derive(Debug, Serialize)]
-pub struct ProjectView {
-    #[serde(flatten)]
-    project: Project,
-    missing: bool,
-}
-
-impl ProjectView {
-    fn of(project: Project) -> Self {
-        Self {
-            missing: !Path::new(&project.root).is_dir(),
-            project,
-        }
-    }
 }
 
 /// Everything `session_create` accepts. Exactly one of `command`/`agent` and exactly one
@@ -251,7 +236,7 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
         Some(project_id) => {
             let root = project_root(storage, project_id)?;
             match &args.checkout {
-                Some(checkout) => project_checkout(&root, checkout)?,
+                Some(checkout) => projects::project_checkout(&root, checkout)?,
                 None => root,
             }
         }
@@ -265,38 +250,9 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
     })
 }
 
-fn project_checkout(root: &str, checkout: &str) -> Result<String, BridgeError> {
-    let root = std::fs::canonicalize(root)
-        .map_err(|error| invalid(format!("the project root is unavailable: {error}")))?;
-    let checkout = std::fs::canonicalize(checkout)
-        .map_err(|error| invalid(format!("the checkout path is unavailable: {error}")))?;
-    if checkout == root {
-        return Ok(checkout.display().to_string());
-    }
-    if worktrees::contains_checkout(&root, &checkout)? {
-        Ok(checkout.display().to_string())
-    } else {
-        Err(invalid(
-            "the checkout is not the project root or a listed Git worktree",
-        ))
-    }
-}
-
 /// The registered project's root, which must still exist on disk.
 fn project_root(storage: &Storage, project_id: &str) -> Result<String, BridgeError> {
-    let project = storage
-        .get()?
-        .list_projects()?
-        .into_iter()
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| not_found(format!("no project '{project_id}' is registered")))?;
-    if !Path::new(&project.root).is_dir() {
-        return Err(invalid(format!(
-            "the project root {} no longer exists",
-            project.root
-        )));
-    }
-    Ok(project.root)
+    projects::project_root(storage.get()?, project_id)
 }
 
 /// Best-effort: an insert or settings failure is logged, never propagated — the process
@@ -338,26 +294,6 @@ fn parse<T: DeserializeOwned>(reply: Value) -> Result<T, BridgeError> {
 
 fn invalid(message: impl Into<String>) -> BridgeError {
     BridgeError::new(Code::Daemon(ErrorCode::InvalidArgument), message)
-}
-
-fn not_found(message: impl Into<String>) -> BridgeError {
-    BridgeError::new(Code::Daemon(ErrorCode::NotFound), message)
-}
-
-/// Canonicalize `path` and register it; a file or a missing path is `invalid_argument`.
-fn add_project(store: &Store, path: &str) -> Result<ProjectView, BridgeError> {
-    let root = std::fs::canonicalize(path)
-        .map_err(|error| invalid(format!("cannot use '{path}': {error}")))?;
-    if !root.is_dir() {
-        return Err(invalid(format!("'{path}' is not a directory")));
-    }
-    let name = root.file_name().map_or_else(
-        || root.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    store
-        .add_project(&name, &root.display().to_string())
-        .map(ProjectView::of)
 }
 
 #[tauri::command]
@@ -461,10 +397,7 @@ fn git_view_checkout(
     project_id: &str,
     checkout_path: &str,
 ) -> Result<PathBuf, BridgeError> {
-    let root = project_root(storage, project_id)?;
-    let checkout = project_checkout(&root, checkout_path)?;
-    git_view::repo_checkout(Path::new(&checkout))?;
-    Ok(PathBuf::from(checkout))
+    projects::git_checkout(storage.get()?, project_id, checkout_path)
 }
 
 #[tauri::command]
@@ -737,25 +670,17 @@ pub async fn project_add(
     storage: State<'_, Storage>,
     path: String,
 ) -> Result<ProjectView, BridgeError> {
-    add_project(storage.get()?, &path)
+    projects::add_project(storage.get()?, &path)
 }
 
 #[tauri::command]
 pub async fn project_list(storage: State<'_, Storage>) -> Result<Vec<ProjectView>, BridgeError> {
-    Ok(storage
-        .get()?
-        .list_projects()?
-        .into_iter()
-        .map(ProjectView::of)
-        .collect())
+    projects::list_projects(storage.get()?)
 }
 
 #[tauri::command]
 pub async fn project_remove(storage: State<'_, Storage>, id: String) -> Result<(), BridgeError> {
-    match storage.get()?.remove_project(&id)? {
-        true => Ok(()),
-        false => Err(not_found(format!("no project '{id}' is registered"))),
-    }
+    projects::remove_project(storage.get()?, &id)
 }
 
 #[tauri::command]

@@ -8,11 +8,11 @@
 //! a compact 4-pt-grid scale (see the constants below), deliberately denser than
 //! the TSX.
 
-use rune::{col, el, row, spacer, Color, El, ScrollSpec, TextStyle};
+use rune::{Color, El, ScrollSpec, TextStyle, col, el, row, spacer};
 
-use crate::data::{self, Project, SessionView, WorktreeInfo};
-use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T128, T12TN};
 use crate::State;
+use crate::data::{self, Project, SessionView, WorktreeInfo};
+use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T12TN, T128};
 
 const SIDEBAR_W: f32 = 320.0; // PANEL_LIMITS.projectTree.defaultWidth
 
@@ -20,10 +20,10 @@ const SIDEBAR_W: f32 = 320.0; // PANEL_LIMITS.projectTree.defaultWidth
 // badges and text land on whole device pixels at 1x/1.25x/1.5x/2x (boxes snap to device
 // pixels but text keeps its exact position, so fractional layouts drift text off-centre).
 const ROW_H: f32 = 24.0; // every row's pitch: project, worktree, session, "Worktrees"
-                         // Filled rows (active, selected) keep a 2 pt gap so neighbouring fills never merge into
-                         // one blob. The fill is an inset `row_layer` (`FILL_H` tall, `ROW_GAP` in from the top
-                         // and bottom) rather than a margin on the row, so every row keeps its exact 24 pt pitch
-                         // and the text/badges inside never move off the pixel grid.
+// Filled rows (active, selected) keep a 2 pt gap so neighbouring fills never merge into
+// one blob. The fill is an inset `row_layer` (`FILL_H` tall, `ROW_GAP` in from the top
+// and bottom) rather than a margin on the row, so every row keeps its exact 24 pt pitch
+// and the text/badges inside never move off the pixel grid.
 const ROW_GAP: f32 = 1.0;
 const FILL_H: f32 = ROW_H - 2.0 * ROW_GAP; // 22
 const CELL: f32 = 20.0; // chevron cell (was 28)
@@ -32,7 +32,7 @@ const SESSION_PL: f32 = 20.0; // session icon indent inside its list (was 40)
 const NAME: TextStyle = TextStyle::new(13.0, 500.0).lh(16.0); // was T14M
 const SUB: TextStyle = T12.lh(16.0); // session title (was T12)
 const BRANCH: TextStyle = T11.lh(16.0); // inline branch (was T11, on its own line)
-                                        // Header / meta text on the same 16 pt line box, so it sits on whole pixels in its row.
+// Header / meta text on the same 16 pt line box, so it sits on whole pixels in its row.
 const HDR: TextStyle = T11ST.lh(16.0); // "PROJECTS", "Unassigned"
 const HDR_M: TextStyle = T11M.lh(16.0); // "Other sessions"
 const PCT: TextStyle = T12TN.lh(16.0); // session context %

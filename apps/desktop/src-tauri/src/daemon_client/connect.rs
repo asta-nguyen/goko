@@ -225,18 +225,3 @@ async fn losing_the_connection_closes_events_and_output() {
     ));
     assert!(output.recv().await.is_none());
 }
-
-#[test]
-fn home_prefers_goko_home_then_application_support() {
-    let dir = home_dir_from(Some("/tmp/goko".into()), Some("/Users/me".into())).unwrap();
-    assert_eq!(dir, PathBuf::from("/tmp/goko"));
-
-    for goko_home in [None, Some("".into())] {
-        let dir = home_dir_from(goko_home, Some("/Users/me".into())).unwrap();
-        assert_eq!(
-            dir,
-            PathBuf::from("/Users/me/Library/Application Support/Goko")
-        );
-    }
-    assert!(home_dir_from(None, None).is_err());
-}

@@ -1,0 +1,632 @@
+//! The editor workspace chrome: project/checkout pickers, the four-section
+//! tab strip, the stale/error notice, the draft-guard dialog, and dispatch
+//! into the mounted section views. Sections keep their own scroll/selection
+//! state so switching back is instant, like the desktop's visited set.
+//!
+//! rune-kit overlays (open `Select` menus) collect into a per-frame `Vec`
+//! passed to `rune_kit::root`, matching the kit-gallery pattern.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use app_core::projects::ProjectView;
+use app_core::worktrees::WorktreeList;
+use rune::{El, Tx, col, row};
+use rune_kit::Kit;
+
+use crate::State;
+use crate::editor::backend::{self, Req};
+use crate::editor::navigation::{self, GuardAction, PendingNav};
+use crate::editor::state::Section;
+use crate::theme::{self, Ink};
+
+/// Picker entries are `(label, stable identity)` pairs: rune-kit `Select`
+/// matches on the label string alone, so the label must be unique AND carry
+/// enough information to recover the identity. Labels stay human-readable —
+/// a collision appends the path (then the id as a last resort) instead of
+/// changing every option's appearance.
+fn disambiguate(entries: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for (label, _) in &entries {
+        *counts.entry(label.clone()).or_default() += 1;
+    }
+    let mut used = HashSet::new();
+    entries
+        .into_iter()
+        .map(|(label, id)| {
+            let mut label = label;
+            if counts.get(label.as_str()).copied().unwrap_or(0) > 1 || used.contains(&label) {
+                // Second uniqueness tier: caller folded the path into the
+                // base label already when names collided; `id` is the
+                // guaranteed-unique last resort.
+                if used.contains(&label) {
+                    label = format!("{label} · {id}");
+                }
+            }
+            used.insert(label.clone());
+            (label, id)
+        })
+        .collect()
+}
+
+/// Registered projects → `(label, project_id)`. Same-name projects get the
+/// root path folded into the label so each stays individually selectable.
+fn project_options(projects: &[ProjectView]) -> Vec<(String, String)> {
+    let mut name_count = std::collections::HashMap::<&str, usize>::new();
+    for p in projects {
+        *name_count.entry(p.project.name.as_str()).or_default() += 1;
+    }
+    let entries = projects
+        .iter()
+        .map(|p| {
+            let label = if name_count[p.project.name.as_str()] > 1 {
+                format!("{} — {}", p.project.name, p.project.root)
+            } else {
+                p.project.name.clone()
+            };
+            (label, p.project.id.clone())
+        })
+        .collect();
+    disambiguate(entries)
+}
+
+/// Project root + listed worktrees → `(label, checkout path)`. The main
+/// worktree IS the project root: it appears once as "root" and any listed
+/// entry that duplicates it (by `is_root` or equal path) is skipped.
+/// Same-name worktrees get their path folded into the label.
+fn checkout_options(root: Option<&str>, worktrees: &WorktreeList) -> Vec<(String, PathBuf)> {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    if let Some(root) = root {
+        entries.push(("root".to_string(), root.to_string()));
+    }
+    for wt in &worktrees.worktrees {
+        if wt.missing || wt.is_root {
+            continue;
+        }
+        let path = PathBuf::from(&wt.path);
+        if root.is_some_and(|r| Path::new(r) == path.as_path()) {
+            continue; // the root worktree must not appear twice
+        }
+        entries.push((wt.name.clone(), wt.path.clone()));
+    }
+    let mut name_count = std::collections::HashMap::<String, usize>::new();
+    for (label, _) in &entries {
+        *name_count.entry(label.clone()).or_default() += 1;
+    }
+    disambiguate(
+        entries
+            .into_iter()
+            .map(|(label, path)| {
+                let label = if name_count.get(label.as_str()).copied().unwrap_or(0) > 1 {
+                    format!("{label} — {path}")
+                } else {
+                    label
+                };
+                (label, path)
+            })
+            .collect(),
+    )
+    .into_iter()
+    .map(|(label, path)| (label, PathBuf::from(path)))
+    .collect()
+}
+
+/// Root of the editor view.
+pub fn workspace(s: &State, ink: &Ink, k: &Kit) -> El {
+    let mut layer = Vec::new();
+    let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0);
+    root = root.child(pickers(s, ink, k, &mut layer));
+    if s.editor.checkout.is_some() {
+        root = root.child(section_tabs(s, ink));
+        if let Some(notice) = &s.editor.notice {
+            root = root.child(notice_bar(notice, ink));
+        }
+        root = root.child(section_body(s, ink, k).grow(1.0).min_h(0.0));
+    } else {
+        root = root.child(empty_state(s, ink));
+    }
+    // Guard dialog renders above everything (Save/Discard/Cancel) as a real
+    // modal: `Dialog` + `El::modal` trap focus, inert the background and
+    // answer Escape — all required for the dirty-draft guard to be honest.
+    if s.editor.guard.is_some() {
+        guard_dialog(s, ink, k, &mut layer);
+    }
+    // `kit::root` wraps the base in an `h_full` div: without `grow` it claims
+    // the whole column and pushes the section content below the tab/controls
+    // bars (the buried-footer defect). `grow(1).min_h(0)` makes it take the
+    // space the bars leave instead.
+    rune_kit::root(root, layer).grow(1.0).min_h(0.0)
+}
+
+/// Refresh the reads the active section needs — the entry point
+/// `navigation::set_section`/`refresh_checkout_data` call.
+pub fn refresh_active(s: &mut State) {
+    s.editor.refresh_active();
+}
+
+/// Project picker + checkout picker + "add project" — the only place editor
+/// checkout selection happens; it never reads the mock terminal session.
+fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
+    let mut bar = row()
+        .w_full()
+        .h(36.0)
+        .px(12.0)
+        .gap(8.0)
+        .items_center()
+        .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+        .fill(ink.panel);
+
+    // Project select (native rune-kit Select — fully controlled: `open`
+    // mirrors `editor.project_picker_open`, toggled/dismissed via the
+    // callbacks; choosing routes through the draft guard as SelectProject
+    // so a Cancel keeps the old project AND checkout intact). Options carry
+    // unique labels mapped to project ids — same-name projects stay
+    // individually selectable.
+    let project_opts = project_options(&s.editor.projects);
+    let options: Vec<String> = project_opts.iter().map(|(l, _)| l.clone()).collect();
+    let current = s
+        .editor
+        .project_id
+        .as_deref()
+        .and_then(|id| project_opts.iter().find(|(_, pid)| pid == id))
+        .map(|(l, _)| l.clone());
+    // Field (boxed) appearance is the only Select variant that honours
+    // `.width()` — Inline sizes its trigger to the label, and a
+    // path-disambiguated project name stretched the whole picker bar.
+    // `.shrink()` lets the trigger give way at narrow widths; the inner
+    // label truncates and `.help` keeps the full identity reachable.
+    let project_help = current.clone().unwrap_or_else(|| "Select a project".into());
+    bar = bar.child(
+        rune_kit::Select::new("editor-project", &options)
+            .appearance(rune_kit::SelectAppearance::Field)
+            .current(current.as_deref())
+            .placeholder("Select a project")
+            .label("Project")
+            .width(200.0)
+            .open(s.editor.project_picker_open)
+            .on_toggle(|st: &mut State| {
+                st.editor.project_picker_open = !st.editor.project_picker_open;
+                if st.editor.project_picker_open {
+                    st.editor.checkout_picker_open = false;
+                }
+            })
+            .on_close(|st: &mut State| {
+                st.editor.project_picker_open = false;
+            })
+            .on_choose(move |st: &mut State, label: &str, tx: &mut Tx| {
+                st.editor.project_picker_open = false;
+                if let Some((_, pid)) = project_opts.iter().find(|(l, _)| l == label) {
+                    navigation::navigate(
+                        st,
+                        PendingNav::SelectProject {
+                            project_id: pid.clone(),
+                        },
+                        tx,
+                    );
+                }
+            })
+            .build(k, layer)
+            .shrink()
+            .min_w(120.0)
+            .help(project_help),
+    );
+
+    // Checkout select: project root + listed worktrees of the selected
+    // project. Options map unique labels to canonical checkout paths; the
+    // root worktree appears once and same-name worktrees disambiguate by
+    // path, so every entry selects its intended identity.
+    let project_root = s.editor.project_id.as_deref().and_then(|pid| {
+        s.editor
+            .projects
+            .iter()
+            .find(|p| p.project.id == pid)
+            .map(|p| p.project.root.as_str())
+    });
+    let checkout_opts = checkout_options(project_root, &s.editor.worktrees);
+    let labels: Vec<String> = checkout_opts.iter().map(|(l, _)| l.clone()).collect();
+    let current_checkout = s.editor.checkout.as_ref().and_then(|c| {
+        checkout_opts
+            .iter()
+            .find(|(_, p)| p.as_path() == c.as_path())
+            .map(|(l, _)| l.clone())
+    });
+    let checkout_help = current_checkout
+        .clone()
+        .unwrap_or_else(|| "Select a checkout".into());
+    bar = bar.child(
+        rune_kit::Select::new("editor-checkout", &labels)
+            .appearance(rune_kit::SelectAppearance::Field)
+            .current(current_checkout.as_deref())
+            .placeholder(if s.editor.worktrees_loading {
+                "Loading…"
+            } else {
+                "Select a checkout"
+            })
+            .label("Checkout")
+            .width(240.0)
+            .open(s.editor.checkout_picker_open)
+            .on_toggle(|st: &mut State| {
+                st.editor.checkout_picker_open = !st.editor.checkout_picker_open;
+                if st.editor.checkout_picker_open {
+                    st.editor.project_picker_open = false;
+                }
+            })
+            .on_close(|st: &mut State| {
+                st.editor.checkout_picker_open = false;
+            })
+            .on_choose(move |st: &mut State, label: &str, tx: &mut Tx| {
+                st.editor.checkout_picker_open = false;
+                let Some(pid) = st.editor.project_id.clone() else {
+                    return;
+                };
+                let Some((_, path)) = checkout_opts.iter().find(|(l, _)| l == label) else {
+                    return;
+                };
+                navigation::navigate(
+                    st,
+                    PendingNav::SelectCheckout {
+                        project_id: pid,
+                        checkout: path.clone(),
+                    },
+                    tx,
+                );
+            })
+            .build(k, layer)
+            .shrink()
+            .min_w(140.0)
+            .help(checkout_help),
+    );
+
+    // "Add project" opens the native folder picker.
+    bar = bar.child(
+        theme::btn_sm("Add project", Some((&theme::FOLDER_PLUS, 14.0)), true, ink).on_press_tx(
+            |_s: &mut State, tx: &mut Tx| {
+                tx.open_folder(
+                    rune::file_dialog::FileDialogOptions {
+                        title: "Choose a project folder".into(),
+                        ..Default::default()
+                    },
+                    |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
+                        if let Ok(Some(path)) = result {
+                            st.editor
+                                .backend
+                                .send(backend::Job::project(Req::AddProject(
+                                    path.display().to_string(),
+                                )));
+                        }
+                    },
+                );
+            },
+        ),
+    );
+
+    if let Some(err) = &s.editor.projects_error {
+        bar = bar.child(theme::txt(err, theme::T11M_LH, ink.danger));
+    }
+    if let Some(err) = &s.editor.worktrees_error {
+        bar = bar.child(theme::txt(err, theme::T11M_LH, ink.danger));
+    }
+    col().w_full().child(bar)
+}
+
+/// The four section tabs; the default section comes from state (Changes,
+/// matching the desktop workspace).
+fn section_tabs(s: &State, ink: &Ink) -> El {
+    let mut tabs = row()
+        .h(36.0)
+        .w_full()
+        .px(8.0)
+        .gap(4.0)
+        .items_center()
+        .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+        // A focus group gives the tabs arrow-key roving and reports each
+        // tab's selected state to assistive tech (ARIA tab pattern).
+        .focus_group();
+    for section in Section::ALL {
+        let active = s.editor.section == section;
+        tabs = tabs.child(el_tab(section, active, ink).on_press_tx(
+            move |st: &mut State, tx: &mut Tx| {
+                navigation::navigate(st, PendingNav::SetSection(section), tx);
+            },
+        ));
+    }
+    tabs
+}
+
+fn el_tab(section: Section, active: bool, ink: &Ink) -> rune::El {
+    use rune::el;
+    el().key(format!("section:{}", section.label()))
+        .h(28.0)
+        .px(12.0)
+        .radius(7.0)
+        .items_center()
+        .justify_center()
+        .fill(if active {
+            ink.text.alpha(0.10)
+        } else {
+            rune::Color::TRANSPARENT
+        })
+        .hover(ink.text.alpha(0.06))
+        .role("tab")
+        .label(section.label())
+        // `Role::Tab` is a selectable item: this reports selected/unselected
+        // both in `Runtime::elements` (`item_selected`) and the OS a11y tree.
+        .focus_selected(active)
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .child(theme::txt(
+            section.label(),
+            theme::T12M,
+            if active { ink.text } else { ink.muted },
+        ))
+}
+
+fn notice_bar(notice: &crate::editor::state::Notice, ink: &Ink) -> El {
+    let tone = if notice.stale {
+        ink.warning
+    } else {
+        ink.danger
+    };
+    row()
+        .w_full()
+        .px(12.0)
+        .py(6.0)
+        .gap(8.0)
+        .items_center()
+        .fill(tone.alpha(0.08))
+        .border_sides([0.0, 0.0, 1.0, 0.0], tone.alpha(0.25))
+        .child(theme::txt(&notice.text, theme::T12, tone))
+}
+
+/// Dispatch to the active section's `view(&State)` entry — sibling workers
+/// own `changes`/`history`/`stashes` (+ `commit`/`patch`/`commit_detail`
+/// panes they compose). Selection/ensure work that needs `&mut State` runs
+/// from reply handlers and `navigation::set_section`, never the render pass.
+fn section_body(s: &State, ink: &Ink, k: &Kit) -> El {
+    let _ = (ink, k);
+    match s.editor.section {
+        Section::Files => crate::editor::files::files_view(s, ink, k),
+        Section::Changes => crate::editor::changes::view(s),
+        Section::History => crate::editor::history::view(s),
+        Section::Stashes => crate::editor::stashes::view(s),
+        Section::Servers => crate::editor::lsp::servers_view(s, ink, k),
+    }
+}
+
+fn empty_state(s: &State, ink: &Ink) -> El {
+    let body = if s.editor.projects.is_empty() && !s.editor.projects_loading {
+        "No projects registered. Add a project folder to start editing."
+    } else if s.editor.projects.is_empty() {
+        "Loading projects…"
+    } else {
+        "Select a project and checkout to open the editor."
+    };
+    col()
+        .grow(1.0)
+        .w_full()
+        .items_center()
+        .justify_center()
+        .gap(8.0)
+        .child(theme::txt("Editor", theme::T14M, ink.text))
+        .child(theme::txt(body, theme::T12, ink.muted))
+        .child(
+            theme::btn_sm("Add project", Some((&theme::FOLDER_PLUS, 14.0)), true, ink).on_press_tx(
+                |_st: &mut State, tx: &mut Tx| {
+                    tx.open_folder(
+                        rune::file_dialog::FileDialogOptions {
+                            title: "Choose a project folder".into(),
+                            ..Default::default()
+                        },
+                        |st: &mut State,
+                         result: rune::file_dialog::FileDialogResult,
+                         _tx: &mut Tx| {
+                            if let Ok(Some(path)) = result {
+                                st.editor
+                                    .backend
+                                    .send(backend::Job::project(Req::AddProject(
+                                        path.display().to_string(),
+                                    )));
+                            }
+                        },
+                    );
+                },
+            ),
+        )
+}
+
+/// The dirty-draft guard as a rune-kit `Dialog`: `role="dialog"`, a trapped
+/// focus scope, an inert background and Escape/outside-press → Cancel. The
+/// kit's `on_close` has no `Tx`, so dismissal routes through
+/// `navigation::cancel_guard` (identical to `resolve_guard(Cancel)`).
+fn guard_dialog(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) {
+    let quitting = s.editor.guard.as_ref().is_some_and(|g| g.quitting);
+    let title = if quitting {
+        "Save changes before quitting?"
+    } else {
+        "Save changes before leaving?"
+    };
+    let buttons = row()
+        .gap(8.0)
+        .justify_end()
+        .w_full()
+        .child(theme::btn_sm("Cancel", None, true, ink).on_press_tx(
+            |st: &mut State, tx: &mut Tx| {
+                navigation::resolve_guard(st, GuardAction::Cancel, tx);
+            },
+        ))
+        .child(theme::btn_sm("Discard", None, true, ink).on_press_tx(
+            |st: &mut State, tx: &mut Tx| {
+                if st.editor.quit_vetoed {
+                    navigation::quit_discard(st);
+                } else {
+                    navigation::resolve_guard(st, GuardAction::Discard, tx);
+                }
+            },
+        ))
+        .child(theme::btn_sm("Save", None, false, ink).on_press_tx(
+            |st: &mut State, tx: &mut Tx| {
+                if st.editor.quit_vetoed {
+                    navigation::quit_after_save(st);
+                } else {
+                    navigation::resolve_guard(st, GuardAction::Save, tx);
+                }
+            },
+        ));
+    rune_kit::Dialog::new("editor-guard", title)
+        .open(true)
+        .fit()
+        .width(400.0)
+        .description("The open file has unsaved edits.")
+        .on_close(|st: &mut State| navigation::cancel_guard(st))
+        .child(buttons)
+        .build(k, layer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app_core::projects::ProjectView;
+    use app_core::store::Project;
+    use app_core::worktrees::WorktreeInfo;
+
+    fn project(id: &str, name: &str, root: &str) -> ProjectView {
+        ProjectView {
+            project: Project {
+                id: id.into(),
+                name: name.into(),
+                root: root.into(),
+                created_at: 0,
+            },
+            missing: false,
+        }
+    }
+
+    fn worktree(name: &str, path: &str, is_root: bool) -> WorktreeInfo {
+        WorktreeInfo {
+            name: name.into(),
+            path: path.into(),
+            branch: None,
+            head: String::new(),
+            is_root,
+            missing: false,
+            dirty: None,
+            changed: None,
+        }
+    }
+
+    fn wt_list(worktrees: Vec<WorktreeInfo>) -> WorktreeList {
+        WorktreeList {
+            repo: true,
+            worktrees,
+        }
+    }
+
+    #[test]
+    fn same_name_projects_get_distinct_selectable_ids() {
+        let projects = vec![
+            project("p1", "web", "/work/a/web"),
+            project("p2", "web", "/work/b/web"),
+            project("p3", "api", "/work/c/api"),
+        ];
+        let opts = project_options(&projects);
+        assert_eq!(opts.len(), 3);
+        let labels: Vec<&str> = opts.iter().map(|(l, _)| l.as_str()).collect();
+        // Unique labels — Select can match each one back to its id.
+        let mut sorted = labels.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3);
+        // The two "web" projects disambiguate by root; "api" stays clean.
+        assert!(labels.contains(&"api"));
+        assert!(labels.iter().any(|l| l.starts_with("web — /work/a/web")));
+        assert!(labels.iter().any(|l| l.starts_with("web — /work/b/web")));
+        // Each label resolves to exactly one intended id.
+        let id_of = |label: &str| {
+            opts.iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, i)| i.as_str())
+        };
+        assert_eq!(
+            id_of(labels.iter().find(|l| l.contains("/work/a/web")).unwrap()),
+            Some("p1")
+        );
+        assert_eq!(
+            id_of(labels.iter().find(|l| l.contains("/work/b/web")).unwrap()),
+            Some("p2")
+        );
+    }
+
+    #[test]
+    fn identical_name_and_root_projects_still_disambiguate() {
+        let projects = vec![
+            project("p1", "web", "/same/root"),
+            project("p2", "web", "/same/root"),
+        ];
+        let opts = project_options(&projects);
+        let labels: Vec<&str> = opts.iter().map(|(l, _)| l.as_str()).collect();
+        assert_ne!(labels[0], labels[1]);
+        assert_eq!(opts[0].1, "p1");
+        assert_eq!(opts[1].1, "p2");
+    }
+
+    #[test]
+    fn same_name_worktrees_get_distinct_paths() {
+        let wts = wt_list(vec![
+            worktree("feature", "/repo/wt-a", false),
+            worktree("feature", "/repo/wt-b", false),
+            worktree("dev", "/repo/wt-c", false),
+        ]);
+        let opts = checkout_options(Some("/repo"), &wts);
+        assert_eq!(opts.len(), 4); // root + 3 worktrees
+        let labels: Vec<&str> = opts.iter().map(|(l, _)| l.as_str()).collect();
+        let mut sorted = labels.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4);
+        assert!(labels.contains(&"root"));
+        assert!(labels.contains(&"dev"));
+        assert!(labels.iter().any(|l| l.contains("/repo/wt-a")));
+        assert!(labels.iter().any(|l| l.contains("/repo/wt-b")));
+        // Path identity round-trips: each label maps to its own checkout.
+        let path_of = |label: &str| {
+            opts.iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, p)| p.clone())
+        };
+        assert_eq!(
+            path_of(labels.iter().find(|l| l.contains("wt-a")).unwrap()),
+            Some(PathBuf::from("/repo/wt-a"))
+        );
+        assert_eq!(
+            path_of(labels.iter().find(|l| l.contains("wt-b")).unwrap()),
+            Some(PathBuf::from("/repo/wt-b"))
+        );
+    }
+
+    #[test]
+    fn root_worktree_never_duplicates() {
+        // is_root flag AND a path-equal non-flagged entry are both skipped.
+        let wts = wt_list(vec![
+            worktree("main", "/repo", true),
+            worktree("main", "/repo", false),
+            worktree("feature", "/repo/wt", false),
+        ]);
+        let opts = checkout_options(Some("/repo"), &wts);
+        assert_eq!(opts.len(), 2); // "root" + feature only
+        assert!(opts.iter().any(|(l, _)| l == "root"));
+        assert!(
+            opts.iter()
+                .any(|(l, p)| l == "feature" && p == &PathBuf::from("/repo/wt"))
+        );
+    }
+
+    #[test]
+    fn missing_worktrees_are_skipped() {
+        let mut gone = worktree("gone", "/repo/gone", false);
+        gone.missing = true;
+        let wts = wt_list(vec![gone, worktree("ok", "/repo/ok", false)]);
+        let opts = checkout_options(Some("/repo"), &wts);
+        assert_eq!(opts.len(), 2);
+        assert!(opts.iter().all(|(l, _)| l != "gone"));
+    }
+}

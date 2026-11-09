@@ -10,37 +10,12 @@ use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
-/// A unique temporary directory removed on drop. Keep labels short: a unix socket path
-/// must fit in about 100 bytes.
-pub struct TempDir(PathBuf);
-
-impl TempDir {
-    pub fn new(label: &str) -> Self {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("goko-br-{label}-{}-{id}", std::process::id()));
-        fs::create_dir_all(&path).expect("create temporary directory");
-        Self(path)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+pub use app_core::test_support::TempDir;
 
 /// A temporary `GOKO_HOME` (not created until something uses it). Dropping it kills every
 /// daemon that was started with it, identified by the pids `gokod()` records in
@@ -56,10 +31,8 @@ impl Home {
         // starts a daemon through `connect_or_spawn` needs.
         gokod();
         let dir = TempDir::new(label);
-        Self {
-            path: dir.0.join("h"),
-            _dir: dir,
-        }
+        let path = dir.path().join("h");
+        Self { path, _dir: dir }
     }
 
     pub fn path(&self) -> &Path {
