@@ -3,7 +3,7 @@
 //! + agent-logo + goko-mark icon bodies, and the small builders shared by the
 //!   chrome regions. Ported from the verified rune-spike `fidelity.rs`.
 
-use rune::{icon, row, text, Color, El, Icon, TextStyle};
+use rune::{icon, row, text, Color, El, Icon, Spring, TextStyle};
 
 pub fn c(hex: &str) -> Color {
     rune::color::hex(hex).expect("palette hex")
@@ -54,6 +54,9 @@ impl Ink {
 
 pub const T11: TextStyle = TextStyle::new(11.0, 400.0);
 pub const T11M: TextStyle = TextStyle::new(11.0, 500.0);
+/// Chip and pill labels on a 16 pt line box, so text sits on whole device pixels
+/// inside a 20 pt badge (the sidebar's compact scale does the same).
+pub const T11M_LH: TextStyle = T11M.lh(16.0);
 pub const T11MN: TextStyle = TextStyle::new(11.0, 500.0).features("'tnum' 1");
 pub const T11MN_BADGE: TextStyle = T11MN.lh(16.0);
 pub const T11ST: TextStyle = TextStyle::new(11.0, 600.0).tracking(0.55); // Projects/Unassigned headers
@@ -64,6 +67,16 @@ pub const T128: TextStyle = TextStyle::new(12.8, 500.0); // button sm text-[0.8r
 pub const T14: TextStyle = TextStyle::new(14.0, 400.0);
 pub const T14M: TextStyle = TextStyle::new(14.0, 500.0);
 pub const T14S: TextStyle = TextStyle::new(14.0, 600.0).tracking(-0.35); // "goko" tracking-tight
+
+// ---------------------------------------------------------------------------
+// Motion — one colour spring for state changes (active, selected, open) shared
+// by the sidebar rows and the header controls, so both read as one app.
+// ---------------------------------------------------------------------------
+
+/// Critically damped, ~0.11 s to 95 %. The default colour spring takes ~0.22 s,
+/// which trails the instant press wash and makes a state change read as a second,
+/// late event.
+pub const STATE_SPRING: Spring = Spring::new(0.15, 0.0);
 
 // ---------------------------------------------------------------------------
 // Icons — lucide bodies (viewBox 24) via @lobehub path data + agent logos from
@@ -157,6 +170,26 @@ stroke_icon!(
     "<path d=\"M12 19h8\"/>",
     "<path d=\"m4 17 6-6-6-6\"/>"
 );
+// Split-pane glyphs for the tab strip's icon-only split buttons (lucide
+// columns-2 / rows-2: an 18 px frame with one divider).
+stroke_icon!(
+    COLUMNS_2,
+    "columns-2",
+    "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" ry=\"2\"/>",
+    "<path d=\"M12 3v18\"/>"
+);
+stroke_icon!(
+    ROWS_2,
+    "rows-2",
+    "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" ry=\"2\"/>",
+    "<path d=\"M3 12h18\"/>"
+);
+stroke_icon!(
+    BOOK_OPEN,
+    "book-open",
+    "<path d=\"M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z\"/>",
+    "<path d=\"M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z\"/>"
+);
 // Badge variant="warning" icon (CheckoutStatus "missing" badge).
 stroke_icon!(
     TRIANGLE_ALERT,
@@ -243,7 +276,9 @@ pub fn count_badge(n: usize, ink: &Ink) -> El {
 
 /// UsageChips' outline badge: name + per-window `label value` groups. Every
 /// child inherits the badge's 11 px / 500, so window labels and separators are
-/// medium too — only the percentage carries tnum.
+/// medium too — only the percentage carries tnum. The `·` separators are chip
+/// children, not part of a window group, so they sit the same 6 pt from the value
+/// before them and the label after them.
 pub fn usage_chip(name: &'static str, limits: &[(&'static str, u8)], ink: &Ink) -> El {
     let mut chip = row()
         .h(20.0)
@@ -252,7 +287,7 @@ pub fn usage_chip(name: &'static str, limits: &[(&'static str, u8)], ink: &Ink) 
         .items_center()
         .radius(10.0)
         .border(1.0, ink.border)
-        .child(txt(name, T11M, ink.text));
+        .child(txt(name, T11M_LH, ink.text));
     for (i, (window, pct)) in limits.iter().enumerate() {
         // usageTone(): >=90 danger, >=80 warning, else muted.
         let tone = if *pct >= 90 {
@@ -262,14 +297,16 @@ pub fn usage_chip(name: &'static str, limits: &[(&'static str, u8)], ink: &Ink) 
         } else {
             ink.muted
         };
-        let mut g = row().gap(4.0).items_center();
         if i > 0 {
-            g = g.child(txt("·", T11M, ink.muted));
+            chip = chip.child(txt("·", T11M_LH, ink.muted));
         }
-        g = g
-            .child(txt(window, T11M, ink.muted))
-            .child(txt(&format!("{pct}%"), T11MN, tone));
-        chip = chip.child(g);
+        chip = chip.child(
+            row()
+                .gap(4.0)
+                .items_center()
+                .child(txt(window, T11M_LH, ink.muted))
+                .child(txt(&format!("{pct}%"), T11MN_BADGE, tone)),
+        );
     }
     chip
 }
@@ -304,5 +341,16 @@ pub fn btn_sm(label: &str, icon: Option<(&'static Icon, f32)>, outline: bool, in
     if let Some((i, size)) = icon {
         b = b.child(ic(i, size, ink.text));
     }
+    // Hover and press are text-colour washes, not `ink.bg`: `bg` is the active tab's
+    // fill and a darker-than-panel well, so a `bg` hover is invisible on a `bg`
+    // surface and reads as "selected" next to one. The press shrinks it 3 % so the
+    // button visibly hears the click; the ring shows for keyboard focus only.
     b.child(txt(label, T128, ink.text))
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .press_scale(0.97)
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
 }

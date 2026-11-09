@@ -8,18 +8,13 @@
 //! a compact 4-pt-grid scale (see the constants below), deliberately denser than
 //! the TSX.
 
-use rune::{col, el, row, spacer, Color, El, ScrollSpec, Spring, TextStyle};
+use rune::{col, el, row, spacer, Color, El, ScrollSpec, TextStyle};
 
 use crate::data::{self, Project, SessionView, WorktreeInfo};
 use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T128, T12TN};
 use crate::State;
 
 const SIDEBAR_W: f32 = 320.0; // PANEL_LIMITS.projectTree.defaultWidth
-
-/// Colour spring for row state changes (active, selected): critically damped, ~0.11 s
-/// to 95 %. The default colour spring takes ~0.22 s, which trails the instant press
-/// wash and makes the accent edge read as a second, late event.
-const STATE_SPRING: Spring = Spring::new(0.15, 0.0);
 
 // Density: the compact scale. Heights and vertical offsets are multiples of 4 pt so rows,
 // badges and text land on whole device pixels at 1x/1.25x/1.5x/2x (boxes snap to device
@@ -127,7 +122,7 @@ fn row_layer(fill: Color) -> El {
         .h(FILL_H)
         .radius(6.0)
         .fill(fill)
-        .motion(STATE_SPRING)
+        .motion(theme::STATE_SPRING)
 }
 
 /// `aside` (bg-panel) > section `flex min-h-0 flex-1 flex-col gap-2 p-3`.

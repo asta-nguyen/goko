@@ -15,6 +15,16 @@ use rune::{col, row, AppSpec, Cx, El};
 use crate::data::Data;
 use crate::theme::Ink;
 
+/// The workspace column's content mode: the terminal stub, the editor
+/// placeholder, or the app-level settings page that replaces the whole column
+/// — TerminalWorkspace's view switch plus App.tsx's `settingsMode`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum View {
+    Terminal,
+    Editor,
+    Settings,
+}
+
 pub struct State {
     ink: Ink,
     data: Data,
@@ -30,6 +40,8 @@ pub struct State {
     worktree_groups: HashMap<String, bool>,
     /// Per-worktree session list open, keyed by worktree path; absent = open.
     worktrees_open: HashMap<String, bool>,
+    /// Workspace column mode (terminal / editor placeholder / settings).
+    view: View,
 }
 
 impl State {
@@ -54,14 +66,60 @@ impl State {
             active_tab,
             worktree_groups: HashMap::new(),
             worktrees_open: HashMap::new(),
+            view: View::Terminal,
         }
     }
 }
 
+/// Centered title + muted body for views this milestone doesn't implement —
+/// keeps the chrome's buttons honest instead of dead.
+fn placeholder(title: &str, body: &str, ink: &Ink) -> El {
+    col()
+        .grow(1.0)
+        .w_full()
+        .h_full()
+        .items_center()
+        .justify_center()
+        .gap(8.0)
+        .child(theme::txt(title, theme::T14M, ink.text))
+        .child(theme::txt(body, theme::T12, ink.muted))
+}
+
 /// Root: header full-width, then [sidebar 320 | 8 px separator | workspace
-/// column (tab bar / controls / terminal)] — App.tsx + ResizableSplit.
+/// column]. Settings replaces the whole column like App.tsx's settingsMode;
+/// Editor/Terminal keep the tab strip + controls and swap only the content.
 fn view(s: &State, _cx: &mut Cx<State>) -> El {
     let ink = &s.ink;
+    let workspace = if s.view == View::Settings {
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .h_full()
+            .min_h(0.0)
+            .child(placeholder(
+                "Settings",
+                "The settings page lands in a later milestone.",
+                ink,
+            ))
+    } else {
+        let content = if s.view == View::Editor {
+            placeholder(
+                "Editor",
+                "The editor workspace lands in a later milestone.",
+                ink,
+            )
+        } else {
+            term::terminal_area(s, ink)
+        };
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .h_full()
+            .min_h(0.0)
+            .child(chrome::tab_bar(s, ink))
+            .child(chrome::controls_bar(s, ink))
+            .child(content)
+    };
     col()
         .w_full()
         .h_full()
@@ -74,16 +132,7 @@ fn view(s: &State, _cx: &mut Cx<State>) -> El {
                 .w_full()
                 .child(sidebar::sidebar(s, ink))
                 .child(sidebar::separator(ink))
-                .child(
-                    col()
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .h_full()
-                        .min_h(0.0)
-                        .child(chrome::tab_bar(s, ink))
-                        .child(chrome::controls_bar(s, ink))
-                        .child(term::terminal_area(s, ink)),
-                ),
+                .child(workspace),
         )
 }
 
