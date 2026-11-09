@@ -3,11 +3,11 @@
 //! real components' measurements (App.tsx header, TerminalWorkspace tab strip,
 //! SessionControls breadcrumb + state badge + elapsed + actions).
 
-use rune::{el, rich, row, spacer, Color, El, Span, TextStyle};
+use rune::{el, row, spacer, El};
 
 use crate::data;
 use crate::theme::{self, Ink, T11M, T12, T12M, T12TN, T14, T14M, T14S};
-use crate::State;
+use crate::{State, View};
 
 /// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
 /// bg-panel px-4` (48 px, gap 12, px 16).
@@ -32,11 +32,30 @@ pub fn header(s: &State, ink: &Ink) -> El {
                 .child(theme::txt("Disconnected", T11M, ink.danger)),
         );
     }
-    right = right.child(el().size(28.0, 28.0).radius(8.0).center().child(theme::ic(
-        &theme::SETTINGS,
-        16.0,
-        ink.text,
-    )));
+    // Settings toggles the app-level settings mode like App.tsx's gear;
+    // pressing it again returns to the terminal.
+    right = right.child(
+        el().size(28.0, 28.0)
+            .radius(8.0)
+            .center()
+            .hover(ink.bg)
+            .child(theme::ic(&theme::SETTINGS, 16.0, ink.text))
+            .on_press(|s: &mut State| {
+                s.view = if s.view == View::Settings {
+                    View::Terminal
+                } else {
+                    View::Settings
+                };
+            }),
+    );
+
+    // Persistent connection dot beside the wordmark; the pill on the right
+    // only appears while disconnected, matching the React header.
+    let conn = if s.data.connected {
+        ink.success
+    } else {
+        ink.danger
+    };
 
     row()
         .w_full()
@@ -59,19 +78,10 @@ pub fn header(s: &State, ink: &Ink) -> El {
                 )
                 .child(
                     row()
-                        .gap(6.0)
+                        .gap(8.0)
                         .items_center()
                         .child(theme::txt("goko", T14S, ink.text))
-                        // Prototype marker so this window is unmistakable next
-                        // to the real app in side-by-side comparisons.
-                        .child(
-                            el().h(16.0)
-                                .px(5.0)
-                                .radius(4.0)
-                                .fill(ink.danger)
-                                .center()
-                                .child(theme::txt("RUNE", TextStyle::new(9.0, 700.0), ink.white)),
-                        ),
+                        .child(el().size(6.0, 6.0).radius(3.0).fill(conn)),
                 ),
         )
         .child(spacer())
@@ -96,15 +106,44 @@ pub fn tab_bar(s: &State, ink: &Ink) -> El {
         .fill(ink.panel)
         .px(8.0)
         .child(tabs)
-        .child(theme::btn_sm(
-            "New tab",
-            Some((&theme::PLUS, 14.0)),
-            false,
-            ink,
-        ))
-        .child(theme::btn_sm("Split left/right", None, true, ink))
-        .child(theme::btn_sm("Split top/bottom", None, true, ink))
-        .child(view_switch(ink))
+        .child(
+            theme::btn_sm("New tab", Some((&theme::PLUS, 14.0)), false, ink).on_press(
+                |s: &mut State| {
+                    // Mock session_create: a shell session titled like the
+                    // tab, then the sidebar's activate-and-focus path.
+                    let title = data::spawn_shell(&mut s.data);
+                    s.open_tabs.push(title);
+                    s.active_tab = s.open_tabs.len() - 1;
+                    sync_selection(s);
+                },
+            ),
+        )
+        .child(theme::btn_icon(&theme::COLUMNS_2, ink))
+        .child(theme::btn_icon(&theme::ROWS_2, ink))
+        .child(view_switch(s, ink))
+}
+
+/// Point selection at whatever `active_tab` resolves to after the tab list
+/// changed; clears it when the active title has no session. Shared by tab
+/// close/select, New tab and Close pane.
+fn sync_selection(s: &mut State) {
+    let found = s.open_tabs.get(s.active_tab).and_then(|t| {
+        s.data
+            .sessions
+            .iter()
+            .find(|v| v.title() == *t)
+            .map(|sv| (sv.info.id.clone(), data::workspace_for_session(&s.data, sv)))
+    });
+    match found {
+        Some((id, ws)) => {
+            s.selected_session = Some(id);
+            s.active_workspace = Some(ws);
+        }
+        None => {
+            s.selected_session = None;
+            s.active_workspace = None;
+        }
+    }
 }
 
 /// Session tab pill: `bg-bg/50 rounded-lg`; the active title gets `bg-bg
@@ -112,24 +151,24 @@ pub fn tab_bar(s: &State, ink: &Ink) -> El {
 /// with that title; the X closes the tab.
 fn tab_el(title: &str, index: usize, active: bool, ink: &Ink) -> El {
     let mut b = row()
-        .h(28.0)
+        .h(32.0)
         .gap(6.0)
         .items_center()
         .px(10.0)
         .radius(8.0)
-        .fill(ink.bg.alpha(0.5));
+        .fill(if active { ink.bg } else { ink.bg.alpha(0.5) })
+        .hover(ink.bg);
     b = if active {
-        b.child(theme::txt(title, T14M, ink.text))
+        b.child(theme::txt(title, T12M, ink.text).max_w(160.0).truncate())
     } else {
-        b.child(theme::txt(title, T14, ink.muted))
+        b.child(theme::txt(title, T12, ink.muted).max_w(160.0).truncate())
     };
-    let tab_title = title.to_string();
     b.child(
-        el().size(16.0, 16.0)
+        el().size(28.0, 28.0)
             .center()
             .radius(4.0)
             .hover(ink.bg)
-            .child(theme::ic(&theme::X, 12.0, ink.muted))
+            .child(theme::ic(&theme::X, 14.0, ink.muted))
             .on_press(move |s: &mut State| {
                 s.open_tabs.remove(index);
                 if index < s.active_tab {
@@ -138,51 +177,59 @@ fn tab_el(title: &str, index: usize, active: bool, ink: &Ink) -> El {
                 if s.active_tab >= s.open_tabs.len() {
                     s.active_tab = s.open_tabs.len().saturating_sub(1);
                 }
-                if let Some(t) = s.open_tabs.get(s.active_tab) {
-                    let t = t.clone();
-                    if let Some(sv) = s.data.sessions.iter().find(|v| v.title() == t) {
-                        s.selected_session = Some(sv.info.id.clone());
-                        s.active_workspace = Some(data::workspace_for_session(&s.data, sv));
-                    }
-                } else {
-                    s.selected_session = None;
-                    s.active_workspace = None;
-                }
+                sync_selection(s);
             }),
     )
     .on_press(move |s: &mut State| {
         s.active_tab = index;
-        if let Some(sv) = s.data.sessions.iter().find(|v| v.title() == tab_title) {
-            s.selected_session = Some(sv.info.id.clone());
-            s.active_workspace = Some(data::workspace_for_session(&s.data, sv));
-        }
+        sync_selection(s);
     })
 }
 
-/// ViewSwitch: Terminal pressed / Editor unpressed — a two-item segmented
-/// control, `bg-bg/60 rounded-lg p-0.5` with `bg-bg` on the active item.
-fn view_switch(ink: &Ink) -> El {
+/// ViewSwitch: Terminal pressed / Editor unpressed — a bordered `bg-bg`
+/// track with a raised `bg-panel` active item, icons included (ViewSwitch.tsx).
+fn view_switch(s: &State, ink: &Ink) -> El {
     row()
-        .h(28.0)
+        .h(34.0)
         .gap(2.0)
         .items_center()
         .padding(2.0)
         .radius(8.0)
-        .fill(ink.bg.alpha(0.6))
-        .child(switch_item("Terminal", true, ink))
-        .child(switch_item("Editor", false, ink))
+        .border(1.0, ink.border)
+        .fill(ink.bg)
+        .child(switch_item(
+            &theme::SQUARE_TERMINAL,
+            "Terminal",
+            View::Terminal,
+            s.view == View::Terminal,
+            ink,
+        ))
+        .child(switch_item(
+            &theme::BOOK_OPEN,
+            "Editor",
+            View::Editor,
+            s.view == View::Editor,
+            ink,
+        ))
 }
 
-fn switch_item(label: &str, active: bool, ink: &Ink) -> El {
-    let mut b = row().h(24.0).px(8.0).items_center().radius(6.0);
+fn switch_item(
+    icon: &'static rune::Icon,
+    label: &str,
+    target: View,
+    active: bool,
+    ink: &Ink,
+) -> El {
+    let tone = if active { ink.text } else { ink.muted };
+    let mut b = row().h(28.0).px(8.0).gap(6.0).items_center().radius(6.0);
     if active {
-        b = b.fill(ink.bg);
+        b = b.fill(ink.panel);
     }
-    b.child(theme::txt(
-        label,
-        T12M,
-        if active { ink.text } else { ink.muted },
-    ))
+    b.child(theme::ic(icon, 14.0, tone))
+        .child(theme::txt(label, if active { T12M } else { T12 }, tone))
+        .on_press(move |s: &mut State| {
+            s.view = target;
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -202,8 +249,10 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
     let info = &sv.info;
     let title = sv.title();
 
-    // Breadcrumb rich text: "<project> › " muted + "<agent> · " muted +
-    // "<title>" 14 medium — `min-w-0 truncate text-sm`.
+    // Breadcrumb: "<project> › " muted + agent glyph "<agent> · " muted +
+    // "<title>" 14 medium — `min-w-0 truncate text-sm`. Segments are separate
+    // elements because rich text cannot embed the agent icon; only the title
+    // truncates, keeping the project/agent context visible.
     let project_name = sv
         .meta
         .as_ref()
@@ -214,31 +263,34 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .agent_label(&s.data.agents)
         .filter(|a| !a.eq_ignore_ascii_case(title.as_str()));
 
-    let mut content = String::new();
-    let mut spans: Vec<Span> = Vec::new();
-    let mut push = |text: &str, color: Color, weight: Option<f32>| {
-        let start = content.len();
-        content.push_str(text);
-        let mut sp = Span::new(start, content.len()).color(color);
-        if let Some(w) = weight {
-            sp = sp.weight(w);
-        }
-        spans.push(sp);
-    };
+    let mut crumb = row().min_w(0.0).shrink().items_center();
     if let Some(pn) = project_name {
-        push(&format!("{pn} › "), ink.muted, None);
+        crumb = crumb.child(theme::txt(&format!("{pn} › "), T14, ink.muted));
     }
     if let Some(a) = agent {
-        push(&format!("{a} · "), ink.muted, None);
+        let (glyph, tint) = theme::agent_glyph(sv.agent_id(), ink);
+        crumb = crumb.child(theme::ic(glyph, 14.0, tint)).child(theme::txt(
+            &format!(" {a} · "),
+            T14,
+            ink.muted,
+        ));
     }
-    push(&title, ink.text, Some(500.0));
+    crumb = crumb.child(theme::txt(&title, T14M, ink.text).truncate());
 
-    // StateBadge: `rounded border border-border px-1.5 py-0.5 text-xs` + TONE.
+    // StateBadge + StateDot's tone dot: `rounded border border-border px-1.5
+    // py-0.5 text-xs` + TONE, with the activity-aware dot ahead of the label.
     let badge = row()
         .radius(4.0)
         .border(1.0, ink.border)
         .px(6.0)
         .py(2.0)
+        .gap(4.0)
+        .items_center()
+        .child(
+            el().size(6.0, 6.0)
+                .radius(3.0)
+                .fill(info.state.dot_color(sv.activity, ink)),
+        )
         .child(theme::txt(
             info.state.label(),
             T12,
@@ -259,10 +311,52 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
     );
 
     // Stop is disabled when the state is not controllable or disconnected.
+    // Mock stop_session: a live session exits with a frozen ended_at.
     let mut stop = theme::btn_sm("Stop", None, true, ink);
     if !live || !s.data.connected {
         stop = stop.opacity(0.5);
     }
+    let stop = stop.on_press(|s: &mut State| {
+        let Some(id) = s.selected_session.clone() else {
+            return;
+        };
+        if let Some(sv) = s.data.sessions.iter_mut().find(|v| v.info.id == id) {
+            if sv.info.state.controls_live() {
+                sv.info.state = data::SessionState::Exited;
+                sv.info.ended_at = Some(data::MOCK_NOW_MS);
+                sv.activity = None;
+            }
+        }
+    });
+
+    // Close pane drops the session and its tab, then focuses whatever the
+    // active tab resolves to — the same path tab close takes.
+    let close = theme::btn_sm("Close pane", None, false, ink).on_press(|s: &mut State| {
+        let Some(id) = s.selected_session.clone() else {
+            return;
+        };
+        let title = s
+            .data
+            .sessions
+            .iter()
+            .find(|v| v.info.id == id)
+            .map(|v| v.title());
+        s.data.sessions.retain(|v| v.info.id != id);
+        s.selected_session = None;
+        s.active_workspace = None;
+        if let Some(title) = title {
+            if let Some(pos) = s.open_tabs.iter().position(|t| *t == title) {
+                s.open_tabs.remove(pos);
+                if pos < s.active_tab {
+                    s.active_tab -= 1;
+                }
+                if s.active_tab >= s.open_tabs.len() {
+                    s.active_tab = s.open_tabs.len().saturating_sub(1);
+                }
+            }
+        }
+        sync_selection(s);
+    });
 
     row()
         .w_full()
@@ -272,21 +366,9 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .fill(ink.panel)
         .px(16.0)
         .py(8.0)
-        .child(
-            rich(content, spans)
-                .font(T14)
-                .color(ink.text)
-                .min_w(0.0)
-                .truncate(),
-        )
+        .child(crumb)
         .child(badge)
         .child(elapsed)
         .child(spacer())
-        .child(
-            row()
-                .gap(8.0)
-                .items_center()
-                .child(stop)
-                .child(theme::btn_sm("Close pane", None, false, ink)),
-        )
+        .child(row().gap(8.0).items_center().child(stop).child(close))
 }

@@ -9,12 +9,14 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 - [Desktop Editor](architecture/editor.md) — CodeMirror editing, Vim mode, Git content search, result navigation, and staging, commit, push, and ACP commit messages
 - [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, and ACP agents
 - [Desktop Theme](domains/desktop-theme.md) — dark and light palettes and theme preference behavior
+- [Rune chrome](domains/rune-chrome.md) — goko-rune header, workspace tab strip, and session controls strip on mock data
 
 ## Requirement prefixes
 
 | Prefix | Domain |
 |---|---|
 | EDT | Desktop Editor |
+| RNC | Rune chrome |
 | SET | Desktop Settings |
 | THM | Desktop Theme |
 

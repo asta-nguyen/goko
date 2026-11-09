@@ -3,7 +3,7 @@
 //! + agent-logo + goko-mark icon bodies, and the small builders shared by the
 //!   chrome regions. Ported from the verified rune-spike `fidelity.rs`.
 
-use rune::{icon, row, text, Color, El, Icon, TextStyle};
+use rune::{el, icon, row, text, Color, El, Icon, TextStyle};
 
 pub fn c(hex: &str) -> Color {
     rune::color::hex(hex).expect("palette hex")
@@ -157,6 +157,26 @@ stroke_icon!(
     "<path d=\"M12 19h8\"/>",
     "<path d=\"m4 17 6-6-6-6\"/>"
 );
+// Split-pane glyphs for the tab strip's icon-only split buttons (lucide
+// columns-2 / rows-2: an 18 px frame with one divider).
+stroke_icon!(
+    COLUMNS_2,
+    "columns-2",
+    "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" ry=\"2\"/>",
+    "<path d=\"M12 3v18\"/>"
+);
+stroke_icon!(
+    ROWS_2,
+    "rows-2",
+    "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" ry=\"2\"/>",
+    "<path d=\"M3 12h18\"/>"
+);
+stroke_icon!(
+    BOOK_OPEN,
+    "book-open",
+    "<path d=\"M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z\"/>",
+    "<path d=\"M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z\"/>"
+);
 // Badge variant="warning" icon (CheckoutStatus "missing" badge).
 stroke_icon!(
     TRIANGLE_ALERT,
@@ -304,5 +324,14 @@ pub fn btn_sm(label: &str, icon: Option<(&'static Icon, f32)>, outline: bool, in
     if let Some((i, size)) = icon {
         b = b.child(ic(i, size, ink.text));
     }
-    b.child(txt(label, T128, ink.text))
+    b.child(txt(label, T128, ink.text)).hover(ink.bg)
+}
+
+/// Icon-only ghost button: a 28 px square in the `btn_sm` rhythm.
+pub fn btn_icon(i: &'static Icon, ink: &Ink) -> El {
+    el().size(28.0, 28.0)
+        .radius(8.0)
+        .center()
+        .hover(ink.bg)
+        .child(ic(i, 16.0, ink.text))
 }
