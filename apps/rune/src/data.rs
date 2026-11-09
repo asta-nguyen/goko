@@ -423,6 +423,38 @@ fn sess(
     }
 }
 
+/// The tab strip's New tab button: mock `session_create` for a running shell
+/// under the goko root checkout. Returns the tab title; `Shell N` numbers past
+/// the highest live shell session so titles never collide after closes. The
+/// caller pushes the title onto `open_tabs` and `sync_selection` resolves it
+/// like any other.
+pub fn spawn_shell(data: &mut Data) -> String {
+    let n = data
+        .sessions
+        .iter()
+        .filter_map(|v| {
+            v.title()
+                .strip_prefix("Shell ")
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .max()
+        .unwrap_or(1)
+        + 1;
+    let title = format!("Shell {n}");
+    let id = format!("sess-shell-new-{n}");
+    data.sessions.push(sess(
+        &id,
+        &title,
+        &["/bin/zsh"],
+        GOKO_ROOT,
+        SessionState::Running,
+        Some(PID_GOKO),
+        Some("shell"),
+        None,
+    ));
+    title
+}
+
 /// The dataset behind the app. Swap point for real data: everything below this
 /// function's return value is what the views consume.
 pub fn mock_data() -> Data {
