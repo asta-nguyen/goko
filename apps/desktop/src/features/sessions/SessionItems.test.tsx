@@ -259,4 +259,31 @@ describe('SessionItems sub-agents', () => {
     expect(screen.queryByText(/↳/)).toBeNull()
     expect(screen.queryByText(/Running sub-agents:/)).toBeNull()
   })
+
+  it('shows working on the dot when a sub-agent runs after the session turn ended', async () => {
+    activityService.get.mockResolvedValue({ 'daemon-session': 'done' })
+    renderSubagentRow({ 'daemon-session': [subagent('devin', 1)] })
+
+    expect(await screen.findByTitle('running · working')).toBeTruthy()
+  })
+
+  it('shows working on the dot when a sub-agent runs with no activity entry', async () => {
+    renderSubagentRow({ 'daemon-session': [subagent('devin', 1)] })
+
+    expect(await screen.findByTitle('running · working')).toBeTruthy()
+  })
+
+  it('keeps waiting on the dot when a sub-agent runs while the session waits', async () => {
+    activityService.get.mockResolvedValue({ 'daemon-session': 'waiting' })
+    renderSubagentRow({ 'daemon-session': [subagent('devin', 1)] })
+
+    expect(await screen.findByTitle('running · waiting')).toBeTruthy()
+  })
+
+  it('keeps done on the dot when no sub-agent runs', async () => {
+    activityService.get.mockResolvedValue({ 'daemon-session': 'done' })
+    renderSubagentRow({})
+
+    expect(await screen.findByTitle('running · done')).toBeTruthy()
+  })
 })

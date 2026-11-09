@@ -53,7 +53,15 @@ cleanup.
 | Wire protocol | `crates/protocol/` | Frame codec (`u32` length, `u8` kind, ≤1 MiB payload), JSON message schema (requests, responses, events, error codes), `SessionId`/`SessionInfo`/`SessionState` types |
 | Daemon | `crates/daemon/` | `gokod` binary: instance lock, token auth, socket server, request dispatch, session state machine, PTY spawn/signal/resize/live-CWD, 1 MiB replay buffer with subscriber streaming |
 | Desktop bridge | `apps/desktop/src-tauri/` | Daemon connect-or-spawn client and handshake, `Bridge` request API, event pump to Tauri events, terminal `Channel`, SQLite `goko.db` store (projects, session metadata, settings), agent discovery and launch, usage polling and `usage_get` (per account), agent accounts and their launch environment (`accounts.rs`; see [Agent accounts](../domains/agent-accounts.md)), agent activity polling and `activity_get`, sub-agent process polling and `subagents_get`, worktree/env-file commands, `git_view_*` editor commands including checkout-scoped content search; see [Editor requirements](editor.md#edt-content-search) |
-| Desktop UI | `apps/desktop/src/` | React 19 + TanStack Query + zustand: project-tree sidebar, terminal workspaces (tabs and split panes over xterm), session controls, Editor workspace (Files, Changes, History, Stashes), provider usage chips that switch between accounts, Claude context percentages, working/waiting/done session dots, a `↳ <agent>` indicator while a session runs sub-agent CLIs; Files uses CodeMirror, persisted optional Vim mode, and content search with line navigation; see [Editor requirements](editor.md#edt-codemirror-surface) |
+| Desktop UI | `apps/desktop/src/` | React 19 + TanStack Query + zustand: project-tree sidebar, terminal workspaces (tabs and split panes over xterm), session controls, Editor workspace (Files, Changes, History, Stashes), provider usage chips that switch between accounts, Claude context percentages, working/waiting/done session dots, a `↳ <agent>` indicator while a session runs sub-agent CLIs; Files uses CodeMirror, persisted optional Vim mode, and content search with line navigation; see [Editor requirements](editor.md#edt-codemirror-surface) and [terminal file links](editor.md#edt-terminal-file-link) |
+
+## Terminal links
+
+The terminal scans each row for HTTP(S) URLs and path-like tokens. Only Cmd+click on macOS or Ctrl+click elsewhere opens an HTTP(S) URL in the system browser; the Tauri opener capability allows only `http` and `https`, and trailing sentence punctuation is excluded. URL rows do not trigger file-list reads.
+
+A path is linked only when it resolves to a file returned by the checkout's `git_view_file_list` (tracked or non-ignored untracked files). Absolute paths must be inside the checkout; relative paths are tried from the session's live working directory, then from the checkout root, with `.` and `..` normalized and paths that leave the checkout rejected. The shared query cache keeps the file list fresh for five seconds and reads it only for rows with path candidates. If that read fails, file links are omitted while URL links remain.
+
+Activating a resolved path with the same modifier sends a one-shot request to the Editor for that checkout. The Editor opens Files through its existing navigation guard and reveals `:line` when present. Links are resolved within one terminal row; a path split across rows is not linked.
 
 ## Cross-domain dependencies
 
@@ -142,7 +150,16 @@ session it walks the descendants of that pid and keeps those whose program is `c
 only when it changed, and `subagents_get` returns it; a failed listing or `ps` keeps the previous
 map. A sidebar row with sub-agents shows muted `↳ <agent>` text (`×N` for repeats, agents in
 alphabetical order, for example `↳ codex, devin ×2`) whose title lists `<agent> (pid <pid>):
-<command>` per sub-agent.
+<command>` per sub-agent. A running session with sub-agents shows the `working` spinner on its dot even
+when its own activity reads `done` or is missing (its turn ended while a sub-agent still runs);
+`waiting` keeps priority because it needs the user.
+
+A Codex session's tools run in the shared `codex app-server` daemon, not under the session's pid.
+For agent CLIs below a `codex app-server` process, `subagents.rs` reads each one's
+`CODEX_THREAD_ID` (`ps -Eww -o pid=,command=`) and maps the thread to a session through the
+rollout match `activity.rs` uses (`match_codex_rollouts`; the thread id is the rollout file
+stem's last 36 characters), then adds the agent to the same map. It reads nothing extra when no
+agent runs below a daemon, and covers only the default Codex home.
 
 Limits: a sub-agent's output is not available (it goes to its parent agent's pipe, not to a Goko
 terminal); an agent that runs inside its parent's own process is not a process and is not
@@ -170,6 +187,8 @@ word contains a space is split there and can be missed.
 - `crates/daemon/tests/e2e.rs`
 - `crates/daemon/src/paths.rs`
 - `apps/desktop/src-tauri/src/lib.rs`
+- `apps/desktop/src-tauri/Cargo.toml`
+- `apps/desktop/src-tauri/capabilities/default.json`
 - `apps/desktop/src-tauri/src/bridge.rs`
 - `apps/desktop/src-tauri/src/commands.rs`
 - `apps/desktop/src-tauri/src/daemon_client.rs`
@@ -180,6 +199,19 @@ word contains a space is split there and can be missed.
 - `apps/desktop/src-tauri/src/subagents.rs`
 - `apps/desktop/src-tauri/src/terminal.rs`
 - `apps/desktop/src/features/terminal/TerminalController.ts`
+- `apps/desktop/src/features/terminal/TerminalController.test.ts`
+- `apps/desktop/src/features/terminal/TerminalView.tsx`
+- `apps/desktop/src/features/terminal/TerminalView.test.tsx`
+- `apps/desktop/src/features/terminal/TerminalWorkspace.tsx`
+- `apps/desktop/src/features/terminal/terminal-links.ts`
+- `apps/desktop/src/features/terminal/terminal-links.test.ts`
+- `apps/desktop/src/features/editor/EditorWorkspace.tsx`
+- `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+- `apps/desktop/src/features/editor/EditorFiles.tsx`
+- `apps/desktop/src/services/git-view.ts`
+- `apps/desktop/src/queryClient.ts`
+- `apps/desktop/package.json`
+- `apps/desktop/src-tauri/src/git_view.rs`
 - `apps/desktop/src-tauri/src/wiring_tests.rs`
 - `apps/desktop/src-tauri/src/store.rs`
 - `apps/desktop/src/App.tsx`

@@ -294,7 +294,7 @@ fn claude_session_id(argv: &[String]) -> Option<&str> {
 /// Goko launches Codex as its bare resolved path, so a lone argv whose stem is `codex`
 /// (`codex.js` for an npm install) is a Codex session. A named account prepends `env`
 /// and `NAME=value` words before the same binary: `[env, NAME=value…, <bin>]`.
-fn is_codex(argv: &[String]) -> bool {
+pub fn is_codex(argv: &[String]) -> bool {
     fn stem_is_codex(arg: &str) -> bool {
         Path::new(arg)
             .file_stem()

@@ -126,6 +126,7 @@ pub fn run() {
     let shutdown = Arc::new(ShutdownState::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let home = daemon_client::home_dir()?;
             let bridge = Bridge::new(home.clone());

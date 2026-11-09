@@ -46,4 +46,13 @@ reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
 
-You are responsible for managing the final outcomes of tasks. Use the Devin CLI—specifically the `swe-2-max flash` model with full permissions—to execute these tasks. Your role is to oversee the results; if any issues arise, instruct the `swe-2-max flash` model to fix them until the task is complete. Stick closely to the plan, and if you are unsure about anything or wish to propose an approach, ask for clarification. Since the `swe-2-max flash` model is free to use, leverage it for as much work as possible to conserve your own quota. Can add multi subagent `swe-2-max flash` to implement parallel tasks.
+## Delegating implementation to Devin
+
+You are the supervisor and own the final outcome of every task. Delegate the coding to the Devin CLI with the free `swe-2-flash-max` model, and spend your own quota on planning, review, and decisions.
+
+- **Run it:** `devin --model swe-2-flash-max --permission-mode dangerous -p --prompt-file <file>`. Do not pass `--sandbox`; it overrides the permission mode and blocks shell commands. Devin runs in the user's working tree, so tell it not to commit, stash, reset, clean, or touch unrelated uncommitted changes.
+- **One task per run:** write the prompt to a file. Point it at `AGENTS.md`, the change's `design.md` and `tasks.md`, name exactly one task, and require a final report with the files changed, the commands run with pass/fail counts, any deviation, and open questions.
+- **Parallel runs:** start several Devin runs at once only when their tasks touch disjoint files. Otherwise run them in order.
+- **Verify yourself:** never accept a report on trust. Check `git status`, read the diff, and rerun the task's `Verify` commands. A missing file or a test filter that matches nothing is a failure.
+- **Fix loop:** if a check fails, send Devin the exact failing output and ask for a fix. After three failed attempts on one problem, stop and report it to the user instead of retrying.
+- **Stay in the plan:** follow the approved plan. If a task is unclear, or you want to change the approach or scope, ask the user before continuing.

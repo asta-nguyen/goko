@@ -1,8 +1,10 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type IBufferLine, type ILink, type IDisposable } from '@xterm/xterm'
+import { goToModifier } from '../../lib/utils'
 import { toBridgeError } from '../../services/errors'
 import type { SessionService } from '../../services/session'
+import { findFileRefs, findUrlRefs } from './terminal-links'
 
 type Service = Pick<SessionService, 'subscribe' | 'write' | 'resize' | 'ack'>
 
@@ -31,6 +33,41 @@ export const textareaEdit = (before: string, after: string): string => {
   return BACKSPACE.repeat(old.length - common) + next.slice(common).join('')
 }
 
+/**
+ * The 1-based column span of the buffer cell behind each UTF-16 offset of `text`.
+ * The scanners report string offsets but link ranges are cell columns, and the two
+ * diverge once a wide glyph (CJK, emoji) precedes the link. The walk mirrors
+ * `translateToString`'s cell advance so both stay aligned; `first`/`last` are
+ * indexed by string offset and hold the first and last 1-based column of its cell.
+ */
+const cellColumns = (line: IBufferLine, text: string): { first: number[]; last: number[] } => {
+  const first: number[] = []
+  const last: number[] = []
+  let offset = 0
+  for (let x = 0; x < line.length && offset < text.length; ) {
+    const cell = line.getCell(x)
+    if (!cell) break
+    const chars = cell.getChars() || ' ' // cells without content translate to a space
+    const span = cell.getWidth() || 1
+    for (let i = 0; i < chars.length && offset < text.length; i++, offset++) {
+      first[offset] = x + 1
+      last[offset] = x + span
+    }
+    x += span
+  }
+  return { first, last }
+}
+
+/** What an activated link does: URLs go to the system browser, checkout files to the Editor. */
+export interface TerminalLinks {
+  openUrl(url: string): void
+  file?: {
+    /** The checkout-relative path a printed candidate names, or null when it is not a checkout file. */
+    resolve(raw: string): Promise<string | null>
+    open(path: string, line?: number): void
+  }
+}
+
 /** One xterm instance bound to one session. Output goes straight to `term.write`, never through React. */
 export class TerminalController {
   private term?: Terminal
@@ -43,6 +80,7 @@ export class TerminalController {
   private onData?: { dispose(): void }
   private imeCleanup?: () => void
   private unsubscribe?: () => void
+  private linksDisposable?: IDisposable
   private sent = ''
   private disposed = false
   private visible = true
@@ -52,6 +90,7 @@ export class TerminalController {
   constructor(
     private sessionId: string,
     private service: Service,
+    private links?: TerminalLinks,
   ) {}
 
   /** Open, fit, send the fitted size, then subscribe, so the replay never lands in a wrong-size terminal. */
@@ -72,6 +111,7 @@ export class TerminalController {
     term.open(element)
     if (visible) this.useWebgl(term)
     this.attachIme(term, element)
+    this.registerLinks(term)
     // Writes to an exited session are rejected by the daemon; the view's banner shows why.
     this.onData = term.onData((data) => {
       // A key xterm handled itself (space, Backspace, Enter, arrows) ends the IME word, and the
@@ -115,6 +155,7 @@ export class TerminalController {
     this.imeCleanup?.()
     this.unsubscribe?.()
     this.onData?.dispose()
+    this.linksDisposable?.dispose()
     this.fit.dispose()
     this.term?.dispose()
   }
@@ -144,6 +185,83 @@ export class TerminalController {
   private updateTheme(): void {
     if (!this.term) return
     this.term.options.theme = { background: token('--bg'), foreground: token('--text'), cursor: token('--accent') }
+  }
+
+  /**
+   * One provider for HTTP(S) URLs and checkout files. A row's URL candidates never need the file
+   * list; only a row with file candidates resolves them through `links.file`, then reports every
+   * link at once. Activation stays behind the Editor's Cmd/Ctrl rule in `goToModifier`.
+   */
+  private registerLinks(term: Terminal): void {
+    const links = this.links
+    if (!links) return
+    this.linksDisposable = term.registerLinkProvider({
+      provideLinks: (y, callback) => {
+        const line = term.buffer.active.getLine(y - 1)
+        const text = line?.translateToString(true)
+        if (!line || !text) {
+          callback(undefined)
+          return
+        }
+        const urlRefs = findUrlRefs(text)
+        const file = links.file
+        const fileRefs = file ? findFileRefs(text) : []
+        if (urlRefs.length === 0 && fileRefs.length === 0) {
+          callback(undefined)
+          return
+        }
+        // `y` is a 1-based buffer line and link ranges are 1-based cell columns;
+        // the scanners return UTF-16 string offsets, mapped through the cells.
+        const columns = cellColumns(line, text)
+        const range = (start: number, end: number) => ({
+          start: { x: columns.first[start], y },
+          end: { x: columns.last[end - 1], y },
+        })
+        const urlLinks: ILink[] = urlRefs.map((ref): ILink => ({
+          range: range(ref.start, ref.end),
+          text: ref.url,
+          activate: (event) => {
+            if (!goToModifier(event)) return
+            try {
+              const { protocol } = new URL(ref.url)
+              if (protocol !== 'http:' && protocol !== 'https:') return
+            } catch {
+              return
+            }
+            links.openUrl(ref.url)
+          },
+        }))
+        if (!file || fileRefs.length === 0) {
+          callback(urlLinks.length ? urlLinks : undefined)
+          return
+        }
+        void Promise.all(
+          fileRefs.map((ref) =>
+            file.resolve(ref.path).then(
+              (path) => ({ ref, path }),
+              () => ({ ref, path: null }),
+            ),
+          ),
+        ).then((resolved) => {
+          if (this.disposed) return
+          const fileLinks = resolved.flatMap(({ ref, path }): ILink[] =>
+            path === null
+              ? []
+              : [
+                  {
+                    range: range(ref.start, ref.end),
+                    text: text.slice(ref.start, ref.end),
+                    activate: (event) => {
+                      if (goToModifier(event)) file.open(path, ref.line)
+                    },
+                  },
+                ],
+          )
+          const all = [...urlLinks, ...fileLinks]
+          callback(all.length ? all : undefined)
+        })
+      },
+    })
   }
 
   paste(text: string): void {

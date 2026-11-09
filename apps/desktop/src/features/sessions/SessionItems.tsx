@@ -51,6 +51,7 @@ const SessionRow = memo(function SessionRow({
   const context = contextPct === null ? null : Math.round(contextPct)
   const activity = useSessionActivity(session)
   const subagents = useSessionSubagents(session)
+  const shownActivity = subagents.length > 0 && activity !== 'waiting' ? 'working' : activity
   const { data: accounts } = useAccounts()
   // The account comes from the session's own argv, so it survives active-account switches.
   const agentKey = agent === 'claude' || agent === 'codex' ? agent : null
@@ -77,7 +78,7 @@ const SessionRow = memo(function SessionRow({
           <AgentIcon agent={agent} />
           <StateDot
             state={session.state}
-            activity={activity}
+            activity={shownActivity}
             className="absolute -bottom-0.5 -right-0.5 size-2 ring-2 ring-panel"
           />
         </span>

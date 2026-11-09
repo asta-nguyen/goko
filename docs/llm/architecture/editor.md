@@ -182,6 +182,24 @@ The system SHALL let the user stage and unstage files from the Editor's Changes 
 
 Evidence: `apps/desktop/src-tauri/src/git_write.rs`, `apps/desktop/src/features/editor/CommitBox.tsx`, `apps/desktop/src/features/editor/EditorChanges.tsx`, `apps/desktop/src/features/editor/CommitBox.test.tsx`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
 
+### EDT-terminal-file-link
+
+The system SHALL, on Cmd+click (macOS) or Ctrl+click (other platforms) on a file path printed in a session's terminal output that resolves to a file in that session's checkout, switch to the Editor's Files view for that checkout and open the file, revealing the printed line when the path carries `:line`.
+
+#### Scenario: Open a printed path at its line
+
+- GIVEN a session in a Git checkout prints `src/App.tsx:10` and `src/App.tsx` is in the checkout's file list
+- WHEN the user Cmd/Ctrl+clicks that text
+- THEN the Editor's Files view opens `src/App.tsx` with line 10 revealed
+
+#### Scenario: Unresolved or unmodified click
+
+- GIVEN a printed path names no file of the checkout, or the user clicks without Cmd/Ctrl
+- WHEN the pointer is over the text or the user clicks it
+- THEN an unresolved path is not underlined and nothing opens, and a click without Cmd/Ctrl never opens a file
+
+Evidence: `apps/desktop/src/features/terminal/terminal-links.ts`, `apps/desktop/src/features/terminal/TerminalController.ts`, `apps/desktop/src/features/terminal/TerminalView.tsx`, `apps/desktop/src/stores/ui.ts`, `apps/desktop/src/features/editor/EditorWorkspace.tsx`, `apps/desktop/src/features/editor/EditorFiles.tsx`, `apps/desktop/src/features/terminal/terminal-links.test.ts`, `apps/desktop/src/features/editor/EditorWorkspace.test.tsx`
+
 ### EDT-vim-save
 
 The system SHALL persist the optional Vim mode under `editor.vim` and route Vim `:w` to the active editor's existing save action.
@@ -197,6 +215,8 @@ Evidence: `apps/desktop/src/features/editor/queries.ts`, `apps/desktop/src/featu
 ## Flow
 
 Files mode keeps the existing filename filter and tree. Content mode trims and debounces the shared input, then `useGitSearch` keys the result by project, checkout, and query; the service invokes `git_view_search`. The Tauri command revalidates the registered checkout before `git_view::search` runs Git through the bounded runner. Selecting a result uses the Files navigation path. An already open file receives a line reveal directly; changing files goes through the shared unsaved-draft guard. CodeMirror clamps the requested line to the document, selects it, scrolls it into view, and focuses the editor. `Cmd/Ctrl+F` inside CodeMirror remains available to its search panel.
+
+Terminal file links arrive as one-shot open requests scoped to the session's checkout. `EditorWorkspace` switches to Files only for its matching checkout; `EditorFiles` selects the requested path through the same unsaved-draft guard as other navigation, then reveals the requested line. The request is cleared after handling, when its checkout cannot be shown, or when the Editor unmounts. See [Terminal links](overview.md#terminal-links) for URL opening and path resolution.
 
 Cmd+click (macOS) or Ctrl+click (other platforms) on a token in the Files editor starts a lookup; a modified click is handled ahead of Vim, and while the modifier is held the token under the pointer is underlined. An import specifier (`from`, `import`, `require` strings) is resolved against the checkout's file list: relative paths try the extensions `.ts .tsx .js .jsx .mjs .cjs .json` and `index.*`, a `.js` specifier also tries its TypeScript source, and other specifiers try the `compilerOptions.paths` aliases of the nearest `tsconfig.json` or `jsconfig.json` that defines any. A hit opens through the Files navigation path. Any other name of two or more characters outside a comment or string is searched with the content search; its declaration lines are picked by keyword and shape patterns (JS/TS, Python, Rust, Go). The first declaration in the open file wins, otherwise a single declaration in the checkout opens at its line, and anything else switches the sidebar to Content mode with the name as the query.
 
@@ -259,6 +279,7 @@ A History page that fails with no cached data shows the existing error pane with
 - `CommitBox` and Editor workspace tests cover the commit enable rules, `Cmd/Ctrl+Enter`, commit failure, push labels, Generate fill, discard-after-edit, cancel, unmount cancel, connect, agent fallback, row stage/unstage/discard buttons, and the discard dialog.
 - Rust `git_view` tests cover branch-scoped history, rejected unsafe branches (including revision syntax), the branch list with the current flag, the commit body, email, and committer, and numstat for text, binary, renamed, and root commits; the wiring test checks the command names and wire keys.
 - `history-graph`, `history-layout`, and `resizable-handle` tests cover colour continuity and lane reuse, clamped and failing storage, keyboard steps, drag clamping, and double-click reset; `HistoryTable` and `CommitDetail` tests cover rows, dimming, keyboard focus, paging, the context menu, copy feedback, parents, the collapsed body, and counts; Editor workspace tests cover the branch dropdown, match jumping, Jump to HEAD, the Uncommitted row and its fallback, and stale refreshes.
+- Terminal controller and view tests cover modified-click activation, resolved checkout paths, lazy cached file-list reads, file-list failures that leave URL links available, and the Editor open request; Editor workspace tests cover one-shot consumption, line reveal, checkout matching, and the existing draft-navigation guard.
 
 ## Related
 
@@ -303,6 +324,13 @@ A History page that fails with no cached data shows the existing error pane with
 - `apps/desktop/src/features/editor/queries.test.tsx`
 - `apps/desktop/src/features/editor/queries.ts`
 - `apps/desktop/src/features/settings/SettingsPage.tsx`
+- `apps/desktop/src/features/terminal/TerminalController.test.ts`
+- `apps/desktop/src/features/terminal/TerminalController.ts`
+- `apps/desktop/src/features/terminal/TerminalView.test.tsx`
+- `apps/desktop/src/features/terminal/TerminalView.tsx`
+- `apps/desktop/src/features/terminal/TerminalWorkspace.tsx`
+- `apps/desktop/src/features/terminal/terminal-links.test.ts`
+- `apps/desktop/src/features/terminal/terminal-links.ts`
 - `apps/desktop/src/queryClient.ts`
 - `apps/desktop/src/services/acp.ts`
 - `apps/desktop/src/services/git-view.test.ts`

@@ -357,7 +357,13 @@ export function TerminalWorkspace({
         onPointerDown={() => focusPane(workspaceId, tab.id, pane.id)}
         className={cn('relative h-full min-h-0 min-w-0 flex-1', pane.id === tab.activePaneId && 'ring-1 ring-inset ring-accent/40')}
       >
-        <TerminalView sessionId={pane.sessionId} active={active && tab.id === workspace.activeTabId} />
+        <TerminalView
+          sessionId={pane.sessionId}
+          active={active && tab.id === workspace.activeTabId}
+          workspaceId={workspaceId}
+          projectId={project?.id}
+          checkoutPath={checkoutPath}
+        />
         {pane.closingAt !== null && (
           <div className="absolute left-3 top-3 z-20 flex max-w-[min(32rem,90%)] items-center gap-2 rounded-md border border-border bg-panel/95 px-2.5 py-1.5 text-xs shadow-sm">
             <span className="font-medium">Closing</span>

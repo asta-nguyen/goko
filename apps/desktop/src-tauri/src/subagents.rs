@@ -1,5 +1,7 @@
+use crate::activity::{is_codex, match_codex_rollouts, recent_rollouts, CodexSession, RolloutMeta};
 use crate::bridge::Bridge;
 use crate::events::Emit;
+use crate::usage::codex_home_from;
 use protocol::session::{SessionInfo, SessionState};
 use serde::Serialize;
 use serde_json::json;
@@ -156,6 +158,194 @@ pub fn compute_subagents(sessions: &[SessionInfo], rows: &[ProcessRow]) -> Subag
     map
 }
 
+// Codex 0.167 runs a session's shell tool inside a shared `codex app-server`
+// daemon, not under the `codex` TUI Goko spawned, so walking the session pid's
+// descendants finds no agent. The daemon's tool calls carry `CODEX_THREAD_ID`
+// in their environment, and the same id ends the session's rollout file name;
+// tying a rollout to its Goko session reuses activity's cwd + start-time
+// heuristic. Known limit: named Codex accounts use their own `CODEX_HOME`, and
+// only the default Codex home is scanned here.
+
+/// A `codex app-server …` process: the file stem of the first word is `codex`
+/// and the second word is `app-server`.
+fn is_codex_app_server(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    Path::new(first)
+        .file_stem()
+        .is_some_and(|stem| stem == "codex")
+        && words.next() == Some("app-server")
+}
+
+/// Agent-CLI descendants of every `codex app-server` root, sorted by pid and
+/// deduplicated. Pids already reported as direct sub-agents are skipped, and so
+/// are the daemon's own `codex app-server` children: shared infrastructure, not
+/// sub-agents.
+fn codex_daemon_agents<'a>(rows: &'a [ProcessRow], direct: &SubagentMap) -> Vec<&'a ProcessRow> {
+    let claimed: HashSet<u32> = direct
+        .values()
+        .flat_map(|subagents| subagents.iter().map(|subagent| subagent.pid))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut found = Vec::new();
+    for root in rows {
+        if !is_codex_app_server(&root.command) {
+            continue;
+        }
+        for row in descendants(rows, root.pid) {
+            if seen.insert(row.pid)
+                && !is_codex_app_server(&row.command)
+                && agent_of(&row.command).is_some()
+                && !claimed.contains(&row.pid)
+            {
+                found.push(row);
+            }
+        }
+    }
+    found.sort_by_key(|row| row.pid);
+    found
+}
+
+/// pid -> `CODEX_THREAD_ID` from `ps -E` output, one `<pid> <command…>
+/// <ENV=VAL …>` line each. An env value containing spaces splits into several
+/// tokens; a uuid never does.
+fn parse_thread_ids(text: &str) -> HashMap<u32, String> {
+    let mut threads = HashMap::new();
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        let Some(pid) = words.next().and_then(|word| word.parse::<u32>().ok()) else {
+            continue;
+        };
+        if let Some(id) = words.find_map(|word| word.strip_prefix("CODEX_THREAD_ID=")) {
+            threads.insert(pid, id.to_owned());
+        }
+    }
+    threads
+}
+
+/// pid -> `CODEX_THREAD_ID` read from each process's environment. A `ps`
+/// failure yields an empty map, so the tick attributes nothing.
+async fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let joined = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(output) = tokio::process::Command::new("ps")
+        .args(["-Eww", "-o", "pid=,command=", "-p", joined.as_str()])
+        .output()
+        .await
+    else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    parse_thread_ids(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The thread id a rollout belongs to: the uuid at the end of its file stem
+/// (`rollout-<timestamp>-<uuid>.jsonl` keeps the last 36 chars). A shorter stem
+/// is skipped.
+fn rollout_thread_id(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let start = stem.char_indices().nth_back(35)?.0;
+    Some(stem[start..].to_owned())
+}
+
+/// thread id -> Goko session id: each running Codex session with a pid is
+/// matched to its rollout, and the rollout stem's trailing uuid is the thread.
+fn thread_owners(sessions: &[SessionInfo], rollouts: &[RolloutMeta]) -> HashMap<String, String> {
+    let running: Vec<&SessionInfo> = sessions
+        .iter()
+        .filter(|session| {
+            session.state == SessionState::Running
+                && session.pid.is_some()
+                && is_codex(&session.argv)
+        })
+        .collect();
+    let ids: Vec<String> = running
+        .iter()
+        .map(|session| session.id.as_uuid().to_string())
+        .collect();
+    let codex: Vec<CodexSession> = running
+        .iter()
+        .zip(ids.iter())
+        .map(|(session, id)| CodexSession {
+            id: id.as_str(),
+            cwd: session.cwd.as_str(),
+            started_at_ms: session.started_at,
+        })
+        .collect();
+    match_codex_rollouts(&codex, rollouts)
+        .into_iter()
+        .filter_map(|(session_id, rollout)| {
+            rollout_thread_id(&rollout).map(|thread| (thread, session_id))
+        })
+        .collect()
+}
+
+/// Adds each daemon agent whose `CODEX_THREAD_ID` belongs to a Goko Codex
+/// session to that session's entry; touched vecs stay sorted by pid.
+fn attribute_codex(
+    map: &mut SubagentMap,
+    agents: &[&ProcessRow],
+    threads: &HashMap<u32, String>,
+    owners: &HashMap<String, String>,
+) {
+    let mut touched = HashSet::new();
+    for row in agents {
+        let Some(agent) = agent_of(&row.command) else {
+            continue;
+        };
+        let Some(owner) = threads.get(&row.pid).and_then(|id| owners.get(id)) else {
+            continue;
+        };
+        let subagents = map.entry(owner.clone()).or_default();
+        if subagents.iter().any(|sub| sub.pid == row.pid) {
+            continue;
+        }
+        subagents.push(Subagent {
+            agent: agent.to_owned(),
+            pid: row.pid,
+            command: row.command.chars().take(COMMAND_LIMIT).collect(),
+        });
+        touched.insert(owner.clone());
+    }
+    for owner in touched {
+        if let Some(subagents) = map.get_mut(&owner) {
+            subagents.sort_by_key(|sub| sub.pid);
+        }
+    }
+}
+
+/// The Codex-daemon pass for this tick: a no-op unless a Codex home is known
+/// and the process table holds `codex app-server` agents, so the common case
+/// reads no environment and scans no rollouts.
+async fn add_codex_daemon_agents(
+    map: &mut SubagentMap,
+    sessions: &[SessionInfo],
+    rows: &[ProcessRow],
+    codex_home: Option<&Path>,
+) {
+    let Some(codex_home) = codex_home else {
+        return;
+    };
+    let agents = codex_daemon_agents(rows, map);
+    if agents.is_empty() {
+        return;
+    }
+    let pids: Vec<u32> = agents.iter().map(|row| row.pid).collect();
+    let threads = thread_ids(&pids).await;
+    let owners = thread_owners(sessions, &recent_rollouts(codex_home));
+    attribute_codex(map, &agents, &threads, &owners);
+}
+
 /// The map for this tick. A failed session listing or process-table read keeps
 /// `previous`; when no running session has a pid the answer is empty and the
 /// table is not read at all.
@@ -163,6 +353,7 @@ async fn next_map<F, Fut>(
     sessions: Option<Vec<SessionInfo>>,
     table: F,
     previous: &SubagentMap,
+    codex_home: Option<&Path>,
 ) -> SubagentMap
 where
     F: FnOnce() -> Fut,
@@ -178,7 +369,11 @@ where
         return SubagentMap::new();
     }
     match table().await {
-        Some(rows) => compute_subagents(&sessions, &rows),
+        Some(rows) => {
+            let mut map = compute_subagents(&sessions, &rows);
+            add_codex_daemon_agents(&mut map, &sessions, &rows, codex_home).await;
+            map
+        }
         None => previous.clone(),
     }
 }
@@ -207,6 +402,7 @@ fn apply(next: SubagentMap, current: &mut SubagentMap, state: &SubagentState, em
 }
 
 pub fn spawn_poller(bridge: Bridge, emit: Emit) -> SubagentState {
+    let codex_home = codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"));
     let state = SubagentState::default();
     let poll_state = state.clone();
     tauri::async_runtime::spawn(async move {
@@ -216,7 +412,7 @@ pub fn spawn_poller(bridge: Bridge, emit: Emit) -> SubagentState {
             interval.tick().await;
             // A daemon or `ps` error keeps the previous map; the next tick retries.
             let sessions = bridge.session_list().await.ok();
-            let next = next_map(sessions, process_table, &current).await;
+            let next = next_map(sessions, process_table, &current, codex_home.as_deref()).await;
             apply(next, &mut current, &poll_state, &emit);
         }
     });
@@ -233,6 +429,7 @@ mod tests {
     use std::cell::Cell;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
@@ -402,6 +599,148 @@ not a row
         assert_eq!(subs[0].command, long.chars().take(200).collect::<String>());
     }
 
+    #[test]
+    fn parse_thread_ids_reads_the_thread_id_appended_after_the_command() {
+        let text = "\
+38155 /Users/nus/.local/bin/devin --model x -p --prompt-file a.md \
+HOME=/Users/nus USER=nus CODEX_THREAD_ID=01a1be35-ef31-7d91-a7eb-ebfab364b664 PATH=/bin
+38156 devin acp SHELL=/bin/zsh
+63024 /opt/codex/bin/codex app-server --listen unix://x
+not-a-row CODEX_THREAD_ID=ignored
+";
+
+        let threads = parse_thread_ids(text);
+
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[&38155], "01a1be35-ef31-7d91-a7eb-ebfab364b664");
+    }
+
+    #[test]
+    fn codex_daemon_agents_finds_agent_cli_descendants_of_the_shared_daemon() {
+        // The Codex 0.167 shape: the TUI the session spawned (42066) has no
+        // children; the shared `codex app-server` daemon (16453 -> 63024) owns
+        // the tool calls, and `codex-code-mode-host`/`rtk proxy` are not agents.
+        let rows = vec![
+            row(1, 0, "launchd"),
+            row(42066, 1, "codex"),
+            row(16453, 1, "codex app-server daemon pid-update-loop"),
+            row(
+                63024,
+                16453,
+                "/opt/codex/bin/codex app-server --listen unix:///tmp/x.sock --managed-daemon",
+            ),
+            row(9483, 63024, "/opt/codex/bin/codex-code-mode-host"),
+            row(
+                38154,
+                63024,
+                "rtk proxy devin --model x -p --prompt-file x.md",
+            ),
+            row(
+                38155,
+                38154,
+                "/Users/nus/.local/bin/devin --model x -p --prompt-file x.md",
+            ),
+            row(38156, 38155, "devin acp"),
+            row(777, 1, "devin --model y"),
+        ];
+
+        let agents = codex_daemon_agents(&rows, &SubagentMap::new());
+        let pids: Vec<u32> = agents.iter().map(|row| row.pid).collect();
+
+        assert_eq!(pids, vec![38155, 38156]);
+    }
+
+    #[test]
+    fn codex_daemon_agents_skips_pids_already_in_the_direct_map() {
+        let rows = vec![
+            row(16453, 1, "codex app-server daemon pid-update-loop"),
+            row(
+                63024,
+                16453,
+                "/opt/codex/bin/codex app-server --listen unix://x",
+            ),
+            row(38155, 63024, "devin --model x"),
+            row(38156, 63024, "devin acp"),
+        ];
+        let direct = SubagentMap::from([(
+            "s".to_owned(),
+            vec![subagent("devin", 38155, "devin --model x")],
+        )]);
+
+        let agents = codex_daemon_agents(&rows, &direct);
+        let pids: Vec<u32> = agents.iter().map(|row| row.pid).collect();
+
+        assert_eq!(pids, vec![38156]);
+    }
+
+    #[test]
+    fn thread_owners_maps_thread_ids_to_codex_sessions_via_rollouts() {
+        let thread = "01a1be35-ef31-7d91-a7eb-ebfab364b664";
+        let mut codex_session = info(SessionState::Running, Some(42066));
+        codex_session.argv = vec!["/opt/homebrew/Caskroom/codex/0.167.0/bin/codex".into()];
+        codex_session.cwd = "/p".into();
+        codex_session.started_at = 2_000_000;
+        // Same cwd and an earlier start: each would claim the "/p" rollout if
+        // it were not filtered out before matching.
+        let mut non_codex = info(SessionState::Running, Some(7));
+        non_codex.cwd = "/p".into();
+        non_codex.started_at = 1_000_000;
+        let mut no_pid = info(SessionState::Running, None);
+        no_pid.argv = vec!["codex".into()];
+        no_pid.cwd = "/p".into();
+        no_pid.started_at = 1_500_000;
+        let rollout = |name: &str, cwd: &str, started_ms: i64| RolloutMeta {
+            path: PathBuf::from(format!(
+                "/codex/sessions/2026/11/09/rollout-2026-11-09T09-49-28-{name}.jsonl"
+            )),
+            cwd: cwd.to_owned(),
+            started_ms,
+        };
+        let rollouts = vec![
+            rollout(thread, "/p", 2_001_000),
+            rollout("00000000-0000-0000-0000-000000000000", "/other", 2_002_000),
+        ];
+        let expected = sid(&codex_session);
+
+        let owners = thread_owners(&[codex_session, non_codex, no_pid], &rollouts);
+
+        assert_eq!(owners, HashMap::from([(thread.to_owned(), expected)]));
+    }
+
+    #[test]
+    fn attribute_codex_adds_owned_agents_sorted_without_duplicates() {
+        let rows = vec![
+            row(38155, 1, "/x/devin --model x"),
+            row(300, 1, "claude --x"),
+            row(38156, 1, "devin acp"),
+            row(500, 1, "opencode"),
+        ];
+        let agents: Vec<&ProcessRow> = rows.iter().collect();
+        let threads = HashMap::from([
+            (38155, "T1".to_owned()),
+            (300, "T2".to_owned()),
+            (38156, "T-unknown".to_owned()),
+        ]);
+        let owners = HashMap::from([
+            ("T1".to_owned(), "S".to_owned()),
+            ("T2".to_owned(), "S".to_owned()),
+        ]);
+        let mut map = SubagentMap::new();
+
+        attribute_codex(&mut map, &agents, &threads, &owners);
+        attribute_codex(&mut map, &agents, &threads, &owners);
+
+        // 38156's thread has no owner and 500 has no thread: both are ignored.
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map["S"],
+            vec![
+                subagent("claude", 300, "claude --x"),
+                subagent("devin", 38155, "/x/devin --model x"),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn next_map_keeps_the_previous_map_when_the_session_list_fails() {
         let previous = previous_map();
@@ -414,6 +753,7 @@ not a row
                 async { None }
             },
             &previous,
+            None,
         )
         .await;
 
@@ -437,6 +777,7 @@ not a row
                 async { None }
             },
             &previous,
+            None,
         )
         .await;
 
@@ -449,7 +790,7 @@ not a row
         let session = info(SessionState::Running, Some(100));
         let previous = previous_map();
 
-        let next = next_map(Some(vec![session]), || async { None }, &previous).await;
+        let next = next_map(Some(vec![session]), || async { None }, &previous, None).await;
 
         assert_eq!(next, previous);
     }
@@ -463,6 +804,7 @@ not a row
             Some(vec![session.clone()]),
             || async move { Some(rows) },
             &SubagentMap::new(),
+            None,
         )
         .await;
 
@@ -500,6 +842,39 @@ not a row
     }
 
     #[tokio::test]
+    async fn thread_ids_reads_codex_thread_id_from_a_real_process_environment() {
+        // `env` sets the variable and execs the command, so the spawned pid
+        // carries `CODEX_THREAD_ID` in its environment like a Codex tool call.
+        // The sleeper must be a non-platform binary: Apple platform binaries
+        // (`/bin/sleep`, `/bin/sh`, …) never expose their environment to
+        // `ps -E`, while user-installed binaries like node do.
+        let mut child = tokio::process::Command::new("env")
+            .args([
+                "CODEX_THREAD_ID=test-thread-1",
+                "node",
+                "-e",
+                "setTimeout(()=>{},30000)",
+            ])
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+
+        // Poll briefly: `ps` may run in the window before `env` finishes exec.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let threads = loop {
+            let threads = thread_ids(&[pid]).await;
+            if threads.contains_key(&pid) || Instant::now() >= deadline {
+                break threads;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+
+        assert_eq!(threads.get(&pid).map(String::as_str), Some("test-thread-1"));
+    }
+
+    #[tokio::test]
     async fn a_real_devin_process_under_a_session_is_reported_and_then_dropped() {
         let dir = TempDir::new("subagents-e2e");
         let bin = dir.path().join("bin");
@@ -531,7 +906,7 @@ not a row
         let deadline = Instant::now() + Duration::from_secs(5);
         let subs = loop {
             let sessions = bridge.session_list().await.unwrap();
-            let map = next_map(Some(sessions), process_table, &SubagentMap::new()).await;
+            let map = next_map(Some(sessions), process_table, &SubagentMap::new(), None).await;
             match map.get(&sid) {
                 Some(subs) => break subs.clone(),
                 None => {
@@ -563,7 +938,7 @@ not a row
         }
 
         let sessions = bridge.session_list().await.unwrap();
-        let map = next_map(Some(sessions), process_table, &SubagentMap::new()).await;
+        let map = next_map(Some(sessions), process_table, &SubagentMap::new(), None).await;
         assert!(map.get(&sid).is_none(), "{map:?}");
 
         // The forced stop killed the process group, so the sleep is gone too.

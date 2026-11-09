@@ -5,6 +5,7 @@ import { basicSetup } from 'codemirror'
 import { languages } from '@codemirror/language-data'
 import { getCM, Vim, vim } from '@replit/codemirror-vim'
 import { useEffect, useRef } from 'react'
+import { goToModifier } from '../../lib/utils'
 import { codeTheme } from './code-theme'
 import { tokenAt, type GoToTarget, type GoToToken } from './go-to-definition'
 
@@ -33,9 +34,6 @@ const dropTextOutsideInsertMode = EditorView.inputHandler.of((view) => {
   return !!state && !state.insertMode
 })
 const vimExtensions = () => [vim(), dropTextOutsideInsertMode]
-
-// Ctrl+click is a right click on macOS, so go-to there is Cmd+click.
-const goToModifier = (event: MouseEvent) => (/Macintosh/.test(navigator.userAgent) ? event.metaKey : event.ctrlKey)
 
 /** The token under the pointer; a name inside a comment or string is not worth a lookup. */
 function tokenUnder(view: EditorView, event: MouseEvent): GoToToken | null {

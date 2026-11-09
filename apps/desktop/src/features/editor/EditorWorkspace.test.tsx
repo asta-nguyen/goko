@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ReactNode } from 'react'
 import { makeQueryClient, queryKeys } from '../../queryClient'
 import type { GitViewChanges, Project, WorktreeInfo } from '../../services/types'
-import { useUi } from '../../stores/ui'
+import { checkoutKey, useUi } from '../../stores/ui'
 import { EditorWorkspace } from './EditorWorkspace'
 
 const { service, settings, worktrees, gitWrite, acp } = vi.hoisted(() => ({
@@ -993,6 +993,128 @@ describe('sections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(service.changes).toHaveBeenCalledTimes(2))
     expect((await screen.findAllByText('src/app.ts')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('open-file request', () => {
+  const ROOT_KEY = checkoutKey('p1', '/work/p1')
+  const textFile = () =>
+    service.file.mockImplementation((_p: string, _co: string, filePath: string) =>
+      Promise.resolve({ path: filePath, kind: 'text' as const, text: 'line one\nline two', truncated: false, size: 17 }),
+    )
+
+  it('opens the requested file at the requested line and clears the request', async () => {
+    textFile()
+    renderEditor()
+    await screen.findByRole('region', { name: 'Staged files' })
+
+    act(() => useUi.getState().openEditorFile(ROOT_KEY, 'README.md', 4))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit README.md' })
+    expect(editor.getAttribute('data-reveal-line')).toBe('4')
+    expect(editor.getAttribute('data-reveal-nonce')).toBe('1')
+    expect(screen.getByRole('tab', { name: 'Files' }).getAttribute('aria-selected')).toBe('true')
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+  })
+
+  it('reveals the line without reopening when the file is already open', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' })
+    const fileCalls = service.file.mock.calls.length
+
+    act(() => useUi.getState().openEditorFile(ROOT_KEY, 'src/app.ts', 9))
+
+    await waitFor(() => expect(editor.getAttribute('data-reveal-line')).toBe('9'))
+    expect(service.file).toHaveBeenCalledTimes(fileCalls)
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+  })
+
+  it('routes the open through the dirty-draft guard and Cancel keeps the draft', async () => {
+    textFile()
+    renderEditor()
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'src' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'app.ts' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit src/app.ts' })
+    fireEvent.change(editor, { target: { value: 'edited draft' } })
+    expect(useUi.getState().editorDraft).not.toBeNull()
+
+    act(() => useUi.getState().openEditorFile(ROOT_KEY, 'README.md', 4))
+
+    await waitFor(() => expect(useUi.getState().editorGuardOpen).toBe(true))
+    expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' })).toBeTruthy()
+    expect(service.file).not.toHaveBeenCalledWith('p1', '/work/p1', 'README.md')
+
+    act(() => useUi.getState().cancelEditorNavigation())
+    expect(useUi.getState().editorGuardOpen).toBe(false)
+    expect(screen.getByRole('textbox', { name: 'Edit src/app.ts' })).toBeTruthy()
+    expect(useUi.getState().editorDraft).not.toBeNull()
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+  })
+
+  it('drops a request for another workspace without opening anything', async () => {
+    renderEditor()
+    await screen.findByRole('region', { name: 'Staged files' })
+
+    act(() => useUi.getState().openEditorFile(checkoutKey('p1', '/work/feature'), 'src/app.ts', 3))
+
+    await waitFor(() => expect(useUi.getState().editorOpenRequest).toBeNull())
+    expect(screen.queryByRole('textbox', { name: 'Edit src/app.ts' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Changes' }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('drops a request for an unsupported checkout and shows the empty state', async () => {
+    worktrees.list.mockResolvedValue({ repo: false, worktrees: [] })
+    renderEditor()
+
+    act(() => useUi.getState().openEditorFile(ROOT_KEY, 'src/app.ts'))
+
+    expect(await screen.findByText('Editor needs a Git checkout')).toBeTruthy()
+    await waitFor(() => expect(useUi.getState().editorOpenRequest).toBeNull())
+  })
+
+  it('drops a request for a missing checkout and shows the empty state', async () => {
+    worktrees.list.mockResolvedValue({ repo: true, worktrees: [ROOT, { ...FEATURE, missing: true }] })
+    renderEditor('/work/feature')
+
+    act(() => useUi.getState().openEditorFile(checkoutKey('p1', '/work/feature'), 'src/app.ts'))
+
+    expect(await screen.findByText('This checkout is missing')).toBeTruthy()
+    await waitFor(() => expect(useUi.getState().editorOpenRequest).toBeNull())
+  })
+
+  it('clears a pending request when the Editor unmounts', async () => {
+    worktrees.list.mockReturnValue(new Promise(() => {}))
+    const { unmount } = renderEditor()
+
+    act(() => useUi.getState().openEditorFile(ROOT_KEY, 'src/app.ts'))
+    expect(useUi.getState().editorOpenRequest).not.toBeNull()
+
+    unmount()
+    await waitFor(() => expect(useUi.getState().editorOpenRequest).toBeNull())
+  })
+
+  it('does not replay a consumed request when the Editor remounts', async () => {
+    textFile()
+    const { unmount } = renderEditor()
+    await screen.findByRole('region', { name: 'Staged files' })
+    act(() => useUi.getState().openEditorFile(ROOT_KEY, 'README.md', 4))
+    await screen.findByRole('textbox', { name: 'Edit README.md' })
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+    const fileCalls = service.file.mock.calls.length
+
+    unmount()
+    renderEditor()
+    await screen.findByRole('region', { name: 'Staged files' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    await screen.findByLabelText('Filter files')
+
+    expect(screen.queryByRole('textbox', { name: 'Edit README.md' })).toBeNull()
+    expect(service.file).toHaveBeenCalledTimes(fileCalls)
+    expect(useUi.getState().editorOpenRequest).toBeNull()
   })
 })
 

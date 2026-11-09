@@ -1,25 +1,88 @@
 import '@xterm/xterm/css/xterm.css'
+import { useQueryClient } from '@tanstack/react-query'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { useEffect, useRef } from 'react'
+import { queryKeys } from '../../queryClient'
+import { gitViewService } from '../../services/git-view'
 import { sessionService } from '../../services/session'
+import { useUi } from '../../stores/ui'
 import { useSession } from '../sessions/queries'
-import { TerminalController } from './TerminalController'
+import { TerminalController, type TerminalLinks } from './TerminalController'
+import { resolveFileRef } from './terminal-links'
 
 /** Full-height terminal for one session. Output never touches React state; only session metadata does. */
-export function TerminalView({ sessionId, active = true }: { sessionId: string | null; active?: boolean }) {
+export function TerminalView({
+  sessionId,
+  active = true,
+  workspaceId,
+  projectId,
+  checkoutPath,
+}: {
+  sessionId: string | null
+  active?: boolean
+  workspaceId?: string
+  projectId?: string
+  checkoutPath?: string
+}) {
   const host = useRef<HTMLDivElement>(null)
   const controller = useRef<TerminalController | null>(null)
+  const queryClient = useQueryClient()
   const { data: session } = useSession(sessionId)
+  // Hover-time reads go through refs so a moved `cwd` or late project context
+  // never rebuilds the terminal (a rebuild would drop xterm's UI state).
+  const cwdRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    cwdRef.current = session?.cwd
+  }, [session?.cwd])
+  const contextRef = useRef<{ workspaceId?: string; projectId?: string; checkoutPath?: string }>({})
+  useEffect(() => {
+    contextRef.current = { workspaceId, projectId, checkoutPath }
+  }, [workspaceId, projectId, checkoutPath])
 
   useEffect(() => {
     if (!sessionId || !host.current) return
-    const instance = new TerminalController(sessionId, sessionService)
+    const file: NonNullable<TerminalLinks['file']> = {
+      resolve: async (raw) => {
+        const { projectId, checkoutPath } = contextRef.current
+        if (!projectId || !checkoutPath) return null
+        try {
+          const files = await queryClient.fetchQuery({
+            queryKey: queryKeys.gitFileList(projectId, checkoutPath),
+            queryFn: () => gitViewService.fileList(projectId, checkoutPath),
+            staleTime: 5000,
+          })
+          return resolveFileRef({ path: raw }, {
+            checkoutPath,
+            cwd: cwdRef.current,
+            files: new Set(files),
+          })
+        } catch {
+          return null
+        }
+      },
+      open: (path, line) => {
+        const { workspaceId } = contextRef.current
+        if (workspaceId) useUi.getState().openEditorFile(workspaceId, path, line)
+      },
+    }
+    const links: TerminalLinks = {
+      // A rejected open (no browser, denied) must not break the terminal.
+      openUrl: (url) => void openUrl(url).catch(() => {}),
+      // The provider reads `file` on every hover; the getter keeps it absent
+      // until project, checkout, and workspace context have all arrived.
+      get file() {
+        const { workspaceId, projectId, checkoutPath } = contextRef.current
+        return workspaceId && projectId && checkoutPath ? file : undefined
+      },
+    }
+    const instance = new TerminalController(sessionId, sessionService, links)
     controller.current = instance
     void instance.mount(host.current, active)
     return () => {
       instance.dispose()
       if (controller.current === instance) controller.current = null
     }
-  }, [sessionId])
+  }, [sessionId, queryClient])
 
   useEffect(() => controller.current?.setVisible(active), [active])
 

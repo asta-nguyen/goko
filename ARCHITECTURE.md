@@ -116,6 +116,17 @@ title, created_at)`, and `settings(key, value)`.
   deleted so metadata cleanup can be retried.
 - Removing a project does not stop its sessions. Its open tabs are rehomed under Unassigned
   and remain closable there.
+- HTTP(S) URLs and checkout file paths printed in a session's output are links, underlined
+  on hover and activated only with the Editor's go-to modifier (Cmd+click on macOS,
+  Ctrl+click elsewhere), so a plain click just selects text. A URL opens in the system
+  browser through the opener plugin, re-checked to `http`/`https` in the webview and scoped
+  by capability. A printed path links only when it resolves inside the session checkout's
+  file list (`git_view_file_list`: tracked and untracked, not ignored), tried against the
+  session's live `cwd` then the checkout root; activation sends a one-shot Editor request
+  that opens the file in Files at the printed `:line`. The list is read lazily through the
+  shared query cache (5 s stale time) only when a hovered row has a path-like token; with no
+  project, no Git checkout, or a failed list, URL links still work and file links do not
+  appear. Anchors in Markdown rendered by the Editor remain inert.
 
 ## Project checkouts and Git worktrees (S3)
 
@@ -358,8 +369,15 @@ its pid whose program is `claude`, `codex`, `opencode`, or `devin` (the first wo
 the word after `node` or `bun`) and publishes the map `{session id: [{agent, pid, command}]}` in
 `subagents://updated` only when it changed (`subagents_get` returns the current map). A failed
 listing or `ps` keeps the previous map. The sidebar shows `↳ <agent>` on a session row while
-sub-agents run. The indicator is read-only: a sub-agent's output stays in its parent's pipe, and
+sub-agents run, and the row's dot shows `working` while any run unless the session is `waiting`.
+The indicator is read-only: a sub-agent's output stays in its parent's pipe, and
 agents running inside their parent's process are not detected.
+
+Codex runs its shell tool inside the shared `codex app-server` daemon, so its agent CLIs are not
+under the session's pid. For agent CLIs below a `codex app-server` process, the backend reads
+their `CODEX_THREAD_ID` (`ps -Eww`) and maps the thread to a Goko session through the same rollout
+match the activity poller uses, then adds them to the same map. Only the default Codex home is
+covered, and only when such an agent exists (otherwise no environment is read).
 
 ## PTY ownership
 

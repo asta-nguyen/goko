@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { GitDiffRequest } from '../../services/git-view'
 import type { Project } from '../../services/types'
-import { useUi } from '../../stores/ui'
+import { checkoutKey, useUi } from '../../stores/ui'
 import { useWorktreeList } from '../worktrees/queries'
 import { EditorChanges } from './EditorChanges'
 import { EditorFiles } from './EditorFiles'
@@ -33,10 +33,13 @@ export function EditorWorkspace({
   checkoutPath: string
 }) {
   const setActiveView = useUi((state) => state.setActiveView)
+  const editorOpenRequest = useUi((state) => state.editorOpenRequest)
+  const clearEditorOpenRequest = useUi((state) => state.clearEditorOpenRequest)
   const worktreeQuery = useWorktreeList(projectId, Boolean(project))
   const [section, setSection] = useState<Section>('changes')
   const [jump, setJump] = useState<GitDiffRequest | null>(null)
   const root = useRef<HTMLElement | null>(null)
+  const unmountClear = useRef<number | null>(null)
   // Once visited, a section stays mounted so its state and scroll survive;
   // its queries only run while it is the visible section.
   const [visited, setVisited] = useState<ReadonlySet<Section>>(new Set(['changes']))
@@ -52,6 +55,36 @@ export function EditorWorkspace({
     !unsupported &&
     (project?.missing === true || checkout?.missing === true || (repo === true && !isRoot && checkout === undefined))
   const ready = !unsupported && !missingCheckout && repo === true
+  const openRequest =
+    editorOpenRequest !== null && editorOpenRequest.workspaceId === checkoutKey(projectId, checkoutPath)
+      ? editorOpenRequest
+      : null
+
+  useEffect(() => {
+    if (editorOpenRequest === null) return
+    if (openRequest === null || unsupported || missingCheckout) {
+      clearEditorOpenRequest()
+      return
+    }
+    if (!ready) return
+    setSection('files')
+  }, [editorOpenRequest, openRequest, unsupported, missingCheckout, ready, clearEditorOpenRequest])
+
+  // Deferred a tick so StrictMode's dev remount simulation can cancel it; a
+  // request still pending at a real unmount is dropped, never replayed.
+  useEffect(() => {
+    if (unmountClear.current !== null) {
+      window.clearTimeout(unmountClear.current)
+      unmountClear.current = null
+    }
+    return () => {
+      const pending = useUi.getState().editorOpenRequest
+      unmountClear.current = window.setTimeout(() => {
+        unmountClear.current = null
+        if (useUi.getState().editorOpenRequest === pending) clearEditorOpenRequest()
+      }, 0)
+    }
+  }, [clearEditorOpenRequest])
 
   useEffect(() => {
     if (!ready) return
@@ -161,6 +194,8 @@ export function EditorWorkspace({
                     checkoutPath={checkoutPath}
                     active={section === 'files'}
                     onShowChanges={showChanges}
+                    openRequest={openRequest}
+                    onOpenHandled={clearEditorOpenRequest}
                   />
                 )}
                 {item.id === 'changes' && (

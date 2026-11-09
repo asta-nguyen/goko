@@ -237,6 +237,52 @@ describe('useUi', () => {
     act(() => useUi.getState().reset())
     expect(useUi.getState().diffView).toBe('unified')
   })
+
+  it('openEditorFile stores a nonce-tagged request, switches to the Editor, and clears', () => {
+    const workspaceId = checkoutKey('p1', '/work/p1')
+    act(() => useUi.getState().openEditorFile(workspaceId, 'src/app.ts', 10))
+
+    const first = useUi.getState().editorOpenRequest
+    expect(first).toMatchObject({ workspaceId, path: 'src/app.ts', line: 10 })
+    expect(typeof first?.nonce).toBe('number')
+    expect(useUi.getState().activeView).toBe('editor')
+
+    act(() => useUi.getState().openEditorFile(workspaceId, 'README.md'))
+    const second = useUi.getState().editorOpenRequest
+    expect(second?.nonce).not.toBe(first?.nonce)
+    expect(second?.line).toBeUndefined()
+
+    act(() => useUi.getState().clearEditorOpenRequest())
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+
+    act(() => useUi.getState().reset())
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+  })
+
+  it('drops the pending open-file request when the guarded navigation is canceled', () => {
+    const workspaceId = checkoutKey('p1', '/work/p1')
+    act(() => {
+      useUi.getState().setEditorDraft({
+        projectId: 'p1',
+        checkoutPath: '/work/p1',
+        path: 'a.ts',
+        originalText: 'one',
+        text: 'two',
+      })
+      useUi.getState().openEditorFile(workspaceId, 'src/app.ts', 10)
+    })
+
+    expect(useUi.getState().activeView).toBe('terminal')
+    expect(useUi.getState().editorGuardOpen).toBe(true)
+    expect(useUi.getState().editorOpenRequest).toMatchObject({ workspaceId, path: 'src/app.ts', line: 10 })
+
+    act(() => useUi.getState().cancelEditorNavigation())
+
+    expect(useUi.getState().activeView).toBe('terminal')
+    expect(useUi.getState().editorGuardOpen).toBe(false)
+    expect(useUi.getState().editorDraft).not.toBeNull()
+    expect(useUi.getState().editorOpenRequest).toBeNull()
+  })
 })
 
 describe('checkoutForCwd', () => {

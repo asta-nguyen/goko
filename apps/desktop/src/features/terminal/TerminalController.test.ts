@@ -1,4 +1,14 @@
-import { pasteToSession, TerminalController, textareaEdit } from './TerminalController'
+import { pasteToSession, TerminalController, textareaEdit, type TerminalLinks } from './TerminalController'
+
+type FakeCell = { chars: string; width: number }
+type FakeLink = {
+  range: { start: { x: number; y: number }; end: { x: number; y: number } }
+  text: string
+  activate: (event: MouseEvent, text: string) => void
+}
+type FakeLinkProvider = {
+  provideLinks: (y: number, callback: (links: FakeLink[] | undefined) => void) => void
+}
 
 const h = vi.hoisted(() => {
   const state = {
@@ -35,6 +45,42 @@ const h = vi.hoisted(() => {
       this.written.push(d)
       // Like xterm, parsing finishes before the callback — synchronously is a valid fast case.
       cb?.()
+    }
+    linkProviders: FakeLinkProvider[] = []
+    lines = new Map<number, string | FakeCell[]>()
+    providerDisposed = false
+    registerLinkProvider = vi.fn((provider: FakeLinkProvider) => {
+      this.linkProviders.push(provider)
+      return {
+        dispose: vi.fn(() => {
+          this.providerDisposed = true
+        }),
+      }
+    })
+    buffer = {
+      active: {
+        getLine: (y: number) => {
+          const row = this.lines.get(y)
+          if (row === undefined) return undefined
+          const cells: FakeCell[] = typeof row === 'string' ? [...row].map((chars) => ({ chars, width: 1 })) : row
+          return {
+            length: cells.length,
+            translateToString: (trimRight?: boolean) => {
+              let text = ''
+              for (let x = 0; x < cells.length; ) {
+                text += cells[x].chars || ' '
+                x += cells[x].width || 1
+              }
+              return trimRight ? text.replace(/\s+$/, '') : text
+            },
+            getCell: (x: number) => {
+              if (x < 0 || x >= cells.length) return undefined
+              const cell = cells[x]
+              return { getChars: () => cell.chars, getWidth: () => cell.width }
+            },
+          }
+        },
+      },
     }
     dispose() {
       this.disposed = true
@@ -593,6 +639,156 @@ describe('TerminalController acks', () => {
     c.dispose()
     onBytes(0, new Uint8Array(3 * K64))
     expect(service.ack).not.toHaveBeenCalled()
+  })
+})
+
+describe('TerminalController links', () => {
+  const mount = async (links?: TerminalLinks) => {
+    const c = new TerminalController('s1', service, links)
+    await c.mount(element())
+    return c
+  }
+  /** provideLinks' line number is 1-based; the fake buffer's getLine is 0-based like the real API. */
+  const provide = async (row: string | FakeCell[], y = 1) => {
+    state.terms[0].lines.set(y - 1, row)
+    let result: FakeLink[] | undefined
+    state.terms[0].linkProviders[0].provideLinks(y, (links) => (result = links))
+    await flush()
+    return result
+  }
+  const click = (ctrlKey: boolean) => new MouseEvent('click', { ctrlKey })
+  /** One width-1 cell per character. */
+  const ascii = (text: string): FakeCell[] => [...text].map((chars) => ({ chars, width: 1 }))
+  /** A wide glyph plus the zero-width spacer cell xterm stores after it. */
+  const wide = (chars: string): FakeCell[] => [
+    { chars, width: 2 },
+    { chars: '', width: 0 },
+  ]
+
+  it('registers no provider without links', async () => {
+    await mount()
+    expect(state.terms[0].registerLinkProvider).not.toHaveBeenCalled()
+  })
+
+  it('registers one provider for URLs and resolved files on the same row', async () => {
+    const openUrl = vi.fn()
+    const resolve = vi.fn(async (raw: string) => (raw === 'src/a.ts' ? 'src/a.ts' : null))
+    const open = vi.fn()
+    await mount({ openUrl, file: { resolve, open } })
+    expect(state.terms[0].registerLinkProvider).toHaveBeenCalledTimes(1)
+
+    const found = await provide('see https://example.com/x and src/a.ts:10 missing.ts')
+    expect(found).toHaveLength(2)
+    expect(found?.[0].text).toBe('https://example.com/x')
+    expect(found?.[0].range).toEqual({ start: { x: 5, y: 1 }, end: { x: 25, y: 1 } })
+    expect(found?.[1].text).toBe('src/a.ts:10')
+    expect(resolve).toHaveBeenCalledWith('src/a.ts')
+    expect(resolve).toHaveBeenCalledWith('missing.ts')
+  })
+
+  it('maps link ranges to cell columns when wide glyphs precede a URL', async () => {
+    const openUrl = vi.fn()
+    await mount({ openUrl })
+    const found = await provide([...wide('你'), ...wide('好'), { chars: ' ', width: 1 }, ...ascii('https://example.com/x')])
+    expect(found).toHaveLength(1)
+    expect(found?.[0].text).toBe('https://example.com/x')
+    // 你 and 好 each take two cells, so the URL covers columns 6-26, not string columns 4-24.
+    expect(found?.[0].range).toEqual({ start: { x: 6, y: 1 }, end: { x: 26, y: 1 } })
+  })
+
+  it('opens an https URL only on a modified click', async () => {
+    const openUrl = vi.fn()
+    await mount({ openUrl })
+    const found = await provide('go to https://example.com/docs now')
+    const link = found![0]
+    expect(link.text).toBe('https://example.com/docs')
+
+    link.activate(click(false), link.text)
+    expect(openUrl).not.toHaveBeenCalled()
+    link.activate(click(true), link.text)
+    expect(openUrl).toHaveBeenCalledWith('https://example.com/docs')
+  })
+
+  it('provides no links for file: or javascript: text', async () => {
+    const openUrl = vi.fn()
+    const resolve = vi.fn(async () => null)
+    await mount({ openUrl, file: { resolve, open: vi.fn() } })
+    expect(await provide('file:///tmp/a.ts javascript:alert(1)')).toBeUndefined()
+    expect(openUrl).not.toHaveBeenCalled()
+  })
+
+  it('ignores a malformed https URL without throwing', async () => {
+    const openUrl = vi.fn()
+    await mount({ openUrl })
+    const found = await provide('see https://[ broken')
+    const link = found![0]
+    expect(link.text).toBe('https://[')
+
+    expect(() => link.activate(click(true), link.text)).not.toThrow()
+    expect(openUrl).not.toHaveBeenCalled()
+  })
+
+  it('does not resolve files on a URL-only row', async () => {
+    const resolve = vi.fn(async () => 'src/a.ts')
+    await mount({ openUrl: vi.fn(), file: { resolve, open: vi.fn() } })
+    const found = await provide('only https://example.com/x here')
+    expect(found).toHaveLength(1)
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
+  it('reports a file link only for candidates that resolve', async () => {
+    const resolve = vi.fn(async (raw: string) => (raw === 'src/a.ts' ? 'src/a.ts' : null))
+    await mount({ openUrl: vi.fn(), file: { resolve, open: vi.fn() } })
+    const found = await provide('src/a.ts missing.ts')
+    expect(found).toHaveLength(1)
+    expect(found?.[0].text).toBe('src/a.ts')
+  })
+
+  it('keeps the URL link when file resolution rejects', async () => {
+    const openUrl = vi.fn()
+    const resolve = vi.fn(async () => {
+      throw new Error('file list failed')
+    })
+    const open = vi.fn()
+    await mount({ openUrl, file: { resolve, open } })
+
+    const found = await provide('see https://example.com/x and src/a.ts')
+    expect(resolve).toHaveBeenCalledWith('src/a.ts')
+    expect(found).toHaveLength(1)
+    expect(found?.[0].text).toBe('https://example.com/x')
+
+    found![0].activate(click(true), found![0].text)
+    expect(openUrl).toHaveBeenCalledWith('https://example.com/x')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('opens a resolved file at its line only on a modified click', async () => {
+    const resolve = vi.fn(async () => 'src/App.tsx')
+    const open = vi.fn()
+    await mount({ openUrl: vi.fn(), file: { resolve, open } })
+    const found = await provide('src/App.tsx:10')
+    const link = found![0]
+    expect(link.text).toBe('src/App.tsx:10')
+
+    link.activate(click(false), link.text)
+    expect(open).not.toHaveBeenCalled()
+    link.activate(click(true), link.text)
+    expect(open).toHaveBeenCalledWith('src/App.tsx', 10)
+  })
+
+  it('reports no links when every candidate misses, and plain rows never resolve', async () => {
+    const resolve = vi.fn(async () => null)
+    await mount({ openUrl: vi.fn(), file: { resolve, open: vi.fn() } })
+    expect(await provide('missing.ts')).toBeUndefined()
+    expect(await provide('plain words here')).toBeUndefined()
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('disposes the link provider with the controller', async () => {
+    const c = await mount({ openUrl: vi.fn() })
+    expect(state.terms[0].providerDisposed).toBe(false)
+    c.dispose()
+    expect(state.terms[0].providerDisposed).toBe(true)
   })
 })
 

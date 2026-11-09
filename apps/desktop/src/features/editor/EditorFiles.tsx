@@ -138,11 +138,15 @@ export function EditorFiles({
   checkoutPath,
   active,
   onShowChanges,
+  openRequest,
+  onOpenHandled,
 }: {
   projectId: string
   checkoutPath: string
   active: boolean
   onShowChanges: (request: GitDiffRequest) => void
+  openRequest?: { path: string; line?: number; nonce: number } | null
+  onOpenHandled?: () => void
 }) {
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -273,6 +277,14 @@ export function EditorFiles({
       setReveal(line === undefined ? null : (current) => ({ line, nonce: (current?.nonce ?? 0) + 1 }))
     })
   }
+
+  const handledOpenNonce = useRef<number | null>(null)
+  useEffect(() => {
+    if (!openRequest || openRequest.nonce === handledOpenNonce.current) return
+    handledOpenNonce.current = openRequest.nonce
+    selectPath(openRequest.path, openRequest.line)
+    onOpenHandled?.()
+  }, [openRequest, onOpenHandled])
 
   useEffect(() => {
     if (!notice) return

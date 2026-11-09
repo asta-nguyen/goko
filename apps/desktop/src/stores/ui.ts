@@ -81,6 +81,14 @@ export interface EditorDraft {
   text: string
 }
 
+/** A one-shot request for the Editor to open a checkout file, e.g. from a terminal link. */
+export interface EditorOpenRequest {
+  workspaceId: string
+  path: string
+  line?: number
+  nonce: number
+}
+
 type EditorNavigation = () => void | Promise<void>
 
 /** Fixed app panel bounds in px; the widths live only in memory for the app run. */
@@ -102,6 +110,7 @@ interface UiState {
   pendingEditorNavigation: EditorNavigation | null
   editorSaveDraft: (() => Promise<boolean>) | null
   editorReloadDraft: (() => Promise<boolean>) | null
+  editorOpenRequest: EditorOpenRequest | null
   workspaces: Record<string, TerminalWorkspaceState>
   removedProjectIds: string[]
   panelWidths: Record<PanelId, number>
@@ -120,6 +129,8 @@ interface UiState {
   requestEditorNavigation: (navigation: EditorNavigation) => void
   continueEditorNavigation: (discard: boolean) => void
   cancelEditorNavigation: () => void
+  openEditorFile: (workspaceId: string, path: string, line?: number) => void
+  clearEditorOpenRequest: () => void
   claimDefaultTab: (id: string) => boolean
   failDefaultTab: (id: string, error: string) => void
   openSession: (workspaceId: string, sessionId: string, title: string, activate?: boolean) => void
@@ -260,6 +271,8 @@ function setActive(workspaces: Record<string, TerminalWorkspaceState>, workspace
   }
 }
 
+let editorOpenNonce = 0
+
 const initialState = {
   selectedId: null,
   activeWorkspaceId: null,
@@ -271,6 +284,7 @@ const initialState = {
   pendingEditorNavigation: null as EditorNavigation | null,
   editorSaveDraft: null as (() => Promise<boolean>) | null,
   editorReloadDraft: null as (() => Promise<boolean>) | null,
+  editorOpenRequest: null as EditorOpenRequest | null,
   workspaces: {} as Record<string, TerminalWorkspaceState>,
   removedProjectIds: [] as string[],
   panelWidths: {
@@ -341,7 +355,13 @@ export const useUi = create<UiState>((set, get) => ({
     }))
     if (navigation) void navigation()
   },
-  cancelEditorNavigation: () => set({ editorGuardOpen: false, pendingEditorNavigation: null }),
+  cancelEditorNavigation: () =>
+    set({ editorGuardOpen: false, pendingEditorNavigation: null, editorOpenRequest: null }),
+  openEditorFile: (workspaceId, path, line) => {
+    set({ editorOpenRequest: { workspaceId, path, line, nonce: ++editorOpenNonce } })
+    get().setActiveView('editor')
+  },
+  clearEditorOpenRequest: () => set({ editorOpenRequest: null }),
   claimDefaultTab: (id) => {
     const current = get().workspaces[id] ?? emptyWorkspace()
     if (current.tabs.length > 0 || current.defaultPending) return false
