@@ -1,0 +1,31 @@
+docs/agent-devkit/changes/archive/2026-11-08-multi-account/design.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 212
+docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/design.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 102
+ARCHITECTURE.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 323-351
+docs/agent-devkit/changes/archive/2026-11-05-agent-activity/tasks.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 1-128
+docs/agent-devkit/changes/archive/2026-11-05-agent-activity/design.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 1-95
+docs/agent-devkit/INDEX.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 10-11
+docs/agent-devkit/changes/archive/2026-11-06-editor-commit-acp/design.md
+  s_d361934f0cc28e::t_d3b771aad0c31a 1-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c60dbd69d1fa280b904cfacfe0165e2b266893f0",
+  "prompts": {},
+  "sessions": {
+    "s_d361934f0cc28e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9e17895-19c5-404b-913a-30875d3af5c3",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
