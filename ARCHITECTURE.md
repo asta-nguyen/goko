@@ -26,7 +26,7 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
   receives terminal bytes on a Tauri `Channel`.
 - Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
   holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
-  the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures, and
+  the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures (`usage/claude/<account-id>/<session-id>.json` for a named account), and
   `activity/claude/<session-id>` hook files holding `working`, `waiting`, or `done`
   (files older than seven days are pruned at app startup).
 
@@ -283,6 +283,9 @@ created | starting → failed
   The Stop action sends SIGTERM, so its exited banner can have no numeric code.
 - Every state change is broadcast as the full `SessionInfo` (capacity 64). A subscriber
   that falls behind is sent the current state of every session instead.
+- `SessionInfo.pid` is the PTY child's pid, set when the session becomes `running` and left `None`
+  before the spawn and for a failed spawn (an older daemon omits it, which reads as `None`). The
+  app uses it to find the processes under a session (see Sub-agent indicator).
 - For a live session, `SessionInfo.cwd` is the process's current directory. `list` and `get`
   refresh it before returning, and a 200 ms watcher emits `session.updated` only when it
   changes. If the OS cannot provide an absolute UTF-8 path, the daemon reports an empty
@@ -297,15 +300,37 @@ The desktop backend exposes `usage_get` for the initial usage snapshot and emits
 `usage://updated` when its five-second poll detects changed data. Claude launches receive a
 UUIDv4 through `--session-id` and inline `--settings`; the injected statusline command saves
 Claude's JSON to `GOKO_HOME/usage/claude/<session-id>.json` and forwards it to the user's
-`$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude/settings.json`) `statusLine.command`, when
-configured. Claude context fill is keyed by that session id, while account limits use the newest
-modified capture file that reports `rate_limits` (a newer session without them is skipped).
+`<account folder>/settings.json` `statusLine.command`, when configured (the Default account's
+folder is `$CLAUDE_CONFIG_DIR`, else `~/.claude`). Claude context fill is keyed by that session id,
+while an account's limits use the newest modified capture file in its folder that reports
+`rate_limits` (a newer session without them is skipped).
+
+Accounts: a Claude or Codex session runs under the agent's active account, stored in the
+`accounts` setting. The Default account launches exactly as before; a named account launches
+through `/usr/bin/env CLAUDE_CONFIG_DIR=<dir>` or `/usr/bin/env CODEX_HOME=<dir>` (the daemon
+has no per-session environment, so the prefix is part of the argv), captures Claude usage under
+`usage/claude/<account-id>/`, and fails the launch with `invalid_argument` if its folder is
+missing. The poller reads every account each tick (and at once after an account is added,
+removed, or activated): `UsageSnapshot.claude` and `.codex` describe the active account and
+`accounts["<agent>:<account-id>"]` holds each account's limits.
 
 Codex limits are read from the latest `token_count` event in the last 64 KiB of the newest
-modified `rollout-*.jsonl` in the two newest day directories under `$CODEX_HOME/sessions`
-(default `~/.codex/sessions`). The UI
+modified `rollout-*.jsonl` in the two newest day directories under the account's `sessions`
+folder (Default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). The UI
 shows known provider limits in header chips with reset times and data age, and known Claude
 context percentages in session rows. A reset limit is shown as `reset`.
+
+## Sub-agent indicator
+
+`subagents.rs` in the desktop backend polls every 2 seconds. It lists sessions through the bridge
+and, if at least one running session has a `pid`, reads the process table once (`ps -axww -o
+pid=,ppid=,command=`, started with an argv). For each running session it collects descendants of
+its pid whose program is `claude`, `codex`, `opencode`, or `devin` (the first word's file stem, or
+the word after `node` or `bun`) and publishes the map `{session id: [{agent, pid, command}]}` in
+`subagents://updated` only when it changed (`subagents_get` returns the current map). A failed
+listing or `ps` keeps the previous map. The sidebar shows `↳ <agent>` on a session row while
+sub-agents run. The indicator is read-only: a sub-agent's output stays in its parent's pipe, and
+agents running inside their parent's process are not detected.
 
 ## PTY ownership
 

@@ -7,6 +7,13 @@ export interface UsageLimit {
   window_minutes: number
 }
 
+/** One account's usage: its limits in window order (empty when it has no data). */
+export interface AccountUsage {
+  limits: UsageLimit[]
+  /** Unix epoch milliseconds. */
+  updated_at: number | null
+}
+
 export interface UsageSnapshot {
   claude: {
     five_hour: UsageLimit | null
@@ -21,6 +28,8 @@ export interface UsageSnapshot {
     /** Unix epoch milliseconds. */
     updated_at: number | null
   }
+  /** Every account's usage, keyed `"<agent>:<account-id>"` (e.g. `claude:default`). */
+  accounts: Record<string, AccountUsage>
 }
 
 export const usageService = {

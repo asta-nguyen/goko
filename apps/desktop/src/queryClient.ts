@@ -35,9 +35,11 @@ export const queryKeys = {
   commitAgent: ['settings', 'commit.agent'] as const,
   acpAgents: ['acp-agents'] as const,
   acpStatus: ['acp-status'] as const,
+  accounts: ['accounts'] as const,
   daemonStatus: ['daemon-status'],
   usage: ['usage'],
   activity: ['activity'] as const,
+  subagents: ['subagents'] as const,
 } as const
 
 // The daemon pushes changes and the bridge already reconnects, so never refetch on our own.

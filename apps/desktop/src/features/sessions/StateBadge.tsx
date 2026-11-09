@@ -29,7 +29,7 @@ export function StateBadge({ state }: { state: SessionState }) {
 }
 
 const ACTIVITY_DOT: Record<Activity, string> = {
-  working: 'bg-warning animate-pulse',
+  working: 'border-2 border-accent border-t-transparent bg-panel motion-safe:animate-spin',
   waiting: 'bg-danger',
   done: 'bg-success',
 }
@@ -49,7 +49,13 @@ export function StateDot({
   return (
     <span
       title={label}
-      className={cn('size-2.5 shrink-0 rounded-full', shown ? ACTIVITY_DOT[shown] : (DOT[state] ?? 'bg-muted'), className)}
+      className={cn(
+        'size-2.5 shrink-0 rounded-full',
+        shown ? ACTIVITY_DOT[shown] : (DOT[state] ?? 'bg-muted'),
+        className,
+        // size-3 comes last so tailwind-merge lets it beat the caller's size-2.
+        shown === 'working' ? 'size-3' : null,
+      )}
     >
       <span className="sr-only">{label}</span>
     </span>

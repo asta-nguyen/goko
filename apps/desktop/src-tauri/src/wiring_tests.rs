@@ -26,6 +26,7 @@ fn webview_with(
         .manage(crate::acp::AcpHub::new())
         .manage(crate::usage::UsageState::default())
         .manage(crate::activity::ActivityState::default())
+        .manage(crate::subagents::SubagentState::default())
         .invoke_handler(handler())
         .build(mock_context(noop_assets()))
         .unwrap();
@@ -84,6 +85,10 @@ async fn commands_take_and_return_what_the_frontend_services_send_and_expect() {
 
     assert_eq!(
         invoke(&webview, "activity_get", json!({})).unwrap(),
+        json!({})
+    );
+    assert_eq!(
+        invoke(&webview, "subagents_get", json!({})).unwrap(),
         json!({})
     );
 

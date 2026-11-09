@@ -25,8 +25,9 @@ apps/desktop (Tauri app)                        crates/daemon (gokod)
   `~/Library/Application Support/Goko`, created mode 0700. It also holds
   `worktree-operations.lock` (a shared/exclusive flock serializing session
   creation against worktree removal) and the app-owned `goko.db`.
-- Claude usage captures live at `usage/claude/<claude-session-id>.json` and Claude
-  activity words at `activity/claude/<claude-session-id>` under that directory; files
+- Claude usage captures live at `usage/claude/<claude-session-id>.json` (Default account) or
+  `usage/claude/<account-id>/<claude-session-id>.json` (a named account), and Claude
+  activity words at `activity/claude/<claude-session-id>`, under that directory; files
   older than seven days are pruned when the app starts.
 - The Tauri backend (`src-tauri`) is the only socket client; the React UI
   reaches it through `invoke` commands, Tauri events, and a `Channel` carrying
@@ -51,8 +52,8 @@ cleanup.
 |---|---|---|
 | Wire protocol | `crates/protocol/` | Frame codec (`u32` length, `u8` kind, ≤1 MiB payload), JSON message schema (requests, responses, events, error codes), `SessionId`/`SessionInfo`/`SessionState` types |
 | Daemon | `crates/daemon/` | `gokod` binary: instance lock, token auth, socket server, request dispatch, session state machine, PTY spawn/signal/resize/live-CWD, 1 MiB replay buffer with subscriber streaming |
-| Desktop bridge | `apps/desktop/src-tauri/` | Daemon connect-or-spawn client and handshake, `Bridge` request API, event pump to Tauri events, terminal `Channel`, SQLite `goko.db` store (projects, session metadata, settings), agent discovery and launch, usage polling and `usage_get`, agent activity polling and `activity_get`, worktree/env-file commands, `git_view_*` editor commands including checkout-scoped content search; see [Editor requirements](editor.md#edt-content-search) |
-| Desktop UI | `apps/desktop/src/` | React 19 + TanStack Query + zustand: project-tree sidebar, terminal workspaces (tabs and split panes over xterm), session controls, Editor workspace (Files, Changes, History, Stashes), provider usage chips, Claude context percentages, working/waiting/done session dots; Files uses CodeMirror, persisted optional Vim mode, and content search with line navigation; see [Editor requirements](editor.md#edt-codemirror-surface) |
+| Desktop bridge | `apps/desktop/src-tauri/` | Daemon connect-or-spawn client and handshake, `Bridge` request API, event pump to Tauri events, terminal `Channel`, SQLite `goko.db` store (projects, session metadata, settings), agent discovery and launch, usage polling and `usage_get` (per account), agent accounts and their launch environment (`accounts.rs`; see [Agent accounts](../domains/agent-accounts.md)), agent activity polling and `activity_get`, sub-agent process polling and `subagents_get`, worktree/env-file commands, `git_view_*` editor commands including checkout-scoped content search; see [Editor requirements](editor.md#edt-content-search) |
+| Desktop UI | `apps/desktop/src/` | React 19 + TanStack Query + zustand: project-tree sidebar, terminal workspaces (tabs and split panes over xterm), session controls, Editor workspace (Files, Changes, History, Stashes), provider usage chips that switch between accounts, Claude context percentages, working/waiting/done session dots, a `↳ <agent>` indicator while a session runs sub-agent CLIs; Files uses CodeMirror, persisted optional Vim mode, and content search with line navigation; see [Editor requirements](editor.md#edt-codemirror-surface) |
 
 ## Cross-domain dependencies
 
@@ -60,9 +61,9 @@ cleanup.
   messages; the UI never sees the socket.
 - The UI calls only Tauri commands (`src/services/call.ts` wraps `invoke` and
   normalizes errors to `BridgeError`) and listens for `session://updated`,
-  `session://exited`, `daemon://status`, `usage://updated`, and `activity://updated`
-  events, which `services/sync.ts` writes into the query cache. `usage_get` and
-  `activity_get` supply the initial snapshots.
+  `session://exited`, `daemon://status`, `usage://updated`, `activity://updated`, and
+  `subagents://updated` events, which `services/sync.ts` writes into the query cache.
+  `usage_get`, `activity_get`, and `subagents_get` supply the initial snapshots.
 - Session metadata in SQLite is keyed by the daemon's session UUID; daemon
   session state itself is in-memory only.
 - Git/worktree operations run `git` via `Command::new("git")` with argv and
@@ -74,19 +75,24 @@ When the app launches Claude, the desktop backend supplies a UUIDv4 with
 `--session-id` and inline `--settings` that wraps the Claude statusline command.
 The wrapper saves Claude's statusline JSON to
 `$GOKO_HOME/usage/claude/<claude-session-id>.json` and forwards it to the
-`statusLine.command` found in `$CLAUDE_CONFIG_DIR/settings.json` (default
-`~/.claude/settings.json`), when set. Claude's context percentage is associated
-with its session id; account limits come from the most recently modified
-capture file that reports them, so a newer session without `rate_limits` yet
-does not hide them.
+`statusLine.command` found in the launched account's `settings.json` (the Default account's
+folder is `$CLAUDE_CONFIG_DIR`, else `~/.claude`), when set. A named account launches through
+`/usr/bin/env CLAUDE_CONFIG_DIR=<dir>` and captures to `usage/claude/<account-id>/` instead
+(see [Agent accounts](../domains/agent-accounts.md#acc-launch-account)). Claude's context
+percentage is associated with its session id; an account's limits come from the most recently
+modified capture file in its folder that reports them, so a newer session without
+`rate_limits` yet does not hide them.
 
 At startup the backend reads a usage snapshot, then polls every five seconds.
 Claude data comes from the capture files. Codex data comes from the last 64 KiB
 of the newest modified `rollout-*.jsonl` in the two newest day directories
-under `$CODEX_HOME/sessions`, or `~/.codex/sessions` when `CODEX_HOME` is
-unset; the latest `token_count` event
-provides its primary and secondary rate limits. Changed snapshots are sent in
-`usage://updated`. The header shows known provider limits with reset time and
+under the account's `sessions` folder (the Default account's is
+`$CODEX_HOME/sessions`, or `~/.codex/sessions` when `CODEX_HOME` is
+unset); the latest `token_count` event
+provides its primary and secondary rate limits. Each tick reads every account of both agents:
+the snapshot's `claude` and `codex` describe the active account and its `accounts` map holds
+every account's limits (see [Agent accounts](../domains/agent-accounts.md#acc-usage-per-account)).
+Changed snapshots are sent in `usage://updated`. The header shows known provider limits with reset time and
 data age in a tooltip, and a Claude session row shows its known context
 percentage. Expired limits display `reset`.
 
@@ -107,7 +113,8 @@ cannot be read this tick, the previous value is kept.
   Ctrl+C (`\x03`); if that session's delivered terminal output contains `Interrupted`
   within 2 s, the interrupt time is recorded and a `working` hook file written before it
   reads as `done`. Esc that only closes a menu prints no `Interrupted` and changes nothing.
-- Codex: a session whose argv is a lone path with stem `codex` is matched to a rollout
+- Codex: a session whose argv is a lone path with stem `codex`, or `env` followed by
+  `NAME=value` words and such a path (a named account), is matched to a rollout
   (`rollout-*.jsonl` in the two newest day directories under `$CODEX_HOME/sessions`, or
   `~/.codex/sessions`) with the same `cwd` as the rollout's `session_meta`, started no
   earlier than 5 s before the session. Sessions claim in start order and a rollout is
@@ -116,9 +123,31 @@ cannot be read this tick, the previous value is kept.
   and two sessions in one directory can be mismatched when a rollout is missing.
 - Shell, OpenCode, and Devin sessions have no activity and keep the plain `running` dot.
 
-The sidebar dot for a `running` session with an activity pulses in the warning tone
-(`working`), is danger-toned (`waiting`), or success-toned (`done`); its title reads
-`running · <activity>`. Other states render as before.
+The sidebar marker for a `running` session with an activity is a spinning accent-colored ring
+(`working`; a static ring when the system asks for reduced motion), a danger-toned dot
+(`waiting`), or a success-toned dot (`done`); its title reads `running · <activity>`. Other
+states render as before.
+
+## Sub-agent indicator
+
+A session row shows when its agent has started another agent CLI through its shell tool.
+The daemon reports each session's child pid in `SessionInfo.pid`, set when the session becomes
+`running` (`None` before the spawn, for a failed spawn, and from an older daemon). `subagents.rs`
+ticks every 2 s: it lists sessions through the bridge and, when at least one running session has
+a pid, reads the process table once with `ps -axww -o pid=,ppid=,command=`. For each running
+session it walks the descendants of that pid and keeps those whose program is `claude`, `codex`,
+`opencode`, or `devin` (the file stem of the first word of the command, or of the word after
+`node` or `bun`); a `zsh -c … devin …` wrapper does not match. The full map of Goko session id to
+`{agent, pid, command}` (the command truncated to 200 characters) is sent in `subagents://updated`
+only when it changed, and `subagents_get` returns it; a failed listing or `ps` keeps the previous
+map. A sidebar row with sub-agents shows muted `↳ <agent>` text (`×N` for repeats, agents in
+alphabetical order, for example `↳ codex, devin ×2`) whose title lists `<agent> (pid <pid>):
+<command>` per sub-agent.
+
+Limits: a sub-agent's output is not available (it goes to its parent agent's pipe, not to a Goko
+terminal); an agent that runs inside its parent's own process is not a process and is not
+detected; a sub-agent that runs for less than one tick can be missed; a program path whose first
+word contains a space is split there and can be missed.
 
 ## Tests
 
@@ -144,9 +173,11 @@ The sidebar dot for a `running` session with an activity pulses in the warning t
 - `apps/desktop/src-tauri/src/bridge.rs`
 - `apps/desktop/src-tauri/src/commands.rs`
 - `apps/desktop/src-tauri/src/daemon_client.rs`
+- `apps/desktop/src-tauri/src/accounts.rs`
 - `apps/desktop/src-tauri/src/agents.rs`
 - `apps/desktop/src-tauri/src/usage.rs`
 - `apps/desktop/src-tauri/src/activity.rs`
+- `apps/desktop/src-tauri/src/subagents.rs`
 - `apps/desktop/src-tauri/src/terminal.rs`
 - `apps/desktop/src/features/terminal/TerminalController.ts`
 - `apps/desktop/src-tauri/src/wiring_tests.rs`
@@ -161,6 +192,9 @@ The sidebar dot for a `running` session with an activity pulses in the warning t
 - `apps/desktop/src/services/call.ts`
 - `apps/desktop/src/services/usage.ts`
 - `apps/desktop/src/services/activity.ts`
+- `apps/desktop/src/services/subagents.ts`
+- `apps/desktop/src/features/subagents/queries.ts`
+- `apps/desktop/src/features/subagents/queries.test.tsx`
 - `apps/desktop/src/services/sync.ts`
 - `apps/desktop/src/features/usage/UsageChips.test.tsx`
 - `apps/desktop/src/features/usage/queries.test.tsx`

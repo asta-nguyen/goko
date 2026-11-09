@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ReactNode } from 'react'
 import { makeQueryClient, queryKeys } from '../../queryClient'
 import type { AcpAgent, AcpStatusMap } from '../../services/types'
+import { useUi } from '../../stores/ui'
 import { SettingsPage } from './SettingsPage'
 
 const { settings } = vi.hoisted(() => ({ settings: { get: vi.fn(), set: vi.fn() } }))
@@ -18,6 +19,24 @@ const acp = vi.hoisted(() => ({
   cancel: vi.fn(),
 }))
 vi.mock('../../services/acp', () => ({ acpService: acp }))
+
+const accounts = vi.hoisted(() => ({
+  get: vi.fn(),
+  add: vi.fn(),
+  rename: vi.fn(),
+  remove: vi.fn(),
+  setActive: vi.fn(),
+}))
+vi.mock('../../services/accounts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/accounts')>()),
+  accountsService: accounts,
+}))
+
+const usage = vi.hoisted(() => ({ get: vi.fn() }))
+vi.mock('../../services/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/usage')>()),
+  usageService: usage,
+}))
 
 const PRESETS: AcpAgent[] = [
   {
@@ -62,8 +81,18 @@ beforeEach(() => {
   acp.status.mockReset().mockResolvedValue({})
   acp.generateCommitMessage.mockReset().mockResolvedValue('')
   acp.cancel.mockReset().mockResolvedValue(undefined)
+  accounts.get.mockReset().mockResolvedValue({
+    claude: { active: 'default', items: [{ id: 'default', name: 'Default', dir: '/h/.claude', is_default: true }] },
+    codex: { active: 'default', items: [{ id: 'default', name: 'Default', dir: '/h/.codex', is_default: true }] },
+  })
+  usage.get.mockReset().mockResolvedValue({
+    claude: { five_hour: null, seven_day: null, sessions: {}, updated_at: null },
+    codex: { primary: null, secondary: null, updated_at: null },
+    accounts: {},
+  })
   window.localStorage.clear()
   delete document.documentElement.dataset.theme
+  useUi.getState().reset()
 })
 
 afterEach(() => {
@@ -129,6 +158,44 @@ it('keeps the Editor card hidden until its section is selected', async () => {
 
   fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
   expect(screen.queryByRole('switch', { name: 'Vim mode' })).toBeNull()
+})
+
+it('opens on the Accounts section when settingsSection requests it and clears the value', async () => {
+  act(() => useUi.getState().openSettings('accounts'))
+  renderSettings()
+
+  expect(await screen.findByRole('group', { name: 'Claude Code accounts' })).toBeTruthy()
+  expect(screen.queryByRole('switch', { name: 'Vim mode' })).toBeNull()
+  expect(useUi.getState().settingsSection).toBeNull()
+})
+
+it('switches to the requested section while Settings is already open', async () => {
+  renderSettings()
+  expect(await screen.findByRole('switch', { name: 'Vim mode' })).toBeTruthy()
+
+  act(() => useUi.getState().openSettings('accounts'))
+
+  expect(await screen.findByRole('group', { name: 'Claude Code accounts' })).toBeTruthy()
+  expect(screen.queryByRole('switch', { name: 'Vim mode' })).toBeNull()
+  expect(useUi.getState().settingsSection).toBeNull()
+})
+
+it('still starts on Editor when Settings opens the normal way', async () => {
+  act(() => useUi.getState().setActiveView('settings'))
+  renderSettings()
+
+  expect(await screen.findByRole('switch', { name: 'Vim mode' })).toBeTruthy()
+  expect(screen.queryByRole('group', { name: 'Claude Code accounts' })).toBeNull()
+})
+
+it('lists Accounts in the nav and shows the Claude Code and Codex cards', async () => {
+  renderSettings()
+  fireEvent.click(screen.getByRole('button', { name: 'Accounts' }))
+
+  const claude = await screen.findByRole('group', { name: 'Claude Code accounts' })
+  expect(await within(claude).findByRole('group', { name: 'Default' })).toBeTruthy()
+  const codex = await screen.findByRole('group', { name: 'Codex accounts' })
+  expect(await within(codex).findByRole('group', { name: 'Default' })).toBeTruthy()
 })
 
 describe('ACP agents section', () => {

@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod acp;
 pub mod activity;
 pub mod agents;
@@ -9,6 +10,7 @@ pub mod events;
 pub mod git_view;
 pub mod git_write;
 pub mod store;
+pub mod subagents;
 pub mod terminal;
 pub mod usage;
 pub mod worktrees;
@@ -103,9 +105,16 @@ fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send
         commands::project_remove,
         commands::agent_list,
         activity::activity_get,
+        subagents::subagents_get,
         commands::session_meta_list,
         commands::settings_get,
         commands::settings_set,
+        accounts::accounts_get,
+        accounts::accounts_add,
+        accounts::accounts_rename,
+        accounts::accounts_remove,
+        accounts::accounts_set_active,
+        accounts::accounts_sign_in,
         terminal::terminal_subscribe,
         terminal::terminal_unsubscribe,
         terminal::terminal_ack,
@@ -132,7 +141,18 @@ pub fn run() {
                 home.clone(),
                 Arc::clone(&emit),
             ));
-            app.manage(usage::spawn_poller(home, Arc::clone(&emit)));
+            app.manage(subagents::spawn_poller(bridge.clone(), Arc::clone(&emit)));
+            // The usage poller re-reads the accounts setting every tick through
+            // the managed store, so account commands take effect at once.
+            let accounts_handle = app.handle().clone();
+            app.manage(usage::spawn_poller(
+                home,
+                Arc::clone(&emit),
+                Box::new(move || {
+                    let storage = accounts_handle.state::<store::Storage>();
+                    accounts::read(storage.inner())
+                }),
+            ));
             events::spawn_pump(bridge, emit);
             Ok(())
         })

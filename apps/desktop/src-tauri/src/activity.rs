@@ -292,9 +292,27 @@ fn claude_session_id(argv: &[String]) -> Option<&str> {
 }
 
 /// Goko launches Codex as its bare resolved path, so a lone argv whose stem is `codex`
-/// (`codex.js` for an npm install) is a Codex session.
+/// (`codex.js` for an npm install) is a Codex session. A named account prepends `env`
+/// and `NAME=value` words before the same binary: `[env, NAME=value…, <bin>]`.
 fn is_codex(argv: &[String]) -> bool {
-    matches!(argv, [bin] if Path::new(bin).file_stem().is_some_and(|stem| stem == "codex"))
+    fn stem_is_codex(arg: &str) -> bool {
+        Path::new(arg)
+            .file_stem()
+            .is_some_and(|stem| stem == "codex")
+    }
+    match argv {
+        [bin] => stem_is_codex(bin),
+        [first, rest @ ..]
+            if Path::new(first)
+                .file_name()
+                .is_some_and(|name| name == "env") =>
+        {
+            rest.iter()
+                .position(|arg| !arg.contains('='))
+                .is_some_and(|bin| bin == rest.len() - 1 && stem_is_codex(&rest[bin]))
+        }
+        _ => false,
+    }
 }
 
 /// Goko session id -> activity, for running Claude and Codex sessions only. A session whose
@@ -699,6 +717,7 @@ mod tests {
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
             cwd: cwd.into(),
             state: SessionState::Running,
+            pid: None,
             exit_code: None,
             error: None,
             started_at,
@@ -825,6 +844,50 @@ mod tests {
                 (sid(&late), Activity::Working)
             ])
         );
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn is_codex_matches_a_lone_codex_argv() {
+        assert!(is_codex(&argv(&["codex"])));
+    }
+
+    #[test]
+    fn is_codex_matches_env_then_assignments_then_codex() {
+        assert!(is_codex(&argv(&["env", "CODEX_HOME=/x", "/bin/codex"])));
+    }
+
+    #[test]
+    fn is_codex_matches_an_absolute_env_binary() {
+        assert!(is_codex(&argv(&[
+            "/usr/bin/env",
+            "CODEX_HOME=/x",
+            "/bin/codex"
+        ])));
+    }
+
+    #[test]
+    fn is_codex_rejects_env_before_a_non_codex_binary() {
+        assert!(!is_codex(&argv(&[
+            "env",
+            "CLAUDE_CONFIG_DIR=/x",
+            "/bin/claude",
+            "--session-id",
+            "a"
+        ])));
+    }
+
+    #[test]
+    fn is_codex_rejects_env_without_a_binary() {
+        assert!(!is_codex(&argv(&["env", "CODEX_HOME=/x"])));
+    }
+
+    #[test]
+    fn is_codex_rejects_codex_with_trailing_arguments() {
+        assert!(!is_codex(&argv(&["codex", "--flag"])));
     }
 
     #[test]

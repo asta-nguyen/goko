@@ -1,9 +1,12 @@
 use super::*;
+use crate::accounts::{Accounts, AgentAccounts, StoredAccount};
 use crate::store::Storage;
-use crate::test_support::{self, Home};
+use crate::test_support::{self, Home, TempDir};
 use protocol::message::ErrorCode;
 use protocol::session::{SessionId, SessionState};
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -110,6 +113,91 @@ fn blank() -> CreateArgs {
         cols: 80,
         rows: 24,
     }
+}
+
+fn agent_args(agent: &str) -> CreateArgs {
+    CreateArgs {
+        command: None,
+        agent: Some(agent.into()),
+        project_id: None,
+        checkout: None,
+        cwd: Some("/tmp".into()),
+        title: None,
+        cols: 80,
+        rows: 24,
+    }
+}
+
+/// `resolve_launch` reads `PATH` and `GOKO_HOME` from the process environment;
+/// tests that set them hold this lock and restore the old values on drop.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct EnvRestore(Vec<(&'static str, Option<OsString>)>);
+
+impl EnvRestore {
+    fn set(vars: &[(&'static str, OsString)]) -> Self {
+        let saved = vars
+            .iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect();
+        for (key, value) in vars {
+            std::env::set_var(key, value);
+        }
+        Self(saved)
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        for (key, value) in self.0.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+/// `PATH` with `dir` first, so a fake agent binary shadows the real one while
+/// every other tool still resolves.
+fn path_with_first(dir: &Path) -> OsString {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(paths).unwrap()
+}
+
+fn fake_agent_bin(dir: &Path, name: &str) -> PathBuf {
+    let bin = dir.join(name);
+    fs::write(&bin, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// A fake `claude` under `<dir>/bin` that records what it receives: its argv
+/// one per line in `<dir>/args.txt` and `$CLAUDE_CONFIG_DIR` (no newline) in
+/// `<dir>/env.txt`, then exits 0. Output paths are baked into the script.
+fn recording_claude(dir: &Path) -> PathBuf {
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("claude");
+    let quote = |path: &Path| {
+        shlex::try_quote(&path.display().to_string())
+            .unwrap()
+            .into_owned()
+    };
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > {}\nexit 0\n",
+            quote(&dir.join("args.txt")),
+            quote(&dir.join("env.txt")),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
 }
 
 async fn create(bridge: &Bridge, storage: &Storage, command: &str) -> SessionInfo {
@@ -691,6 +779,7 @@ async fn worktree_removal_waits_for_a_session_launch_to_finish_then_rechecks_ses
         argv: vec!["sh".into()],
         cwd: linked.display().to_string(),
         state: SessionState::Running,
+        pid: None,
         exit_code: None,
         error: None,
         started_at: 1,
@@ -1087,4 +1176,230 @@ async fn worktree_removal_fails_closed_when_the_checked_daemon_connection_dies()
         "a replacement daemon must not answer the session list"
     );
     server.abort();
+}
+
+#[test]
+fn a_missing_non_default_account_folder_is_invalid_argument() {
+    let dir = TempDir::new("cmd-account-missing");
+    let storage = Storage::open(&dir.path().join("store"));
+    let missing = dir.path().join("missing account");
+    let accounts = serde_json::json!({
+        "claude": {"active": "gone", "items": [{"id": "gone", "name": "Gone", "dir": missing.display().to_string()}]},
+        "codex": {"active": "gone", "items": [{"id": "gone", "name": "Gone", "dir": missing.display().to_string()}]},
+    });
+    storage
+        .get()
+        .unwrap()
+        .set_setting("accounts", &accounts.to_string())
+        .unwrap();
+
+    for agent in ["claude", "codex"] {
+        let error = resolve_launch(&storage, &agent_args(agent)).err().unwrap();
+        assert_eq!(
+            error.code,
+            Code::Daemon(ErrorCode::InvalidArgument),
+            "{agent}"
+        );
+        assert!(
+            error.message.contains(&missing.display().to_string()),
+            "{agent}: {}",
+            error.message
+        );
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("restore the folder or pick another account in Settings › Accounts"),
+            "{agent}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_active_account_falls_back_to_the_default_launch() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = TempDir::new("cmd-account-default");
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let codex = fake_agent_bin(&bin_dir, "codex");
+    let _env = EnvRestore::set(&[("PATH", path_with_first(&bin_dir))]);
+
+    let storage = Storage::open(&dir.path().join("store"));
+    let account_dir = dir.path().join("account");
+    fs::create_dir_all(&account_dir).unwrap();
+    let accounts = serde_json::json!({
+        "codex": {
+            "active": "ghost",
+            "items": [{"id": "acct1", "name": "Work", "dir": account_dir.display().to_string()}]
+        }
+    });
+    storage
+        .get()
+        .unwrap()
+        .set_setting("accounts", &accounts.to_string())
+        .unwrap();
+
+    let launch = resolve_launch(&storage, &agent_args("codex")).unwrap();
+
+    // The Default argv is the bare resolved binary: no `env` words.
+    assert_eq!(
+        launch.argv,
+        vec![fs::canonicalize(&codex).unwrap().display().to_string()]
+    );
+}
+
+#[test]
+fn the_statusline_is_read_from_the_active_accounts_settings() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = TempDir::new("cmd-account-statusline");
+    let bin_dir = dir.path().join("bin");
+    let goko_home = dir.path().join("goko-home");
+    // The space proves the dir stays one argv element.
+    let account_dir = dir.path().join("account dir");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(&goko_home).unwrap();
+    fs::create_dir_all(&account_dir).unwrap();
+    fake_agent_bin(&bin_dir, "claude");
+    fs::write(
+        account_dir.join("settings.json"),
+        r#"{"statusLine":{"command":"account statusline"}}"#,
+    )
+    .unwrap();
+    let _env = EnvRestore::set(&[
+        ("PATH", path_with_first(&bin_dir)),
+        ("GOKO_HOME", goko_home.as_os_str().to_os_string()),
+    ]);
+
+    let storage = Storage::open(&dir.path().join("store"));
+    let accounts = serde_json::json!({
+        "claude": {
+            "active": "work",
+            "items": [{"id": "work", "name": "Work", "dir": account_dir.display().to_string()}]
+        }
+    });
+    storage
+        .get()
+        .unwrap()
+        .set_setting("accounts", &accounts.to_string())
+        .unwrap();
+
+    let launch = resolve_launch(&storage, &agent_args("claude")).unwrap();
+
+    assert_eq!(launch.argv.len(), 7);
+    assert_eq!(launch.argv[0], "/usr/bin/env");
+    assert_eq!(
+        launch.argv[1],
+        format!("CLAUDE_CONFIG_DIR={}", account_dir.display())
+    );
+    assert!(launch.argv[2].ends_with("/claude"));
+    assert_eq!(launch.argv[3], "--session-id");
+    assert_eq!(launch.argv[5], "--settings");
+    let settings: serde_json::Value = serde_json::from_str(&launch.argv[6]).unwrap();
+    let command = settings
+        .pointer("/statusLine/command")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(command.contains("account statusline"), "{command}");
+    assert!(command.contains("usage/claude/work/"), "{command}");
+    assert!(goko_home.join("usage/claude/work").is_dir());
+}
+
+#[tokio::test]
+async fn the_sign_in_command_runs_through_the_daemon_with_the_account_folder_intact() {
+    let home = Home::new("cmd-signin-e2e");
+    let dir = TempDir::new("cmd-signin-e2e");
+    recording_claude(dir.path());
+    // The space proves the folder survives quoting through command → argv → env.
+    let account_dir = dir.path().join("a b");
+    fs::create_dir_all(&account_dir).unwrap();
+    let accounts = Accounts {
+        claude: AgentAccounts {
+            active: "ab12cd34".to_owned(),
+            items: vec![StoredAccount {
+                id: "ab12cd34".to_owned(),
+                name: "Work".to_owned(),
+                dir: account_dir.clone(),
+            }],
+        },
+        codex: AgentAccounts::default(),
+    };
+    let path = path_with_first(&dir.path().join("bin"));
+    let launch =
+        accounts::sign_in_launch(&accounts, "claude", "ab12cd34", Some(path.as_os_str())).unwrap();
+
+    let bridge = bridge(&home);
+    let storage = storage(&home);
+    let session = bridge
+        .session_create(
+            &storage,
+            CreateArgs {
+                command: Some(launch.command),
+                agent: None,
+                project_id: None,
+                checkout: None,
+                cwd: Some(launch.cwd),
+                title: Some(launch.title),
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap();
+    let exited = wait_for_state(&bridge, session.id, SessionState::Exited).await;
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("args.txt")).unwrap(),
+        "auth\nlogin\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("env.txt")).unwrap(),
+        account_dir.display().to_string()
+    );
+    assert_eq!(exited.title, "Sign in · Work");
+}
+
+#[tokio::test]
+async fn a_named_account_launch_gives_the_agent_process_its_config_dir() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = Home::new("cmd-account-launch");
+    let dir = TempDir::new("cmd-account-launch");
+    recording_claude(dir.path());
+    let bin_dir = dir.path().join("bin");
+    let account_dir = dir.path().join("account dir");
+    // `add` creates the folder itself and makes the account active.
+    let _env = EnvRestore::set(&[
+        ("PATH", path_with_first(&bin_dir)),
+        ("GOKO_HOME", home.path().as_os_str().to_os_string()),
+    ]);
+
+    let storage = storage(&home);
+    let accounts = accounts::add(
+        storage.get().unwrap(),
+        "claude",
+        "Work",
+        &account_dir.display().to_string(),
+        None,
+        None,
+    )
+    .unwrap();
+    let account_dir = accounts.claude.items[0].dir.clone();
+
+    let bridge = bridge(&home);
+    let session = bridge
+        .session_create(&storage, agent_args("claude"))
+        .await
+        .unwrap();
+    wait_for_state(&bridge, session.id, SessionState::Exited).await;
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("env.txt")).unwrap(),
+        account_dir.display().to_string()
+    );
+    let args = fs::read_to_string(dir.path().join("args.txt")).unwrap();
+    assert_eq!(args.lines().next(), Some("--session-id"), "{args}");
 }

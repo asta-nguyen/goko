@@ -15,6 +15,7 @@ vi.mock('../../services/usage', async (importOriginal) => ({
 const snapshot = (sessions: UsageSnapshot['claude']['sessions'] = {}): UsageSnapshot => ({
   claude: { five_hour: null, seven_day: null, sessions, updated_at: 1 },
   codex: { primary: null, secondary: null, updated_at: null },
+  accounts: {},
 })
 
 const session = (argv: string[]): SessionInfo => ({

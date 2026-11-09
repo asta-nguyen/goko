@@ -52,6 +52,9 @@ pub struct SessionInfo {
     pub argv: Vec<String>,
     pub cwd: String,
     pub state: SessionState,
+    /// The PTY child's pid; `None` before spawn and for a failed spawn.
+    #[serde(default)]
+    pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
     /// Unix epoch milliseconds.
@@ -100,6 +103,7 @@ mod tests {
             argv: vec!["sh".into()],
             cwd: "/tmp".into(),
             state: SessionState::Running,
+            pid: None,
             exit_code: None,
             error: None,
             started_at: 1_700_000_000_000,
@@ -107,6 +111,49 @@ mod tests {
         };
 
         let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(serde_json::from_str::<SessionInfo>(&json).unwrap(), info);
+    }
+
+    #[test]
+    fn session_info_without_a_pid_key_deserializes_as_none() {
+        let info = SessionInfo {
+            id: SessionId::new(),
+            title: "shell".into(),
+            argv: vec!["sh".into()],
+            cwd: "/tmp".into(),
+            state: SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 1_700_000_000_000,
+            ended_at: None,
+        };
+        let mut value = serde_json::to_value(&info).unwrap();
+        value.as_object_mut().unwrap().remove("pid");
+
+        let decoded = serde_json::from_value::<SessionInfo>(value).unwrap();
+
+        assert_eq!(decoded.pid, None);
+        assert_eq!(decoded, info);
+    }
+
+    #[test]
+    fn session_info_with_a_pid_round_trips() {
+        let info = SessionInfo {
+            id: SessionId::new(),
+            title: "shell".into(),
+            argv: vec!["sh".into()],
+            cwd: "/tmp".into(),
+            state: SessionState::Running,
+            pid: Some(4242),
+            exit_code: None,
+            error: None,
+            started_at: 1_700_000_000_000,
+            ended_at: None,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":4242"));
         assert_eq!(serde_json::from_str::<SessionInfo>(&json).unwrap(), info);
     }
 

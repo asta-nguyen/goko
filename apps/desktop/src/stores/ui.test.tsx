@@ -65,6 +65,43 @@ describe('useUi', () => {
     }
   })
 
+  it('openSettings sets the view and the requested section together, even when already on Settings', () => {
+    act(() => useUi.getState().openSettings('accounts'))
+    expect(useUi.getState().activeView).toBe('settings')
+    expect(useUi.getState().settingsSection).toBe('accounts')
+
+    act(() => useUi.getState().openSettings('appearance'))
+    expect(useUi.getState().activeView).toBe('settings')
+    expect(useUi.getState().settingsSection).toBe('appearance')
+
+    act(() => useUi.getState().openSettings())
+    expect(useUi.getState().settingsSection).toBeNull()
+
+    act(() => useUi.getState().clearSettingsSection())
+    expect(useUi.getState().settingsSection).toBeNull()
+  })
+
+  it('openSettings waits for the unsaved-draft guard like setActiveView', () => {
+    act(() => {
+      useUi.getState().setEditorDraft({
+        projectId: 'p1',
+        checkoutPath: '/w/p1',
+        path: 'a.ts',
+        originalText: 'one',
+        text: 'two',
+      })
+      useUi.getState().openSettings('accounts')
+    })
+
+    expect(useUi.getState().editorGuardOpen).toBe(true)
+    expect(useUi.getState().activeView).toBe('terminal')
+    expect(useUi.getState().settingsSection).toBeNull()
+
+    act(() => useUi.getState().continueEditorNavigation(true))
+    expect(useUi.getState().activeView).toBe('settings')
+    expect(useUi.getState().settingsSection).toBe('accounts')
+  })
+
   it('stores project-keyed tabs and focuses an existing session instead of duplicating it', () => {
     act(() => {
       useUi.getState().activateWorkspace('p1')

@@ -1,3 +1,4 @@
+use crate::accounts::{Accounts, AgentAccounts, DEFAULT_ID};
 use crate::events::Emit;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -9,10 +10,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::State;
+use tokio::sync::Notify;
 
 pub(crate) const CODEX_TAIL_BYTES: u64 = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CLAUDE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const CLAUDE_FIVE_HOUR_MINUTES: u64 = 300;
+const CLAUDE_SEVEN_DAY_MINUTES: u64 = 10_080;
 
 pub(crate) fn prune_old(dir: &Path, max_age: Duration) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -41,6 +45,17 @@ pub(crate) fn prune_old(dir: &Path, max_age: Duration) {
 pub struct UsageSnapshot {
     pub claude: ClaudeUsage,
     pub codex: CodexUsage,
+    /// Every account's limits, keyed `"<agent>:<account-id>"` (`claude:default`,
+    /// `codex:<id>`, …). `claude`/`codex` above describe the active account.
+    pub accounts: HashMap<String, AccountUsage>,
+}
+
+/// One account's usage: its existing limits in window order (Claude: five-hour
+/// then seven-day; Codex: primary then secondary) and when they were last read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct AccountUsage {
+    pub limits: Vec<Limit>,
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -83,8 +98,14 @@ fn parse_claude(text: &str) -> Option<ClaudeStatus> {
         context_pct: value
             .pointer("/context_window/used_percentage")
             .and_then(Value::as_f64),
-        five_hour: claude_limit(value.pointer("/rate_limits/five_hour"), 300),
-        seven_day: claude_limit(value.pointer("/rate_limits/seven_day"), 10_080),
+        five_hour: claude_limit(
+            value.pointer("/rate_limits/five_hour"),
+            CLAUDE_FIVE_HOUR_MINUTES,
+        ),
+        seven_day: claude_limit(
+            value.pointer("/rate_limits/seven_day"),
+            CLAUDE_SEVEN_DAY_MINUTES,
+        ),
     })
 }
 
@@ -125,16 +146,29 @@ fn codex_limit(value: Option<&Value>) -> Option<Limit> {
     })
 }
 
-#[derive(Clone, Default)]
-pub struct UsageState(Arc<RwLock<UsageSnapshot>>);
+#[derive(Clone)]
+pub struct UsageState {
+    snapshot: Arc<RwLock<UsageSnapshot>>,
+    /// Wakes the poller between interval ticks so `refresh` reads at once.
+    wake: Arc<Notify>,
+}
+
+impl Default for UsageState {
+    fn default() -> Self {
+        Self::new(UsageSnapshot::default())
+    }
+}
 
 impl UsageState {
     fn new(snapshot: UsageSnapshot) -> Self {
-        Self(Arc::new(RwLock::new(snapshot)))
+        Self {
+            snapshot: Arc::new(RwLock::new(snapshot)),
+            wake: Arc::new(Notify::new()),
+        }
     }
 
     fn snapshot(&self) -> UsageSnapshot {
-        self.0
+        self.snapshot
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -142,9 +176,16 @@ impl UsageState {
 
     fn replace(&self, snapshot: UsageSnapshot) {
         *self
-            .0
+            .snapshot
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
+    }
+
+    /// Wake the poller so it reads the sources and emits at once. Account
+    /// commands call this after a change; the poller still emits only when
+    /// the snapshot changed.
+    pub fn refresh(&self) {
+        self.wake.notify_one();
     }
 }
 
@@ -153,20 +194,42 @@ pub fn usage_get(state: State<'_, UsageState>) -> UsageSnapshot {
     state.snapshot()
 }
 
-pub fn spawn_poller(goko_home: PathBuf, emit: Emit) -> UsageState {
-    prune_old(&goko_home.join("usage/claude"), CLAUDE_RETENTION);
+/// Start the usage poller. `accounts_source` is read every tick (and once at
+/// startup) so account changes take effect without a restart; it must be
+/// infallible — a broken store reads as Default-only inside `accounts::read`.
+pub fn spawn_poller(
+    goko_home: PathBuf,
+    emit: Emit,
+    accounts_source: Box<dyn Fn() -> Accounts + Send + Sync>,
+) -> UsageState {
     let codex_home = codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"));
-    let mut current = read_snapshot(&goko_home, codex_home.as_deref(), &UsageSnapshot::default());
+    let accounts = accounts_source();
+    let claude_root = goko_home.join("usage/claude");
+    for (_, dir) in claude_folders(&claude_root, &accounts.claude) {
+        prune_old(&dir, CLAUDE_RETENTION);
+    }
+    let mut current = read_snapshot(
+        &goko_home,
+        codex_home.as_deref(),
+        &accounts,
+        &UsageSnapshot::default(),
+    );
     let state = UsageState::new(current.clone());
     let poll_state = state.clone();
+    let wake = Arc::clone(&state.wake);
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(POLL_INTERVAL);
         interval.tick().await;
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = wake.notified() => {}
+            }
+            let accounts = accounts_source();
             poll_once(
                 &goko_home,
                 codex_home.as_deref(),
+                &accounts,
                 &mut current,
                 &poll_state,
                 &emit,
@@ -179,11 +242,12 @@ pub fn spawn_poller(goko_home: PathBuf, emit: Emit) -> UsageState {
 fn poll_once(
     goko_home: &Path,
     codex_home: Option<&Path>,
+    accounts: &Accounts,
     current: &mut UsageSnapshot,
     state: &UsageState,
     emit: &Emit,
 ) {
-    let next = read_snapshot(goko_home, codex_home, current);
+    let next = read_snapshot(goko_home, codex_home, accounts, current);
     if next != *current {
         state.replace(next.clone());
         *current = next.clone();
@@ -194,18 +258,182 @@ fn poll_once(
 fn read_snapshot(
     goko_home: &Path,
     codex_home: Option<&Path>,
+    accounts: &Accounts,
     previous: &UsageSnapshot,
 ) -> UsageSnapshot {
+    let mut account_usage = HashMap::new();
+    let mut sessions = previous.claude.sessions.clone();
+
+    // Claude: Default reads the flat `usage/claude` folder, a named account its
+    // `usage/claude/<id>` subfolder; sessions merge across every owned folder.
+    let claude_root = goko_home.join("usage/claude");
+    let active_claude = active_id(&accounts.claude);
+    let mut claude = ClaudeUsage::default();
+    for (id, dir) in claude_folders(&claude_root, &accounts.claude) {
+        let key = format!("claude:{id}");
+        let read = read_claude_folder(&dir, &claude_previous(previous.accounts.get(&key)));
+        for (session_id, context) in read.sessions {
+            match context {
+                Some(context) => {
+                    sessions.insert(session_id, context);
+                }
+                None => {
+                    sessions.remove(&session_id);
+                }
+            }
+        }
+        if id == active_claude {
+            claude = ClaudeUsage {
+                five_hour: read.five_hour.clone(),
+                seven_day: read.seven_day.clone(),
+                sessions: HashMap::new(),
+                updated_at: read.updated_at,
+            };
+        }
+        account_usage.insert(
+            key,
+            AccountUsage {
+                limits: [read.five_hour, read.seven_day]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                updated_at: read.updated_at,
+            },
+        );
+    }
+    claude.sessions = sessions;
+
+    // Codex: Default reads the resolved default `CODEX_HOME`, a named account
+    // its own folder's `sessions`.
+    let active_codex = active_id(&accounts.codex);
+    let mut codex = CodexUsage::default();
+    for (id, home) in codex_folders(codex_home, &accounts.codex) {
+        let key = format!("codex:{id}");
+        let usage = read_codex(
+            home.as_deref(),
+            &codex_previous(previous.accounts.get(&key)),
+        );
+        if id == active_codex {
+            codex = usage.clone();
+        }
+        account_usage.insert(
+            key,
+            AccountUsage {
+                limits: [usage.primary, usage.secondary]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                updated_at: usage.updated_at,
+            },
+        );
+    }
+
     UsageSnapshot {
-        claude: read_claude(goko_home, &previous.claude),
-        codex: read_codex(codex_home, &previous.codex),
+        claude,
+        codex,
+        accounts: account_usage,
     }
 }
 
-fn read_claude(goko_home: &Path, previous: &ClaudeUsage) -> ClaudeUsage {
-    let mut usage = previous.clone();
-    let Ok(entries) = fs::read_dir(goko_home.join("usage/claude")) else {
-        return usage;
+/// The active account's id, falling back to Default when `active` names no
+/// stored item (the stored value is normalized on read; this is defensive).
+fn active_id(agent: &AgentAccounts) -> &str {
+    if agent.items.iter().any(|item| item.id == agent.active) {
+        agent.active.as_str()
+    } else {
+        DEFAULT_ID
+    }
+}
+
+/// `(account id, capture folder)` for Default and each stored Claude account.
+/// Default reads the flat `usage/claude` folder — its `*.json` files only, so
+/// account subfolders are never its captures — and a named account reads its
+/// `usage/claude/<id>` subfolder. A folder no account owns is never listed.
+fn claude_folders(root: &Path, agent: &AgentAccounts) -> Vec<(String, PathBuf)> {
+    let mut folders = vec![(DEFAULT_ID.to_owned(), root.to_path_buf())];
+    folders.extend(
+        agent
+            .items
+            .iter()
+            .filter(|item| valid_stored_id(&item.id))
+            .map(|item| (item.id.clone(), root.join(&item.id))),
+    );
+    folders
+}
+
+/// `(account id, codex home)` for Default (the resolved `CODEX_HOME`, possibly
+/// `None`) and each stored Codex account (its folder is its `CODEX_HOME`).
+fn codex_folders(
+    default_home: Option<&Path>,
+    agent: &AgentAccounts,
+) -> Vec<(String, Option<PathBuf>)> {
+    let mut folders = vec![(DEFAULT_ID.to_owned(), default_home.map(Path::to_path_buf))];
+    folders.extend(
+        agent
+            .items
+            .iter()
+            .filter(|item| valid_stored_id(&item.id))
+            .map(|item| (item.id.clone(), Some(item.dir.clone()))),
+    );
+    folders
+}
+
+fn valid_stored_id(id: &str) -> bool {
+    !id.is_empty() && id != DEFAULT_ID
+}
+
+/// The per-account previous `ClaudeUsage` for the limits scan: the stored
+/// `limits` are flat in window order, so they map back by `window_minutes`
+/// (the Claude windows are fixed constants).
+fn claude_previous(account: Option<&AccountUsage>) -> ClaudeUsage {
+    let mut usage = ClaudeUsage::default();
+    if let Some(account) = account {
+        usage.updated_at = account.updated_at;
+        for limit in &account.limits {
+            match limit.window_minutes {
+                CLAUDE_FIVE_HOUR_MINUTES => usage.five_hour = Some(limit.clone()),
+                CLAUDE_SEVEN_DAY_MINUTES => usage.seven_day = Some(limit.clone()),
+                _ => {}
+            }
+        }
+    }
+    usage
+}
+
+/// The per-account previous `CodexUsage`. Window order is primary then
+/// secondary, but a lone stored limit cannot say which slot it held; it is
+/// kept as primary — the `accounts` map round-trips it either way.
+fn codex_previous(account: Option<&AccountUsage>) -> CodexUsage {
+    let mut usage = CodexUsage::default();
+    if let Some(account) = account {
+        usage.updated_at = account.updated_at;
+        let mut limits = account.limits.iter();
+        usage.primary = limits.next().cloned();
+        usage.secondary = limits.next().cloned();
+    }
+    usage
+}
+
+/// What one Claude capture folder contributed this tick.
+struct ClaudeFolderRead {
+    /// Session-context updates for the merged map: `Some` sets the fill,
+    /// `None` clears it. Unparseable files contribute nothing, so their
+    /// previous session value survives.
+    sessions: HashMap<String, Option<SessionContext>>,
+    five_hour: Option<Limit>,
+    seven_day: Option<Limit>,
+    updated_at: Option<i64>,
+}
+
+fn read_claude_folder(dir: &Path, previous: &ClaudeUsage) -> ClaudeFolderRead {
+    let mut read = ClaudeFolderRead {
+        sessions: HashMap::new(),
+        five_hour: previous.five_hour.clone(),
+        seven_day: previous.seven_day.clone(),
+        updated_at: previous.updated_at,
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return read;
     };
     let mut files = Vec::new();
     for entry in entries.flatten() {
@@ -229,13 +457,12 @@ fn read_claude(goko_home: &Path, previous: &ClaudeUsage) -> ClaudeUsage {
             .ok()
             .and_then(|text| parse_claude(&text));
         if let Some(status) = &parsed {
-            if let Some(context_pct) = status.context_pct {
-                usage
-                    .sessions
-                    .insert(session_id, SessionContext { context_pct });
-            } else {
-                usage.sessions.remove(&session_id);
-            }
+            read.sessions.insert(
+                session_id,
+                status
+                    .context_pct
+                    .map(|context_pct| SessionContext { context_pct }),
+            );
         }
         files.push((modified, path, parsed));
     }
@@ -247,20 +474,16 @@ fn read_claude(goko_home: &Path, previous: &ClaudeUsage) -> ClaudeUsage {
     for (modified, _, status) in files.iter().rev() {
         match status {
             Some(status) if status.five_hour.is_some() || status.seven_day.is_some() => {
-                update_claude_account(&mut usage, status, *modified);
+                read.five_hour = status.five_hour.clone();
+                read.seven_day = status.seven_day.clone();
+                read.updated_at = unix_millis(*modified);
                 break;
             }
-            None if usage.updated_at.is_some() => break,
+            None if read.updated_at.is_some() => break,
             _ => {}
         }
     }
-    usage
-}
-
-fn update_claude_account(usage: &mut ClaudeUsage, status: &ClaudeStatus, modified: SystemTime) {
-    usage.five_hour = status.five_hour.clone();
-    usage.seven_day = status.seven_day.clone();
-    usage.updated_at = unix_millis(modified);
+    read
 }
 
 fn read_codex(codex_home: Option<&Path>, previous: &CodexUsage) -> CodexUsage {
@@ -377,6 +600,7 @@ fn unix_millis(time: SystemTime) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::StoredAccount;
     use serde_json::json;
     use std::time::SystemTime;
 
@@ -410,8 +634,25 @@ mod tests {
         used_pct: f64,
         modified: SystemTime,
     ) -> PathBuf {
-        let dir = home.join("usage/claude");
-        fs::create_dir_all(&dir).unwrap();
+        write_claude_capture(
+            &home.join("usage/claude"),
+            id,
+            context_pct,
+            used_pct,
+            modified,
+        )
+    }
+
+    /// A statusline capture in an explicit folder: Default's flat
+    /// `usage/claude` or a named account's `usage/claude/<id>`.
+    fn write_claude_capture(
+        dir: &Path,
+        id: &str,
+        context_pct: f64,
+        used_pct: f64,
+        modified: SystemTime,
+    ) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
         let path = dir.join(format!("{id}.json"));
         fs::write(
             &path,
@@ -454,6 +695,21 @@ mod tests {
         fs::write(&path, contents).unwrap();
         set_modified(&path, modified);
         path
+    }
+
+    fn stored(id: &str, dir: &Path) -> StoredAccount {
+        StoredAccount {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    fn agent_accounts(active: &str, items: Vec<StoredAccount>) -> AgentAccounts {
+        AgentAccounts {
+            active: active.to_owned(),
+            items,
+        }
     }
 
     #[test]
@@ -626,7 +882,12 @@ mod tests {
             UNIX_EPOCH + Duration::from_secs(20),
         );
 
-        let snapshot = read_snapshot(home.path(), None, &UsageSnapshot::default());
+        let snapshot = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
 
         assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 42.0);
         assert_eq!(snapshot.claude.updated_at, Some(20_000));
@@ -653,7 +914,12 @@ mod tests {
             UNIX_EPOCH + Duration::from_secs(20),
         );
 
-        let snapshot = read_snapshot(home.path(), None, &UsageSnapshot::default());
+        let snapshot = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
 
         assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 42.0);
         assert_eq!(snapshot.claude.updated_at, Some(10_000));
@@ -661,7 +927,7 @@ mod tests {
         assert_eq!(snapshot.claude.sessions["session-new"].context_pct, 3.0);
 
         // Still true on a later poll that starts from that snapshot.
-        let again = read_snapshot(home.path(), None, &snapshot);
+        let again = read_snapshot(home.path(), None, &Accounts::default(), &snapshot);
         assert_eq!(again.claude.five_hour, snapshot.claude.five_hour);
     }
 
@@ -675,7 +941,12 @@ mod tests {
             UNIX_EPOCH + Duration::from_secs(5),
         );
 
-        let snapshot = read_snapshot(home.path(), None, &UsageSnapshot::default());
+        let snapshot = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
 
         assert_eq!(snapshot.claude.five_hour, None);
         assert_eq!(snapshot.claude.seven_day, None);
@@ -699,10 +970,15 @@ mod tests {
             42.0,
             UNIX_EPOCH + Duration::from_secs(20),
         );
-        let previous = read_snapshot(home.path(), None, &UsageSnapshot::default());
+        let previous = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
         fs::write(newest, "{half-written").unwrap();
 
-        let snapshot = read_snapshot(home.path(), None, &previous);
+        let snapshot = read_snapshot(home.path(), None, &Accounts::default(), &previous);
 
         assert_eq!(snapshot.claude.five_hour, previous.claude.five_hour);
         assert_eq!(snapshot.claude.updated_at, previous.claude.updated_at);
@@ -728,6 +1004,7 @@ mod tests {
         let snapshot = read_snapshot(
             crate::test_support::TempDir::new("usage-codex-home").path(),
             Some(home.path()),
+            &Accounts::default(),
             &UsageSnapshot::default(),
         );
 
@@ -761,6 +1038,7 @@ mod tests {
         let snapshot = read_snapshot(
             crate::test_support::TempDir::new("usage-codex-days-home").path(),
             Some(home.path()),
+            &Accounts::default(),
             &UsageSnapshot::default(),
         );
 
@@ -785,7 +1063,12 @@ mod tests {
     #[test]
     fn poll_once_emits_only_when_the_snapshot_changes() {
         let home = crate::test_support::TempDir::new("usage-poll");
-        let mut current = read_snapshot(home.path(), None, &UsageSnapshot::default());
+        let mut current = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
         let state = UsageState::new(current.clone());
         let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
         let received = Arc::clone(&emitted);
@@ -793,7 +1076,14 @@ mod tests {
             received.lock().unwrap().push((name.to_owned(), payload));
         });
 
-        poll_once(home.path(), None, &mut current, &state, &emit);
+        poll_once(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &mut current,
+            &state,
+            &emit,
+        );
         assert!(emitted.lock().unwrap().is_empty());
 
         write_claude(
@@ -803,12 +1093,384 @@ mod tests {
             42.0,
             UNIX_EPOCH + Duration::from_secs(20),
         );
-        poll_once(home.path(), None, &mut current, &state, &emit);
-        poll_once(home.path(), None, &mut current, &state, &emit);
+        poll_once(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &mut current,
+            &state,
+            &emit,
+        );
+        poll_once(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &mut current,
+            &state,
+            &emit,
+        );
 
         let emitted = emitted.lock().unwrap();
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].0, "usage://updated");
         assert_eq!(state.snapshot(), current);
+    }
+
+    #[test]
+    fn read_snapshot_reports_the_default_account_exactly_as_before() {
+        let home = crate::test_support::TempDir::new("usage-default-account");
+        write_claude(
+            home.path(),
+            "session-one",
+            62.0,
+            42.0,
+            UNIX_EPOCH + Duration::from_secs(20),
+        );
+
+        let snapshot = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
+
+        // `claude` keeps today's shape and values.
+        assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 42.0);
+        assert_eq!(snapshot.claude.seven_day, None);
+        assert_eq!(snapshot.claude.updated_at, Some(20_000));
+        assert_eq!(snapshot.claude.sessions["session-one"].context_pct, 62.0);
+
+        // `claude:default` carries the same limits and update time.
+        let entry = &snapshot.accounts["claude:default"];
+        assert_eq!(
+            entry.limits,
+            vec![snapshot.claude.five_hour.clone().unwrap()]
+        );
+        assert_eq!(entry.updated_at, snapshot.claude.updated_at);
+
+        // Codex has its Default entry too, empty without a home or rollouts.
+        assert!(snapshot.accounts["codex:default"].limits.is_empty());
+        assert_eq!(snapshot.accounts["codex:default"].updated_at, None);
+    }
+
+    #[test]
+    fn read_snapshot_reads_every_claude_account_and_reports_the_active_one() {
+        let home = crate::test_support::TempDir::new("usage-two-claude");
+        write_claude(
+            home.path(),
+            "default-session",
+            10.0,
+            11.0,
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+        write_claude_capture(
+            &home.path().join("usage/claude/work"),
+            "work-session",
+            70.0,
+            77.0,
+            UNIX_EPOCH + Duration::from_secs(20),
+        );
+        let accounts = Accounts {
+            claude: agent_accounts(
+                "work",
+                vec![stored("work", &home.path().join("claude-work"))],
+            ),
+            codex: AgentAccounts::default(),
+        };
+
+        let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
+
+        // `claude` describes the active account ("work"); `accounts` has both.
+        assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 77.0);
+        assert_eq!(snapshot.claude.updated_at, Some(20_000));
+        assert_eq!(snapshot.accounts["claude:default"].limits[0].used_pct, 11.0);
+        assert_eq!(snapshot.accounts["claude:default"].updated_at, Some(10_000));
+        assert_eq!(snapshot.accounts["claude:work"].limits[0].used_pct, 77.0);
+        assert_eq!(snapshot.accounts["claude:work"].updated_at, Some(20_000));
+
+        // Switching the active id changes `claude` but not `accounts`.
+        let mut flipped = accounts.clone();
+        flipped.claude.active = "default".to_owned();
+        let snapshot = read_snapshot(home.path(), None, &flipped, &snapshot);
+        assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 11.0);
+        assert_eq!(snapshot.accounts["claude:work"].limits[0].used_pct, 77.0);
+        assert_eq!(
+            snapshot.accounts,
+            read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default()).accounts
+        );
+    }
+
+    #[test]
+    fn read_snapshot_merges_claude_sessions_across_account_folders() {
+        let home = crate::test_support::TempDir::new("usage-claude-sessions");
+        write_claude(
+            home.path(),
+            "default-session",
+            10.0,
+            11.0,
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+        write_claude_capture(
+            &home.path().join("usage/claude/work"),
+            "work-session",
+            70.0,
+            77.0,
+            UNIX_EPOCH + Duration::from_secs(20),
+        );
+        let accounts = Accounts {
+            claude: agent_accounts(
+                "default",
+                vec![stored("work", &home.path().join("claude-work"))],
+            ),
+            codex: AgentAccounts::default(),
+        };
+
+        let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
+
+        assert_eq!(
+            snapshot.claude.sessions["default-session"].context_pct,
+            10.0
+        );
+        assert_eq!(snapshot.claude.sessions["work-session"].context_pct, 70.0);
+    }
+
+    #[test]
+    fn read_snapshot_does_not_read_a_subfolder_as_default_claude_captures() {
+        let home = crate::test_support::TempDir::new("usage-claude-subdir");
+        // A stray folder inside `usage/claude` that no account owns.
+        write_claude_capture(
+            &home.path().join("usage/claude/stray"),
+            "stray-session",
+            50.0,
+            55.0,
+            UNIX_EPOCH + Duration::from_secs(30),
+        );
+        write_claude(
+            home.path(),
+            "real-session",
+            10.0,
+            11.0,
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+
+        let snapshot = read_snapshot(
+            home.path(),
+            None,
+            &Accounts::default(),
+            &UsageSnapshot::default(),
+        );
+
+        // Default read only the flat folder: the stray file's newer limits and
+        // session never leak in.
+        assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 11.0);
+        assert_eq!(snapshot.claude.updated_at, Some(10_000));
+        assert!(snapshot.claude.sessions.contains_key("real-session"));
+        assert!(!snapshot.claude.sessions.contains_key("stray-session"));
+        assert!(!snapshot.accounts.contains_key("claude:stray"));
+    }
+
+    #[test]
+    fn read_snapshot_reads_codex_per_account_and_reports_the_active_one() {
+        let home = crate::test_support::TempDir::new("usage-codex-accounts");
+        let default_codex = crate::test_support::TempDir::new("usage-codex-default");
+        let work_codex = crate::test_support::TempDir::new("usage-codex-work");
+        write_rollout(
+            default_codex.path(),
+            "2026/11/04",
+            10.0,
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+        write_rollout(
+            work_codex.path(),
+            "2026/11/04",
+            56.0,
+            UNIX_EPOCH + Duration::from_secs(20),
+        );
+        let accounts = Accounts {
+            claude: AgentAccounts::default(),
+            codex: agent_accounts("work", vec![stored("work", work_codex.path())]),
+        };
+
+        let snapshot = read_snapshot(
+            home.path(),
+            Some(default_codex.path()),
+            &accounts,
+            &UsageSnapshot::default(),
+        );
+
+        // `codex` describes the active account ("work"); `accounts` has both.
+        assert_eq!(snapshot.codex.primary.as_ref().unwrap().used_pct, 56.0);
+        assert_eq!(snapshot.codex.updated_at, Some(20_000));
+        assert_eq!(snapshot.accounts["codex:default"].limits[0].used_pct, 10.0);
+        assert_eq!(snapshot.accounts["codex:work"].limits[0].used_pct, 56.0);
+
+        // Switching the active id changes `codex` but not `accounts`.
+        let mut flipped = accounts.clone();
+        flipped.codex.active = "default".to_owned();
+        let snapshot = read_snapshot(home.path(), Some(default_codex.path()), &flipped, &snapshot);
+        assert_eq!(snapshot.codex.primary.as_ref().unwrap().used_pct, 10.0);
+        assert_eq!(
+            snapshot.accounts,
+            read_snapshot(
+                home.path(),
+                Some(default_codex.path()),
+                &accounts,
+                &UsageSnapshot::default(),
+            )
+            .accounts
+        );
+    }
+
+    #[test]
+    fn read_snapshot_keeps_an_accounts_previous_value_when_its_capture_is_corrupt() {
+        let home = crate::test_support::TempDir::new("usage-corrupt-account");
+        write_claude(
+            home.path(),
+            "default-session",
+            10.0,
+            11.0,
+            UNIX_EPOCH + Duration::from_secs(30),
+        );
+        let work_file = write_claude_capture(
+            &home.path().join("usage/claude/work"),
+            "work-session",
+            70.0,
+            77.0,
+            UNIX_EPOCH + Duration::from_secs(20),
+        );
+        let accounts = Accounts {
+            claude: agent_accounts(
+                "default",
+                vec![stored("work", &home.path().join("claude-work"))],
+            ),
+            codex: AgentAccounts::default(),
+        };
+        let previous = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
+        assert_eq!(previous.accounts["claude:work"].limits[0].used_pct, 77.0);
+
+        // The account's newest capture is now mid-write garbage; Default gets a
+        // newer good file, so Default still updates while "work" keeps its value.
+        fs::write(&work_file, "{half-written").unwrap();
+        write_claude(
+            home.path(),
+            "default-session-new",
+            12.0,
+            13.0,
+            UNIX_EPOCH + Duration::from_secs(40),
+        );
+
+        let snapshot = read_snapshot(home.path(), None, &accounts, &previous);
+
+        assert_eq!(
+            snapshot.accounts["claude:work"],
+            previous.accounts["claude:work"]
+        );
+        assert_eq!(snapshot.accounts["claude:default"].limits[0].used_pct, 13.0);
+    }
+
+    #[test]
+    fn read_snapshot_ignores_a_capture_folder_no_account_owns() {
+        let home = crate::test_support::TempDir::new("usage-orphan");
+        // "gone" was removed; its capture folder stays on disk with the newest file.
+        write_claude_capture(
+            &home.path().join("usage/claude/gone"),
+            "gone-session",
+            90.0,
+            95.0,
+            UNIX_EPOCH + Duration::from_secs(50),
+        );
+        write_claude_capture(
+            &home.path().join("usage/claude/work"),
+            "work-session",
+            70.0,
+            77.0,
+            UNIX_EPOCH + Duration::from_secs(20),
+        );
+        write_claude(
+            home.path(),
+            "default-session",
+            10.0,
+            11.0,
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+        let accounts = Accounts {
+            claude: agent_accounts(
+                "default",
+                vec![stored("work", &home.path().join("claude-work"))],
+            ),
+            codex: AgentAccounts::default(),
+        };
+
+        let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
+
+        assert_eq!(snapshot.accounts.len(), 3);
+        assert!(!snapshot.accounts.contains_key("claude:gone"));
+        assert_eq!(snapshot.claude.five_hour.as_ref().unwrap().used_pct, 11.0);
+        assert!(!snapshot.claude.sessions.contains_key("gone-session"));
+        assert!(snapshot.claude.sessions.contains_key("work-session"));
+    }
+
+    #[tokio::test]
+    async fn refresh_completes_a_pending_wait_on_the_poller_wake_signal() {
+        let state = UsageState::default();
+        let wake = Arc::clone(&state.wake);
+        let waiter = tokio::spawn(async move { wake.notified().await });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "the waiter finished before refresh");
+
+        state.refresh();
+
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("refresh did not wake the poller")
+            .unwrap();
+    }
+
+    #[test]
+    fn read_snapshot_gives_every_account_an_entry_even_without_data() {
+        let home = crate::test_support::TempDir::new("usage-all-accounts");
+        let empty_codex = crate::test_support::TempDir::new("usage-empty-codex");
+        write_claude_capture(
+            &home.path().join("usage/claude/used"),
+            "used-session",
+            1.0,
+            2.0,
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+        let accounts = Accounts {
+            claude: agent_accounts(
+                "default",
+                vec![
+                    stored("empty", &home.path().join("claude-empty")),
+                    stored("used", &home.path().join("claude-used")),
+                ],
+            ),
+            codex: agent_accounts("default", vec![stored("cx", empty_codex.path())]),
+        };
+
+        let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
+
+        for key in [
+            "claude:default",
+            "claude:empty",
+            "claude:used",
+            "codex:default",
+            "codex:cx",
+        ] {
+            assert!(snapshot.accounts.contains_key(key), "missing {key}");
+        }
+        assert!(snapshot.accounts["claude:empty"].limits.is_empty());
+        assert_eq!(snapshot.accounts["claude:empty"].updated_at, None);
+        assert!(snapshot.accounts["codex:cx"].limits.is_empty());
+        assert_eq!(snapshot.accounts["codex:cx"].updated_at, None);
+        assert_eq!(snapshot.accounts["claude:used"].limits[0].used_pct, 2.0);
+
+        // The wire shape is exactly {"limits": [...], "updated_at": ms|null}.
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            json["accounts"]["claude:empty"],
+            json!({"limits": [], "updated_at": null})
+        );
     }
 }

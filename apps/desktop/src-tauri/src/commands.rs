@@ -1,6 +1,7 @@
 //! The request/response commands the webview calls. Each is a thin wrapper over a `Bridge`
 //! method so tests can call the method directly.
 
+use crate::accounts::{self, LaunchAccount};
 use crate::acp::{self, AcpAgent, AcpHub, AcpOverride, AcpStatus};
 use crate::agents::{self, AgentInfo};
 use crate::bridge::Bridge;
@@ -213,14 +214,24 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
     }
     let (argv, agent) = match &args.agent {
         Some(agent) => {
+            // Only Claude and Codex have accounts; every other agent launches as before.
+            let account = match agent.as_str() {
+                "claude" | "codex" => accounts::resolve(agent, storage)?,
+                _ => LaunchAccount {
+                    id: "default".to_owned(),
+                    dir: None,
+                },
+            };
+            if let Some(dir) = account.dir.as_ref().filter(|dir| !dir.is_dir()) {
+                return Err(invalid(format!(
+                    "the account folder {} no longer exists",
+                    dir.display()
+                ))
+                .with_hint("restore the folder or pick another account in Settings › Accounts"));
+            }
             let (goko_home, original_statusline) = if agent == "claude" {
                 let home = daemon_client::home_dir()?;
-                let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-                    .filter(|dir| !dir.is_empty())
-                    .map(PathBuf::from)
-                    .or_else(|| {
-                        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
-                    });
+                let config_dir = account.dir.clone().or_else(|| accounts::default_dir(agent));
                 let original = config_dir
                     .and_then(|dir| agents::original_statusline(&dir.join("settings.json")));
                 (home, original)
@@ -234,6 +245,7 @@ fn resolve_launch(storage: &Storage, args: &CreateArgs) -> Result<Launch, Bridge
                     &default_shell(std::env::var_os("SHELL")),
                     &goko_home,
                     original_statusline.as_deref(),
+                    &account,
                 )?,
                 Some(agent.clone()),
             )

@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { AgentInfo } from '../../services/types'
+import { useAccounts } from '../accounts/queries'
 import { AgentIcon } from './AgentIcon'
 
 export type SessionTarget = { agent: string; title?: string } | { command: string; title?: string }
@@ -28,6 +29,7 @@ export function NewSessionMenu({
   onAgent: (id: string) => void
   onCustom: () => void
 }) {
+  const { data: accounts } = useAccounts()
   return (
     <DropdownMenu>
       <Tooltip>
@@ -41,13 +43,27 @@ export function NewSessionMenu({
         <TooltipContent>{label}</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" className="w-56">
-        {agents.map((agent) => (
-          <DropdownMenuItem key={agent.id} disabled={disabled || !agent.available} onSelect={() => onAgent(agent.id)}>
-            <AgentIcon agent={agent.id} />
-            {agent.label}
-            {!agent.available && ' — not found on PATH'}
-          </DropdownMenuItem>
-        ))}
+        {agents.map((agent) => {
+          const agentKey = agent.id === 'claude' || agent.id === 'codex' ? agent.id : null
+          const agentAccounts = agentKey === null ? undefined : accounts?.[agentKey]
+          const activeName =
+            agentAccounts !== undefined && agentAccounts.items.length >= 2
+              ? agentAccounts.items.find((item) => item.id === agentAccounts.active)?.name
+              : undefined
+          return (
+            <DropdownMenuItem key={agent.id} disabled={disabled || !agent.available} onSelect={() => onAgent(agent.id)}>
+              <AgentIcon agent={agent.id} />
+              {agent.label}
+              {activeName && (
+                <>
+                  {' '}
+                  <span className="text-muted">· {activeName}</span>
+                </>
+              )}
+              {!agent.available && ' — not found on PATH'}
+            </DropdownMenuItem>
+          )
+        })}
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={disabled} onSelect={onCustom}>
           <AgentIcon />

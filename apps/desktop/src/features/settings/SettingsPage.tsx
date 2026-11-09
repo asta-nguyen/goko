@@ -1,20 +1,26 @@
 import { KeyboardIcon, SunMoonIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import { resolveTheme, THEME_OPTIONS, THEME_SWATCH, type Theme, useTheme } from '../../components/use-theme'
+import { useUi } from '../../stores/ui'
 import { useEditorVim } from '../editor/queries'
+import { AccountsSection } from './AccountsSection'
 import { AcpAgentsSection } from './AcpAgentsSection'
 
 const SECTIONS = [
   { id: 'editor', label: 'Editor' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'accounts', label: 'Accounts' },
   { id: 'acp-agents', label: 'ACP agents' },
 ] as const
 type SettingsSectionId = (typeof SECTIONS)[number]['id']
+
+const isSectionId = (value: string | null): value is SettingsSectionId =>
+  value !== null && SECTIONS.some((item) => item.id === value)
 
 function SettingRow({
   icon,
@@ -44,9 +50,21 @@ function SettingRow({
 }
 
 export function SettingsPage() {
-  const [section, setSection] = useState<SettingsSectionId>('editor')
+  const settingsSection = useUi((state) => state.settingsSection)
+  const clearSettingsSection = useUi((state) => state.clearSettingsSection)
+  const [section, setSection] = useState<SettingsSectionId>(() =>
+    isSectionId(settingsSection) ? settingsSection : 'editor',
+  )
   const [vim, setVim] = useEditorVim()
   const [theme, setTheme] = useTheme()
+
+  // A one-shot section request (e.g. Manage accounts…) applies on arrival and
+  // is cleared; opening Settings any other way still lands on Editor.
+  useEffect(() => {
+    if (settingsSection === null) return
+    if (isSectionId(settingsSection)) setSection(settingsSection)
+    clearSettingsSection()
+  }, [settingsSection, clearSettingsSection])
 
   return (
     <section aria-label="Settings" className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -141,6 +159,7 @@ export function SettingsPage() {
               </CardContent>
             </Card>
           )}
+          {section === 'accounts' && <AccountsSection />}
           {section === 'acp-agents' && <AcpAgentsSection />}
         </div>
       </div>

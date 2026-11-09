@@ -163,6 +163,7 @@ impl SessionManager {
                 argv: spec.argv.clone(),
                 cwd: spec.cwd.clone(),
                 state: SessionState::Created,
+                pid: None,
                 exit_code: None,
                 error: None,
                 started_at: now_ms(),
@@ -187,7 +188,7 @@ impl SessionManager {
                 let _ = session.pty.set(Arc::clone(&pty));
                 lock(&self.sessions).push(Arc::clone(&session));
                 let info = session
-                    .apply(Transition::Spawned, |_| {})
+                    .apply(Transition::Spawned, |info| info.pid = Some(pty.pid()))
                     .expect("a starting session can always run");
                 tokio::spawn(watch_exit(Arc::clone(&session), pty));
                 info

@@ -2,16 +2,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { useActivity } from '../features/activity/queries'
+import { useSubagents } from '../features/subagents/queries'
 import { useUsage } from '../features/usage/queries'
 import { useDaemonStatus, useSessionList } from '../features/sessions/queries'
 import { makeQueryClient, queryKeys } from '../queryClient'
 import { startQuerySync } from './sync'
 import type { ActivityMap } from './activity'
+import type { SubagentMap } from './subagents'
 import type { UsageSnapshot } from './usage'
 import type { DaemonStatus, SessionInfo } from './types'
 
 type Handler = (e: { payload: unknown }) => void
-const { handlers, listen, service, usageService, activityService } = vi.hoisted(() => {
+const { handlers, listen, service, usageService, activityService, subagentsService } = vi.hoisted(() => {
   const handlers = new Map<string, Set<Handler>>()
   const listen = vi.fn(async (name: string, cb: Handler) => {
     if (!handlers.has(name)) handlers.set(name, new Set())
@@ -24,11 +26,13 @@ const { handlers, listen, service, usageService, activityService } = vi.hoisted(
     service: { list: vi.fn(), status: vi.fn() },
     usageService: { get: vi.fn() },
     activityService: { get: vi.fn() },
+    subagentsService: { get: vi.fn() },
   }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen }))
 vi.mock('./session', () => ({ sessionService: service }))
 vi.mock('./activity', () => ({ activityService }))
+vi.mock('./subagents', () => ({ subagentsService }))
 vi.mock('./usage', () => ({
   usageService,
   claudeSessionId: (argv: string[]) => {
@@ -63,6 +67,7 @@ beforeEach(async () => {
   Object.values(service).forEach((f) => f.mockReset())
   usageService.get.mockReset()
   activityService.get.mockReset()
+  subagentsService.get.mockReset()
   stop = startQuerySync(qc)
   await settle()
 })
@@ -73,6 +78,7 @@ describe('startQuerySync', () => {
     const initial: UsageSnapshot = {
       claude: { five_hour: null, seven_day: null, sessions: {}, updated_at: null },
       codex: { primary: null, secondary: null, updated_at: null },
+      accounts: {},
     }
     const next: UsageSnapshot = {
       ...initial,
@@ -101,6 +107,23 @@ describe('startQuerySync', () => {
 
     await waitFor(() => expect(result.current.data).toEqual(next))
     expect(qc.getQueryData(queryKeys.activity)).toEqual(next)
+  })
+
+  it('updates useSubagents from subagents://updated', async () => {
+    const initial: SubagentMap = { s1: [{ agent: 'devin', pid: 1, command: 'devin' }] }
+    const next: SubagentMap = {
+      s1: [{ agent: 'devin', pid: 1, command: 'devin' }],
+      s2: [{ agent: 'codex', pid: 2, command: 'codex' }],
+    }
+    subagentsService.get.mockResolvedValue(initial)
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    const { result } = renderHook(() => useSubagents(), { wrapper })
+    await waitFor(() => expect(result.current.data).toEqual(initial))
+
+    act(() => emit('subagents://updated', next))
+
+    await waitFor(() => expect(result.current.data).toEqual(next))
+    expect(qc.getQueryData(queryKeys.subagents)).toEqual(next)
   })
 
   it('updates one session without replacing the others', async () => {
@@ -179,11 +202,11 @@ describe('startQuerySync', () => {
     stopOther()
   })
 
-  it('registers five listeners once, and stop removes them all', async () => {
-    expect(listeners()).toBe(5)
+  it('registers six listeners once, and stop removes them all', async () => {
+    expect(listeners()).toBe(6)
     expect(startQuerySync(qc)).toBe(stop)
     await settle()
-    expect(listen).toHaveBeenCalledTimes(5)
+    expect(listen).toHaveBeenCalledTimes(6)
 
     stop()
     await settle()
@@ -195,6 +218,6 @@ describe('startQuerySync', () => {
     const stopOther = startQuerySync(other)
     stopOther() // before `listen` resolved
     await settle()
-    expect(listeners()).toBe(5) // only the beforeEach client's
+    expect(listeners()).toBe(6) // only the beforeEach client's
   })
 })

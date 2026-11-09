@@ -1,13 +1,32 @@
 import { memo } from 'react'
 import { cn } from '@/lib/utils'
+import { accountNameOf } from '../../services/accounts'
+import type { Subagent } from '../../services/subagents'
 import type { SessionInfo } from '../../services/types'
+import { useAccounts } from '../accounts/queries'
 import { useSessionActivity } from '../activity/queries'
+import { useSessionSubagents } from '../subagents/queries'
 import { useSessionContext } from '../usage/queries'
 import { usageTone, usageToneClass } from '../usage/tone'
 import { AgentIcon } from './AgentIcon'
 import { StateDot } from './StateBadge'
 
 const sessionTitle = (session: SessionInfo) => session.title || session.argv.join(' ')
+
+/** `↳ devin`, `↳ devin ×2`, `↳ codex, devin ×2`: agent names alphabetical, counts after the name. */
+function SubagentIndicator({ subagents }: { subagents: Subagent[] }) {
+  const byAgent = [...subagents].sort((a, b) => a.agent.localeCompare(b.agent))
+  const counts = new Map<string, number>()
+  for (const { agent } of byAgent) counts.set(agent, (counts.get(agent) ?? 0) + 1)
+  const names = [...counts.entries()].map(([agent, n]) => (n > 1 ? `${agent} ×${n}` : agent)).join(', ')
+  const entries = byAgent.map(({ agent, pid, command }) => `${agent} (pid ${pid}): ${command}`)
+  return (
+    <span title={entries.join('\n')} className="min-w-0 truncate text-xs text-muted">
+      <span aria-hidden="true">{`↳ ${names}`}</span>
+      <span className="sr-only">{`Running sub-agents: ${entries.join('; ')}`}</span>
+    </span>
+  )
+}
 
 const SessionRow = memo(function SessionRow({
   session,
@@ -31,6 +50,15 @@ const SessionRow = memo(function SessionRow({
   const contextPct = useSessionContext(session)
   const context = contextPct === null ? null : Math.round(contextPct)
   const activity = useSessionActivity(session)
+  const subagents = useSessionSubagents(session)
+  const { data: accounts } = useAccounts()
+  // The account comes from the session's own argv, so it survives active-account switches.
+  const agentKey = agent === 'claude' || agent === 'codex' ? agent : null
+  const agentAccounts = agentKey === null ? undefined : accounts?.[agentKey]
+  const accountName =
+    agentKey !== null && agentAccounts !== undefined && agentAccounts.items.length >= 2
+      ? accountNameOf(agentKey, session.argv, accounts)
+      : null
   return (
     <li>
       <button
@@ -61,6 +89,13 @@ const SessionRow = memo(function SessionRow({
         ) : (
           <span className="min-w-0 truncate font-medium">{title}</span>
         )}
+        {accountName !== null && (
+          <>
+            {' '}
+            <span className="min-w-0 truncate text-xs text-muted">· {accountName}</span>
+          </>
+        )}
+        {subagents.length > 0 && <SubagentIndicator subagents={subagents} />}
         {contextPct !== null && (
           <span
             aria-label={`Claude context ${context}%`}

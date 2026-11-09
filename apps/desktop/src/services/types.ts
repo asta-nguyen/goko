@@ -18,6 +18,8 @@ export interface SessionInfo {
   argv: string[]
   cwd: string
   state: SessionState
+  /** The PTY child's pid; `null` before spawn and for a failed spawn. Absent from older daemons. */
+  pid?: number | null
   exit_code: number | null
   error: string | null
   /** Unix epoch milliseconds. */

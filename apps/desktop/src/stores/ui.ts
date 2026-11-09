@@ -94,6 +94,8 @@ interface UiState {
   selectedId: string | null
   activeWorkspaceId: string | null
   activeView: WorkspaceView
+  /** One-shot Settings section request; SettingsPage selects it and clears it. */
+  settingsSection: string | null
   editorDraft: EditorDraft | null
   editorGuardOpen: boolean
   editorSaveError: string | null
@@ -109,6 +111,8 @@ interface UiState {
   select: (id: string | null) => void
   activateWorkspace: (id: string) => void
   setActiveView: (view: WorkspaceView) => void
+  openSettings: (section?: string) => void
+  clearSettingsSection: () => void
   setEditorDraft: (draft: EditorDraft | null) => void
   setEditorSaveError: (error: string | null) => void
   setEditorSaveDraft: (save: (() => Promise<boolean>) | null) => void
@@ -260,6 +264,7 @@ const initialState = {
   selectedId: null,
   activeWorkspaceId: null,
   activeView: 'terminal' as WorkspaceView,
+  settingsSection: null as string | null,
   editorDraft: null as EditorDraft | null,
   editorGuardOpen: false,
   editorSaveError: null as string | null,
@@ -296,6 +301,14 @@ export const useUi = create<UiState>((set, get) => ({
     if (get().activeView === activeView) return
     get().requestEditorNavigation(() => set({ activeView }))
   },
+  // Unlike setActiveView this never early-returns: called while Settings is
+  // already open it still switches the requested section.
+  openSettings: (section) => {
+    get().requestEditorNavigation(() =>
+      set({ activeView: 'settings', settingsSection: section ?? null }),
+    )
+  },
+  clearSettingsSection: () => set({ settingsSection: null }),
   setEditorDraft: (draft) => set({
     editorDraft: draft && draft.text !== draft.originalText.replace(/\r\n|\r/g, '\n') ? draft : null,
     editorSaveError: null,

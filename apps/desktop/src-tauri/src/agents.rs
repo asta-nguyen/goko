@@ -5,6 +5,7 @@
 //! created, never earlier, so a binary that appears or disappears between `agent_list`
 //! and Start is handled on the launch path.
 
+use crate::accounts::LaunchAccount;
 use crate::error::{BridgeError, Code};
 use protocol::message::ErrorCode;
 use serde::Serialize;
@@ -99,14 +100,16 @@ pub fn discover(path_var: Option<&OsStr>, default_shell: &str) -> Vec<AgentInfo>
 }
 
 /// Launch argv for `agent`, resolved fresh: `[absolute resolved path]` for a real
-/// agent, `[default_shell]` for `shell`. An unknown id or a binary missing from
-/// `path_var` is `invalid_argument`.
+/// agent, `[default_shell]` for `shell`. A named Claude or Codex account prepends
+/// `/usr/bin/env NAME=<dir>`; Claude also captures usage under the account id.
+/// An unknown id or a binary missing from `path_var` is `invalid_argument`.
 pub fn argv_for(
     agent: &str,
     path_var: Option<&OsStr>,
     default_shell: &str,
     goko_home: &Path,
     original_statusline: Option<&str>,
+    account: &LaunchAccount,
 ) -> Result<Vec<String>, BridgeError> {
     let adapter = ADAPTERS
         .iter()
@@ -128,12 +131,28 @@ pub fn argv_for(
                 )
                 .with_hint("install it or pick Shell")
             })?;
+            // A named Claude or Codex account sets its folder variable through
+            // `env`; the dir stays a single argv element even with spaces.
+            let env_word = match (agent, account.dir.as_ref()) {
+                ("claude", Some(dir)) => Some(format!("CLAUDE_CONFIG_DIR={}", dir.display())),
+                ("codex", Some(dir)) => Some(format!("CODEX_HOME={}", dir.display())),
+                _ => None,
+            };
             if agent != "claude" {
-                return Ok(vec![path.display().to_string()]);
+                return Ok(match env_word {
+                    Some(word) => vec!["/usr/bin/env".to_owned(), word, path.display().to_string()],
+                    None => vec![path.display().to_string()],
+                });
             }
 
             let session_id = Uuid::new_v4().to_string();
+            // A named account captures under its id; Default keeps the flat folder.
             let usage_dir = goko_home.join("usage/claude");
+            let usage_dir = if account.dir.is_some() {
+                usage_dir.join(&account.id)
+            } else {
+                usage_dir
+            };
             fs::create_dir_all(&usage_dir).map_err(|error| {
                 BridgeError::new(
                     Code::Storage,
@@ -174,13 +193,18 @@ pub fn argv_for(
                     "PostToolUse": hook("working")?,
                 }
             });
-            Ok(vec![
+            let mut argv = match env_word {
+                Some(word) => vec!["/usr/bin/env".to_owned(), word],
+                None => Vec::new(),
+            };
+            argv.extend([
                 path.display().to_string(),
                 "--session-id".to_owned(),
                 session_id,
                 "--settings".to_owned(),
                 settings.to_string(),
-            ])
+            ]);
+            Ok(argv)
         }
     }
 }
@@ -244,6 +268,14 @@ mod tests {
     /// A `PATH` value naming `dirs` in order, each created under `dir`.
     fn path_var(dirs: &[&Path]) -> OsString {
         std::env::join_paths(dirs.iter().map(|dir| dir.as_os_str())).unwrap()
+    }
+
+    /// The implicit Default account every pre-accounts launch resolves to.
+    fn default_account() -> LaunchAccount {
+        LaunchAccount {
+            id: "default".into(),
+            dir: None,
+        }
     }
 
     fn fake_bin(dir: &TempDir, name: &str, mode: u32) -> PathBuf {
@@ -310,19 +342,51 @@ mod tests {
         fake_bin(&dir, "opencode", 0o755);
         let path = path_var(&[dir.path()]);
 
-        let argv = argv_for("opencode", Some(&path), "/bin/zsh", dir.path(), None).unwrap();
+        let argv = argv_for(
+            "opencode",
+            Some(&path),
+            "/bin/zsh",
+            dir.path(),
+            None,
+            &default_account(),
+        )
+        .unwrap();
         assert_eq!(argv.len(), 1);
         assert!(argv[0].ends_with("/opencode"));
 
-        let missing = argv_for("codex", Some(&path), "/bin/zsh", dir.path(), None).unwrap_err();
+        let missing = argv_for(
+            "codex",
+            Some(&path),
+            "/bin/zsh",
+            dir.path(),
+            None,
+            &default_account(),
+        )
+        .unwrap_err();
         assert_eq!(missing.code, Code::Daemon(ErrorCode::InvalidArgument));
         assert!(missing.hint.unwrap().contains("Shell"));
 
-        let unknown = argv_for("emacs", Some(&path), "/bin/zsh", dir.path(), None).unwrap_err();
+        let unknown = argv_for(
+            "emacs",
+            Some(&path),
+            "/bin/zsh",
+            dir.path(),
+            None,
+            &default_account(),
+        )
+        .unwrap_err();
         assert_eq!(unknown.code, Code::Daemon(ErrorCode::InvalidArgument));
 
         assert_eq!(
-            argv_for("shell", Some(&path), "/bin/fish", dir.path(), None).unwrap(),
+            argv_for(
+                "shell",
+                Some(&path),
+                "/bin/fish",
+                dir.path(),
+                None,
+                &default_account()
+            )
+            .unwrap(),
             vec!["/bin/fish".to_owned()]
         );
 
@@ -330,7 +394,15 @@ mod tests {
         let codex_bin = fake_bin(&codex_dir, "codex", 0o755);
         let codex_path = path_var(&[codex_dir.path()]);
         assert_eq!(
-            argv_for("codex", Some(&codex_path), "/bin/zsh", dir.path(), None).unwrap(),
+            argv_for(
+                "codex",
+                Some(&codex_path),
+                "/bin/zsh",
+                dir.path(),
+                None,
+                &default_account()
+            )
+            .unwrap(),
             vec![fs::canonicalize(codex_bin).unwrap().display().to_string()]
         );
     }
@@ -341,7 +413,15 @@ mod tests {
         assert!(agents
             .iter()
             .all(|agent| agent.available == (agent.id == "shell")));
-        assert!(argv_for("claude", None, "/bin/zsh", Path::new("/tmp"), None).is_err());
+        assert!(argv_for(
+            "claude",
+            None,
+            "/bin/zsh",
+            Path::new("/tmp"),
+            None,
+            &default_account()
+        )
+        .is_err());
         // Sanity check that OsStr bytes flow through: a non-UTF8 dir is still scanned.
         let weird = OsStr::from_bytes(b"\xffdir");
         assert!(resolve("claude", Some(weird)).is_none());
@@ -353,7 +433,15 @@ mod tests {
         let bin = fake_bin(&dir, "claude", 0o755);
         let path = path_var(&[dir.path()]);
 
-        let argv = argv_for("claude", Some(&path), "/bin/zsh", dir.path(), None).unwrap();
+        let argv = argv_for(
+            "claude",
+            Some(&path),
+            "/bin/zsh",
+            dir.path(),
+            None,
+            &default_account(),
+        )
+        .unwrap();
 
         assert_eq!(argv.len(), 5);
         assert_eq!(
@@ -393,7 +481,15 @@ mod tests {
         fake_bin(&dir, "claude", 0o755);
         let path = path_var(&[dir.path()]);
 
-        let argv = argv_for("claude", Some(&path), "/bin/zsh", dir.path(), None).unwrap();
+        let argv = argv_for(
+            "claude",
+            Some(&path),
+            "/bin/zsh",
+            dir.path(),
+            None,
+            &default_account(),
+        )
+        .unwrap();
         let id = &argv[2];
         let settings: Value = serde_json::from_str(&argv[4]).unwrap();
         let file = dir.path().join("activity/claude").join(id);
@@ -427,7 +523,15 @@ mod tests {
         let home = dir.path().join("goko home");
         fs::create_dir_all(&home).unwrap();
 
-        let argv = argv_for("claude", Some(&path), "/bin/zsh", &home, None).unwrap();
+        let argv = argv_for(
+            "claude",
+            Some(&path),
+            "/bin/zsh",
+            &home,
+            None,
+            &default_account(),
+        )
+        .unwrap();
         let settings: Value = serde_json::from_str(&argv[4]).unwrap();
         let command = settings
             .pointer("/hooks/Stop/0/hooks/0/command")
@@ -462,6 +566,7 @@ mod tests {
             "/bin/zsh",
             dir.path(),
             Some(original),
+            &default_account(),
         )
         .unwrap();
         let id = &argv[2];
@@ -509,5 +614,125 @@ mod tests {
 
         fs::remove_file(&settings).unwrap();
         assert_eq!(original_statusline(&settings), None);
+    }
+
+    #[test]
+    fn a_named_claude_account_prefixes_env_and_captures_under_its_id() {
+        let dir = TempDir::new("agents-claude-acct");
+        let bin = fake_bin(&dir, "claude", 0o755);
+        let path = path_var(&[dir.path()]);
+        let goko_home = dir.path().join("goko-home");
+        fs::create_dir_all(&goko_home).unwrap();
+        // The space proves the dir stays one argv element.
+        let account_dir = dir.path().join("account dir");
+        fs::create_dir_all(&account_dir).unwrap();
+        let account = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir.clone()),
+        };
+
+        let argv = argv_for(
+            "claude",
+            Some(&path),
+            "/bin/zsh",
+            &goko_home,
+            None,
+            &account,
+        )
+        .unwrap();
+
+        assert_eq!(argv.len(), 7);
+        assert_eq!(argv[0], "/usr/bin/env");
+        assert_eq!(
+            argv[1],
+            format!("CLAUDE_CONFIG_DIR={}", account_dir.display())
+        );
+        assert_eq!(
+            argv[2],
+            fs::canonicalize(bin).unwrap().display().to_string()
+        );
+        assert_eq!(argv[3], "--session-id");
+        let id = Uuid::parse_str(&argv[4]).unwrap();
+        assert_eq!(id.get_version_num(), 4);
+        assert_eq!(argv[5], "--settings");
+        let settings: Value = serde_json::from_str(&argv[6]).unwrap();
+        let capture = settings
+            .pointer("/statusLine/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(capture.contains(&format!("usage/claude/work/{id}.json")));
+        assert!(goko_home.join("usage/claude/work").is_dir());
+        // The activity file path is unchanged: activity/claude/<session-id>.
+        let hook = settings
+            .pointer("/hooks/Stop/0/hooks/0/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(hook.contains(
+            &goko_home
+                .join("activity/claude")
+                .join(&argv[4])
+                .display()
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn a_named_codex_account_prefixes_env_with_its_home() {
+        let dir = TempDir::new("agents-codex-acct");
+        let bin = fake_bin(&dir, "codex", 0o755);
+        let path = path_var(&[dir.path()]);
+        let account_dir = dir.path().join("codex account");
+        fs::create_dir_all(&account_dir).unwrap();
+        let account = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir.clone()),
+        };
+
+        let argv = argv_for("codex", Some(&path), "/bin/zsh", dir.path(), None, &account).unwrap();
+
+        assert_eq!(
+            argv,
+            vec![
+                "/usr/bin/env".to_owned(),
+                format!("CODEX_HOME={}", account_dir.display()),
+                fs::canonicalize(bin).unwrap().display().to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn opencode_devin_and_shell_ignore_a_named_account() {
+        let dir = TempDir::new("agents-other-acct");
+        fake_bin(&dir, "opencode", 0o755);
+        fake_bin(&dir, "devin", 0o755);
+        let path = path_var(&[dir.path()]);
+        let account_dir = dir.path().join("account dir");
+        fs::create_dir_all(&account_dir).unwrap();
+        let named = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir),
+        };
+
+        for agent in ["opencode", "devin"] {
+            let default = argv_for(
+                agent,
+                Some(&path),
+                "/bin/zsh",
+                dir.path(),
+                None,
+                &default_account(),
+            )
+            .unwrap();
+            let launched =
+                argv_for(agent, Some(&path), "/bin/zsh", dir.path(), None, &named).unwrap();
+            assert_eq!(launched, default, "{agent}");
+            assert_eq!(launched.len(), 1, "{agent}");
+        }
+        assert_eq!(
+            argv_for("shell", Some(&path), "/bin/fish", dir.path(), None, &named).unwrap(),
+            vec!["/bin/fish".to_owned()]
+        );
     }
 }
