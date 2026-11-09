@@ -34,9 +34,12 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`
 ### RNC-header-status
 
 The system SHALL render the header with the goko mark and wordmark, a persistent
-6 px connection dot (success when `Data::connected`, danger otherwise), one
+6 px connection dot in a 12 px halo (success when `Data::connected`, danger
+otherwise) whose wordmark group carries an accessible name and hover tooltip
+("Connected to the Goko daemon" / "Disconnected from the Goko daemon"), one
 usage chip per `Data::usage` entry, and a settings button; a "Disconnected" pill
-appears on the right only while `connected` is false.
+appears on the right only while `connected` is false, entering with a short fade
+and small scale-up.
 
 #### Scenario: connected mock
 
@@ -93,7 +96,10 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`
 The system SHALL toggle `State::view` between `Settings` and `Terminal` when
 the header settings button is pressed; `Settings` replaces the whole workspace
 column (tab strip, controls, content) with a placeholder, matching App.tsx's
-settingsMode.
+settingsMode. The button is a keyboard-focusable toggle named "Settings" with a
+tooltip, pressed (`checked`) while `view` is `Settings`; it shows that state as an
+accent tint with the gear turned one 60° notch (a spring, instant under Reduce
+Motion), and gives hover wash, press wash and a 0.95 press scale as feedback.
 
 #### Scenario: open settings
 
@@ -113,7 +119,9 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`
 
 The system SHALL activate a workspace tab when its pill is pressed, setting
 `active_tab` to that index and selecting the session whose title matches, which
-also sets `active_workspace` to that session's checkout.
+also sets `active_workspace` to that session's checkout. A hovered inactive tab
+washes lighter and lifts its title, and stays visibly distinct from the active
+tab; tabs are keyed by title so neighbours slide into place when one closes.
 
 #### Scenario: press a tab
 
@@ -141,7 +149,10 @@ Evidence: `apps/rune/src/chrome.rs`
 
 The system SHALL switch `State::view` between `Terminal` and `Editor` when the
 view-switch items are pressed; `Editor` keeps the tab strip and controls and
-renders a placeholder in place of the terminal stub.
+renders a placeholder in place of the terminal stub. The switch is a radio group
+(arrow keys move and select) with one thumb, shared by id (`view-thumb`), that
+glides to the newly active segment; an inactive segment lifts to the text colour
+on hover and every segment shrinks slightly while pressed.
 
 #### Scenario: switch to editor
 
@@ -190,7 +201,8 @@ last tab clears `selected_session`/`active_workspace`; `active_tab` re-clamps
 with `saturating_sub`. `sync_selection` clears the selection when the active
 tab's title matches no session. Stop no-ops on non-live states, and the split
 buttons remain inert — real pane splits need a layout the milestone doesn't
-have. Disconnection only dims Stop and shows the header pill.
+have — so they render dimmed and disabled, with no hover, a tooltip, and no Tab
+stop. Disconnection only dims Stop and shows the header pill.
 
 ## Tests
 
