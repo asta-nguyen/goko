@@ -1,0 +1,390 @@
+apps/desktop/src/features/sessions/SessionItems.test.tsx
+  s_4a1cd6c058fbe0::t_fc263f659b5bdc 56-67
+  s_dddd20b8603c99::t_4304eb6b89c5a9 53
+  s_4a1cd6c058fbe0::t_897243de8fb47c 141-195
+  s_486ffc6b959fb9::t_79b7f27c689ae2 21-25
+  s_4a1cd6c058fbe0::t_f0963d923b4fb8 2,5,26-36
+  s_486ffc6b959fb9::t_c930295a40c927 91
+  s_486ffc6b959fb9::t_9b8a62a2fcb129 6
+  s_4a1cd6c058fbe0::t_c62b56cf55610f 92
+  s_486ffc6b959fb9::t_066a799a5f3e78 54,196-262
+docs/llm/INDEX.md
+  s_d361934f0cc28e::t_0ec76c5cecb54a 9,11,18
+docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/design.md
+  s_d361934f0cc28e::t_7e25dae5b4a980 1-102
+crates/daemon/src/session.rs
+  s_269050e457a2bf::t_912bb56cbca4ce 166
+  s_269050e457a2bf::t_766435992ba36f 191
+apps/desktop/src/features/subagents/queries.ts
+  s_486ffc6b959fb9::t_7666d1bba80edf 1-18
+apps/desktop/src-tauri/src/accounts.rs
+  s_23e6cf95e0c0ab::t_36eeab81e62077 347
+  s_e0cd407ca57e6b::t_8418204e423617 382,395
+  s_d361934f0cc28e::t_f41b3466f817c2 534-535,538-541
+  s_e74ef2bd3af96b::t_fbc62940e0083b 109-118
+  s_23e6cf95e0c0ab::t_83bb661f19e4ba 1211
+  s_d361934f0cc28e::t_713dc19b9d27fc 291
+  s_e0cd407ca57e6b::t_976cf86e6b366b 412,416-418,424,428-430
+  s_23e6cf95e0c0ab::t_53cd024234f2a9 272,307,563,696,775-782,848,896-902,1348,1391-1394,1458-1461,1468-1471
+  s_e74ef2bd3af96b::t_45b2cff2e274ad 433-448
+  s_23e6cf95e0c0ab::t_b24ee8f3daa4ba 674-675,677-678,681
+  s_e74ef2bd3af96b::t_f6ec203ac9262c 709-753
+  s_e74ef2bd3af96b::t_a069a06c7372ec 188-253
+  s_23e6cf95e0c0ab::t_e145a3645b74fc 1166-1167,1170,1173-1174
+  s_d361934f0cc28e::t_242fc1db0304a0 1312-1324
+  s_e74ef2bd3af96b::t_764fa2fea2feca 18-22,24
+  s_23e6cf95e0c0ab::t_8b7af6d556e309 305
+  s_d361934f0cc28e::t_a45a7a4861a58e 953-978
+  s_23e6cf95e0c0ab::t_3808d4349b7559 1126
+  s_e74ef2bd3af96b::t_9173227b32073d 1473-1531,1533-1584
+  s_e74ef2bd3af96b::t_83ab4ef6eb1db4 1532
+  s_e0cd407ca57e6b::t_46d9333aa84d58 27
+  s_23e6cf95e0c0ab::t_6a4b021bd53f79 1360-1363
+  s_d361934f0cc28e::t_2833532ec342e3 336
+  s_d361934f0cc28e::t_1581be0b9cf3a1 162-164,166
+  s_d361934f0cc28e::t_c7f179b3aa5b43 39
+  s_23e6cf95e0c0ab::t_bfed3e98948af5 1-17,23,25-26,28-38,40-108,119-161,165,167-187,254-271,273-290,292-304,306,308-335,337-346,348-381,383-394,396-411,413-415,419-423,425-427,431-432,449-533,536-537,542-562,564-673,676,679-680,682-695,697-708,754-774,783-847,849-895,903-952,979-1125,1127-1165,1168-1169,1171-1172,1175-1210,1212-1311,1325-1347,1349-1359,1364-1390,1395-1457,1462-1467,1472,1585
+apps/desktop/src-tauri/src/agents.rs
+  s_8d5a662d150ab0::t_e1376815712e94 196-200,206-207
+  s_8d5a662d150ab0::t_a338f5dfc80739 618-692,694-727,730-733,735-737
+  s_8d5a662d150ab0::t_c8aff054cf6c86 484-492
+  s_8d5a662d150ab0::t_c033c2bec40954 134-140,142-145,149,151-155
+  s_8d5a662d150ab0::t_e4ba26e9f88775 416-424,693,728-729,734
+  s_8d5a662d150ab0::t_4dcdba41aaba46 103-105,112
+  s_8d5a662d150ab0::t_47ebe405961aeb 273-280
+  s_8d5a662d150ab0::t_bff0073a50ff51 8
+  s_8d5a662d150ab0::t_c4ea7180577fa5 436-444
+  s_8d5a662d150ab0::t_f9730ac9f1d82a 526-534
+  s_8d5a662d150ab0::t_6016f4213ec804 345-353,357-365,369-377,381-389,397-405
+  s_8d5a662d150ab0::t_17586c0caa6e07 569
+apps/desktop/src-tauri/src/commands/tests.rs
+  s_8d5a662d150ab0::t_bd24f93136a4c4 1197
+  s_8d5a662d150ab0::t_42809aa5bd9fc2 4,7,9
+  s_8bce60554de6cb::t_82ba3599fffda3 178-202
+  s_8bce60554de6cb::t_cc6ccd4f830c8b 2
+  s_269050e457a2bf::t_9c9fa34f0ec07f 782
+  s_8d5a662d150ab0::t_e4ba26e9f88775 1198-1202
+  s_8d5a662d150ab0::t_b7cb197c4028eb 1180-1196,1203-1308
+  s_8d5a662d150ab0::t_a71185428423ed 118-177
+  s_8bce60554de6cb::t_2fef03b5fd7f90 1309-1405
+apps/desktop/src-tauri/src/usage.rs
+  s_e0cd407ca57e6b::t_3b19a3e5fa6850 603
+  s_e0cd407ca57e6b::t_17f97985984369 1041
+  s_e0cd407ca57e6b::t_0db2feb86a878b 930
+  s_e0cd407ca57e6b::t_f33712a0a8b175 13,18-19
+  s_e0cd407ca57e6b::t_897600663a6586 1007
+  s_e0cd407ca57e6b::t_c9ed3380ff1a10 1079-1086
+  s_e0cd407ca57e6b::t_ccafba86b0d192 48-58
+  s_d361934f0cc28e::t_961d9eda55fa05 344,353,370,382
+  s_e0cd407ca57e6b::t_18f2c1762f7a90 637-655
+  s_e0cd407ca57e6b::t_77b8ee21d6239d 312-315,1186,1230-1233,1304,1310,1449
+  s_e0cd407ca57e6b::t_9b6de8fe5d72c9 700-714
+  s_d361934f0cc28e::t_a937a6db67f3b2 1
+  s_e0cd407ca57e6b::t_175f43cc009a45 978,1118-1185,1187-1229,1234-1303,1305-1309,1311-1448,1450-1475
+  s_e0cd407ca57e6b::t_629995b057f2a4 981
+  s_e0cd407ca57e6b::t_c8a8e51980ff78 101-108
+  s_e0cd407ca57e6b::t_132d928894c870 1096-1111
+  s_e0cd407ca57e6b::t_2ca48cb8351cc1 885-890,917-922,944-949,973-977,1066-1071
+  s_e0cd407ca57e6b::t_43590c3469383c 149-160,164-167,171,179,183-189,197-204,206-216,219,224-228,232,245,250,261,264-311,316-330,332-343,348-352,354-369,371-381,383-436,460-465,477-479,482,486
+docs/agent-devkit/INDEX.md
+  s_d361934f0cc28e::t_7e25dae5b4a980 10-11
+crates/daemon/tests/session_manager.rs
+  s_269050e457a2bf::t_eefb58950ce20c 110-139
+docs/llm/domains/agent-accounts.md
+  s_d361934f0cc28e::t_7d7fc1bdcb0ce9 1-88,91-108,110-112,114-138
+  s_d361934f0cc28e::t_3ccad69c394ae7 89-90,109,113
+apps/desktop/src/features/subagents/queries.test.tsx
+  s_486ffc6b959fb9::t_0c58f5a3396415 1-78
+apps/desktop/src/features/sessions/StateBadge.tsx
+  s_d7ac92835fae46::t_70fbf2aaa24237 52-58
+  s_d7ac92835fae46::t_73a3565fa073d3 32
+apps/desktop/src-tauri/src/commands.rs
+  s_8d5a662d150ab0::t_9e8ce85a828561 4
+  s_8d5a662d150ab0::t_44477b4e7ec6b4 217-231,248
+  s_8d5a662d150ab0::t_e4ba26e9f88775 234
+apps/desktop/src/queryClient.ts
+  s_dddd20b8603c99::t_80b2382d5955f1 38
+  s_486ffc6b959fb9::t_c8b71f20b43432 42
+apps/desktop/src/features/settings/AccountsSection.test.tsx
+  s_24b23e6c540f5c::t_3d37c222aff0fa 270-295,306-330,341-366
+  s_dddd20b8603c99::t_b8080a34e9fdf7 102,109
+  s_24b23e6c540f5c::t_e4e2cd43189fc1 331-340
+  s_24b23e6c540f5c::t_31099294fe42e6 6,8,17,23-31
+  s_dddd20b8603c99::t_974b03287d20af 1-5,7,9-16,18-22,32-53,73-85,92-93,95-101,103-108,110-269,367
+  s_24b23e6c540f5c::t_fd32924296b6d3 54-72
+  s_24b23e6c540f5c::t_9025b6700de603 86-91,94
+  s_24b23e6c540f5c::t_e3835214b4ee4a 296-305
+apps/desktop/src/services/sync.ts
+  s_486ffc6b959fb9::t_01c7d4bb96a193 5
+  s_486ffc6b959fb9::t_8bbd06a9287915 35-37
+apps/desktop/src/features/usage/UsageChips.tsx
+  s_4a1cd6c058fbe0::t_7d5bfd7ae39b93 2,4-12,14-18,29-64,68-70,86,92,97-100,106-151,153-167
+apps/desktop/src/features/settings/SettingsPage.test.tsx
+  s_dddd20b8603c99::t_e590ea8de3266b 84-92
+  s_4a1cd6c058fbe0::t_4143434ba08f7d 6
+  s_dddd20b8603c99::t_c20f7235fd9911 191-195,197,199-200
+  s_dddd20b8603c99::t_90837f059135f7 23-40
+  s_4a1cd6c058fbe0::t_1c0bb4ec995c54 163-190
+  s_dddd20b8603c99::t_baf239194bf0e4 196,198
+  s_4a1cd6c058fbe0::t_6f32a2957f436b 95
+apps/desktop/src/features/sessions/StateBadge.test.tsx
+  s_d7ac92835fae46::t_447a7fa17ffca5 13,16,21-23,28-37
+  s_d7ac92835fae46::t_ae528004fc908e 38-39
+apps/desktop/src-tauri/src/activity.rs
+  s_8d5a662d150ab0::t_5ed60addf77c9e 849-892
+  s_8d5a662d150ab0::t_c23a6ec39265d7 295-296,298,302-305,309-315
+  s_8d5a662d150ab0::t_e4ba26e9f88775 299-301,306-308
+  s_269050e457a2bf::t_1c1991de0971db 720
+apps/desktop/src/features/sessions/SessionItems.tsx
+  s_4a1cd6c058fbe0::t_efebfc674c48b8 54-61
+  s_4a1cd6c058fbe0::t_dd31bdf0f2e8c1 93-96
+  s_486ffc6b959fb9::t_cbf3bbb406b612 4,8
+  s_486ffc6b959fb9::t_65df1b645ba52f 16-30
+  s_4a1cd6c058fbe0::t_bdec0715aa8d15 92,97
+  s_486ffc6b959fb9::t_96c3461a780fdb 53
+  s_4a1cd6c058fbe0::t_cf26a19570f0e3 3,6
+  s_486ffc6b959fb9::t_a891d401904731 98
+apps/desktop/src/App.test.tsx
+  s_486ffc6b959fb9::t_2cde1f3a46526d 180,200,214,222
+  s_dddd20b8603c99::t_b07846daae4f25 118
+apps/desktop/src/features/usage/UsageChips.test.tsx
+  s_4a1cd6c058fbe0::t_4e8eebc35f8de2 32,139-169,172-174,176-178,180,186-187,189-211
+  s_dddd20b8603c99::t_7fcb6ae6ccd2c9 83
+  s_dddd20b8603c99::t_4e329f232c919e 31
+  s_4a1cd6c058fbe0::t_39e5f46657e7f3 170-171
+  s_4a1cd6c058fbe0::t_42d57a728b5b5d 5,7,16-26
+  s_4a1cd6c058fbe0::t_6ca93ff76c5c66 175,179,181-185,188
+  s_4a1cd6c058fbe0::t_921f78d2828d41 34-45,61-63
+  s_4a1cd6c058fbe0::t_719ff212f44d6d 27
+  s_4a1cd6c058fbe0::t_23bc1451568c9e 33
+apps/desktop/src/features/accounts/queries.ts
+  s_dddd20b8603c99::t_e15a2476286fff 1-4,8-65
+  s_24b23e6c540f5c::t_db0167e3d0acca 5-7
+  s_24b23e6c540f5c::t_31a29d05f385fd 66-88
+apps/desktop/src/services/accounts.test.ts
+  s_24b23e6c540f5c::t_45a09975c8382e 1-6
+  s_dddd20b8603c99::t_f93893eb0266ca 7-68
+  s_24b23e6c540f5c::t_aea94b54074085 69-78
+apps/desktop/src/services/usage.ts
+  s_dddd20b8603c99::t_72cc11cff882a2 10-16
+  s_dddd20b8603c99::t_8dbea4bfa1e3ab 31-32
+ARCHITECTURE.md
+  s_d361934f0cc28e::t_08480d0bbe4ffe 29,303-315,318-319
+  s_d361934f0cc28e::t_c035b564d02471 286-288,323-333
+  s_d361934f0cc28e::t_12704bce9f16de 334
+crates/protocol/src/session.rs
+  s_269050e457a2bf::t_8c7a1eb21d342d 106,117-142,148,153-156,158
+  s_269050e457a2bf::t_8eabcd30b28dff 143-147,149-152
+  s_269050e457a2bf::t_f6e2421a8d47ee 55-57
+  s_269050e457a2bf::t_281df6e9ae76a7 157
+  s_269050e457a2bf::t_56161926c36dd4 159
+apps/desktop/src/services/subagents.ts
+  s_486ffc6b959fb9::t_eb1bd12fbc9142 1-13
+apps/desktop/src-tauri/src/subagents.rs
+  s_ae14e309728d3e::t_081a2831b1eaa3 1-228,231-233,236,238-401,403-470,472-500,583
+  s_8bce60554de6cb::t_c6baba087950ed 519
+  s_8bce60554de6cb::t_4b619e1138811d 229-230,234-235,237
+  s_8bce60554de6cb::t_0008f5a9068667 507-509
+  s_8bce60554de6cb::t_349429c35c5bf9 501-506,510-518,520-533,535-547,549-582
+  s_8bce60554de6cb::t_e142b5991cbb9c 548
+  s_ae14e309728d3e::t_dcd5179e7f732b 402,471
+  s_8bce60554de6cb::t_2930a8b1fdd0e7 534
+apps/desktop/src/features/settings/SettingsPage.tsx
+  s_4a1cd6c058fbe0::t_80ed4e998ff24e 2
+  s_4a1cd6c058fbe0::t_6b89adaf0d5bc4 9
+  s_dddd20b8603c99::t_2512df4c00539f 11,17
+  s_4a1cd6c058fbe0::t_34c9a65f424ca5 22-24
+  s_dddd20b8603c99::t_020b0dbae3f7f0 162
+  s_4a1cd6c058fbe0::t_d00c2655b363d6 53-57,61-67
+  s_4a1cd6c058fbe0::t_bc28e2b8739197 68
+apps/desktop/src/features/usage/queries.test.tsx
+  s_dddd20b8603c99::t_ee4270579ff6fb 18
+apps/desktop/src/services/sync.test.tsx
+  s_486ffc6b959fb9::t_1865aabeef5364 5
+  s_486ffc6b959fb9::t_f722ec57c69aac 11
+  s_dddd20b8603c99::t_cd1ae213933a9c 81
+  s_486ffc6b959fb9::t_18886534291cf8 112-128
+  s_486ffc6b959fb9::t_40cd55ca0a6a35 205-206,209
+  s_486ffc6b959fb9::t_2fd012726d5374 70
+  s_486ffc6b959fb9::t_b431d5014d9aea 221
+  s_486ffc6b959fb9::t_e54a47869892d3 16,29,35
+docs/llm/domains/desktop-settings.md
+  s_d361934f0cc28e::t_7cceef216711c7 79
+  s_d361934f0cc28e::t_3bde648f33e1eb 91-92
+  s_d361934f0cc28e::t_3a88cccd45534b 114-116,121-122,124,126-127
+  s_d361934f0cc28e::t_4eedd8b992304c 104
+  s_d361934f0cc28e::t_3ccad69c394ae7 7,15-20,33,75,83,95,99
+  s_d361934f0cc28e::t_eea1d1da8b964a 5-6,8-14,21-32,34
+  s_d361934f0cc28e::t_c642cfa1865eb5 73
+  s_d361934f0cc28e::t_f4e30daa25decc 74
+crates/protocol/src/message.rs
+  s_269050e457a2bf::t_41701ea07ea81c 205
+docs/llm/architecture/overview.md
+  s_d361934f0cc28e::t_08480d0bbe4ffe 28-30,78-84,89-95,116-117,176
+  s_d361934f0cc28e::t_c035b564d02471 55-56,64-66,131-150,180,195-197
+  s_d361934f0cc28e::t_924ba36a0b842c 126-129
+  s_d361934f0cc28e::t_15c4330dc3d38b 130
+apps/desktop/src/services/accounts.ts
+  s_dddd20b8603c99::t_487dd5d2abaeb5 1-23,33-41,43-71,73-80
+  s_24b23e6c540f5c::t_5509bfde1bd3a9 24-32,42
+  s_d361934f0cc28e::t_d334aa1e9a09ec 72
+apps/desktop/src/features/sessions/SessionLaunch.test.tsx
+  s_4a1cd6c058fbe0::t_bad12ddf0d40b2 1-114
+apps/desktop/src-tauri/src/lib.rs
+  s_e0cd407ca57e6b::t_b96e279e78f613 145-155
+  s_23e6cf95e0c0ab::t_366e439dbdb99c 112-116
+  s_ae14e309728d3e::t_b79804705af988 13
+  s_e74ef2bd3af96b::t_1d7aa4d21e01a8 117
+  s_ae14e309728d3e::t_2509a6fb343792 108
+  s_ae14e309728d3e::t_dcd5179e7f732b 144
+  s_23e6cf95e0c0ab::t_7903820a025463 1
+apps/desktop/src-tauri/src/wiring_tests.rs
+  s_ae14e309728d3e::t_c0d4c12d49d838 90-93
+  s_ae14e309728d3e::t_eacd5ed37c4c9e 29
+apps/desktop/src/services/types.ts
+  s_269050e457a2bf::t_0f8f492bb8a38e 21-22
+apps/desktop/src/stores/ui.test.tsx
+  s_4a1cd6c058fbe0::t_69d9e8546d659c 68-104
+apps/desktop/src/features/sessions/SessionLaunch.tsx
+  s_4a1cd6c058fbe0::t_8381007e3d1e9a 32
+  s_4a1cd6c058fbe0::t_7d39854e3ae8eb 57-62
+  s_4a1cd6c058fbe0::t_66e9159ff397ea 14
+  s_4a1cd6c058fbe0::t_686b39b9a86240 46-56,63-66
+apps/desktop/src/stores/ui.ts
+  s_4a1cd6c058fbe0::t_bce2d42576cb54 114-115
+  s_4a1cd6c058fbe0::t_4454517d558920 97-98
+  s_4a1cd6c058fbe0::t_751fb21895d0dd 267
+  s_4a1cd6c058fbe0::t_619cfc639aa38a 304-311
+docs/agent-devkit/changes/archive/2026-11-08-multi-account/design.md
+  s_d361934f0cc28e::t_7e25dae5b4a980 1-212
+apps/desktop/src/features/accounts/AccountUsageSummary.tsx
+  s_dddd20b8603c99::t_14f492daff480c 1-32
+apps/desktop/src/features/settings/AccountsSection.tsx
+  s_24b23e6c540f5c::t_b6970c27b602b6 8,13
+  s_24b23e6c540f5c::t_e6a6106d69a2ae 100-104
+  s_24b23e6c540f5c::t_e9576b04044da6 162
+  s_d361934f0cc28e::t_8dabaa9589d2f9 108
+  s_24b23e6c540f5c::t_597111c21d28dc 143,148
+  s_24b23e6c540f5c::t_6fb8436e823eb7 42-43,49-50
+  s_24b23e6c540f5c::t_61df3e5179dead 220,224-230
+  s_dddd20b8603c99::t_8a9271a2c7b35d 1-7,9-12,14-41,44-48,51-99,105-107,109-142,144-147,149-161,163-219,221-223,231-253,256-259,266-271,277-295
+  s_24b23e6c540f5c::t_6477b079333966 254-255,260-265,272-276
+docs/agent-devkit/changes/archive/2026-11-08-multi-account/delta.md
+  s_d361934f0cc28e::t_41872f8ee7e7d3 1-44
+docs/agent-devkit/changes/archive/2026-11-08-multi-account/tasks.md
+  s_d361934f0cc28e::t_a8cb40dc4f83c4 1-183
+docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/tasks.md
+  s_d361934f0cc28e::t_df2a9f68fec724 1-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d834dbf8378f80bfa3f3c99333abbd3d25cf178a",
+  "prompts": {},
+  "sessions": {
+    "s_23e6cf95e0c0ab": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "regular-wedelia",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_24b23e6c540f5c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "acoustic-family",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_269050e457a2bf": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "turquoise-parcel",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_486ffc6b959fb9": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "wealthy-aletopelta",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_4a1cd6c058fbe0": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "patch-spider",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_8bce60554de6cb": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "twilight-ferryboat",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_8d5a662d150ab0": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cheerful-buckthorn",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_ae14e309728d3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "maple-jackfruit",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d361934f0cc28e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9e17895-19c5-404b-913a-30875d3af5c3",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d7ac92835fae46": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "granite-tulip",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_dddd20b8603c99": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "gaudy-structure",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e0cd407ca57e6b": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "reliable-selenium",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e74ef2bd3af96b": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "truthful-somersault",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
