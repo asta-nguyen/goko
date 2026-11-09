@@ -3,10 +3,10 @@
 //! rune-spike `fidelity.rs` (itself from its `main.rs`), including the Tango
 //! ansi16 palette the real TerminalController renders on #1e1e1e.
 
-use rune::{col, el, rich, text, Color, El, ScrollSpec, Span, TextStyle};
+use rune::{Color, El, ScrollSpec, Span, TextStyle, col, el, rich, text};
 
-use crate::theme::Ink;
 use crate::State;
+use crate::theme::Ink;
 
 // ---------------------------------------------------------------------------
 // Terminal: ANSI bytes -> alacritty_terminal grid -> styled runs.

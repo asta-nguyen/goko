@@ -3,7 +3,11 @@
 Goko is a macOS-first desktop app for running interactive command-line agents
 per project. A Tauri 2 / React app talks to a separate Rust daemon (`gokod`)
 over a Unix socket; the daemon owns every PTY and child process. Project and
-session metadata lives in an app-owned SQLite database.
+session metadata lives in an app-owned SQLite database. A second frontend, the
+native Rune shell (`apps/rune`), shares the Tauri-free `crates/app-core`
+backend for project, Git, file, ACP, and language-server operations; its
+terminal/session chrome is still mock data pending the live-terminal
+milestone.
 
 ## Process topology
 
@@ -32,6 +36,11 @@ apps/desktop (Tauri app)                        crates/daemon (gokod)
 - The Tauri backend (`src-tauri`) is the only socket client; the React UI
   reaches it through `invoke` commands, Tauri events, and a `Channel` carrying
   terminal output bytes.
+- `apps/rune` (`goko-rune`, Rune/wgpu/winit) is a separate native process that
+  never connects to `gokod`: its terminal and session chrome render mock data,
+  and its editor workspace uses `crates/app-core` plus `goko.db` directly —
+  see [Rune editor](../domains/rune-editor.md) and
+  [Rune chrome](../domains/rune-chrome.md).
 
 ## Graceful app shutdown
 
@@ -52,16 +61,10 @@ cleanup.
 |---|---|---|
 | Wire protocol | `crates/protocol/` | Frame codec (`u32` length, `u8` kind, ≤1 MiB payload), JSON message schema (requests, responses, events, error codes), `SessionId`/`SessionInfo`/`SessionState` types |
 | Daemon | `crates/daemon/` | `gokod` binary: instance lock, token auth, socket server, request dispatch, session state machine, PTY spawn/signal/resize/live-CWD, 1 MiB replay buffer with subscriber streaming |
-| Desktop bridge | `apps/desktop/src-tauri/` | Daemon connect-or-spawn client and handshake, `Bridge` request API, event pump to Tauri events, terminal `Channel`, SQLite `goko.db` store (projects, session metadata, settings), agent discovery and launch, usage polling and `usage_get` (per account), agent accounts and their launch environment (`accounts.rs`; see [Agent accounts](../domains/agent-accounts.md)), agent activity polling and `activity_get`, sub-agent process polling and `subagents_get`, worktree/env-file commands, `git_view_*` editor commands including checkout-scoped content search; see [Editor requirements](editor.md#edt-content-search) |
-| Desktop UI | `apps/desktop/src/` | React 19 + TanStack Query + zustand: project-tree sidebar, terminal workspaces (tabs and split panes over xterm), session controls, Editor workspace (Files, Changes, History, Stashes), provider usage chips that switch between accounts, Claude context percentages, working/waiting/done session dots, a `↳ <agent>` indicator while a session runs sub-agent CLIs; Files uses CodeMirror, persisted optional Vim mode, and content search with line navigation; see [Editor requirements](editor.md#edt-codemirror-surface) and [terminal file links](editor.md#edt-terminal-file-link) |
-
-## Terminal links
-
-The terminal scans each row for HTTP(S) URLs and path-like tokens. Only Cmd+click on macOS or Ctrl+click elsewhere opens an HTTP(S) URL in the system browser; the Tauri opener capability allows only `http` and `https`, and trailing sentence punctuation is excluded. URL rows do not trigger file-list reads.
-
-A path is linked only when it resolves to a file returned by the checkout's `git_view_file_list` (tracked or non-ignored untracked files). Absolute paths must be inside the checkout; relative paths are tried from the session's live working directory, then from the checkout root, with `.` and `..` normalized and paths that leave the checkout rejected. The shared query cache keeps the file list fresh for five seconds and reads it only for rows with path candidates. If that read fails, file links are omitted while URL links remain.
-
-Activating a resolved path with the same modifier sends a one-shot request to the Editor for that checkout. The Editor opens Files through its existing navigation guard and reveals `:line` when present. Links are resolved within one terminal row; a path split across rows is not linked.
+| Desktop bridge | `apps/desktop/src-tauri/` | Daemon connect-or-spawn client and handshake, `Bridge` request API, event pump to Tauri events, terminal `Channel`, SQLite `goko.db` store (projects, session metadata, settings), agent discovery and launch, usage polling and `usage_get`, agent activity polling and `activity_get`, worktree/env-file commands; editor `git_view_*`/`git_write_*`/`acp_*` commands delegate to the shared `app-core` implementations; see [Editor requirements](editor.md#edt-content-search) |
+| Desktop UI | `apps/desktop/src/` | React 19 + TanStack Query + zustand: project-tree sidebar, terminal workspaces (tabs and split panes over xterm), session controls, Editor workspace (Files, Changes, History, Stashes), provider usage chips, Claude context percentages, working/waiting/done session dots; Files uses CodeMirror, persisted optional Vim mode, and content search with line navigation; see [Editor requirements](editor.md#edt-codemirror-surface) |
+| Shared app core | `crates/app-core/` | Tauri-free backend shared by the desktop commands and the native Rune editor: typed errors, `goko.db` store and migrations, registered-project/checkout validation, bounded Git/file reads and writes, worktree discovery/create/env-copy, ACP hub and agent config, LSP hub, `GOKO_HOME` resolution |
+| Native shell | `apps/rune/` | `goko-rune` (Rune/wgpu/winit, `rune-kit` pinned git rev): mock terminal/session chrome plus the native editor workspace — Files, Changes, History, Stashes, Servers — over `app-core` on a single bounded worker thread with owned ACP and LSP runtimes; see [Rune editor](../domains/rune-editor.md) and [Rune chrome](../domains/rune-chrome.md) |
 
 ## Cross-domain dependencies
 
@@ -76,6 +79,13 @@ Activating a resolved path with the same modifier sends a one-shot request to th
   session state itself is in-memory only.
 - Git/worktree operations run `git` via `Command::new("git")` with argv and
   `-C`; no shell strings are built anywhere.
+- `apps/desktop/src-tauri` and `apps/rune` both depend on `crates/app-core`
+  for editor/storage/Git/ACP/LSP behavior; the desktop keeps thin Tauri
+  command adapters, while `goko-rune` calls `app-core` from its own worker
+  thread.
+- `goko-rune` shares `goko.db` (projects, settings, session metadata tables)
+  but never opens `daemon.sock`; its terminal chrome is mock-only until the
+  live-terminal milestone.
 
 ## Agent usage indicators
 
@@ -168,9 +178,11 @@ word contains a space is split there and can be missed.
 
 ## Tests
 
-- Rust: `cargo test --workspace` — protocol unit tests plus daemon integration
+- Rust: `cargo test --workspace` — protocol unit tests, daemon integration
   tests under `crates/daemon/tests/` that spawn the real `gokod` in a temp
-  `GOKO_HOME`; `src-tauri` unit and wiring tests.
+  `GOKO_HOME`, `app-core` unit tests (including the shared fake-ACP-agent
+  fixture), `src-tauri` unit and wiring tests, and `goko-rune` unit and
+  scene tests under `apps/rune/src`.
 - UI: `pnpm -C apps/desktop test` — Vitest + Testing Library.
 
 ## Sources
@@ -237,4 +249,9 @@ word contains a space is split there and can be missed.
 - `apps/desktop/src/services/sync.test.tsx`
 - `apps/desktop/src/stores/ui.ts`
 - `apps/desktop/package.json`
+- `crates/app-core/src/lib.rs`
+- `crates/app-core/Cargo.toml`
+- `apps/rune/Cargo.toml`
+- `apps/rune/src/main.rs`
+- `apps/rune/src/editor/mod.rs`
 - `README.md`

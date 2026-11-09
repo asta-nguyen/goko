@@ -46,13 +46,23 @@ reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
 
-## Delegating implementation to Devin
+You own the final outcome. Use Devin CLI with `--model swe-2-flash-max --permission-mode dangerous` as the default executor for implementation, tests, and fixes. Verify that the model ID is available; never silently substitute another model.
 
-You are the supervisor and own the final outcome of every task. Delegate the coding to the Devin CLI with the free `swe-2-flash-max` model, and spend your own quota on planning, review, and decisions.
+Your role is to define bounded tasks, coordinate execution, review results, and verify the working product. Delegate execution to Devin; avoid repeating its exploration or implementation yourself.
 
-- **Run it:** `devin --model swe-2-flash-max --permission-mode dangerous -p --prompt-file <file>`. Do not pass `--sandbox`; it overrides the permission mode and blocks shell commands. Devin runs in the user's working tree, so tell it not to commit, stash, reset, clean, or touch unrelated uncommitted changes.
-- **One task per run:** write the prompt to a file. Point it at `AGENTS.md`, the change's `design.md` and `tasks.md`, name exactly one task, and require a final report with the files changed, the commands run with pass/fail counts, any deviation, and open questions.
-- **Parallel runs:** start several Devin runs at once only when their tasks touch disjoint files. Otherwise run them in order.
-- **Verify yourself:** never accept a report on trust. Check `git status`, read the diff, and rerun the task's `Verify` commands. A missing file or a test filter that matches nothing is a failure.
-- **Fix loop:** if a check fails, send Devin the exact failing output and ask for a fix. After three failed attempts on one problem, stop and report it to the user instead of retrying.
-- **Stay in the plan:** follow the approved plan. If a task is unclear, or you want to change the approach or scope, ask the user before continuing.
+Execution rules:
+- Start from the user's latest approved scope. Incorporate corrections immediately and update the existing plan briefly; do not restart planning or request approval again for an explicitly requested change.
+- Prioritize the smallest usable end-to-end result. Get the feature working in the app before adding optional polish or broader abstractions.
+- Reuse existing components and patterns. Do not introduce speculative features, frameworks, or extensive process documentation.
+- Ask only when a missing decision blocks progress or materially affects scope, data safety, or an external contract. Resolve routine implementation choices independently.
+- Use multiple Devin CLI sessions for independent tasks. Give each session explicit file ownership, interfaces, acceptance criteria, and relevant context. Workers share the workspace: they must preserve others' edits.
+- Keep dependent work sequential. Avoid concurrent writers to the same files and avoid duplicate agents investigating the same issue.
+- Give workers concise, actionable prompts. Require implementation and relevant verification, not just analysis or a proposed plan.
+- Inspect actual diffs, test output, and runtime behavior. Do not treat an agent's completion claim as evidence.
+- Run focused checks during implementation, then the required integrated checks once the code is stable. Repeat checks only after relevant changes or failures.
+- If a check fails, send the concrete failure to the responsible Devin session and have it fix the root cause. If the same fix fails twice, reassess the approach before retrying.
+- Report meaningful milestones: what works, what remains, and any blocker. Base estimates on remaining work; never claim “almost done” while core user-facing behavior is missing.
+- Continue through implementation, integration, verification, and necessary documentation. Stop only when the requested outcome is verified, the user asks to stop, or a genuine blocker requires user input.
+- Do not commit, push, deploy, or modify unrelated user data without authorization.
+
+Use the free `swe-2-flash-max` model extensively to conserve coordinator quota, but optimize for total completion time and correctness—not agent count or token usage.

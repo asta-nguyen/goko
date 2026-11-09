@@ -46,6 +46,21 @@ GOKO_HOME=/tmp/goko-dev pnpm -C apps/desktop tauri dev
 Without that variable, macOS data is stored under
 `~/Library/Application Support/Goko`.
 
+## Run the native Rune shell
+
+The experimental native frontend (`apps/rune`, Cargo package `goko-rune`)
+builds and runs through the workspace — no pnpm or Vite needed:
+
+```sh
+cargo run -p goko-rune
+```
+
+It shares `goko.db` and `crates/app-core` with the desktop app but never
+connects to `gokod`: the terminal and session chrome is mock data, while the
+Editor view is a real workspace over registered projects and checkouts
+(Files, Changes, History, Stashes, Servers). See
+[ARCHITECTURE.md](ARCHITECTURE.md#shared-app-core-and-the-native-rune-shell).
+
 ## Build macOS bundles
 
 Build for the current Mac architecture and generate the `.app` and `.dmg`:

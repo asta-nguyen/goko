@@ -1,10 +1,21 @@
 [package]
 name = "goko-rune"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 
 [dependencies]
 alacritty_terminal = "0.26.0"
+app-core = { path = "../../crates/app-core" }
+chrono = "0.4"
+lsp-types = "0.97"
+protocol = { path = "../../crates/protocol" }
 rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["markdown"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-app-kit = "0.2"
+objc2-foundation = "0.2"

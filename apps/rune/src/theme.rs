@@ -3,7 +3,7 @@
 //! + agent-logo + goko-mark icon bodies, and the small builders shared by the
 //!   chrome regions. Ported from the verified rune-spike `fidelity.rs`.
 
-use rune::{icon, row, text, Color, El, Icon, Spring, TextStyle};
+use rune::{Color, El, Icon, Spring, TextStyle, icon, row, text};
 
 pub fn c(hex: &str) -> Color {
     rune::color::hex(hex).expect("palette hex")

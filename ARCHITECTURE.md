@@ -24,6 +24,8 @@ Tauri app (apps/desktop)                      gokod (crates/daemon)
   talks to. It depends on the `protocol` crate and nothing else from the daemon.
 - **The UI** never sees the socket. It calls Tauri commands, listens for Tauri events, and
   receives terminal bytes on a Tauri `Channel`.
+- `apps/rune` is a third process shape: a native Rune frontend that shares
+  `crates/app-core` and `goko.db` but never opens `daemon.sock`.
 - Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
   holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
   the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures (`usage/claude/<account-id>/<session-id>.json` for a named account), and
@@ -40,7 +42,9 @@ removed from the app and daemon through `session.delete`.
 
 Schema v1 is `projects(id, name, root UNIQUE, created_at)`,
 `sessions(id, project_id REFERENCES projects ON DELETE SET NULL, agent, argv JSON, cwd,
-title, created_at)`, and `settings(key, value)`.
+title, created_at)`, and `settings(key, value)`. The store implementation lives in
+`crates/app-core`, a Tauri-free crate shared by the desktop backend and the native
+Rune shell; both open the same `goko.db` with the same schema and migrations.
 
 - A project is a registered, canonical local directory. Adding or removing its row never
   changes files in that directory. Duplicate canonical roots return the existing project;
@@ -223,13 +227,63 @@ title, created_at)`, and `settings(key, value)`.
   poll every three seconds only while their section is visible; other reads load on entry
   or selection, expose manual refresh, and keep the previous result behind a stale-data
   notice when a refresh fails.
-- Fetch, commit, stage/unstage/discard, stash apply/pop/drop, checkout, merge, rebase,
-  push, pull, branch deletion/renaming, lock/unlock, and automatic prune remain out of
-  scope.
+- Worktree-level fetch, checkout, merge, rebase, push, pull, branch
+  deletion/renaming, lock/unlock, and automatic prune remain out of scope.
+  The editor's Git writes are limited to the stage/unstage/discard/commit/push
+  operations described above; stash apply/pop/drop mutations and fetch/pull
+  remain unimplemented everywhere.
 - Verification: `cargo test --workspace`, `cargo fmt --check`, `cargo clippy --workspace
   -- -D warnings`, `cargo build --workspace`, and desktop typecheck/tests/build are recorded
   with the [worktree UX change](docs/agent-devkit/changes/archive/2026-11-02-worktree-ux/tasks.md).
   Manual macOS acceptance: pending.
+
+## Shared app core and the native Rune shell
+
+`crates/app-core` is the Tauri-free backend extracted from `apps/desktop/src-tauri`:
+the typed `BridgeError`, the `goko.db` store and migrations, registered-project
+and checkout validation (`projects`), bounded Git/file reads and writes
+(`git_view`, `git_write`), worktree discovery/create/env-copy plus the shared
+Git runner (`worktrees` — `remove` stays desktop-owned because it must consult
+daemon sessions first), the ACP hub and agent configuration (`acp`, `agents`),
+the language-server hub (`lsp`), and `GOKO_HOME` resolution (`home`). Every
+`apps/desktop/src-tauri/src/*` module that moved is now a `pub use app_core::*`
+re-export; `commands.rs` keeps the Tauri command names, payloads, and wiring
+tests unchanged.
+
+`apps/rune` (`goko-rune`, package binary of the same name; run with
+`cargo run -p goko-rune` from the workspace root) is a second frontend built on
+Rune/wgpu/winit with `rune-kit` pinned to git rev
+`a7f276c3630f85a06a0230295da4d2bd172d8d3b`. It never connects to `gokod`: the
+terminal and session chrome render mock `Data`/`State` shaped like the protocol
+types, and no live native terminal/session producer exists yet. Its Editor view
+is real, though — a native workspace (Files, Changes, History, Stashes,
+Servers) over registered projects and validated checkouts, backed by
+`app-core` and `goko.db`:
+
+- All Git, filesystem, storage, and highlight work runs on one worker thread
+  behind a bounded queue (128 pending jobs); replies carry a checkout key
+  (`project_id` + canonical path) and a per-kind read generation, and stale
+  results are dropped. Writes serialize on the same lane.
+- Editing uses rune-kit's native text surface — not CodeMirror or a WebView —
+  with the shared 1 MiB file cap, atomic expected-original saves, syntax
+  highlighting budgeted to 32 KiB / 8192 ranges, in-document find, and
+  go-to-definition over the checkout's file list and content search.
+- Language servers run one stdio connection per `(checkout, server)` on a
+  dedicated runtime thread through the shared `app_core::lsp::LspHub`, with
+  debounced incremental document sync, a plaintext hover card, and
+  go-to-definition requests that fall back to the heuristic path; diagnostics
+  and completion are deferred.
+- A dirty draft guards every navigation (file, checkout, project, section,
+  view, window close, quit) with Save/Discard/Cancel; the macOS
+  `applicationShouldTerminate:` swizzle vetoes OS-level quits while a draft is
+  dirty (other platforms can only cancel window close — an honest gap).
+- ACP commit-message generation runs on its own Tokio runtime thread with the
+  same isolated-temp-directory, denied-permission, and timeout contract as the
+  desktop; the reply fills the draft only when unchanged.
+- Stashes are read-only and repository-wide; history persists its pane layout
+  through the shared settings key `goko.history.layout`.
+- No Vim mode ships in `apps/rune` (the `editor.vim` setting remains
+  desktop-only), and the external open-file consumer has no producer yet.
 
 ## Daemon lifecycle
 

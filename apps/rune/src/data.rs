@@ -324,12 +324,11 @@ pub fn workspace_for_session(data: &Data, sv: &SessionView) -> String {
         return UNASSIGNED_WORKSPACE.to_string();
     };
     let is_git = data.worktrees.get(pid).is_some_and(|w| w.repo);
-    if is_git {
-        if let Some(wts) = data.worktrees.get(pid) {
-            if let Some(path) = checkout_for_cwd(&wts.worktrees, &sv.info.cwd) {
-                return checkout_key(pid, path);
-            }
-        }
+    if is_git
+        && let Some(wts) = data.worktrees.get(pid)
+        && let Some(path) = checkout_for_cwd(&wts.worktrees, &sv.info.cwd)
+    {
+        return checkout_key(pid, path);
     }
     checkout_key(pid, &project.root)
 }

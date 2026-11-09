@@ -1,7 +1,6 @@
 use super::*;
-use crate::accounts::{Accounts, AgentAccounts, StoredAccount};
-use crate::store::Storage;
-use crate::test_support::{self, Home, TempDir};
+use crate::store::{Project, Storage};
+use crate::test_support::{self, Home};
 use protocol::message::ErrorCode;
 use protocol::session::{SessionId, SessionState};
 use std::ffi::OsString;

@@ -2,6 +2,12 @@
 
 ## Changes
 
+- [Native Rune language servers](changes/rune-native-lsp/design.md) ([tasks](changes/rune-native-lsp/tasks.md))
+
+- [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))
+- [Editor: stage, commit, push, and AI commit messages over ACP](changes/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/2026-11-06-editor-commit-acp/tasks.md))
+- [Agent activity: working, needs you, done](changes/2026-11-05-agent-activity/design.md) ([tasks](changes/2026-11-05-agent-activity/tasks.md))
+
 ## Archived changes
 
 - [Sub-agent indicator on session rows](changes/archive/2026-11-08-subagent-indicator/design.md) ([tasks](changes/archive/2026-11-08-subagent-indicator/tasks.md))

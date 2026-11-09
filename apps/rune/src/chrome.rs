@@ -5,9 +5,10 @@
 
 use std::f32::consts::FRAC_PI_3;
 
-use rune::{el, row, spacer, El, Spring, TextStyle, Transition};
+use rune::{El, Spring, TextStyle, Transition, Tx, el, row, spacer};
 
 use crate::data;
+use crate::editor::navigation::{self, PendingNav};
 use crate::theme::{self, Ink, STATE_SPRING, T11M_LH, T12, T12M, T12TN, T14, T14M, T14S};
 use crate::{State, View};
 
@@ -60,13 +61,15 @@ fn settings_button(open: bool, ink: &Ink) -> El {
                 .motion(GEAR_SPRING),
         )
         // Settings toggles the app-level settings mode like App.tsx's gear;
-        // pressing it again returns to the terminal.
-        .on_press(|s: &mut State| {
-            s.view = if s.view == View::Settings {
+        // pressing it again returns to the terminal. Routed through the
+        // editor's draft guard so an unsaved file can't be hidden silently.
+        .on_press_tx(|s: &mut State, tx: &mut Tx| {
+            let target = if s.view == View::Settings {
                 View::Terminal
             } else {
                 View::Settings
             };
+            navigation::navigate(s, PendingNav::SetView(target), tx);
         })
 }
 
@@ -419,8 +422,10 @@ fn switch_item(
             .key("label")
             .group_color(hover_tone),
     )
-    .on_press(move |s: &mut State| {
-        s.view = target;
+    // View switches pass through the editor's draft guard: leaving the
+    // Editor view with unsaved work raises Save/Discard/Cancel first.
+    .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+        navigation::navigate(s, PendingNav::SetView(target), tx);
     })
 }
 
@@ -512,12 +517,12 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         let Some(id) = s.selected_session.clone() else {
             return;
         };
-        if let Some(sv) = s.data.sessions.iter_mut().find(|v| v.info.id == id) {
-            if sv.info.state.controls_live() {
-                sv.info.state = data::SessionState::Exited;
-                sv.info.ended_at = Some(data::MOCK_NOW_MS);
-                sv.activity = None;
-            }
+        if let Some(sv) = s.data.sessions.iter_mut().find(|v| v.info.id == id)
+            && sv.info.state.controls_live()
+        {
+            sv.info.state = data::SessionState::Exited;
+            sv.info.ended_at = Some(data::MOCK_NOW_MS);
+            sv.activity = None;
         }
     });
 
@@ -536,15 +541,15 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         s.data.sessions.retain(|v| v.info.id != id);
         s.selected_session = None;
         s.active_workspace = None;
-        if let Some(title) = title {
-            if let Some(pos) = s.open_tabs.iter().position(|t| *t == title) {
-                s.open_tabs.remove(pos);
-                if pos < s.active_tab {
-                    s.active_tab -= 1;
-                }
-                if s.active_tab >= s.open_tabs.len() {
-                    s.active_tab = s.open_tabs.len().saturating_sub(1);
-                }
+        if let Some(title) = title
+            && let Some(pos) = s.open_tabs.iter().position(|t| *t == title)
+        {
+            s.open_tabs.remove(pos);
+            if pos < s.active_tab {
+                s.active_tab -= 1;
+            }
+            if s.active_tab >= s.open_tabs.len() {
+                s.active_tab = s.open_tabs.len().saturating_sub(1);
             }
         }
         sync_selection(s);
