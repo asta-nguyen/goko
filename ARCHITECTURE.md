@@ -320,6 +320,35 @@ folder (Default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). The UI
 shows known provider limits in header chips with reset times and data age, and known Claude
 context percentages in session rows. A reset limit is shown as `reset`.
 
+## Agent activity
+
+A running Claude or Codex session shows whether its agent is working, waiting for the user, or done.
+`activity.rs` ticks every second, lists sessions through the bridge (`session_list`), and keeps only
+sessions in state `running`. It sends the full map of Goko session id to `working | waiting | done` in
+`activity://updated` only when it changed; `activity_get` returns the current map. If the daemon list
+fails, or a source cannot be read this tick, the previous value is kept.
+
+- Claude: the launch `--settings` also carries `hooks`. `UserPromptSubmit` and `PostToolUse` write
+  `working`, `Notification` writes `waiting`, `Stop` writes `done` to
+  `$GOKO_HOME/activity/claude/<claude-session-id>`; each hook command is silent and always exits 0. A
+  session is recognized by `--session-id` in its argv.
+- Claude runs no hook on an interrupt. `terminal_write` notes a lone Esc or input with Ctrl+C; if that
+  session's delivered output contains `Interrupted` within 2 s, the interrupt time is recorded and a
+  `working` hook file written before it reads as `done`. Esc that only closes a menu prints no
+  `Interrupted` and changes nothing.
+- Codex: a session whose argv is a lone path with stem `codex`, or `env` followed by `NAME=value` words
+  and such a path (a named account), is matched to a rollout (`rollout-*.jsonl` in the two newest day
+  directories under the account's `sessions` folder) with the same `cwd` as the rollout's
+  `session_meta`, started no earlier than 5 s before the session. Sessions claim in start order and a
+  rollout is claimed once. The last `task_started`, `task_complete`, or `turn_aborted` in the final
+  64 KiB gives `working`, `done`, or `done`. Codex has no waiting event, so an approval prompt stays
+  `working`, and two sessions in one directory can be mismatched when a rollout is missing.
+- Shell, OpenCode, and Devin sessions have no activity and keep the plain `running` marker.
+
+The sidebar marker for a `running` session with an activity is a spinning accent-colored ring
+(`working`; a static ring when the system asks for reduced motion), a danger-toned dot (`waiting`), or a
+success-toned dot (`done`); its title reads `running · <activity>`. Other states render as before.
+
 ## Sub-agent indicator
 
 `subagents.rs` in the desktop backend polls every 2 seconds. It lists sessions through the bridge

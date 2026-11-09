@@ -209,4 +209,4 @@ to approval.
 ## Previous work
 
 - [Agent usage and limit indicators](../2026-11-04-agent-usage-limits/design.md)
-- [Agent activity: working, needs you, done](../../2026-11-05-agent-activity/design.md)
+- [Agent activity: working, needs you, done](../2026-11-05-agent-activity/design.md)

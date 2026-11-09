@@ -99,4 +99,4 @@ followed by the same list. A row without sub-agents is unchanged.
 
 ## Previous work
 
-- [Agent activity: working, needs you, done](../../2026-11-05-agent-activity/design.md)
+- [Agent activity: working, needs you, done](../2026-11-05-agent-activity/design.md)

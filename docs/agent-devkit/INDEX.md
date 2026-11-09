@@ -2,13 +2,13 @@
 
 ## Changes
 
-- [Editor: stage, commit, push, and AI commit messages over ACP](changes/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/2026-11-06-editor-commit-acp/tasks.md))
-- [Agent activity: working, needs you, done](changes/2026-11-05-agent-activity/design.md) ([tasks](changes/2026-11-05-agent-activity/tasks.md))
 
 ## Archived changes
 
 - [Sub-agent indicator on session rows](changes/archive/2026-11-08-subagent-indicator/design.md) ([tasks](changes/archive/2026-11-08-subagent-indicator/tasks.md))
 - [Multiple Claude and Codex accounts](changes/archive/2026-11-08-multi-account/design.md) ([tasks](changes/archive/2026-11-08-multi-account/tasks.md), [delta](changes/archive/2026-11-08-multi-account/delta.md))
+- [Editor: stage, commit, push, and AI commit messages over ACP](changes/archive/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/archive/2026-11-06-editor-commit-acp/tasks.md))
+- [Agent activity: working, needs you, done](changes/archive/2026-11-05-agent-activity/design.md) ([tasks](changes/archive/2026-11-05-agent-activity/tasks.md))
 - [Editor History: Git Graph style table](changes/archive/2026-11-06-history-git-graph/design.md) ([tasks](changes/archive/2026-11-06-history-git-graph/tasks.md))
 - [Editor go-to-definition](changes/archive/2026-11-06-editor-go-to-definition/delta.md)
 - [Multi-theme support](changes/archive/2026-11-05-multi-theme/delta.md)

@@ -170,6 +170,6 @@ ACP wire (protocol version 1, newline-delimited JSON-RPC 2.0): `initialize`, `se
 
 ## Related context
 
-- [Desktop Editor](../../../llm/architecture/editor.md)
-- [Desktop Settings](../../../llm/domains/desktop-settings.md)
-- [Codebase wiki overview](../../../llm/architecture/overview.md)
+- [Desktop Editor](../../../../llm/architecture/editor.md)
+- [Desktop Settings](../../../../llm/domains/desktop-settings.md)
+- [Codebase wiki overview](../../../../llm/architecture/overview.md)
