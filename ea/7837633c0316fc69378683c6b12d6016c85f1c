@@ -1,0 +1,166 @@
+apps/rune/src/sidebar.rs
+  s_981fd57fdf8e92::t_820f9b61a34a17 904-907
+  s_981fd57fdf8e92::t_6c360f53c1afa5 1261
+  s_37b9b0049bf44a::t_e8df32987cc728 1440
+  s_37b9b0049bf44a::t_e9b4713eea44d3 931-934,940,955,962-979
+  s_979b3d3ceb4a3e::t_616eac5c3abbaa 999-1001,1007-1010,1012
+  s_37b9b0049bf44a::t_addb380b7a7e42 1356-1371,1395-1439,1441-1482,1495-1501
+  s_981fd57fdf8e92::t_da231fd13f64e0 656-659,662,672
+  s_37b9b0049bf44a::t_f1074d6fa597d1 1372-1394
+  s_981fd57fdf8e92::t_7d90665e0e7c1b 714,1502-1628,1630-1650
+  s_5ba1a0cedd467c::t_cec80b482579fd 1629
+  s_37b9b0049bf44a::t_c33e330a623bdb 937-939,941-946
+  s_981fd57fdf8e92::t_459e77bb8fe60c 486-489,492
+  s_37b9b0049bf44a::t_1e1bd9c95e3ef2 1483-1494
+  s_981fd57fdf8e92::t_e2015a92b37f7d 370-372
+  s_981fd57fdf8e92::t_ef1102dfac0dc0 1172
+  s_5ba1a0cedd467c::t_0c4a61b3db81e7 709-713,715-717,1011
+apps/rune/src/term.rs
+  s_07265ba8208f25::t_64781f13bf5f3b 747-750,753-754
+  s_07265ba8208f25::t_49bb9f0620dd26 751
+  s_07265ba8208f25::t_f71e0ef3ff5fea 20
+apps/rune/src/editor/backend/apply.rs
+  s_07265ba8208f25::t_f2e89033bf0c72 616-619
+  s_5ba1a0cedd467c::t_2ea52dbef58b68 291-302,467-472
+apps/rune/src/main.rs
+  s_07265ba8208f25::t_5e88baee870718 2606
+  s_07265ba8208f25::t_fed0df24eaf23e 2539-2543,2548,2550
+  s_07265ba8208f25::t_1583b8a58c9649 859
+  s_07265ba8208f25::t_59fa2980a1a4b3 2569-2580,2587-2589,2592,2596,2609,2611
+  s_07265ba8208f25::t_6d499e0580f962 2505-2538,2544-2547,2549,2551-2552,2554-2568,2581-2586,2590-2591,2593-2595,2605,2607-2608,2610,2612-2653,2657-2706,2709-2716,2719-2737
+  s_07265ba8208f25::t_7a10f0b9e0865c 2553
+  s_07265ba8208f25::t_639d0d173133c6 2597-2604
+  s_07265ba8208f25::t_89bf6d36d3c94e 2654-2656
+  s_07265ba8208f25::t_c40e62edaa6df9 2707-2708
+  s_07265ba8208f25::t_4040fcab1e9b6d 2717-2718
+  s_6eaeab035ca28b::t_4b9580d9d45127 605-611,674-675
+crates/app-core/src/git_view.rs
+  s_e2b667fd4711f9::t_66a2fed94c2ce5 1020,1035,1041,1044-1051
+  s_e2b667fd4711f9::t_9f101a3d4e9e6d 11,19-21,165-192,980-1019,1021-1034,1036-1040,1042-1043,1052-1081,2153,2157-2196
+apps/rune/src/editor/code.rs
+  s_981fd57fdf8e92::t_765bfff35d9c43 366-370,383-384,395,407,438-443,453-467,573-591,621-667,679-684,951-961
+  s_e2b667fd4711f9::t_dc6c4ab49b44db 38,57-58,87-102,130-135,962-970
+apps/rune/src/editor/history_layout.rs
+  s_a869f81db37c4c::t_d9cff1b46e22c9 531-532
+  s_a869f81db37c4c::t_514d6793dba454 232-236
+  s_a869f81db37c4c::t_c04fafe693c738 167-171
+  s_a869f81db37c4c::t_12031262846f9c 184-185
+  s_a869f81db37c4c::t_b4f890e4112790 399-403
+  s_a869f81db37c4c::t_018463ccedd3fa 357-364
+  s_a869f81db37c4c::t_3a9cde41fa3252 39-51
+  s_a869f81db37c4c::t_630d3a76d0916b 404-405,628-677
+  s_a869f81db37c4c::t_2a21513b7b6549 238,322-331
+  s_a869f81db37c4c::t_6df491ea938cb8 416
+  s_a869f81db37c4c::t_d8df9680a29af8 237
+  s_a869f81db37c4c::t_6b14e45ec6fdb9 406
+apps/rune/src/editor/state.rs
+  s_a869f81db37c4c::t_c0999368f3b727 202-204
+  s_a869f81db37c4c::t_5eb632ee42cefe 479
+  s_5ba1a0cedd467c::t_3a04960a63efaf 350-353,512
+apps/rune/src/editor/files.rs
+  s_07265ba8208f25::t_f2e89033bf0c72 532-534
+  s_e2b667fd4711f9::t_7f0a456510c91b 548-550
+apps/rune/src/editor/history.rs
+  s_a869f81db37c4c::t_fd8ffcf02a3cc1 41-46
+  s_a869f81db37c4c::t_59257f96bfbd6b 633,636-637,640-649
+  s_a869f81db37c4c::t_3afc8777ea5a1e 535-595
+  s_a869f81db37c4c::t_989eb79a20cadc 965-988,1047
+  s_a869f81db37c4c::t_f7436ecb345325 502
+  s_4c031cf7795f9f::t_35539a978cdf7b 999-1000
+  s_a869f81db37c4c::t_693f47b6f00d32 18-20,28-30
+  s_4c031cf7795f9f::t_13dd2a30a458e5 2788
+  s_a869f81db37c4c::t_d8cf543c6f7779 2830-2833
+  s_a869f81db37c4c::t_6e7be5d1cda475 1615-1663,1665-1666
+  s_a869f81db37c4c::t_f2cd23ef1405e7 2686-2787,2789-2808,2810-2824,2826-2829,2834-2954,2978-2979,2993
+  s_a869f81db37c4c::t_9a089656670f7e 2825
+  s_a869f81db37c4c::t_4cca896aa30dd4 2809
+  s_4c031cf7795f9f::t_327f88357d026b 932-937,989,1001,1664,1667,2955,2980-2981,2990-2992
+apps/rune/src/chrome.rs
+  s_5ba1a0cedd467c::t_c018eea68049d9 370-381
+apps/rune/src/editor/backend.rs
+  s_5ba1a0cedd467c::t_26fe44555fc130 237-242,325-326,1020-1022,1186-1189,1225-1227,1378-1400,1475
+apps/rune/src/editor/lsp.rs
+  s_5ba1a0cedd467c::t_fffc1477214353 1847
+apps/rune/src/editor/mod.rs
+  s_5ba1a0cedd467c::t_aa90f0cf1d071e 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ea7837633c0316fc69378683c6b12d6016c85f1c",
+  "prompts": {},
+  "sessions": {
+    "s_07265ba8208f25": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "thin-shell",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_37b9b0049bf44a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "gregarious-broccoli",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_4c031cf7795f9f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0634890b-1d9b-4641-9d12-8ec63d3e8116",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_5ba1a0cedd467c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1c46f-8601-75d3-b2cf-eac62440b122",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_6eaeab035ca28b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e57d50bc-4dae-4efa-bc18-747d7367bc1d",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_979b3d3ceb4a3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cumbersome-snowshoe",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_981fd57fdf8e92": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cautious-witch",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_a869f81db37c4c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "invincible-tibia",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e2b667fd4711f9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0889dfa8-9a8b-4221-802e-f03f7c76df2f",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
