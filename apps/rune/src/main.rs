@@ -584,7 +584,15 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .build(&s.editor.kit),
         );
     }
-    rune_kit::root(root, layer)
+    // Paste with no text field focused belongs to the focused terminal pane.
+    rune_kit::root(root, layer).on_paste(|s: &mut State, text: &str, _tx: &mut Tx| {
+        if s.view == View::Terminal
+            && s.sidebar_input.is_none()
+            && let Some(session) = s.focused_terminal_session()
+        {
+            s.paste_into_terminal(session, text);
+        }
+    })
 }
 
 /// `AppSpec::setup`: kick the initial project list, history-layout restore,
@@ -2611,7 +2619,7 @@ mod view_tests {
             .attachments
             .values()
             .next()
-            .map(|att| term::term_lines_el(&att.lines, &s.ink))
+            .map(|att| term::term_lines_el(&att.lines, &s.ink, ""))
             .unwrap_or_default();
         col().w(220.0).min_h(0.0).children(rows)
     }
@@ -2780,6 +2788,186 @@ mod view_tests {
         }
         assert_eq!(rt.state.drop_pane, None, "the ring went with the drop");
         assert_eq!(top(&mut rt), live, "the drop typed into the live session");
+    }
+
+    #[test]
+    fn dragging_across_terminal_rows_selects_them_and_cmd_c_copies() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..60).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let rows: Vec<[f32; 4]> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.text.as_deref().is_some_and(|t| t.starts_with("row")))
+            .map(|e| e.rect)
+            .collect();
+        assert!(rows.len() > 4, "terminal rows are laid out: {}", rows.len());
+        let (first, last) = (rows[1], rows[rows.len() - 2]);
+        let (x0, y0) = (first[0] + 2.0, first[1] + first[3] / 2.0);
+        let (x1, y1) = (last[0] + 20.0, last[1] + last[3] / 2.0);
+        rt.pointer_down(x0, y0);
+        rt.pointer_move((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        rt.pointer_move(x1, y1);
+        rt.pointer_up(x1, y1);
+        rt.frame(1.0 / 60.0);
+        assert!(rt.selected_text().is_some(), "the drag selected rows");
+        rt.key(KeyEvent {
+            key: Key::Command('c'),
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(1.0 / 60.0);
+        let copied = rt
+            .copy_request
+            .as_ref()
+            .map(|w| w.content().text().to_owned())
+            .unwrap_or_default();
+        assert!(copied.contains("row"), "copied {copied:?}");
+        assert!(copied.contains('\n'), "several rows: {copied:?}");
+        assert!(
+            copied.lines().all(|l| l == l.trim_end()),
+            "no grid padding: {copied:?}"
+        );
+    }
+
+    #[test]
+    fn a_trackpad_scrolls_the_history_even_with_rows_selected() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..200).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let pane_key = key.clone();
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let top = |rt: &mut Runtime<State>| {
+            let mut text = String::new();
+            rt.update(|s, _| text = s.attachments[&pane_key].lines[0].text());
+            text.trim_end().to_string()
+        };
+        let live = top(&mut rt);
+        rt.pointer_down(560.0, 300.0);
+        rt.pointer_move(600.0, 380.0);
+        rt.pointer_move(640.0, 460.0);
+        rt.pointer_up(640.0, 460.0);
+        rt.frame(1.0 / 60.0);
+        assert!(rt.selected_text().is_some(), "rows are selected");
+        for ph in [
+            rune::GesturePhase::Began,
+            rune::GesturePhase::Moved,
+            rune::GesturePhase::Moved,
+            rune::GesturePhase::Ended,
+        ]
+        .into_iter()
+        {
+            rt.wheel_event(
+                rune::WheelEvent::new(0.0, 12.0)
+                    .at(700.0, 400.0)
+                    .phase(ph)
+                    .precise(true),
+            );
+            rt.frame(1.0 / 60.0);
+        }
+        assert_ne!(
+            top(&mut rt),
+            live,
+            "trackpad scrolled, selected {:?}",
+            rt.selected_text()
+        );
+    }
+
+    #[test]
+    fn a_terminal_link_opens_only_on_cmd_click_and_never_takes_tab() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: b"see nope/zzz.rs:3 now\r\n".to_vec(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let row = rt
+            .elements()
+            .iter()
+            .find(|e| e.text.as_deref().is_some_and(|t| t.starts_with("see nope")))
+            .map(|e| e.rect)
+            .expect("the row is laid out");
+        let (cell_w, _) = term::cell_metrics();
+        let (x, y) = (row[0] + cell_w * 8.0, row[1] + row[3] / 2.0);
+
+        // Tab stays the terminal's: no link takes keyboard focus from it.
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(
+            !rt.elements().iter().any(|e| e.focused && e.role == "link"),
+            "Tab focused a link"
+        );
+
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.notice, None, "a plain click does nothing");
+
+        rt.update(|s, _| {
+            s.editor.set_modifiers(Mods {
+                cmd: true,
+                ..Mods::default()
+            })
+        });
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.notice.as_deref(),
+            Some("nope/zzz.rs: no such file"),
+            "Cmd-click resolved the file"
+        );
     }
 
     #[test]

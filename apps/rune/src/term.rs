@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
 use protocol::message::Response;
 use protocol::session::SessionId;
-use rune::{Color, El, LineCap, Shape, Span, TextStyle, text};
+use rune::{Color, El, LineCap, Link, LinkPaint, Shape, Span, TextStyle, text};
 
 use crate::daemon::{self, Output, SubscribeReply};
 use crate::theme::Ink;
@@ -188,6 +188,11 @@ impl Terminal {
             self.dirty = true;
             self.burst = None;
         }
+    }
+
+    /// Whether the program asked for pastes wrapped in ESC[200~ … ESC[201~.
+    pub fn bracketed_paste(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
     /// Back to the live screen — where typing lands.
@@ -698,7 +703,134 @@ pub fn key_bytes(ev: &rune::KeyEvent) -> Option<Vec<u8>> {
 /// 13 pt monospace on a 16 pt line — xterm fontSize 13 with a ~16 px cell.
 const TERM_FONT: TextStyle = TextStyle::new(13.0, 400.0).mono().lh(16.0);
 
-fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
+/// What a terminal row's text links to.
+#[derive(Debug, PartialEq)]
+pub enum LinkKind {
+    Url,
+    File { path: String, line: Option<u64> },
+}
+
+/// The `http(s)` URLs and path-like tokens (`dir/file.ext[:line[:col]]`) in a
+/// row, as byte ranges of `text`. A URL drops trailing sentence punctuation and
+/// an unbalanced closing bracket. A file token needs an extension and either a
+/// `/` or a line suffix.
+// ponytail: a bare `README.md` is not linked (too many false hits such as
+// `node.js`), and a URL wrapped onto the next row is cut at the row end.
+pub fn find_links(text: &str) -> Vec<(std::ops::Range<usize>, LinkKind)> {
+    let mut out: Vec<(std::ops::Range<usize>, LinkKind)> = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("http") {
+        let start = from + i;
+        let rest = &text[start..];
+        let scheme = if rest.starts_with("https://") {
+            8
+        } else if rest.starts_with("http://") {
+            7
+        } else {
+            from = start + 4;
+            continue;
+        };
+        let len = rest
+            .find(|c: char| c.is_whitespace() || "<>\"'`".contains(c))
+            .unwrap_or(rest.len());
+        let mut end = start + len;
+        while end > start + scheme {
+            let url = &text[start..end];
+            let last = url.chars().last().unwrap_or(' ');
+            let unbalanced =
+                |open: char, close: char| url.matches(close).count() > url.matches(open).count();
+            let drop = ".,;:!?".contains(last)
+                || (last == ')' && unbalanced('(', ')'))
+                || (last == ']' && unbalanced('[', ']'))
+                || (last == '}' && unbalanced('{', '}'));
+            if !drop {
+                break;
+            }
+            end -= last.len_utf8();
+        }
+        if end > start + scheme {
+            out.push((start..end, LinkKind::Url));
+        }
+        from = end.max(start + scheme);
+    }
+    let urls = out.len();
+
+    let is_break = |c: char| c.is_whitespace() || "()[]{}<>\"'`,;".contains(c);
+    let mut token: Option<usize> = None;
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    for (i, c) in text.char_indices() {
+        match (token, is_break(c)) {
+            (None, false) => token = Some(i),
+            (Some(start), true) => {
+                ends.push((start, i));
+                token = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = token {
+        ends.push((start, text.len()));
+    }
+    for (start, end) in ends {
+        let raw = text[start..end].trim_end_matches(['.', ':']);
+        let end = start + raw.len();
+        if out[..urls]
+            .iter()
+            .any(|(r, _)| r.start < end && start < r.end)
+        {
+            continue;
+        }
+        let (mut path, mut nums) = (raw, Vec::new());
+        for _ in 0..2 {
+            match path.rsplit_once(':') {
+                Some((head, tail))
+                    if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    nums.extend(tail.parse::<u64>().ok());
+                    path = head;
+                }
+                _ => break,
+            }
+        }
+        let line = nums.last().copied();
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let ext_ok = name.rsplit_once('.').is_some_and(|(stem, ext)| {
+            !stem.is_empty()
+                && (1..=10).contains(&ext.len())
+                && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+                && ext.bytes().any(|b| b.is_ascii_alphabetic())
+        });
+        if ext_ok
+            && !path.contains("://")
+            && !path.starts_with('-')
+            && (path.contains('/') || line.is_some())
+        {
+            out.push((
+                start..end,
+                LinkKind::File {
+                    path: path.to_string(),
+                    line,
+                },
+            ));
+        }
+    }
+    out.sort_by_key(|(r, _)| r.start);
+    out
+}
+
+/// The id a link carries to `State::open_terminal_link`: `u\turl` or
+/// `f\tsession\tpath\tline`.
+fn link_id(kind: &LinkKind, text: &str, session: &str) -> String {
+    match kind {
+        LinkKind::Url => format!("u\t{text}"),
+        LinkKind::File { path, line } => format!(
+            "f\t{session}\t{path}\t{}",
+            line.map(|n| n.to_string()).unwrap_or_default()
+        ),
+    }
+}
+
+fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32, session: &str) -> El {
     let mut content = String::new();
     let mut spans = Vec::with_capacity(line.runs.len());
     let mut at = 0usize;
@@ -772,6 +904,13 @@ fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
             }
         };
     }
+    let links: Vec<_> = find_links(&content)
+        .into_iter()
+        .map(|(range, kind)| {
+            let id = link_id(&kind, &content[range.clone()], session);
+            (range, id)
+        })
+        .collect();
     let el = if line.runs.len() == 1 {
         let r = &line.runs[0];
         let mut e = text(content)
@@ -792,8 +931,21 @@ fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
         // carry the per-run styling.
         text(content).font(TERM_FONT).color(ink.text).spans(spans)
     };
+    // URLs and file paths open on Cmd-click (`State::open_terminal_link`).
+    let mut el = el;
+    for (range, id) in links {
+        el = el.link(
+            Link::new(range, id)
+                .hover(LinkPaint::new().underline(ink.accent))
+                .help("Cmd-click to open"),
+        );
+    }
     // A grid row is exactly one cell line, whatever the font says.
-    el.shape(shape).h(line_h)
+    // Rows select and copy as one group: drag across them, Cmd+C copies.
+    el.shape(shape)
+        .h(line_h)
+        .selectable(true)
+        .selection_color(ink.accent.alpha(0.35))
 }
 
 // ---------------------------------------------------------------------------
@@ -821,6 +973,18 @@ pub fn committed_text(text: &str) -> String {
     typed
 }
 
+/// What a paste of `text` types: newlines become CR (what Enter sends), and a
+/// program in bracketed-paste mode gets the text wrapped so it can tell a paste
+/// from typing. An embedded end marker is dropped so a paste cannot escape.
+pub fn pasted_text(text: &str, bracketed: bool) -> String {
+    let text = text.replace("\r\n", "\n").replace('\n', "\r");
+    if bracketed {
+        format!("\x1b[200~{}\x1b[201~", text.replace("\x1b[201~", ""))
+    } else {
+        text
+    }
+}
+
 /// What a drop of `paths` types: each path with the shell's special
 /// characters backslash-escaped (as Terminal.app does), joined by spaces
 /// and followed by one.
@@ -840,7 +1004,7 @@ pub fn dropped_paths_text(paths: &[std::path::PathBuf]) -> String {
 
 /// The monospace cell: one character's advance and the line height, both
 /// in points, measured from the same font the lines are drawn with.
-fn cell_metrics() -> (f32, f32) {
+pub fn cell_metrics() -> (f32, f32) {
     let cell_w = rune::text::advance("M", TERM_FONT).max(1.0);
     let (_, line_h) = rune::text::measure("M", &[], TERM_FONT, None);
     (cell_w, line_h.max(1.0))
@@ -849,11 +1013,11 @@ fn cell_metrics() -> (f32, f32) {
 /// A pane's rendered rows as elements: the mono cell metrics every pane
 /// shares, so each split's backgrounds and cursor line up with the cells
 /// its grid was sized to.
-pub fn term_lines_el(lines: &[TermLine], ink: &Ink) -> Vec<El> {
+pub fn term_lines_el(lines: &[TermLine], ink: &Ink, session: &str) -> Vec<El> {
     let (cell_w, line_h) = cell_metrics();
     lines
         .iter()
-        .map(|l| term_line_el(l, ink, cell_w, line_h))
+        .map(|l| term_line_el(l, ink, cell_w, line_h, session))
         .collect()
 }
 
@@ -945,6 +1109,48 @@ mod tests {
         assert_eq!(committed_text("你好"), "你好");
         assert_eq!(committed_text(" "), " ");
         assert_eq!(committed_text(""), "");
+    }
+
+    #[test]
+    fn urls_and_file_paths_are_found_in_a_row() {
+        let f = |text: &str| -> Vec<(String, LinkKind)> {
+            find_links(text)
+                .into_iter()
+                .map(|(r, k)| (text[r].to_string(), k))
+                .collect()
+        };
+        let file = |path: &str, line| LinkKind::File {
+            path: path.to_string(),
+            line,
+        };
+        assert_eq!(
+            f("see https://a.dev/x?y=1, and (https://b.dev/w_(v))."),
+            vec![
+                ("https://a.dev/x?y=1".to_string(), LinkKind::Url),
+                ("https://b.dev/w_(v)".to_string(), LinkKind::Url),
+            ]
+        );
+        assert_eq!(
+            f("● Update(src/main.rs:42:7) and ./a/b.ts."),
+            vec![
+                (
+                    "src/main.rs:42:7".to_string(),
+                    file("src/main.rs", Some(42))
+                ),
+                ("./a/b.ts".to_string(), file("./a/b.ts", None)),
+            ]
+        );
+        // No slash and no line, no extension, a URL's own path, a bare http.
+        assert!(f("README.md node.js v1.2 a/b http://").is_empty());
+        assert_eq!(f("x.rs:9 ~/k/n.md").len(), 2);
+        assert_eq!(f("http://h/p/f.rs").len(), 1, "the URL claims its path");
+    }
+
+    #[test]
+    fn a_paste_types_cr_newlines_and_brackets_only_on_request() {
+        assert_eq!(pasted_text("a\r\nb\nc", false), "a\rb\rc");
+        assert_eq!(pasted_text("x\ny", true), "\x1b[200~x\ry\x1b[201~");
+        assert_eq!(pasted_text("a\x1b[201~b", true), "\x1b[200~ab\x1b[201~");
     }
 
     #[test]

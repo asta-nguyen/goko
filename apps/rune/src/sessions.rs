@@ -434,12 +434,16 @@ impl State {
 
     /// Send bytes to the attached session's PTY.
     pub fn write_terminal(&mut self, session: SessionId, bytes: &[u8]) {
-        let data_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-        let _ = self.daemon.call(move |id| Request::TerminalWrite {
-            id,
-            session_id: session,
-            data_b64: data_b64.clone(),
-        });
+        // A frame over 1 MiB is rejected and closes the connection, so a big
+        // paste goes in pieces (192 KiB raw is 256 KiB of base64), in order.
+        for chunk in bytes.chunks(192 * 1024) {
+            let data_b64 = base64::engine::general_purpose::STANDARD.encode(chunk);
+            let _ = self.daemon.call(move |id| Request::TerminalWrite {
+                id,
+                session_id: session,
+                data_b64: data_b64.clone(),
+            });
+        }
     }
 
     /// Tell the daemon how big the terminal we render is, so its PTY matches.

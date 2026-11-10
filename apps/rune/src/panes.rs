@@ -408,6 +408,93 @@ impl State {
         true
     }
 
+    /// A Cmd-click on a terminal link: a URL opens in the browser, a file in
+    /// the Editor at its line. A plain click is left to selecting and focus.
+    pub fn open_terminal_link(&mut self, id: &str, tx: &mut Tx) {
+        if !self.editor.modifiers.cmd {
+            return;
+        }
+        let mut parts = id.split('\t');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some("u"), Some(url), ..) => open_url(url),
+            (Some("f"), Some(session), Some(path), line) => {
+                let line = line.and_then(|n| n.parse().ok());
+                if let Err(notice) = self.open_terminal_file(session, path, line, tx) {
+                    self.notice = Some(notice);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Open `path` (relative to the session's cwd, `~/`, or absolute) in the
+    /// Editor when it is a file inside the session's project checkout.
+    fn open_terminal_file(
+        &mut self,
+        session: &str,
+        path: &str,
+        line: Option<u64>,
+        tx: &mut Tx,
+    ) -> Result<(), String> {
+        let view = self.session_by_key(session).ok_or("the session is gone")?;
+        let cwd = std::path::PathBuf::from(&view.info.cwd);
+        let joined = match path.strip_prefix("~/") {
+            Some(rest) => {
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest)
+            }
+            None => cwd.join(path),
+        };
+        let file = std::fs::canonicalize(&joined)
+            .ok()
+            .filter(|file| file.is_file())
+            .ok_or_else(|| format!("{path}: no such file"))?;
+        let project_id = view
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.project_id.clone())
+            .ok_or("this session is not in a project")?;
+        let project = self
+            .editor
+            .projects
+            .iter()
+            .find(|project| project.project.id == project_id)
+            .ok_or("this session's project is not registered")?;
+        let list = self
+            .editor
+            .sidebar_worktrees
+            .get(&project_id)
+            .and_then(|entry| entry.list.as_ref())
+            .filter(|list| list.repo);
+        let checkout = list
+            .and_then(|list| crate::data::checkout_for_cwd(&list.worktrees, &view.info.cwd))
+            .map(str::to_owned)
+            .unwrap_or_else(|| project.project.root.clone());
+        let rel = std::fs::canonicalize(&checkout)
+            .ok()
+            .and_then(|root| {
+                file.strip_prefix(root)
+                    .ok()
+                    .map(|rel| rel.to_string_lossy().into_owned())
+            })
+            .ok_or_else(|| format!("{path} is outside the project checkout"))?;
+        crate::editor::navigation::external_open(self, &project_id, &checkout, &rel, line, tx);
+        crate::editor::navigation::navigate(
+            self,
+            crate::editor::navigation::PendingNav::SetView(crate::View::Editor),
+            tx,
+        );
+        Ok(())
+    }
+
+    /// A paste into `session`'s terminal, bracketed when its program asked.
+    pub fn paste_into_terminal(&mut self, session: SessionId, text: &str) -> bool {
+        let bracketed = self
+            .attachments
+            .values()
+            .any(|att| att.term.session == session && att.term.bracketed_paste());
+        self.type_into_terminal(session, term::pasted_text(text, bracketed).as_bytes())
+    }
+
     /// Files dropped on a pane: focus it and type their escaped paths.
     pub fn drop_files(&mut self, tab: &str, pane: &str, key: &str, files: &[std::path::PathBuf]) {
         self.focus_pane(tab, pane);
@@ -1359,8 +1446,13 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let lines: Vec<El> = s
         .attachments
         .get(&key)
-        .map(|att| term::term_lines_el(&att.lines, ink))
-        .unwrap_or_default();
+        .map(|att| term::term_lines_el(&att.lines, ink, &key))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|line| {
+            line.on_link(|s: &mut State, id: &str, tx: &mut Tx| s.open_terminal_link(id, tx))
+        })
+        .collect();
     let border = if s.drop_pane.as_deref() == Some(key.as_str()) {
         ink.accent
     } else if focused {
@@ -1426,6 +1518,17 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 .min_w(0.0)
                 .padding(PANE_PAD)
                 .shrink()
+                .selection_group(true)
+                // Rows are padded to the grid width; copy without the padding.
+                .selection_copy(|sel| {
+                    let rows: Vec<&str> = sel
+                        .texts()
+                        .iter()
+                        .filter(|t| t.is_selected())
+                        .map(|t| t.text().trim_end())
+                        .collect();
+                    Some(rows.join("\n").trim_end().to_string())
+                })
                 .children(lines),
         );
     // The input method follows the focused, live pane's cursor: the
@@ -1512,6 +1615,26 @@ fn badge_button(label: &str, tone: Color, ink: &Ink, f: impl Fn(&mut State) + 's
         .hover(tone.alpha(0.12))
         .child(theme::txt(label, theme::T11M, tone))
         .on_press(move |s: &mut State| f(s))
+}
+
+/// Open `url` with the platform's opener, without waiting for it.
+fn open_url(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    if let Ok(mut child) = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 #[cfg(test)]

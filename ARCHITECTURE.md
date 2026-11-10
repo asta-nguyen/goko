@@ -131,6 +131,11 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
   and rendered as styled text runs. Panes (`panes.rs`) are a recursive binary split layout
   per workspace tab, one terminal per pane; sessions and their lifecycle are in
   `sessions.rs`, the project/worktree tree in `sidebar.rs`.
+- **Terminal input and links:** Cmd+V pastes into the focused pane (bracketed when the
+  program asked, split into 192 KiB writes); rows select and copy with the pointer and
+  Cmd+C (grid padding trimmed). `http(s)` URLs and `path/file.ext[:line]` tokens in a row
+  are links: Cmd-click opens a URL in the browser, or a file inside the session's project
+  checkout in the Editor at its line (`PendingNav::ExternalOpen`).
 - **Editor:** a native workspace (Files, Changes, History, Stashes, Servers) over
   registered projects and validated checkouts, backed by `app-core` and `goko.db`.
 - All Git, filesystem, storage, and highlight work runs on one worker thread behind a
