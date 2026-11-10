@@ -1,0 +1,41 @@
+docs/llm/domains/rune-editor.md
+  s_979b3d3ceb4a3e::t_3bcdc1b553e4d3 609-611
+  s_979b3d3ceb4a3e::t_0aa13b3e731698 439,441,443-451,461,465
+docs/agent-devkit/changes/rune-native-editor/tasks.md
+  s_979b3d3ceb4a3e::t_ec8e593e3d70a0 66-67
+apps/rune/Cargo.toml
+  s_979b3d3ceb4a3e::t_245e6260f3a393 14
+apps/rune/src/editor/syntax.rs
+  s_979b3d3ceb4a3e::t_e831f1d29e7764 497-499
+  s_979b3d3ceb4a3e::t_7bcdc4f425431c 917-918,921,932,955-958,960-961,963,965-983,992-1004,1009
+  s_979b3d3ceb4a3e::t_d569185f20675a 984-986
+  s_979b3d3ceb4a3e::t_30486446ef5ee8 452
+  s_979b3d3ceb4a3e::t_9b2bd8cb017319 17
+  s_979b3d3ceb4a3e::t_e92d5f809ebc43 1-6,8-10,12,14,16,19-21,23,32,39-41,45,47-48,50-52,55-102,114,116,123-128,130-132,135-158,167-241
+  s_979b3d3ceb4a3e::t_6dbb1428d254c4 242
+docs/agent-devkit/changes/rune-native-editor/design.md
+  s_979b3d3ceb4a3e::t_14016bb2673dc3 39
+  s_979b3d3ceb4a3e::t_df760f283e7aac 68
+docs/agent-devkit/INDEX.md
+  s_979b3d3ceb4a3e::t_909371d6dfd557 13
+  s_979b3d3ceb4a3e::t_966d425ddbc629 14
+apps/rune/src/editor/code.rs
+  s_979b3d3ceb4a3e::t_73102dbc866357 276-277
+  s_979b3d3ceb4a3e::t_eac990f6a2d687 983-985,997
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fbf79299b1909fe11a7ee0f6d81254407bec2af3",
+  "prompts": {},
+  "sessions": {
+    "s_979b3d3ceb4a3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cumbersome-snowshoe",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
