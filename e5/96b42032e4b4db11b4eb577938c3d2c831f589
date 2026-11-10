@@ -1,0 +1,27 @@
+apps/rune/src/editor/code.rs
+  s_8ca7a95b53e756::t_5eb7107077fb9d 141
+apps/rune/src/editor/lsp.rs
+  s_8ca7a95b53e756::t_6ac0f68e979429 1859-1865,1867
+  s_8ca7a95b53e756::t_173188bc73deda 1752-1754,1866
+apps/rune/src/main.rs
+  s_8ca7a95b53e756::t_050389b55509b8 523
+apps/rune/src/editor/indent.rs
+  s_8ca7a95b53e756::t_5eb7107077fb9d 122-127,139,145,148-156,158,438,445-449
+  s_8ca7a95b53e756::t_b41de95363a670 450-451
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e596b42032e4b4db11b4eb577938c3d2c831f589",
+  "prompts": {},
+  "sessions": {
+    "s_8ca7a95b53e756": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55445ed9-fc52-44b8-9ea7-b6fe18c14dfb",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
