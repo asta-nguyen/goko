@@ -1,6 +1,6 @@
 //! Local agent adapters resolved on `PATH` at launch time.
 //!
-//! An adapter is just an argv0 name: `claude`, `codex`, `opencode`, `devin`, or the user's
+//! An adapter is just an argv0 name: `claude`, `codex`, `opencode`, `devin`, `agy`, or the user's
 //! default shell, which is always available. Resolution happens when a session is
 //! created, never earlier, so a binary that appears or disappears between `agent_list`
 //! and Start is handled on the launch path.
@@ -77,6 +77,11 @@ const ADAPTERS: &[Adapter] = &[
         id: "devin",
         label: "Devin",
         bin: Some("devin"),
+    },
+    Adapter {
+        id: "agy",
+        label: "Antigravity",
+        bin: Some("agy"),
     },
 ];
 
@@ -663,10 +668,11 @@ mod tests {
     }
 
     #[test]
-    fn opencode_devin_and_shell_ignore_a_named_account() {
+    fn opencode_devin_agy_and_shell_ignore_a_named_account() {
         let dir = TempDir::new("agents-other-acct");
         fake_bin(&dir, "opencode", 0o755);
         fake_bin(&dir, "devin", 0o755);
+        fake_bin(&dir, "agy", 0o755);
         let path = path_var(&[dir.path()]);
         let account_dir = dir.path().join("account dir");
         fs::create_dir_all(&account_dir).unwrap();
@@ -675,7 +681,7 @@ mod tests {
             dir: Some(account_dir),
         };
 
-        for agent in ["opencode", "devin"] {
+        for agent in ["opencode", "devin", "agy"] {
             let default = argv_for(agent, Some(&path), "/bin/zsh", dir.path(), None).unwrap();
             let launched =
                 argv_for_account(agent, Some(&path), "/bin/zsh", dir.path(), None, &named).unwrap();

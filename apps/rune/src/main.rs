@@ -858,6 +858,9 @@ fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
 }
 
 fn main() {
+    // A Dock/Finder launch gets launchd's bare PATH, so `claude`/`codex` would not
+    // resolve; adopt the login shell's before any thread or the daemon starts.
+    app_core::agents::adopt_login_shell_path(&editor::backend::default_shell());
     let app = rune::App::new(AppSpec {
         families: ("Inter", "ui-monospace"),
         min_size: Some((760.0, 480.0)),
