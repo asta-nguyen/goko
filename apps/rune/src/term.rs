@@ -342,6 +342,16 @@ impl Terminal {
         (self.term.grid().columns(), self.term.grid().screen_lines())
     }
 
+    /// The cursor's cell on the visible screen, (row, column) — where the
+    /// input method's candidate window and the preedit go.
+    pub fn cursor_cell(&self) -> Option<(usize, usize)> {
+        let grid = self.term.grid();
+        let row = grid.cursor.point.line.0 + grid.display_offset() as i32;
+        let col = grid.cursor.point.column.0;
+        ((0..grid.screen_lines() as i32).contains(&row) && col < grid.columns())
+            .then_some((row as usize, col))
+    }
+
     /// The palette changed while the grid did not: the cached rows repaint
     /// in the new colours on the next `lines` call. The parser, the stream
     /// offsets and the PTY size are untouched — no resize is faked.
@@ -663,6 +673,10 @@ pub fn key_bytes(ev: &rune::KeyEvent) -> Option<Vec<u8>> {
             }
             Some(text.as_bytes().to_vec())
         }
+        // Shift/Option+Enter is ESC CR, the sequence Claude Code (and what
+        // `/terminal-setup` binds Shift+Enter to) reads as a newline; a
+        // bare terminal cannot tell it from Enter's CR otherwise.
+        Key::Enter if ev.mods.shift || ev.mods.alt => Some(vec![0x1b, b'\r']),
         Key::Enter => Some(vec![b'\r']),
         Key::Backspace => Some(vec![0x7f]),
         Key::Delete => Some(vec![0x1b, b'[', b'3', b'~']),
@@ -787,6 +801,26 @@ fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
 // cursor, laid out on the monospace cell grid.
 // ---------------------------------------------------------------------------
 
+/// What an input method's commit types. Telex ends a word on space, but
+/// the window swallows that key (only the commit arrives), so a committed
+/// Latin word gets its space back. Other scripts (CJK candidates) are typed
+/// as they are.
+// ponytail: punctuation or Enter that commits a word is lost either way; a
+// commit by Enter now leaves a trailing space.
+pub fn committed_text(text: &str) -> String {
+    let latin = |c: char| {
+        c.is_ascii()
+            || ('\u{00C0}'..='\u{024F}').contains(&c)
+            || ('\u{0300}'..='\u{036F}').contains(&c)
+            || ('\u{1E00}'..='\u{1EFF}').contains(&c)
+    };
+    let mut typed = text.to_string();
+    if text.chars().all(latin) && text.chars().last().is_some_and(char::is_alphanumeric) {
+        typed.push(' ');
+    }
+    typed
+}
+
 /// What a drop of `paths` types: each path with the shell's special
 /// characters backslash-escaped (as Terminal.app does), joined by spaces
 /// and followed by one.
@@ -898,6 +932,22 @@ mod tests {
     }
 
     #[test]
+    fn a_committed_latin_word_gets_the_swallowed_space_back() {
+        assert_eq!(committed_text("con"), "con ");
+        assert_eq!(committed_text("việt"), "việt ");
+        assert_eq!(committed_text("tốt"), "tốt ");
+        // Decomposed marks stay one word.
+        assert_eq!(
+            committed_text("vie\u{0323}\u{302}t"),
+            "vie\u{0323}\u{302}t "
+        );
+        // Other scripts and non-words are typed as they are.
+        assert_eq!(committed_text("你好"), "你好");
+        assert_eq!(committed_text(" "), " ");
+        assert_eq!(committed_text(""), "");
+    }
+
+    #[test]
     fn dropped_paths_are_escaped_for_the_shell() {
         let paths = [
             std::path::PathBuf::from("/tmp/a b.txt"),
@@ -906,6 +956,33 @@ mod tests {
         assert_eq!(
             dropped_paths_text(&paths),
             "/tmp/a\\ b.txt /tmp/it\\'s\\(1\\).png "
+        );
+    }
+
+    #[test]
+    fn the_cursor_cell_follows_the_output_and_the_scroll() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: b"abc".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.cursor_cell(), Some((0, 3)));
+        let data: String = (0..100).map(|n| format!("line{n}\r\n")).collect();
+        tx.send(Output {
+            seq: 3,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        term.feed();
+        let live = term.cursor_cell();
+        assert!(live.is_some());
+        term.scroll(1600.0, 16.0);
+        assert_eq!(
+            term.cursor_cell(),
+            None,
+            "the cursor scrolled off the screen"
         );
     }
 
@@ -1411,6 +1488,28 @@ mod tests {
             })
             .is_none()
         );
+    }
+
+    #[test]
+    fn shift_or_option_enter_is_a_newline_not_a_submit() {
+        let enter = |mods: Mods| {
+            key_bytes(&KeyEvent {
+                key: rune::Key::Enter,
+                mods,
+            })
+            .unwrap()
+        };
+        assert_eq!(enter(Mods::default()), b"\r");
+        let shift = Mods {
+            shift: true,
+            ..Mods::default()
+        };
+        let alt = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        assert_eq!(enter(shift), b"\x1b\r");
+        assert_eq!(enter(alt), b"\x1b\r");
     }
 
     #[test]

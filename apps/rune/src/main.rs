@@ -94,6 +94,9 @@ pub struct State {
     pane_grids: HashMap<String, (usize, usize)>,
     /// The pane (session key) a file drag is over: it draws the drop ring.
     drop_pane: Option<String>,
+    /// What the input method is composing (Telex marked text): drawn at
+    /// the terminal's cursor, not yet typed into the session.
+    preedit: String,
     /// The measured size of every split's box along its axis, read by the
     /// separator's drag and keyboard bounds.
     split_sizes: HashMap<String, f32>,
@@ -196,6 +199,7 @@ impl State {
             attachments: HashMap::new(),
             pane_grids: HashMap::new(),
             drop_pane: None,
+            preedit: String::new(),
             split_sizes: HashMap::new(),
             close_inflight: HashSet::new(),
             now_ms: data::now_ms(),
@@ -832,6 +836,27 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
     s.type_into_terminal(session, &bytes)
 }
 
+/// The input method for the Terminal view: what it composes is drawn at
+/// the cursor (`Preedit`) and typed into the focused session once it is
+/// final (`Commit`) — Vietnamese Telex and the other marked-text methods.
+fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
+    if s.view != View::Terminal {
+        return false;
+    }
+    match ev {
+        rune::Ime::Preedit(text, _) => s.preedit.clone_from(text),
+        rune::Ime::Commit(text) => {
+            s.preedit.clear();
+            let Some(session) = s.focused_terminal_session() else {
+                return false;
+            };
+            return s.type_into_terminal(session, term::committed_text(text).as_bytes());
+        }
+        rune::Ime::Enabled | rune::Ime::Disabled => return false,
+    }
+    true
+}
+
 fn main() {
     let app = rune::App::new(AppSpec {
         families: ("Inter", "ui-monospace"),
@@ -846,7 +871,8 @@ fn main() {
     .keep_running()
     .on_close(on_close)
     .on_quit(on_quit)
-    .on_modifiers(on_modifiers);
+    .on_modifiers(on_modifiers)
+    .on_ime(on_ime);
     APP_HANDLE
         .set(app.handle())
         .unwrap_or_else(|_| unreachable!("app handle registered once"));
@@ -2751,6 +2777,64 @@ mod view_tests {
         }
         assert_eq!(rt.state.drop_pane, None, "the ring went with the drop");
         assert_eq!(top(&mut rt), live, "the drop typed into the live session");
+    }
+
+    #[test]
+    fn an_input_method_composes_at_the_cursor_and_commits_into_the_session() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..200).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let pane_key = key.clone();
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        // The window turns the input method on at the focused pane's cursor.
+        assert!(
+            rt.ime_area.is_some(),
+            "the cursor asks for the input method"
+        );
+
+        rt.update(|s, tx| {
+            assert!(on_ime(s, &rune::Ime::Preedit("vie".into(), None), tx));
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(
+            els(&rt).iter().any(|e| e.text.as_deref() == Some("vie")),
+            "the marked text is drawn at the cursor"
+        );
+
+        let top = |rt: &mut Runtime<State>| {
+            let mut text = String::new();
+            rt.update(|s, _| text = s.attachments[&pane_key].lines[0].text());
+            text.trim_end().to_string()
+        };
+        let live = top(&mut rt);
+        rt.wheel_event(rune::WheelEvent::new(0.0, 160.0).at(700.0, 400.0));
+        rt.frame(1.0 / 60.0);
+        assert_ne!(top(&mut rt), live, "the view is in the history");
+        rt.update(|s, tx| {
+            assert!(on_ime(s, &rune::Ime::Commit("việt".into()), tx));
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(
+            rt.state.preedit.is_empty(),
+            "the commit ended the composition"
+        );
+        assert_eq!(top(&mut rt), live, "the commit typed into the live session");
     }
 
     #[test]
