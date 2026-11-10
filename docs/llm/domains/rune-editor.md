@@ -69,36 +69,6 @@ The system SHALL run every Git, filesystem, storage, and highlighting job on a s
 
 Evidence: `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/highlight.rs`, `crates/app-core/src/projects.rs`
 
-### RNE-inline-blame
-
-The system SHALL show, next to the open file's code, one annotation per line naming the author who last touched that line and how long ago the commit landed, read through `git blame` on the worker lane; the column SHALL be hidden while the buffer holds unsaved edits, re-read after the save lands, and toggled on and off from the editor footer with the choice persisted under `goko.editor.blame`.
-
-#### Scenario: Annotations land beside the code
-
-- GIVEN a tracked file is open in a checkout
-- WHEN the blame read lands
-- THEN each code line is followed by a column entry with its author's name and a compact age, and a line changed in the working tree but never committed reads "uncommitted"
-
-#### Scenario: A dirty draft hides the column
-
-- GIVEN the annotations are shown
-- WHEN the user edits the buffer
-- THEN the column is hidden because the annotations describe the file on disk, and it returns with fresh annotations after the save lands
-
-#### Scenario: The toggle persists
-
-- GIVEN the user presses the blame chip in the editor footer
-- WHEN the app restarts
-- THEN the column comes back in the state the user left it, stored under `goko.editor.blame`
-
-#### Scenario: A file Git cannot blame
-
-- GIVEN the open file is untracked or otherwise rejected by Git
-- WHEN the blame read fails
-- THEN the editor shows the error and no annotation is invented
-
-Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
-
 ### RNE-changes-git-writes
 
 The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts and per-layer diffs, staging, unstaging, discarding, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing or prompting for credentials.
@@ -358,6 +328,36 @@ The system SHALL show History as a branch-filtered, paged commit table with a la
 - THEN every parent lists after its children (`git log --topo-order` in the shared backend) so the graph lanes connect
 
 Evidence: `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/history_graph.rs`, `apps/rune/src/editor/history_layout.rs`, `apps/rune/src/editor/commit_detail.rs`, `apps/rune/src/editor/patch.rs`, `crates/app-core/src/git_view.rs`
+
+### RNE-inline-blame
+
+The system SHALL show, next to the open file's code, one annotation per line naming the author who last touched that line and how long ago the commit landed, read through `git blame` on the worker lane — the column hidden while the buffer holds unsaved edits, re-read after the save lands, and toggled on and off from the editor footer with the choice persisted under `goko.editor.blame`.
+
+#### Scenario: Annotations land beside the code
+
+- GIVEN a tracked file is open in a checkout
+- WHEN the blame read lands
+- THEN each code line is followed by a column entry with its author's name and a compact age, and a line changed in the working tree but never committed reads "uncommitted"
+
+#### Scenario: A dirty draft hides the column
+
+- GIVEN the annotations are shown
+- WHEN the user edits the buffer
+- THEN the column is hidden because the annotations describe the file on disk, and it returns with fresh annotations after the save lands
+
+#### Scenario: The toggle persists
+
+- GIVEN the user presses the blame chip in the editor footer
+- WHEN the app restarts
+- THEN the column comes back in the state the user left it, stored under `goko.editor.blame`
+
+#### Scenario: A file Git cannot blame
+
+- GIVEN the open file is untracked or otherwise rejected by Git
+- WHEN the blame read fails
+- THEN the editor shows the error and no annotation is invented
+
+Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
 
 ### RNE-keyboard
 

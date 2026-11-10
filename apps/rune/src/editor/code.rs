@@ -952,6 +952,20 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
 /// live scroll offset the gutter uses so every row lines up with its line.
 fn blame_el(code: &CodeState, ink: &Ink) -> El {
     let shift = code.gutter_shift.clone();
+    // Only the caret's line is annotated; the other rows stay blank so the
+    // text still lines up with the code.
+    let bytes = code.edit.text.as_bytes();
+    let active = bytes[..code.edit.focus.min(bytes.len())]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count();
+    let active_only = code
+        .blame_text()
+        .split('\n')
+        .enumerate()
+        .map(|(i, l)| if i == active { l } else { "" })
+        .collect::<Vec<_>>()
+        .join("\n");
     col()
         .w(BLAME_WIDTH)
         .h_full()
@@ -959,7 +973,7 @@ fn blame_el(code: &CodeState, ink: &Ink) -> El {
         .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
         .clip_rounded(0.0)
         .child(
-            text(code.blame_text())
+            text(active_only)
                 .font(CODE_STYLE)
                 .color(ink.muted)
                 .pl(10.0)

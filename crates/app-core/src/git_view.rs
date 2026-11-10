@@ -1041,25 +1041,14 @@ fn parse_blame_porcelain(out: &[u8]) -> Vec<GitViewBlameLine> {
             continue;
         }
         // Commit metadata, printed right after the header of a commit Git
-        // has not described yet.
-        let described = pending
-            .as_ref()
-            .map(|(sha, _)| !commits.contains_key(sha))
-            .unwrap_or(false);
-        if described {
-            let sha = pending
-                .as_ref()
-                .map(|(sha, _)| sha.clone())
-                .unwrap_or_default();
-            if let Some(author) = text.strip_prefix("author ") {
-                commits.entry(sha).or_default().0 = author.to_owned();
-                continue;
-            }
-            if let Some(time) = text.strip_prefix("author-time ") {
-                let entry = commits.entry(sha).or_default();
-                entry.1 = time.parse::<u64>().unwrap_or(0) * 1000;
-                continue;
-            }
+        // has not described yet (a repeated commit prints none).
+        let Some((sha, _)) = pending.as_ref() else {
+            continue;
+        };
+        if let Some(author) = text.strip_prefix("author ") {
+            commits.entry(sha.clone()).or_default().0 = author.to_owned();
+        } else if let Some(time) = text.strip_prefix("author-time ") {
+            commits.entry(sha.clone()).or_default().1 = time.parse::<u64>().unwrap_or(0) * 1000;
         }
     }
     lines
@@ -2178,6 +2167,7 @@ mod tests {
             vec![(1, "Tester"), (2, "Second"), (3, "Tester")]
         );
         assert!(view.lines.iter().all(|l| !l.uncommitted));
+        assert!(view.lines.iter().all(|l| l.time > 1_600_000_000_000));
         assert_eq!(view.lines[1].commit, head(&root));
     }
 
