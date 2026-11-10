@@ -44,6 +44,8 @@ apps/desktop/src-tauri/src/accounts.rs
   s_d361934f0cc28e::t_1581be0b9cf3a1 162-164,166
   s_d361934f0cc28e::t_c7f179b3aa5b43 39
   s_23e6cf95e0c0ab::t_bfed3e98948af5 1-17,23,25-26,28-38,40-108,119-161,165,167-187,254-271,273-290,292-304,306,308-335,337-346,348-381,383-394,396-411,413-415,419-423,425-427,431-432,449-533,536-537,542-562,564-673,676,679-680,682-695,697-708,754-774,783-847,849-895,903-952,979-1125,1127-1165,1168-1169,1171-1172,1175-1210,1212-1311,1325-1347,1349-1359,1364-1390,1395-1457,1462-1467,1472,1585
+  s_3e1c1eb4bcd366::t_c1614ad589b0a6 509-510
+  s_3e1c1eb4bcd366::t_74d4ca422e4d01 1-22,23-26,28-32,35-38,40-50,51-88,90-94,96-100,102-275,276-373,377-378,397-398,447-500,503-508,511-586,587-623,663-1584,1585
 apps/desktop/src-tauri/src/agents.rs
   s_8d5a662d150ab0::t_e1376815712e94 196-200,206-207
   s_8d5a662d150ab0::t_a338f5dfc80739 618-692,694-727,730-733,735-737
@@ -67,6 +69,7 @@ apps/desktop/src-tauri/src/commands/tests.rs
   s_8d5a662d150ab0::t_b7cb197c4028eb 1180-1196,1203-1308
   s_8d5a662d150ab0::t_a71185428423ed 118-177
   s_8bce60554de6cb::t_2fef03b5fd7f90 1309-1405
+  s_123048726b9ed9::t_b67c669e08da18 782
 apps/desktop/src-tauri/src/usage.rs
   s_e0cd407ca57e6b::t_3b19a3e5fa6850 603
   s_e0cd407ca57e6b::t_17f97985984369 1041
@@ -135,6 +138,7 @@ apps/desktop/src-tauri/src/activity.rs
   s_8d5a662d150ab0::t_c23a6ec39265d7 295-296,298,302-305,309-315
   s_8d5a662d150ab0::t_e4ba26e9f88775 299-301,306-308
   s_269050e457a2bf::t_1c1991de0971db 720
+  s_123048726b9ed9::t_ba459579e38176 720
 apps/desktop/src/features/sessions/SessionItems.tsx
   s_4a1cd6c058fbe0::t_efebfc674c48b8 54-61
   s_4a1cd6c058fbe0::t_dd31bdf0f2e8c1 93-96
@@ -219,6 +223,7 @@ docs/llm/domains/desktop-settings.md
   s_d361934f0cc28e::t_f4e30daa25decc 74
 crates/protocol/src/message.rs
   s_269050e457a2bf::t_41701ea07ea81c 205
+  s_f2242482e6456d::t_13a2695bfe564f 205
 docs/llm/architecture/overview.md
   s_d361934f0cc28e::t_08480d0bbe4ffe 28-30,78-84,89-95,116-117,176
   s_d361934f0cc28e::t_c035b564d02471 55-56,64-66,131-150,180,195-197
@@ -282,6 +287,14 @@ docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/tasks.md
   "base_commit_sha": "d834dbf8378f80bfa3f3c99333abbd3d25cf178a",
   "prompts": {},
   "sessions": {
+    "s_123048726b9ed9": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "energetic-cord",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
     "s_23e6cf95e0c0ab": {
       "agent_id": {
         "tool": "windsurf",
@@ -306,6 +319,30 @@ docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/tasks.md
       },
       "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
     },
+    "s_35786ec2d71c53": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "azure-iguana",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_3cd5761c869e5d": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "historical-archer",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_3e1c1eb4bcd366": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "flicker-theater",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
     "s_486ffc6b959fb9": {
       "agent_id": {
         "tool": "windsurf",
@@ -322,10 +359,42 @@ docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/tasks.md
       },
       "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
     },
+    "s_5ba1a0cedd467c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1c46f-8601-75d3-b2cf-eac62440b122",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_5fb622d6cbf76e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "awesome-ferryboat",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_889bff89ddd5ba": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "lovely-prune",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
     "s_8bce60554de6cb": {
       "agent_id": {
         "tool": "windsurf",
         "id": "twilight-ferryboat",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_8ca7a95b53e756": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55445ed9-fc52-44b8-9ea7-b6fe18c14dfb",
         "model": "unknown"
       },
       "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
@@ -382,6 +451,22 @@ docs/agent-devkit/changes/archive/2026-11-08-subagent-indicator/tasks.md
       "agent_id": {
         "tool": "windsurf",
         "id": "truthful-somersault",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e805a32e130e2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f45263e8-ffbb-4810-99fd-145ca91f33ac",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f2242482e6456d": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "veil-heart",
         "model": "unknown"
       },
       "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
