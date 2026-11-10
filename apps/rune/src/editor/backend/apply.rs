@@ -4,12 +4,12 @@
 //! `backend` so it can reuse the parent's private helpers (`kind_key`) while
 //! keeping `backend.rs` under the file-size budget.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use app_core::git_view::{GitViewDiff, GitViewFile};
 
 use super::{Reply, ReplyData, Req, kind_key};
-use crate::editor::state::{EditorState, GoToStage, Notice, Patch};
+use crate::editor::state::{EditorState, GoToStage, Notice, Patch, SidebarWorktrees};
 
 impl EditorState {
     /// Apply one worker reply. Stale results — a different checkout than the
@@ -43,6 +43,31 @@ impl EditorState {
                 self.projects = projects;
                 self.projects_loading = false;
                 self.projects_error = None;
+                // Sidebar worktree state is keyed by project id: drop
+                // entries for projects that vanished and (re)load every
+                // project with no list yet or a stale error.
+                let ids: Vec<String> = self.projects.iter().map(|p| p.project.id.clone()).collect();
+                self.sidebar_worktrees
+                    .retain(|pid, _| ids.iter().any(|id| id == pid));
+                for pid in &ids {
+                    let needs = self
+                        .sidebar_worktrees
+                        .get(pid)
+                        .is_none_or(|e| e.list.is_none() || e.error.is_some());
+                    if needs {
+                        self.request_worktrees(pid);
+                    }
+                }
+                // The selected project disappeared: keep the identity (the
+                // pickers show it unselected) but refresh so section reads
+                // surface the honest not-found error, not stale data.
+                if self
+                    .project_id
+                    .as_ref()
+                    .is_some_and(|pid| !ids.contains(pid))
+                {
+                    self.refresh_active();
+                }
             }
             (Req::Projects, Err(e)) => {
                 self.projects_loading = false;
@@ -55,14 +80,38 @@ impl EditorState {
                 self.refresh_projects();
             }
             (Req::AddProject(_), Err(e)) => self.notice = Some(err_notice(&e)),
-            (Req::Worktrees(_), Ok(ReplyData::Worktrees(list))) => {
-                self.worktrees = list;
-                self.worktrees_loading = false;
-                self.worktrees_error = None;
+            (Req::Worktrees(pid), Ok(ReplyData::Worktrees(list))) => {
+                // Replies are keyed by the request's project id: only the
+                // selected project's list feeds the checkout picker.
+                if self.project_id.as_deref() == Some(pid.as_str()) {
+                    self.worktrees = list.clone();
+                    self.worktrees_loading = false;
+                    self.worktrees_error = None;
+                }
+                self.sidebar_worktrees.insert(
+                    pid.clone(),
+                    SidebarWorktrees {
+                        list: Some(list),
+                        loading: false,
+                        error: None,
+                    },
+                );
+                // A fresh list that dropped the selected checkout means the
+                // worktree was pruned or moved: refresh so section reads
+                // fail honestly now instead of serving stale paths.
+                if self.project_id.as_deref() == Some(pid.as_str()) && !self.checkout_still_valid()
+                {
+                    self.refresh_active();
+                }
             }
-            (Req::Worktrees(_), Err(e)) => {
-                self.worktrees_loading = false;
-                self.worktrees_error = Some(e);
+            (Req::Worktrees(pid), Err(e)) => {
+                if self.project_id.as_deref() == Some(pid.as_str()) {
+                    self.worktrees_loading = false;
+                    self.worktrees_error = Some(e.clone());
+                }
+                let entry = self.sidebar_worktrees.entry(pid.clone()).or_default();
+                entry.loading = false;
+                entry.error = Some(e);
             }
             // `load` never fails: corrupt JSON falls back per field, exactly
             // like the desktop's readLayout. Other keys have no consumer yet.
@@ -466,6 +515,28 @@ impl EditorState {
         }
     }
 
+    /// `true` while the selected checkout is still selectable: its project
+    /// is registered and the checkout is the project root or a listed,
+    /// non-missing worktree. An empty project list mid-load counts as
+    /// "unknown", not invalid, so startup replies never trigger a spurious
+    /// refresh.
+    fn checkout_still_valid(&self) -> bool {
+        let (Some(pid), Some(checkout)) = (self.project_id.as_deref(), self.checkout.as_ref())
+        else {
+            return true;
+        };
+        let Some(project) = self.projects.iter().find(|p| p.project.id == pid) else {
+            return self.projects.is_empty() && self.projects_loading;
+        };
+        if checkout.as_path() == Path::new(&project.project.root) {
+            return true;
+        }
+        self.worktrees
+            .worktrees
+            .iter()
+            .any(|wt| !wt.missing && Path::new(&wt.path) == checkout.as_path())
+    }
+
     fn enqueue_patch_refresh(&mut self, checkout: PathBuf, key: String) {
         if let (Some(layer), Some(path)) =
             (self.changes.layer.clone(), self.changes.patch_path.clone())
@@ -516,6 +587,10 @@ fn stale_notice(e: &str) -> crate::editor::state::Notice {
 mod tests {
     use super::*;
     use crate::State;
+    use crate::editor::state::Section;
+    use app_core::projects::ProjectView;
+    use app_core::store::Project;
+    use app_core::worktrees::{WorktreeInfo, WorktreeList};
 
     fn scene() -> State {
         let mut s = State::new(crate::test_handle());
@@ -526,6 +601,236 @@ mod tests {
             &PathBuf::from("/tmp/co"),
         ));
         s
+    }
+
+    fn pv(id: &str, name: &str, root: &str) -> ProjectView {
+        ProjectView {
+            project: Project {
+                id: id.into(),
+                name: name.into(),
+                root: root.into(),
+                created_at: 0,
+            },
+            missing: false,
+        }
+    }
+
+    fn wt(name: &str, path: &str, is_root: bool) -> WorktreeInfo {
+        WorktreeInfo {
+            name: name.into(),
+            path: path.into(),
+            branch: None,
+            head: String::new(),
+            is_root,
+            missing: false,
+            dirty: None,
+            changed: None,
+        }
+    }
+
+    fn wt_list(worktrees: Vec<WorktreeInfo>) -> WorktreeList {
+        WorktreeList {
+            repo: true,
+            worktrees,
+        }
+    }
+
+    fn reply(req: Req, result: Result<ReplyData, String>) -> Reply {
+        Reply {
+            req,
+            generation: 0,
+            checkout_key: None,
+            result,
+        }
+    }
+
+    // -- per-project project/worktree replies -------------------------------
+
+    #[test]
+    fn projects_reply_seeds_sidebar_worktrees_per_project() {
+        let mut s = scene();
+        s.editor.apply_reply(reply(
+            Req::Projects,
+            Ok(ReplyData::Projects(vec![
+                pv("p1", "web", "/work/a/web"),
+                pv("p2", "api", "/work/b/api"),
+            ])),
+        ));
+        assert_eq!(s.editor.projects.len(), 2);
+        // Every registered project got its own in-flight sidebar read —
+        // keyed by id, so a reply can only land on the project it asked for.
+        assert!(s.editor.sidebar_worktrees["p1"].loading);
+        assert!(s.editor.sidebar_worktrees["p2"].loading);
+        assert_eq!(s.editor.sidebar_worktrees.len(), 2);
+    }
+
+    #[test]
+    fn worktrees_reply_for_unselected_project_stays_sidebar_only() {
+        let mut s = scene();
+        s.editor.projects = vec![
+            pv("p1", "web", "/work/a/web"),
+            pv("p2", "api", "/work/b/api"),
+        ];
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p1".into()),
+            Ok(ReplyData::Worktrees(wt_list(vec![
+                wt("web", "/work/a/web", true),
+                wt("feat", "/work/a/feat", false),
+            ]))),
+        ));
+        assert_eq!(s.editor.worktrees.worktrees.len(), 2);
+        // p2's reply must NOT overwrite the selected project's picker list.
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p2".into()),
+            Ok(ReplyData::Worktrees(wt_list(vec![wt(
+                "api",
+                "/work/b/api",
+                true,
+            )]))),
+        ));
+        assert_eq!(
+            s.editor.worktrees.worktrees.len(),
+            2,
+            "unselected project's list never lands in the picker"
+        );
+        assert_eq!(
+            s.editor.worktrees.worktrees[0].name, "web",
+            "picker still shows p1's list"
+        );
+        assert_eq!(
+            s.editor.sidebar_worktrees["p2"]
+                .list
+                .as_ref()
+                .unwrap()
+                .worktrees
+                .len(),
+            1,
+            "p2's list lives in its own sidebar entry"
+        );
+    }
+
+    #[test]
+    fn worktrees_error_lands_on_owning_project_only() {
+        let mut s = scene();
+        s.editor.projects = vec![
+            pv("p1", "web", "/work/a/web"),
+            pv("p2", "api", "/work/b/api"),
+        ];
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p2".into()),
+            Err("git exploded".into()),
+        ));
+        assert!(s.editor.worktrees_error.is_none(), "picker error untouched");
+        assert_eq!(
+            s.editor.sidebar_worktrees["p2"].error.as_deref(),
+            Some("git exploded")
+        );
+        assert!(!s.editor.sidebar_worktrees["p2"].loading);
+    }
+
+    #[test]
+    fn vanished_selected_project_prunes_sidebar_and_refreshes() {
+        let mut s = scene();
+        s.editor.projects = vec![pv("p1", "web", "/work/a/web")];
+        s.editor.sidebar_worktrees.insert(
+            "p1".into(),
+            SidebarWorktrees {
+                list: Some(wt_list(vec![wt("web", "/work/a/web", true)])),
+                loading: false,
+                error: None,
+            },
+        );
+        s.editor.sidebar_worktrees.insert(
+            "gone".into(),
+            SidebarWorktrees {
+                list: None,
+                loading: true,
+                error: None,
+            },
+        );
+        // p1 vanished from the registry; "gone" was never registered.
+        s.editor.apply_reply(reply(
+            Req::Projects,
+            Ok(ReplyData::Projects(vec![pv("p2", "api", "/work/b/api")])),
+        ));
+        assert_eq!(s.editor.projects.len(), 1);
+        assert!(
+            !s.editor.sidebar_worktrees.contains_key("p1")
+                && !s.editor.sidebar_worktrees.contains_key("gone"),
+            "vanished projects lose their sidebar entries"
+        );
+        // The selected project is gone: section reads re-kicked so they
+        // surface the honest not-found error (Changes is the default
+        // section, so its loading flag arms).
+        assert_eq!(s.editor.section, Section::Changes);
+        assert!(
+            s.editor.changes.loading,
+            "refresh ran for the dead checkout"
+        );
+    }
+
+    #[test]
+    fn vanished_selected_worktree_triggers_refresh() {
+        let mut s = scene();
+        // /tmp/co is neither the project root nor a listed worktree.
+        s.editor.projects = vec![pv("p1", "web", "/work/a/web")];
+        s.editor.worktrees = wt_list(vec![wt("web", "/work/a/web", true)]);
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p1".into()),
+            Ok(ReplyData::Worktrees(wt_list(vec![wt(
+                "web",
+                "/work/a/web",
+                true,
+            )]))),
+        ));
+        assert!(
+            s.editor.changes.loading,
+            "checkout no longer selectable → honest refresh"
+        );
+    }
+
+    #[test]
+    fn listed_selected_worktree_does_not_refresh() {
+        let mut s = scene();
+        s.editor.projects = vec![pv("p1", "web", "/work/a/web")];
+        s.editor.worktrees = wt_list(vec![
+            wt("web", "/work/a/web", true),
+            wt("co", "/tmp/co", false),
+        ]);
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p1".into()),
+            Ok(ReplyData::Worktrees(wt_list(vec![
+                wt("web", "/work/a/web", true),
+                wt("co", "/tmp/co", false),
+            ]))),
+        ));
+        assert!(
+            !s.editor.changes.loading,
+            "checkout still listed → no spurious refresh"
+        );
+    }
+
+    #[test]
+    fn root_checkout_stays_valid_without_worktree_listing() {
+        let mut s = scene();
+        // Select the project ROOT as checkout: valid even when the worktree
+        // list doesn't repeat it.
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(crate::editor::state::checkout_key(
+            "p1",
+            &PathBuf::from("/work/a/web"),
+        ));
+        s.editor.projects = vec![pv("p1", "web", "/work/a/web")];
+        s.editor.worktrees = wt_list(vec![wt("web", "/work/a/web", true)]);
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p1".into()),
+            Ok(ReplyData::Worktrees(wt_list(vec![wt(
+                "web",
+                "/work/a/web",
+                true,
+            )]))),
+        ));
+        assert!(!s.editor.changes.loading);
     }
 
     fn file_list_reply(paths: Vec<String>) -> Reply {

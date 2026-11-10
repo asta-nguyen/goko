@@ -3,6 +3,7 @@
 //! real components' measurements (App.tsx header, TerminalWorkspace tab strip,
 //! SessionControls breadcrumb + state badge + elapsed + actions).
 
+use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_3;
 
 use rune::{El, Spring, TextStyle, Transition, Tx, el, row, spacer};
@@ -229,12 +230,22 @@ fn split_button(icon: &'static rune::Icon, label: &str, ink: &Ink) -> El {
 /// changed; clears it when the active title has no session. Shared by tab
 /// close/select, New tab and Close pane.
 fn sync_selection(s: &mut State) {
+    // Only real registered project ids can name a workspace — mock session
+    // project ids resolve to Unassigned so a tab click can never fabricate
+    // editor identity.
+    let known: HashSet<&str> = s
+        .editor
+        .projects
+        .iter()
+        .map(|p| p.project.id.as_str())
+        .collect();
     let found = s.open_tabs.get(s.active_tab).and_then(|t| {
-        s.data
-            .sessions
-            .iter()
-            .find(|v| v.title() == *t)
-            .map(|sv| (sv.info.id.clone(), data::workspace_for_session(&s.data, sv)))
+        s.data.sessions.iter().find(|v| v.title() == *t).map(|sv| {
+            (
+                sv.info.id.clone(),
+                data::workspace_for_session(&s.data, sv, &known),
+            )
+        })
     });
     match found {
         Some((id, ws)) => {

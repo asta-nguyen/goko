@@ -92,7 +92,7 @@ Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `
 
 ### RNE-checkout-selection
 
-The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers, validating every selection through `app-core` project/checkout rules and never deriving editor selection from the mock terminal session.
+The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from the mock terminal session.
 
 #### Scenario: Pick project and worktree
 
@@ -100,13 +100,19 @@ The system SHALL let the user pick a registered project and one of its checkouts
 - WHEN the user picks a project then a checkout
 - THEN the editor loads that checkout's sections through the guarded navigation path and keys all reads by `project_id` + canonical path
 
+#### Scenario: Pick from the sidebar
+
+- GIVEN the chrome sidebar lists a registered project's worktree row
+- WHEN the row is pressed
+- THEN the same guarded `SelectCheckout` commits that exact project+checkout — the stored project root for a project row, the listed worktree path for a worktree row — and `active_workspace` highlights it
+
 #### Scenario: Invalid checkout rejected
 
 - GIVEN a checkout path that is not the project root or a listed worktree
 - WHEN the backend validates it for a Git or file job
 - THEN `projects::git_checkout`/`project_checkout` rejects it and no Git command runs
 
-Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/projects.rs`
+Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/data.rs`, `crates/app-core/src/projects.rs`
 
 ### RNE-code-surface
 
@@ -386,6 +392,30 @@ The system SHALL present the editor as five sections — Files, Changes, History
 
 Evidence: `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/lsp.rs`
 
+### RNE-sidebar-sync
+
+The system SHALL keep the chrome sidebar's committed workspace and the editor's checkout selection in sync — activating the committed checkout when the Editor view opens, decoding `active_workspace` into project and checkout, ignoring `__unassigned__`, mock or vanished project ids, and an already-matching selection, through the same draft-guarded `SelectCheckout` path, and clearing the committed workspace when a project switch drops the checkout so no stale row stays highlighted.
+
+#### Scenario: Editor opens on the committed checkout
+
+- GIVEN `active_workspace` names a registered project's checkout and the editor's selection is empty or different
+- WHEN the user switches to the Editor view
+- THEN `activate_sidebar_checkout` navigates `SelectCheckout` for that project+checkout and the sidebar highlight already matches it
+
+#### Scenario: Unregistered workspace ignored
+
+- GIVEN `active_workspace` is `__unassigned__`, names an unregistered or mock project id, or no workspace is committed
+- WHEN the Editor view opens
+- THEN the view still switches but no project or checkout is selected
+
+#### Scenario: Guarded view switch applies the sync after Discard
+
+- GIVEN a dirty draft and `active_workspace` names another registered checkout
+- WHEN the user switches to the Editor view and chooses Discard
+- THEN the view becomes Editor with that project+checkout activated
+
+Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/main.rs`
+
 ### RNE-stashes
 
 The system SHALL list the repository-wide stash stack — shared across linked worktrees — with a filter, auto-selection of the newest stash, a detail pane showing the selected stash's patch, and manual refresh, offering no stash mutation actions.
@@ -432,12 +462,16 @@ Evidence: `apps/rune/src/editor/syntax.rs`, `apps/rune/src/editor/highlight.rs`,
 
 `main.rs` mounts `editor::workspace::workspace` as the Editor view's content
 while keeping the tab strip; the session controls strip stays terminal-only.
-The workspace renders project and checkout pickers — the only place editor
-selection happens, never reading the mock terminal session — above the active
-section view. `EditorState` (`state.rs`) owns the checkout identity
-(`project_id` + canonical path as `checkout_key`), per-section cached state,
-the open document and draft, the navigation guard, pending external opens,
-request generations, the `Lsp` runtime handle, and modifiers.
+Editor selection happens in two places — the workspace's project and checkout
+pickers and the chrome sidebar's project/worktree rows — both routing
+`PendingNav::SelectCheckout`/`SelectProject` through `navigate` and never
+reading the mock terminal session. `EditorState` (`state.rs`) owns the
+checkout identity (`project_id` + canonical path as `checkout_key`), the
+registered-project list with its loading/error flags, the per-project
+`sidebar_worktrees` entries behind the sidebar rows, the picker's `worktrees`
+list, per-section cached state, the open document and draft, the navigation
+guard, pending external opens, request generations, the `Lsp` runtime handle,
+and modifiers.
 
 Every blocking operation — project/worktree lists, settings, file reads and
 saves, Git reads and writes, content search, ACP agent discovery — is a `Req`
@@ -459,7 +493,16 @@ saves go through `enqueue_save` with the expected-original contract.
 `navigation.rs` funnels section, checkout, project, view, document, window,
 and quit changes through `navigate`, raising the Save/Discard/Cancel guard
 for dirty drafts; `quit_guard.rs` adds the macOS `applicationShouldTerminate:`
-swizzle so OS-level quits are vetoed while a draft is dirty.
+swizzle so OS-level quits are vetoed while a draft is dirty. `select_checkout`
+commits post-guard only: it records the checkout as the chrome's
+`active_workspace` highlight key (`data::checkout_key`, NUL-joined), reloads
+worktrees through the shared `request_worktrees` lane when the project
+changed, resets every per-checkout cache, and refreshes the active section;
+`clear_checkout` clears `active_workspace` so nothing stale stays
+highlighted. `SetView(Editor)` apply then calls `activate_sidebar_checkout`,
+which decodes `active_workspace` back into project+checkout and navigates
+`SelectCheckout` when it names a still-registered project and differs from
+the live `checkout_key` — the sidebar→editor sync.
 
 ACP generation lives on its own Tokio runtime thread (`acp.rs`): UI commands
 (connect, generate with a draft snapshot, cancel, refresh, shutdown) cross an
@@ -483,15 +526,23 @@ will need.
 
 ## State changes
 
-In-memory: `EditorState` holds project/checkout selection, per-section state
-(changes data and selection, files tree/model/search, history commits/branches/
-layout/selection, stashes list/detail, LSP server entries/statuses/document
-mirrors/hover state), the open document and its dirty flag, the navigation
-guard and pending navigation, pending external opens, request generations,
-and ACP runtime handles. Each section's state survives switches because it
-lives in `EditorState`, even though `section_body` renders only the active
-section; `visited` records which sections have been activated. Nothing in
-the editor's section state persists across launches.
+In-memory: `EditorState` holds the registered-project list
+(`projects`/`projects_loading`/`projects_error`), per-project
+`sidebar_worktrees` entries, the picker's `worktrees` list, project/checkout
+selection (`project_id`, `checkout`, `checkout_key`, `pending_checkout`),
+per-section state (changes data and selection, files tree/model/search,
+history commits/branches/layout/selection, stashes list/detail, LSP server
+entries/statuses/document mirrors/hover state), the open document and its
+dirty flag, the navigation guard and pending navigation, pending external
+opens, request generations, and ACP runtime handles. A committed
+`SelectCheckout` also mirrors into the chrome's `State::active_workspace` —
+the sidebar highlight key — inside `select_checkout` post-guard, and
+`clear_checkout` clears it; session and tab presses can overwrite it with
+`__unassigned__` without touching the editor's own selection. Each section's
+state survives switches because it lives in `EditorState`, even though
+`section_body` renders only the active section; `visited` records which
+sections have been activated. Nothing in the editor's section state persists
+across launches.
 
 Persisted through the shared `goko.db` settings table (same store the desktop
 uses): the history pane layout under `goko.history.layout`, the commit agent
@@ -509,6 +560,13 @@ session state — the daemon is not involved in the editor at all.
 
 ## Side effects
 
+- Project metadata runs on the same worker lane as project-scoped jobs:
+  `Req::Projects` lists the `goko.db` projects table, `Req::AddProject`
+  canonicalizes and registers a picked folder (a mutating job that finishes
+  during the shutdown drain), and `Req::Worktrees` resolves the stored
+  project root worker-side, then `worktrees::list` reports the repository's
+  worktrees with per-checkout dirty/changed status; replies feed both the
+  checkout picker and the per-project sidebar entries.
 - File reads cap at 1 MiB + 1 byte and classify binary (NUL), non-UTF-8,
   missing, unreadable, and truncated files; saves enforce the same cap plus
   expected-original equality, canonical containment, regular-file and
@@ -532,7 +590,11 @@ session state — the daemon is not involved in the editor at all.
 
 - Every checkout job revalidates `project_id` + canonical checkout through
   `app-core`: the checkout must be the project root or a listed worktree, and
-  Git operations additionally require a real non-bare worktree.
+  Git operations additionally require a real non-bare worktree — identical
+  whether the selection came from the pickers or the sidebar. Project-scoped
+  jobs (`Projects`, `AddProject`, `Worktrees`) carry no checkout identity;
+  `Worktrees` resolves the registered root from the store on the worker and
+  fails for vanished projects or missing roots.
 - File and patch paths must be relative, resolve inside the checkout after
   symlink resolution, and never touch `.git`.
 - Reads are generation-gated per request kind; writes are never
@@ -555,7 +617,14 @@ session state — the daemon is not involved in the editor at all.
 
 Stale replies (wrong `checkout_key` or superseded generation) drop silently;
 queue-full enqueues surface "Backend queue is full — try again" plus a notice
-and never leave busy flags set. Save conflicts (expected-original mismatch,
+and never leave busy flags set. Project reads fail honestly too: a refused
+`Projects`/`Worktrees` enqueue sets `projects_error`/`worktrees_error` or the
+per-project sidebar entry error, the Projects reply's ensure pass re-requests
+worktrees for every project missing a list or holding an error and drops
+entries for vanished projects, a fresh worktree list that no longer contains
+the selected checkout triggers `refresh_active` so section reads fail
+honestly, and `AddProject` failures surface as a notice while success
+re-lists projects. Save conflicts (expected-original mismatch,
 read-only, oversized, non-UTF-8) show the backend error and preserve the
 buffer. A failed save keeps the guard's pending navigation cancelled — the
 draft and editor stay. Discard's confirmation survives a refused enqueue so
@@ -586,9 +655,16 @@ documented in `quit_guard.rs` rather than silently claimed.
   selection, stashes, ACP command routing and draft-snapshot application, and
   the LSP layer's UTF-16 position conversion, incremental document sync,
   hover/definition debounce and timeout handling, settings merge/validation,
-  and server-row state; `src/main.rs` `view_tests` scenes cover editor
-  workspace composition, the draft-guard modal, picker layout, and
-  session-controls absence in the Editor view.
+  and server-row state, project/sidebar worktree reply routing (per-project
+  keys, the Projects ensure pass, vanished-project cleanup), committed-
+  workspace activation and bogus-workspace rejection, and sidebar-driven
+  selection guards; `src/main.rs` `view_tests` scenes cover editor
+  workspace composition, the draft-guard modal, picker layout,
+  session-controls absence in the Editor view, and the sidebar→editor
+  scenes — real-project listing with mock sessions under Unassigned, root
+  and worktree row selection committing identity, dirty-guard
+  Discard/Cancel, status rows, and real-backend fixtures driving
+  cross-project selection including in-flight replies.
 - `crates/app-core` carries its own inline tests plus the shared
   `tests/fixtures/fake_acp_agent.py` driving ACP connect/generate/cancel/
   permission-denial coverage — the same fixture the desktop page cites — and
@@ -616,6 +692,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/chrome.rs`
 - `apps/rune/src/data.rs`
 - `apps/rune/src/term.rs`
+- `apps/rune/src/sidebar.rs`
 - `apps/rune/src/editor/mod.rs`
 - `apps/rune/src/editor/state.rs`
 - `apps/rune/src/editor/backend.rs`
@@ -647,6 +724,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/editor/lsp/pos.rs`
 - `apps/rune/src/editor/lsp/sync.rs`
 - `crates/app-core/src/projects.rs`
+- `crates/app-core/src/worktrees.rs`
 - `crates/app-core/src/git_view.rs`
 - `crates/app-core/src/git_write.rs`
 - `crates/app-core/src/acp.rs`

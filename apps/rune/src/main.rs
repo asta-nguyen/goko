@@ -69,10 +69,6 @@ impl State {
         let ink = Ink::new();
         let data = data::mock_data();
         let lines = term::real_term_lines(&ink);
-        // The second project starts collapsed so its Count badge + right
-        // chevron render; "goko" is expanded and owns the active workspace.
-        let mut expanded = HashMap::new();
-        expanded.insert("proj-notes".to_string(), false);
         let open_tabs = data.tabs.clone();
         let active_tab = data.active_tab;
         let kit = rune_kit::Kit::neutral(true);
@@ -83,9 +79,13 @@ impl State {
             ink,
             data,
             lines,
-            expanded,
+            expanded: HashMap::new(),
             selected_session: Some("sess-devin-spike".to_string()),
-            active_workspace: Some(data::checkout_key("proj-goko", data::GOKO_ROOT)),
+            // No workspace is committed until the user picks a real
+            // registered project/checkout in the sidebar (or the editor
+            // pickers) — the mock data layer must never seed editor
+            // identity.
+            active_workspace: None,
             open_tabs,
             active_tab,
             worktree_groups: HashMap::new(),
@@ -339,7 +339,7 @@ fn main() {
 mod view_tests {
     use super::*;
     use crate::editor::draft::OpenDoc;
-    use crate::editor::navigation::{Guard, PendingNav};
+    use crate::editor::navigation::{Guard, GuardAction, PendingNav};
     use crate::editor::state::Section;
     use app_core::git_view::{GitViewFile, GitViewSearch, GitViewSearchMatch};
     use app_core::projects::ProjectView;
@@ -772,5 +772,615 @@ mod view_tests {
             );
         }
         assert_no_horizontal_overflow(&rt, 760.0);
+    }
+
+    // -- sidebar → editor identity -------------------------------------------
+
+    /// Two registered projects as the backend's Projects reply leaves them,
+    /// each with its own loaded worktree list — p1 has two linked
+    /// worktrees, p2 has one. Terminal view, nothing committed yet.
+    fn sidebar_scene() -> State {
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![
+            project("p1", "web", "/work/a/web"),
+            project("p2", "api", "/work/b/api"),
+        ];
+        let lists = [
+            (
+                "p1",
+                vec![
+                    wt("web", "/work/a/web", true),
+                    wt("feat-a", "/work/a/feat-a", false),
+                    wt("feat-b", "/work/a/feat-b", false),
+                ],
+            ),
+            (
+                "p2",
+                vec![
+                    wt("api", "/work/b/api", true),
+                    wt("fix", "/work/b/fix", false),
+                ],
+            ),
+        ];
+        for (pid, worktrees) in lists {
+            s.editor.sidebar_worktrees.insert(
+                pid.to_string(),
+                crate::editor::state::SidebarWorktrees {
+                    list: Some(WorktreeList {
+                        repo: true,
+                        worktrees,
+                    }),
+                    loading: false,
+                    error: None,
+                },
+            );
+        }
+        s
+    }
+
+    /// Editor already committed to p1's root checkout — the "already in
+    /// Editor" starting point for in-editor sidebar switches.
+    fn sidebar_editor_scene() -> State {
+        let mut s = sidebar_scene();
+        s.view = View::Editor;
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(crate::editor::state::checkout_key(
+            "p1",
+            &PathBuf::from("/work/a/web"),
+        ));
+        s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+        s
+    }
+
+    fn click_key(rt: &mut Runtime<State>, key: &str) {
+        let e = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("element {key} mounted"));
+        let (x, y) = (e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn sidebar_lists_real_projects_and_mock_sessions_stay_unassigned() {
+        let s = sidebar_scene();
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let e = els(&rt);
+        for key in [
+            "sidebar-project:p1",
+            "sidebar-project:p2",
+            "sidebar-worktree:p1:0",
+            "sidebar-worktree:p1:1",
+            "sidebar-worktree:p2:0",
+            "sidebar-unassigned",
+        ] {
+            assert!(
+                e.iter().any(|el| el.key.as_deref() == Some(key)),
+                "missing {key}"
+            );
+        }
+        // Mock project ids never become sidebar rows — they are not
+        // registered projects, so nothing may select them as identity.
+        for mock in ["proj-goko", "proj-notes"] {
+            assert!(
+                !e.iter()
+                    .any(|el| el.key.as_deref() == Some(&format!("sidebar-project:{mock}"))),
+                "mock project {mock} leaked into the sidebar"
+            );
+        }
+        // Mock session rows render under Unassigned, never nested under a
+        // real project — the honest terminal/session boundary.
+        let texts: Vec<&str> = e
+            .iter()
+            .filter_map(|el| el.text.as_deref().or(el.label.as_deref()))
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("fix-auth-flow")));
+        assert!(texts.contains(&"Unassigned"));
+    }
+
+    #[test]
+    fn sidebar_project_row_activates_real_checkout_then_editor_opens_it() {
+        let s = sidebar_scene();
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        // The original bug: pick a real project in the sidebar, then open
+        // the Editor — the SAME project+checkout must activate.
+        click_key(&mut rt, "sidebar-project:p1");
+        assert_eq!(rt.state.view, View::Terminal, "selection alone stays put");
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from("/work/a/web")),
+            "root row selects the registered project root"
+        );
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str())
+        );
+        click_key(&mut rt, "view:Editor");
+        assert_eq!(rt.state.view, View::Editor);
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from("/work/a/web")),
+            "Editor activated the sidebar's committed checkout"
+        );
+    }
+
+    #[test]
+    fn sidebar_worktree_row_selects_exact_checkout_while_in_editor() {
+        let mut rt = Runtime::new(
+            sidebar_editor_scene(),
+            view,
+            (1100.0, 700.0),
+            Env::new(true, 2.0),
+        );
+        rt.frame(0.0);
+        // Already in Editor on p1's root: a worktree row press must move
+        // project+checkout identity to that exact registered path.
+        click_key(&mut rt, "sidebar-worktree:p1:1"); // feat-b
+        assert_eq!(rt.state.view, View::Editor);
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from("/work/a/feat-b"))
+        );
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/feat-b").as_str())
+        );
+        // A different project's worktree row switches project AND checkout.
+        click_key(&mut rt, "sidebar-worktree:p2:0"); // fix
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from("/work/b/fix")));
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p2", "/work/b/fix").as_str())
+        );
+    }
+
+    #[test]
+    fn sidebar_select_with_dirty_doc_guard_discard_commits() {
+        let mut s = sidebar_editor_scene();
+        s.editor.doc = Some(dirty_doc());
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-project:p2");
+        // The guard held: NOTHING moved — project, checkout, workspace
+        // highlight and the dirty draft all still belong to p1.
+        assert!(rt.state.editor.guard.is_some());
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str())
+        );
+        assert!(rt.state.editor.doc.as_ref().unwrap().dirty());
+        // Resolve the guard the way the dialog's Discard button does —
+        // Runtime's headless hit-test does not deliver presses inside
+        // modal layers, so the state-level path is the honest check.
+        rt.update(|s, tx| {
+            crate::editor::navigation::resolve_guard(s, GuardAction::Discard, tx);
+        });
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from("/work/b/api")),
+            "Discard applied the pending sidebar selection"
+        );
+        assert!(rt.state.editor.doc.is_none());
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p2", "/work/b/api").as_str())
+        );
+    }
+
+    #[test]
+    fn sidebar_select_with_dirty_doc_guard_cancel_restores_everything() {
+        let mut s = sidebar_editor_scene();
+        s.editor.doc = Some(dirty_doc());
+        let before_text = s.editor.doc.as_ref().unwrap().code.edit.text.clone();
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-worktree:p2:0"); // fix
+        assert!(rt.state.editor.guard.is_some());
+        rt.update(|s, tx| {
+            crate::editor::navigation::resolve_guard(s, GuardAction::Cancel, tx);
+        });
+        assert!(rt.state.editor.guard.is_none(), "Cancel resolved the guard");
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from("/work/a/web")));
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str()),
+            "Cancel restored the previous visible workspace identity"
+        );
+        let doc = rt.state.editor.doc.as_ref().expect("draft retained");
+        assert!(doc.dirty());
+        assert_eq!(doc.code.edit.text, before_text, "buffer untouched");
+    }
+
+    #[test]
+    fn sidebar_status_rows_cover_loading_error_and_empty() {
+        // Fresh State::new: no projects yet, no load in flight — the honest
+        // empty state, never a fabricated row.
+        let s = State::new(test_handle());
+        assert!(s.active_workspace.is_none());
+        assert!(s.editor.project_id.is_none());
+        assert!(s.editor.checkout.is_none());
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let texts: Vec<String> = els(&rt)
+            .iter()
+            .filter_map(|e| e.text.clone().or_else(|| e.label.clone()))
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("No projects registered")),
+            "empty state missing: {texts:?}"
+        );
+
+        // Initial async load in flight → loading row. Mutations go through
+        // `update` so the next frame knows the view reads changed state.
+        rt.update(|s, _| s.editor.projects_loading = true);
+        rt.frame(0.0);
+        let texts: Vec<String> = els(&rt)
+            .iter()
+            .filter_map(|e| e.text.clone().or_else(|| e.label.clone()))
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("Loading projects")));
+
+        // Registry error with no projects → the error itself, in danger tone.
+        rt.update(|s, _| {
+            s.editor.projects_loading = false;
+            s.editor.projects_error = Some("goko.db is locked".into());
+        });
+        rt.frame(0.0);
+        let texts: Vec<String> = els(&rt).iter().filter_map(|e| e.text.clone()).collect();
+        assert!(texts.iter().any(|t| t.contains("goko.db is locked")));
+
+        // A per-project worktree failure renders under ITS row only.
+        rt.update(|s, _| *s = sidebar_scene());
+        rt.update(|s, _| {
+            let entry = s
+                .editor
+                .sidebar_worktrees
+                .get_mut("p2")
+                .expect("p2 worktrees seeded");
+            entry.error = Some("not a git repository".into());
+            entry.list = None;
+        });
+        rt.frame(0.0);
+        let texts: Vec<String> = els(&rt).iter().filter_map(|e| e.text.clone()).collect();
+        assert!(texts.iter().any(|t| t.contains("not a git repository")));
+        // p1's rows are untouched.
+        assert!(
+            els(&rt)
+                .iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-worktree:p1:0"))
+        );
+    }
+
+    /// The real end-to-end fixture: two registered projects in a temp
+    /// `Store`, real `git worktree` checkouts, real `worktrees::list`
+    /// payloads — driven through the same sidebar → navigation → editor
+    /// identity path production uses.
+    #[test]
+    fn sidebar_drives_editor_with_real_registered_projects_and_worktrees() {
+        use std::process::Command;
+
+        fn git_ok(root: &std::path::Path, args: &[&str]) {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git run");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        fn repo(base: &std::path::Path, name: &str) -> std::path::PathBuf {
+            let root = base.join(name);
+            std::fs::create_dir_all(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            git_ok(&root, &["init", "-b", "main"]);
+            git_ok(&root, &["config", "user.name", "Tester"]);
+            git_ok(&root, &["config", "user.email", "tester@example.com"]);
+            std::fs::write(root.join("file.txt"), "x\n").unwrap();
+            git_ok(&root, &["add", "-A"]);
+            git_ok(&root, &["commit", "-qm", "init"]);
+            root
+        }
+
+        let home = app_core::test_support::TempDir::new("rune-sidebar");
+        let base = home.path().canonicalize().unwrap();
+        let root_a = repo(&base, "proj-web");
+        let root_b = repo(&base, "proj-api");
+        // Two linked worktrees on proj-web, one on proj-api.
+        git_ok(&root_a, &["worktree", "add", "../wt-a", "-b", "feat-a"]);
+        git_ok(&root_a, &["worktree", "add", "../wt-b", "-b", "feat-b"]);
+        git_ok(&root_b, &["worktree", "add", "../wt-c", "-b", "fix-c"]);
+
+        // Register through the real store — the same rows Req::Projects
+        // and Req::Worktrees return in production.
+        let store = app_core::store::Store::open(home.path()).unwrap();
+        let pv_a = app_core::projects::add_project(&store, root_a.to_str().unwrap()).unwrap();
+        let pv_b = app_core::projects::add_project(&store, root_b.to_str().unwrap()).unwrap();
+        let list_a = app_core::worktrees::list(&root_a).unwrap();
+        let list_b = app_core::worktrees::list(&root_b).unwrap();
+        assert_eq!(list_a.worktrees.len(), 3, "root + two linked on web");
+        assert_eq!(list_b.worktrees.len(), 2, "root + one linked on api");
+
+        let id_a = pv_a.project.id.clone();
+        let id_b = pv_b.project.id.clone();
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![pv_a, pv_b];
+        for (pid, list) in [(&id_a, list_a), (&id_b, list_b)] {
+            s.editor.sidebar_worktrees.insert(
+                pid.clone(),
+                crate::editor::state::SidebarWorktrees {
+                    list: Some(list),
+                    loading: false,
+                    error: None,
+                },
+            );
+        }
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        // Real project names render as rows keyed by their real ids.
+        let e = els(&rt);
+        assert!(
+            e.iter()
+                .any(|el| el.key.as_deref() == Some(&format!("sidebar-project:{id_a}")))
+        );
+        assert!(
+            e.iter()
+                .any(|el| el.key.as_deref() == Some(&format!("sidebar-project:{id_b}")))
+        );
+
+        // Root row → the registered canonical root, exactly.
+        click_key(&mut rt, &format!("sidebar-project:{id_a}"));
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some(id_a.as_str()));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from(&root_a)),
+            "root row committed the canonical registered root"
+        );
+
+        // Worktree row → the exact path `git worktree list` reported.
+        let wt_path = rt.state.editor.sidebar_worktrees[&id_a]
+            .list
+            .as_ref()
+            .unwrap()
+            .worktrees
+            .iter()
+            .find(|w| !w.is_root)
+            .unwrap()
+            .path
+            .clone();
+        click_key(&mut rt, &format!("sidebar-worktree:{id_a}:0"));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from(&wt_path)),
+            "worktree row committed the exact listed checkout"
+        );
+
+        // Editor toggle keeps the committed identity; switching projects
+        // through the sidebar while in Editor moves it wholesale.
+        click_key(&mut rt, "view:Editor");
+        assert_eq!(rt.state.view, View::Editor);
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from(&wt_path)));
+        click_key(&mut rt, &format!("sidebar-project:{id_b}"));
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some(id_b.as_str()));
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from(&root_b)));
+        click_key(&mut rt, "view:Terminal");
+        assert_eq!(rt.state.view, View::Terminal);
+        click_key(&mut rt, "view:Editor");
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some(id_b.as_str()));
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from(&root_b)));
+    }
+
+    /// Drain the channel-backed backend exactly like the worker thread:
+    /// every accepted job runs through the real `run_job` against the real
+    /// temp `Storage`, and its reply applies in FIFO order — including any
+    /// jobs a reply itself enqueues (the Projects ensure pass, worktree
+    /// re-reads, section refreshes).
+    fn drain_backend(
+        s: &mut State,
+        rx: &std::sync::mpsc::Receiver<crate::editor::backend::Job>,
+        storage: &Option<app_core::store::Storage>,
+    ) {
+        while let Ok(job) = rx.try_recv() {
+            let reply = crate::editor::backend::run_job(storage, &job);
+            s.editor.apply_reply(reply);
+            if s.editor.section == Section::Changes {
+                crate::editor::changes::ensure_selection(s);
+            }
+        }
+    }
+
+    /// Regression for the native QA hang: two registered projects sharing
+    /// the display name "repo" whose stored roots are NON-canonical
+    /// (`/var/folders/…`) while `git worktree list` reports canonical
+    /// (`/private/var/folders/…`) paths — the exact DB-vs-Git divergence the
+    /// QA fixture had. Selecting project B's root and then project A's
+    /// worktree must commit the exact checkout and let Changes settle,
+    /// driven through the real `run_job`/`apply_reply` stream rather than
+    /// synthetic replies.
+    #[test]
+    fn cross_project_worktree_selection_settles_with_real_backend_replies() {
+        use std::process::Command;
+
+        fn git_ok(root: &std::path::Path, args: &[&str]) {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git run");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        fn repo(base: &std::path::Path, rel: &str) -> PathBuf {
+            let root = base.join(rel);
+            std::fs::create_dir_all(&root).unwrap();
+            git_ok(&root, &["init", "-b", "main"]);
+            git_ok(&root, &["config", "user.name", "Tester"]);
+            git_ok(&root, &["config", "user.email", "tester@example.com"]);
+            std::fs::write(root.join("file.txt"), "x\n").unwrap();
+            git_ok(&root, &["add", "-A"]);
+            git_ok(&root, &["commit", "-qm", "init"]);
+            root // deliberately NOT canonicalized: the QA DB kept /var/…
+        }
+
+        let home = app_core::test_support::TempDir::new("rune-qa-repro");
+        let base = home.path().join("repos");
+        std::fs::create_dir_all(&base).unwrap();
+        let root_a = repo(&base, "repo");
+        let root_b = repo(&base, "other/repo");
+        git_ok(
+            &root_a,
+            &[
+                "worktree",
+                "add",
+                &base.join("wt-a").display().to_string(),
+                "-b",
+                "wt-a",
+            ],
+        );
+        git_ok(
+            &root_a,
+            &[
+                "worktree",
+                "add",
+                &base.join("nested/wt-a2").display().to_string(),
+                "-b",
+                "wt-a2",
+            ],
+        );
+        git_ok(
+            &root_b,
+            &[
+                "worktree",
+                "add",
+                &base.join("other/wt-b").display().to_string(),
+                "-b",
+                "wt-b",
+            ],
+        );
+
+        // Register VERBATIM non-canonical roots under the same display
+        // name — `Store::add_project` stores the string it is given, which
+        // is how the QA database ended up with /var/… roots.
+        let storage = app_core::store::Storage::open(home.path());
+        let store = storage.get().unwrap();
+        let pa = store.add_project("repo", root_a.to_str().unwrap()).unwrap();
+        let pb = store.add_project("repo", root_b.to_str().unwrap()).unwrap();
+        assert_ne!(pa.id, pb.id);
+        let storage = Some(storage);
+
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        let mut s = State::new(test_handle());
+        s.editor.backend = backend;
+        s.view = View::Editor;
+
+        // Startup project load + the per-project worktree ensure pass.
+        s.editor.refresh_projects();
+        drain_backend(&mut s, &rx, &storage);
+        assert_eq!(s.editor.projects.len(), 2);
+        assert!(
+            s.editor
+                .sidebar_worktrees
+                .get(&pa.id)
+                .and_then(|e| e.list.as_ref())
+                .is_some_and(|l| l.worktrees.iter().any(|w| !w.is_root))
+        );
+
+        // The worktree row's checkout is the path `git worktree list`
+        // reported, verbatim — exactly what sidebar.rs sends.
+        let wt_path = s.editor.sidebar_worktrees[&pa.id]
+            .list
+            .as_ref()
+            .unwrap()
+            .worktrees
+            .iter()
+            .find(|w| !w.is_root && w.path.ends_with("wt-a"))
+            .expect("linked worktree listed")
+            .path
+            .clone();
+
+        // QA step A: sidebar project-B root row while in Terminal→Editor.
+        crate::editor::navigation::navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: pb.id.clone(),
+                checkout: PathBuf::from(&pb.root),
+            },
+            &mut rune::Tx::default(),
+        );
+        drain_backend(&mut s, &rx, &storage);
+        assert_eq!(s.editor.project_id.as_deref(), Some(pb.id.as_str()));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new(&pb.root)),
+        );
+        assert!(
+            s.editor.changes.data.is_some(),
+            "root checkout changes loaded"
+        );
+        assert!(!s.editor.changes.loading);
+
+        // QA step B: while in Editor, the sidebar worktree row of project A.
+        crate::editor::navigation::navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: pa.id.clone(),
+                checkout: PathBuf::from(&wt_path),
+            },
+            &mut rune::Tx::default(),
+        );
+        drain_backend(&mut s, &rx, &storage);
+
+        // The committed identity is the exact listed checkout…
+        assert_eq!(s.editor.project_id.as_deref(), Some(pa.id.as_str()));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new(&wt_path)),
+            "worktree selection committed the exact listed path"
+        );
+        // …the picker has real options for it (not stuck on the placeholder)…
+        assert!(
+            !s.editor.worktrees.worktrees.is_empty(),
+            "checkout picker populated for the selected project"
+        );
+        assert!(!s.editor.worktrees_loading);
+        assert!(s.editor.worktrees_error.is_none());
+        // …and Changes settled on the new checkout instead of spinning.
+        assert!(
+            s.editor.changes.data.is_some(),
+            "changes loaded for the worktree checkout"
+        );
+        assert!(!s.editor.changes.loading, "changes loading settled");
+        assert_eq!(
+            s.editor.changes.checkout.as_deref(),
+            s.editor.checkout_key.as_deref(),
+            "changes data belongs to the committed checkout key"
+        );
+        // The sidebar highlight tracks the same committed identity.
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key(&pa.id, &wt_path).as_str())
+        );
     }
 }

@@ -1,15 +1,19 @@
 # Rune chrome
 
 The `goko-rune` app (`apps/rune`, Rune/wgpu/winit) renders the Goko shell chrome —
-the 48 px header, the workspace tab strip, and the session controls strip — from
-mock data shaped like the protocol/Tauri types. Daemon and live-terminal wiring
-land in a later milestone, so sessions never really run: the chrome's buttons
-mutate the in-memory mock `Data`/`State` instead (spawn shell sessions, stop or
-close them, switch workspace views). The project sidebar and terminal stub are
-separate regions outside this page's scope. The Editor view is no longer a
-placeholder: it mounts the native editor workspace documented in
-[Rune editor](rune-editor.md), which performs real project, Git, file, and ACP
-work through `app-core`.
+the 48 px header, the project sidebar, the workspace tab strip, and the session
+controls strip. Sessions and tabs stay mock data shaped like the protocol/Tauri
+types: daemon and live-terminal wiring land in a later milestone, so sessions
+never really run and the chrome's session buttons mutate the in-memory mock
+`Data`/`State` (spawn shell sessions, stop or close them, switch workspace
+views). The project sidebar is the real exception: it lists registered projects
+and their Git worktrees from the editor backend, and its selection commits to
+the Editor workspace through the draft guard — see
+[RNC-sidebar-projects](#rnc-sidebar-projects) and
+[RNC-sidebar-selection](#rnc-sidebar-selection). The terminal stub is a
+separate region outside this page's scope. The Editor view mounts the native
+editor workspace documented in [Rune editor](rune-editor.md), which performs
+real project, Git, file, and ACP work through `app-core`.
 
 ## Requirements
 
@@ -100,10 +104,13 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`
 The system SHALL toggle `State::view` between `Settings` and `Terminal` when
 the header settings button is pressed; `Settings` replaces the whole workspace
 column (tab strip, controls, content) with a placeholder, matching App.tsx's
-settingsMode. The button is a keyboard-focusable toggle named "Settings" with a
-tooltip, pressed (`checked`) while `view` is `Settings`; it shows that state as an
-accent tint with the gear turned one 60° notch (a spring, instant under Reduce
-Motion), and gives hover wash, press wash and a 0.95 press scale as feedback.
+settingsMode. The press routes through the editor's draft guard like the view
+switch, so leaving the Editor with unsaved work raises Save/Discard/Cancel
+before the view changes. The button is a keyboard-focusable toggle named
+"Settings" with a tooltip, pressed (`checked`) while `view` is `Settings`; it
+shows that state as an accent tint with the gear turned one 60° notch (a
+spring, instant under Reduce Motion), and gives hover wash, press wash and a
+0.95 press scale as feedback.
 
 #### Scenario: open settings
 
@@ -117,29 +124,115 @@ Motion), and gives hover wash, press wash and a 0.95 press scale as feedback.
 - WHEN the settings button is pressed again
 - THEN `view` returns to `Terminal`
 
-Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`
+#### Scenario: guarded press from a dirty editor
+
+- GIVEN `view` is `Editor` and the open file has unsaved changes
+- WHEN the settings button is pressed and the user chooses Cancel
+- THEN `view` stays `Editor` with the draft intact
+
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/navigation.rs`
+
+### RNC-sidebar-projects
+
+The system SHALL render the project sidebar from the editor backend's
+registered projects and their per-project worktree lists — never the mock
+`Data::projects` — with one expandable row per project (chevron, folder icon,
+name, missing badge, checkout status, branch label), a collapsible "Worktrees"
+group of linked checkouts on git repositories, session rows nested under the
+checkout their cwd resolves to, an "Other sessions" group for git-project
+sessions matching no checkout, an "Unassigned" group, honest loading, error,
+or empty status rows instead of fabricated projects, and an "Add Project"
+button that registers a natively picked folder through the editor backend's
+`Req::AddProject`.
+
+#### Scenario: real projects, worktrees, and unassigned sessions
+
+- GIVEN the Projects reply lists registered projects and per-project worktree
+  lists have landed
+- WHEN the sidebar renders
+- THEN each project shows its root row and, for git repos, a Worktrees group
+  of linked checkouts; a failed worktree read renders under its own project
+  row only; and every mock session renders under Unassigned because mock
+  project ids are never registered
+
+#### Scenario: honest status rows
+
+- GIVEN no projects are loaded yet, the Projects read failed, or the registry
+  is empty
+- WHEN the sidebar renders
+- THEN it shows "Loading projects…", the error text, or the empty-registry
+  hint — never a fabricated project row
+
+#### Scenario: add a project
+
+- GIVEN the sidebar header
+- WHEN "Add Project" is pressed and a folder is chosen in the native dialog
+- THEN `Req::AddProject` registers it through the editor backend and the
+  refreshed project list renders the new row
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/projects.rs`, `crates/app-core/src/worktrees.rs`
+
+### RNC-sidebar-selection
+
+The system SHALL keep sidebar project/worktree row presses and the editor's
+checkout selection in sync — committing a registered project root or listed
+worktree as the editor's project+checkout through
+`PendingNav::SelectCheckout` and the shared draft guard so unsaved work
+prompts Save/Discard/Cancel first, and recording the committed checkout as
+`active_workspace`, the sidebar row highlight, only after the guard passes,
+so a cancelled or failed navigation restores the previous project, checkout,
+highlight, and draft.
+
+#### Scenario: worktree row selects the exact checkout
+
+- GIVEN the editor is committed to one project's root checkout
+- WHEN a worktree row — of the same or another project — is pressed
+- THEN `SelectCheckout` commits that exact registered path and
+  `active_workspace` highlights the matching row
+
+#### Scenario: root row commits, Editor activates on open
+
+- GIVEN `view` is `Terminal`
+- WHEN a project root row is pressed
+- THEN the selection alone stays in Terminal with the root checkout committed;
+  opening the Editor view then activates that same project+checkout
+
+#### Scenario: dirty draft guards sidebar selection
+
+- GIVEN the open file has unsaved changes
+- WHEN a project or worktree row is pressed and the user chooses Cancel
+- THEN project, checkout, workspace highlight, and draft are all unchanged;
+  Discard or a landed Save commits the pending selection instead
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/data.rs`, `apps/rune/src/main.rs`
 
 ### RNC-tab-activate
 
 The system SHALL activate a workspace tab when its pill is pressed, setting
 `active_tab` to that index and selecting the session whose title matches, which
-also sets `active_workspace` to that session's checkout. A hovered inactive tab
-washes lighter and lifts its title, and stays visibly distinct from the active
-tab; tabs are keyed by title so neighbours slide into place when one closes.
+also sets `active_workspace` to that session's resolved workspace —
+`data::workspace_for_session` returns `__unassigned__` for every current mock
+session because their project ids are never registered projects, so session
+selection highlights Unassigned and never fabricates an editor checkout. A
+hovered inactive tab washes lighter and lifts its title, and stays visibly
+distinct from the active tab; tabs are keyed by title so neighbours slide into
+place when one closes.
 
 #### Scenario: press a tab
 
 - GIVEN `open_tabs` holds several titles and `active_tab` points elsewhere
 - WHEN the user presses a tab pill
-- THEN `active_tab` becomes that index and `selected_session`/`active_workspace` follow the matching `SessionView`
+- THEN `active_tab` becomes that index and `selected_session`/`active_workspace`
+  follow the matching `SessionView` through `workspace_for_session`
 
-Evidence: `apps/rune/src/chrome.rs`
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`
 
 ### RNC-tab-close
 
 The system SHALL remove a workspace tab when its close control is pressed,
 re-indexing `active_tab` and reselecting the session of the tab that becomes
-active, or clearing the selection when no tabs remain.
+active — clearing `selected_session`/`active_workspace` when no session
+resolves.
 
 #### Scenario: close the active tab
 
@@ -185,22 +278,39 @@ App.tsx where session controls live inside the terminal workspace; the editor
 has no session pane. Each chrome function reads `State` (mock `Data`, tab
 list, selection, view) and `Ink` (palette) and returns an `El` element tree;
 shared builders (`txt`, `ic`, `btn_sm`, `btn_icon`, `usage_chip`) live in
-`theme.rs`.
+`theme.rs`. `setup` kicks `editor.refresh_projects()` once so the sidebar's
+real data loads with the app.
+
+The sidebar (`sidebar::sidebar`) reads the editor's project state —
+`editor.projects`, `editor.sidebar_worktrees`, and its own disclosure maps —
+never mock `Data::projects`. Its project-root and worktree row presses call
+`editor::navigation::navigate` with `PendingNav::SelectCheckout`, sharing the
+draft guard and commit path with the editor's pickers; session-row and tab
+presses still mutate only mock `Data`/`State`.
 
 ## State changes
 
 In-memory only for the chrome itself: `open_tabs`, `active_tab`,
-`selected_session`, `active_workspace`, and `view` mutate on tab press/close,
-New tab, Stop, Close pane, the view switch, and the settings button. The
-chrome performs no persistence and opens no daemon, socket, or database
-connection of its own; the editor workspace it can reveal keeps its own state
-and persistence, documented in [Rune editor](rune-editor.md#state-changes).
+`selected_session`, `active_workspace`, `view`, and the sidebar disclosure
+maps (`expanded`, `worktree_groups`, `worktrees_open`) mutate on tab
+press/close, New tab, Stop, Close pane, session-row presses, sidebar chevron
+and project/worktree presses, the view switch, and the settings button.
+`active_workspace` — the sidebar highlight — commits only inside the editor's
+post-guard `select_checkout` on a sidebar selection, and clears when the
+editor drops its checkout; session and tab presses resolve it through
+`workspace_for_session` to `__unassigned__` for every current mock session.
+The chrome opens no daemon, socket, or database connection of its own; its
+sidebar actions only enqueue jobs on the editor backend, which owns all
+persistence and is documented in
+[Rune editor](rune-editor.md#state-changes).
 
 ## Side effects
 
-None from the chrome — it renders mock data and performs no I/O beyond the
-window. The native editor workspace mounted by the Editor view does perform
-validated file, Git, storage, and ACP work through `app-core`; see
+None from the chrome's session/tab controls — they render mock data and
+perform no I/O beyond the window. The sidebar is no longer inert, though: its
+"Add Project" button sends `Req::AddProject` (a storage write) and its
+project/worktree presses commit a checkout selection whose section reads run
+Git and file jobs — all on the editor backend's worker, documented in
 [Rune editor](rune-editor.md#side-effects).
 
 ## Authorization & constraints
@@ -218,17 +328,26 @@ whole strip is absent in the Editor view). Closing the last tab clears
 title matches no session. Stop no-ops on non-live states, and the split
 buttons remain inert — real pane splits need a layout the milestone doesn't
 have — so they render dimmed and disabled, with no hover, a tooltip, and no Tab
-stop. Disconnection only dims Stop and shows the header pill. Editor-side
-navigation failures (dirty-draft guard, stale replies, backend errors) are
-documented in [Rune editor](rune-editor.md#error-paths).
+stop. Disconnection only dims Stop and shows the header pill. The sidebar
+shows honest status rows — "Loading projects…", the `projects_error` text, or
+the empty-registry hint — and never fabricates a project row; a per-project
+worktree failure renders under that project's row only, and refused backend
+enqueues surface queue-full errors on the projects/worktree state rather than
+spinning forever. Editor-side navigation failures (dirty-draft guard, stale
+replies, backend errors) are documented in
+[Rune editor](rune-editor.md#error-paths).
 
 ## Tests
 
 `apps/rune` carries extensive inline `#[test]`/`#[tokio::test]` cases across
 `src/` — the editor modules plus `view_tests` full-app scenes in `src/main.rs`
 covering the view switch, chrome composition, the draft-guard modal, picker
-layout, and session-controls absence in the Editor view (the count grows per
-slice; `cargo test -p goko-rune` is the current total). See
+layout, session-controls absence in the Editor view, and the sidebar→editor
+scenes: real-project listing with mock sessions under Unassigned, root and
+worktree row selection committing identity, dirty-guard Discard/Cancel,
+status rows, and real-backend fixtures driving cross-project selection
+including in-flight replies (the count grows per slice; `cargo test -p
+goko-rune` is the current total). See
 [Rune editor](rune-editor.md#tests) for the coverage inventory; no dedicated
 chrome-only test module exists.
 
@@ -242,6 +361,12 @@ chrome-only test module exists.
 - `apps/rune/src/chrome.rs`
 - `apps/rune/src/theme.rs`
 - `apps/rune/src/data.rs`
+- `apps/rune/src/sidebar.rs`
 - `apps/rune/src/main.rs`
+- `apps/rune/src/editor/state.rs`
+- `apps/rune/src/editor/backend.rs`
+- `apps/rune/src/editor/backend/apply.rs`
 - `apps/rune/src/editor/workspace.rs`
 - `apps/rune/src/editor/navigation.rs`
+- `crates/app-core/src/projects.rs`
+- `crates/app-core/src/worktrees.rs`

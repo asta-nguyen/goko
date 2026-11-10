@@ -178,6 +178,8 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
                 // An in-flight ACP generate belongs to the editor's commit
                 // panel — leaving the view abandons it.
                 crate::editor::acp::cancel(s);
+            } else {
+                activate_sidebar_checkout(s, tx);
             }
         }
         PendingNav::CloseWindow => {
@@ -190,6 +192,38 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
             tx.quit();
         }
     }
+}
+
+/// Entering the Editor activates the checkout the sidebar last committed:
+/// `active_workspace` decodes to (project, checkout); only a still-registered
+/// project may drive the editor — mock session ids, `__unassigned__` and
+/// vanished projects are ignored, and an already-matching selection is a
+/// no-op. Routed through `navigate` so the draft guard treats it like every
+/// other identity change (post-`SetView`-guard the doc is clean, so this
+/// applies immediately).
+fn activate_sidebar_checkout(s: &mut State, tx: &mut Tx) {
+    let Some(workspace) = s.active_workspace.clone() else {
+        return;
+    };
+    let Some((project_id, checkout_path)) = crate::data::checkout_context(&workspace) else {
+        return;
+    };
+    if !s.editor.projects.iter().any(|p| p.project.id == project_id) {
+        return;
+    }
+    let checkout = PathBuf::from(checkout_path);
+    let key = checkout_key(project_id, &checkout);
+    if s.editor.checkout_key.as_deref() == Some(key.as_str()) {
+        return;
+    }
+    navigate(
+        s,
+        PendingNav::SelectCheckout {
+            project_id: project_id.to_string(),
+            checkout,
+        },
+        tx,
+    );
 }
 
 /// Switch the visible section, marking it visited so its state persists.
@@ -217,6 +251,13 @@ pub fn set_section(s: &mut State, section: Section) {
 /// `projects::git_checkout` semantics — the worker revalidates anyway.
 pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     let key = checkout_key(&project_id, &checkout);
+    // The sidebar highlights the committed workspace identity — record it
+    // here (post-guard) so a Cancel never moved it. `data::checkout_key`
+    // uses the desktop's NUL separator; the editor key above keeps its own.
+    s.active_workspace = Some(crate::data::checkout_key(
+        &project_id,
+        &checkout.display().to_string(),
+    ));
     if s.editor.checkout_key.as_deref() == Some(key.as_str()) {
         return;
     }
@@ -224,7 +265,25 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     // cancel before the mutation so its completion can never fill a draft
     // that now belongs somewhere else.
     crate::editor::acp::cancel(s);
-    s.editor.project_id = Some(project_id);
+    let project_changed = s.editor.project_id.as_deref() != Some(project_id.as_str());
+    s.editor.project_id = Some(project_id.clone());
+    if project_changed {
+        // The checkout picker's worktree list belongs to the project:
+        // reload it (and the sidebar's per-project entry) for the new
+        // identity before the checkout-scoped reads kick below.
+        s.editor.worktrees_error = None;
+        s.editor.worktrees = app_core::worktrees::WorktreeList {
+            repo: false,
+            worktrees: Vec::new(),
+        };
+        if s.editor.request_worktrees(&project_id) {
+            s.editor.worktrees_loading = true;
+        } else {
+            s.editor.worktrees_loading = false;
+            s.editor.worktrees_error =
+                Some("the editor queue is full; worktrees were not requested".into());
+        }
+    }
     s.editor.checkout = Some(checkout);
     s.editor.checkout_key = Some(key.clone());
     s.editor.pending_checkout = None;
@@ -275,16 +334,20 @@ pub fn select_project(s: &mut State, project_id: String) {
     // generate under the OLD project+checkout before mutating either.
     crate::editor::acp::cancel(s);
     s.editor.project_id = Some(project_id.clone());
-    s.editor.worktrees_loading = true;
     s.editor.worktrees_error = None;
     s.editor.worktrees = app_core::worktrees::WorktreeList {
         repo: false,
         worktrees: Vec::new(),
     };
-    let _ = backend::enqueue(
-        &mut s.editor.backend,
-        backend::Job::project(backend::Req::Worktrees(project_id.clone())),
-    );
+    // Same read the sidebar issues: the reply feeds both the picker and
+    // the per-project sidebar entry (deduped while one is in flight).
+    if s.editor.request_worktrees(&project_id) {
+        s.editor.worktrees_loading = true;
+    } else {
+        s.editor.worktrees_loading = false;
+        s.editor.worktrees_error =
+            Some("the editor queue is full; worktrees were not requested".into());
+    }
     let keep = s
         .editor
         .checkout_key
@@ -298,6 +361,9 @@ pub fn select_project(s: &mut State, project_id: String) {
 /// Drop the checkout selection and every per-checkout cache (the shared tail
 /// of `ClearCheckout` and a foreign-checkout project switch).
 fn clear_checkout(s: &mut State) {
+    // No checkout committed → nothing may stay highlighted as the active
+    // workspace; the next SelectCheckout records the real key again.
+    s.active_workspace = None;
     s.editor.checkout = None;
     s.editor.checkout_key = None;
     s.editor.pending_checkout = None;
@@ -1619,5 +1685,296 @@ mod tests {
         // Clean draft → navigate applies immediately.
         navigate(&mut s, PendingNav::CloseWindow, &mut tx);
         assert_eq!(s.editor.acp.generating_for, None);
+    }
+
+    // -- sidebar → editor identity -------------------------------------------
+
+    fn project_view(id: &str, name: &str, root: &str) -> app_core::projects::ProjectView {
+        app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: id.into(),
+                name: name.into(),
+                root: root.into(),
+                created_at: 0,
+            },
+            missing: false,
+        }
+    }
+
+    /// Two registered projects, as the Projects reply leaves them.
+    fn registered_state() -> State {
+        let mut s = state();
+        s.editor.projects = vec![
+            project_view("p1", "web", "/work/a/web"),
+            project_view("p2", "api", "/work/b/api"),
+        ];
+        s
+    }
+
+    #[test]
+    fn select_checkout_commits_real_workspace_key() {
+        let mut s = registered_state();
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: "p1".into(),
+                checkout: PathBuf::from("/work/a/web"),
+            },
+            &mut tx,
+        );
+        assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/work/a/web"))
+        );
+        // The sidebar highlight id is the desktop checkoutKey form — the
+        // exact string the project-root row computes for this project.
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str())
+        );
+        // The project switch kicked its own worktree read: the picker's
+        // `worktrees` AND the sidebar's per-project entry both load.
+        assert!(s.editor.worktrees_loading);
+        assert!(s.editor.sidebar_worktrees["p1"].loading);
+    }
+
+    #[test]
+    fn select_checkout_same_project_keeps_worktree_list() {
+        let mut s = registered_state();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(checkout_key("p1", &PathBuf::from("/work/a/web")));
+        s.editor.worktrees = app_core::worktrees::WorktreeList {
+            repo: true,
+            worktrees: vec![app_core::worktrees::WorktreeInfo {
+                name: "wt".into(),
+                path: "/work/a/wt".into(),
+                branch: None,
+                head: String::new(),
+                is_root: false,
+                missing: false,
+                dirty: None,
+                changed: None,
+            }],
+        };
+        let mut tx = Tx::default();
+        // Root → linked worktree inside the SAME project: no worktree reload.
+        navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: "p1".into(),
+                checkout: PathBuf::from("/work/a/wt"),
+            },
+            &mut tx,
+        );
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/work/a/wt"))
+        );
+        assert_eq!(
+            s.editor.worktrees.worktrees.len(),
+            1,
+            "same-project switch keeps the loaded list"
+        );
+        assert!(!s.editor.worktrees_loading);
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/wt").as_str())
+        );
+    }
+
+    #[test]
+    fn set_view_editor_activates_committed_sidebar_checkout() {
+        let mut s = registered_state();
+        s.active_workspace = Some(crate::data::checkout_key("p2", "/work/b/api"));
+        let mut tx = Tx::default();
+        navigate(&mut s, PendingNav::SetView(View::Editor), &mut tx);
+        assert_eq!(s.view, View::Editor);
+        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/work/b/api"))
+        );
+        // The activated checkout re-committed the same workspace key.
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p2", "/work/b/api").as_str())
+        );
+    }
+
+    #[test]
+    fn set_view_editor_ignores_unregistered_and_mock_workspaces() {
+        for bogus in [
+            // Unknown/vanished project id.
+            crate::data::checkout_key("ghost", "/nowhere"),
+            // A mock session project id must never fabricate identity.
+            crate::data::checkout_key("proj-goko", "/home/user/Project/goko"),
+            // The Unassigned pseudo-workspace carries no checkout.
+            crate::data::UNASSIGNED_WORKSPACE.to_string(),
+        ] {
+            let mut s = registered_state();
+            s.active_workspace = Some(bogus.clone());
+            let mut tx = Tx::default();
+            navigate(&mut s, PendingNav::SetView(View::Editor), &mut tx);
+            assert_eq!(s.view, View::Editor, "{bogus}: view still switches");
+            assert!(
+                s.editor.project_id.is_none(),
+                "{bogus}: must not select a project"
+            );
+            assert!(
+                s.editor.checkout.is_none(),
+                "{bogus}: must not select a checkout"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_select_guard_cancel_restores_identity_and_draft() {
+        let mut s = registered_state();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(checkout_key("p1", &PathBuf::from("/work/a/web")));
+        s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+        dirty_doc(&mut s);
+        let mut tx = Tx::default();
+        // A sidebar worktree-row press while dirty: the guard holds and
+        // NOTHING commits — project, checkout, workspace key and draft.
+        navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: "p2".into(),
+                checkout: PathBuf::from("/work/b/api"),
+            },
+            &mut tx,
+        );
+        assert!(s.editor.guard.is_some());
+        assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str())
+        );
+        resolve_guard(&mut s, GuardAction::Cancel, &mut tx);
+        assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
+        assert!(s.editor.doc.as_ref().unwrap().dirty());
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str()),
+            "Cancel restores the previous visible workspace identity"
+        );
+    }
+
+    #[test]
+    fn sidebar_select_guard_discard_commits_new_checkout() {
+        let mut s = registered_state();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(checkout_key("p1", &PathBuf::from("/work/a/web")));
+        s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+        dirty_doc(&mut s);
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: "p2".into(),
+                checkout: PathBuf::from("/work/b/api"),
+            },
+            &mut tx,
+        );
+        resolve_guard(&mut s, GuardAction::Discard, &mut tx);
+        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/work/b/api"))
+        );
+        assert!(s.editor.doc.is_none(), "discard dropped the draft");
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p2", "/work/b/api").as_str())
+        );
+    }
+
+    #[test]
+    fn set_view_editor_guard_discard_applies_sidebar_sync() {
+        let mut s = registered_state();
+        s.active_workspace = Some(crate::data::checkout_key("p2", "/work/b/api"));
+        dirty_doc(&mut s);
+        let mut tx = Tx::default();
+        navigate(&mut s, PendingNav::SetView(View::Editor), &mut tx);
+        // The view did NOT flip under the guard, and the sidebar checkout
+        // did not activate early either.
+        assert!(s.editor.guard.is_some());
+        assert_eq!(s.view, View::Terminal);
+        assert!(s.editor.project_id.is_none());
+        resolve_guard(&mut s, GuardAction::Discard, &mut tx);
+        assert_eq!(s.view, View::Editor);
+        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/work/b/api"))
+        );
+    }
+
+    #[test]
+    fn project_switch_clears_committed_workspace() {
+        let mut s = registered_state();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(checkout_key("p1", &PathBuf::from("/work/a/web")));
+        s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+        // The editor's project picker path: SelectProject drops the foreign
+        // checkout, so no workspace may stay highlighted.
+        select_project(&mut s, "p2".into());
+        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert!(s.editor.checkout.is_none());
+        assert_eq!(s.active_workspace, None);
+        // And the new project's worktree read went through the shared
+        // per-project lane the sidebar reads too.
+        assert!(s.editor.sidebar_worktrees["p2"].loading);
+    }
+
+    #[test]
+    fn sidebar_select_guard_save_resumes_after_landed_write() {
+        let mut s = registered_state();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(checkout_key("p1", &PathBuf::from("/work/a/web")));
+        s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+        dirty_editable_doc(&mut s);
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::SelectCheckout {
+                project_id: "p2".into(),
+                checkout: PathBuf::from("/work/b/api"),
+            },
+            &mut tx,
+        );
+        resolve_guard(&mut s, GuardAction::Save, &mut tx);
+        // Identity untouched while the write is in flight; the pending nav
+        // rides save_resume and replays through `pending_apply` on success.
+        assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
+        assert!(matches!(
+            s.editor.save_resume.as_ref().unwrap().pending,
+            PendingNav::SelectCheckout { .. }
+        ));
+        s.editor.apply_reply(save_reply(&s, Ok(file("edited"))));
+        assert!(matches!(
+            s.editor.pending_apply,
+            Some(PendingNav::SelectCheckout { .. })
+        ));
+        // `poll` routes pending_apply back through navigate → apply.
+        let pending = s.editor.pending_apply.take().unwrap();
+        navigate(&mut s, pending, &mut tx);
+        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/work/b/api"))
+        );
+        assert_eq!(
+            s.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p2", "/work/b/api").as_str())
+        );
     }
 }
