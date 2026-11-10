@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
@@ -142,6 +142,9 @@ pub struct Terminal {
     /// nothing new waits to be drawn, so the first draw and a resize are
     /// never held back.
     burst: Option<Instant>,
+    /// Wheel points not yet worth a whole line: a trackpad sends many
+    /// small deltas.
+    scroll_rem: f32,
 }
 
 impl Terminal {
@@ -169,6 +172,31 @@ impl Terminal {
             rendered: false,
             last: Instant::now(),
             burst: None,
+            scroll_rem: 0.0,
+        }
+    }
+
+    /// Scroll the history by wheel points (positive reveals older lines),
+    /// `line_h` points to a line. Drawn at once; new output leaves the
+    /// view where it is while it is scrolled up.
+    pub fn scroll(&mut self, dy: f32, line_h: f32) {
+        self.scroll_rem += dy / line_h.max(1.0);
+        let lines = self.scroll_rem.trunc();
+        self.scroll_rem -= lines;
+        if lines != 0.0 {
+            self.term.scroll_display(Scroll::Delta(lines as i32));
+            self.dirty = true;
+            self.burst = None;
+        }
+    }
+
+    /// Back to the live screen — where typing lands.
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_rem = 0.0;
+        if self.term.grid().display_offset() != 0 {
+            self.term.scroll_display(Scroll::Bottom);
+            self.dirty = true;
+            self.burst = None;
         }
     }
 
@@ -818,6 +846,38 @@ mod tests {
             .unwrap_or_default()
             .trim_end()
             .to_string()
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_history_and_typing_returns_to_the_bottom() {
+        let (mut term, tx) = terminal();
+        let data: String = (0..100).map(|n| format!("line{n}\r\n")).collect();
+        tx.send(Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        term.feed();
+        let live = first_line(&mut term, &ink());
+        // Positive points reveal older lines; a part of a line waits.
+        term.scroll(40.0, 16.0);
+        let up = first_line(&mut term, &ink());
+        assert_ne!(up, live, "the view moved into the history");
+        // 40 points left half a line over: 4 more are still under a
+        // line, 8 more make one.
+        term.scroll(4.0, 16.0);
+        assert_eq!(first_line(&mut term, &ink()), up, "part of a line waits");
+        term.scroll(4.0, 16.0);
+        assert_ne!(first_line(&mut term, &ink()), up, "the parts add up");
+        term.scroll(-1000.0, 16.0);
+        assert_eq!(
+            first_line(&mut term, &ink()),
+            live,
+            "scrolled back to the bottom"
+        );
+        term.scroll(40.0, 16.0);
+        term.scroll_to_bottom();
+        assert_eq!(first_line(&mut term, &ink()), live);
     }
 
     #[test]

@@ -903,13 +903,18 @@ impl State {
             let Some((chunks, ready)) = self.daemon.attach_output(session, flow) else {
                 continue;
             };
+            let (cols, rows) = self
+                .pane_grids
+                .get(&key)
+                .copied()
+                .unwrap_or((term::TERM_COLS, term::TERM_ROWS));
             self.attachments.insert(
                 key.clone(),
                 Attachment {
                     term: term::Terminal::new(session, chunks, ready),
                     lines: Vec::new(),
-                    cols: term::TERM_COLS,
-                    rows: term::TERM_ROWS,
+                    cols,
+                    rows,
                     pty: (0, 0),
                 },
             );
@@ -1308,6 +1313,7 @@ fn split_separator(ink: &Ink, split: &Split, side: bool) -> El {
 fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let key = pane.session.clone();
     let pane_key = key.clone();
+    let wheel_key = key.clone();
     let pid = pane.id.clone();
     let tid = tab.id.clone();
     let focused = pane.id == tab.active_pane;
@@ -1339,6 +1345,15 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
         .fill(ink.bg)
         .border(1.0, border)
         .on_press(move |s: &mut State| s.focus_pane(&tid, &pid))
+        .on_wheel(move |s: &mut State, e: rune::WheelEvent, _tx: &mut Tx| {
+            let ink = s.ink;
+            let Some(att) = s.attachments.get_mut(&wheel_key) else {
+                return false;
+            };
+            att.term.scroll(e.dy, line_h);
+            att.lines = att.term.lines(&ink).to_vec();
+            true
+        })
         .on_layout_tx(move |s: &mut State, rect: [f32; 4], tx: &mut Tx| {
             // A point to spare on the width: a line a hair too wide would
             // wrap, and a wrapped line is what made content jump.
@@ -1346,6 +1361,7 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 .floor()
                 .max(20.0) as usize;
             let rows = ((rect[3] - 2.0 * PANE_PAD) / line_h).floor().max(4.0) as usize;
+            s.pane_grids.insert(pane_key.clone(), (cols, rows));
             let resized = s.attachments.get_mut(&pane_key).is_some_and(|att| {
                 if (att.cols, att.rows) == (cols, rows) {
                     return false;
@@ -1824,6 +1840,18 @@ mod tests {
         assert!(s.open_tabs.is_empty());
         assert_eq!(s.selected_session, None);
         let _ = a;
+    }
+
+    #[test]
+    fn a_new_attachment_starts_at_the_measured_pane_grid() {
+        let mut s = state();
+        let (a, _) = tabbed_session(&mut s, "first");
+        s.data.connected = true;
+        // The pane was measured before the attachment existed.
+        s.pane_grids.insert(a.clone(), (90, 20));
+        assert!(s.sync_terminals());
+        let att = &s.attachments[&a];
+        assert_eq!((att.cols, att.rows), (90, 20));
     }
 
     #[test]

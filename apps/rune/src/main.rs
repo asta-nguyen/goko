@@ -88,6 +88,10 @@ pub struct State {
     /// Every visible pane's terminal, keyed by session id: grid, output
     /// stream and PTY size — the active tab's panes only.
     attachments: HashMap<String, panes::Attachment>,
+    /// The last measured grid (cols, rows) of each session's pane. A pane's
+    /// layout fires only when its rect changes, so an attachment made after
+    /// that (tab switch, new session) starts from this, not the default.
+    pane_grids: HashMap<String, (usize, usize)>,
     /// The measured size of every split's box along its axis, read by the
     /// separator's drag and keyboard bounds.
     split_sizes: HashMap<String, f32>,
@@ -188,6 +192,7 @@ impl State {
             daemon_reason: None,
             terminal_lagged: HashSet::new(),
             attachments: HashMap::new(),
+            pane_grids: HashMap::new(),
             split_sizes: HashMap::new(),
             close_inflight: HashSet::new(),
             now_ms: data::now_ms(),
@@ -501,7 +506,17 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         if s.view != View::Editor {
             stack = stack.child(chrome::controls_bar(s, ink));
         }
-        stack.child(content)
+        // The content takes what the bars leave: its own `h_full` would
+        // be the whole column's height and push the pane's bottom rows
+        // (a TUI's input frame) below the window.
+        stack.child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .min_h(0.0)
+                .w_full()
+                .child(content),
+        )
     };
     let mut root = col()
         .w_full()
@@ -819,6 +834,12 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
     let Some(bytes) = term::key_bytes(ev) else {
         return false;
     };
+    // Typing lands on the live screen, not on the history being read.
+    for att in s.attachments.values_mut() {
+        if att.term.session == session {
+            att.term.scroll_to_bottom();
+        }
+    }
     s.write_terminal(session, &bytes);
     true
 }
@@ -2623,6 +2644,77 @@ mod view_tests {
     }
 
     #[test]
+    fn the_pane_ends_inside_the_window() {
+        for (w, h) in [(963.0, 780.0), (1512.0, 814.0), (900.0, 560.0)] {
+            let mut s = State::new(test_handle());
+            let key = seed_session(&mut s, "claude", "/work/repo");
+            s.focus_session_tab(&key);
+            let session = s.session_id(&key).unwrap();
+            let (_tx, rx) = mpsc::channel();
+            let (_ready_tx, ready_rx) = mpsc::channel();
+            let terminal = term::Terminal::new(session, rx, ready_rx);
+            attach(&mut s, &key, terminal);
+            let pk = key.clone();
+            let mut rt = Runtime::new(s, view, (w, h), Env::new(true, 2.0));
+            rt.poll = Some(poll);
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+            rt.frame(1.0 / 60.0);
+            // The tab bar and controls sit above the pane: it must take
+            // what they leave, not the whole column's height.
+            let (_, rect) = pane_rows(&rt, &pk);
+            assert!(
+                rect[1] + rect[3] <= h + 0.5,
+                "the pane runs below the window at {w}x{h}: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wheel_over_a_pane_scrolls_its_history() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..200).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let pane_key = key.clone();
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let top = |rt: &mut Runtime<State>| {
+            let mut text = String::new();
+            rt.update(|s, _| text = s.attachments[&pane_key].lines[0].text());
+            text.trim_end().to_string()
+        };
+        let live = top(&mut rt);
+        rt.wheel_event(rune::WheelEvent::new(0.0, 160.0).at(700.0, 400.0));
+        rt.frame(1.0 / 60.0);
+        let up = top(&mut rt);
+        assert_ne!(up, live, "the wheel moved the view into the history");
+        rt.update(|s, _| {
+            let ev = rune::KeyEvent {
+                key: rune::Key::Text("a".into()),
+                mods: rune::Mods::default(),
+            };
+            assert!(terminal_key(s, &ev), "the key reached the live session");
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(top(&mut rt), live, "typing returned to the live screen");
+    }
+
+    #[test]
     fn the_last_terminal_row_stays_inside_its_pane() {
         // The regression the missing Claude input frame reported: the
         // grid's bottom row must land inside the pane, at full width and
@@ -2643,8 +2735,11 @@ mod view_tests {
             let mut rt = Runtime::new(s, view, (w, h), Env::new(true, 2.0));
             rt.poll = Some(poll);
             rt.frame(0.0);
-            // The first layout measures the pane and resizes the grid.
-            rt.frame(1.0 / 60.0);
+            // The first layout measures the pane and resizes the grid;
+            // the next frames let the pane and its rows settle.
+            for _ in 0..4 {
+                rt.frame(1.0 / 60.0);
+            }
 
             let mut rows = 0;
             rt.update(|s, _| {
@@ -2657,6 +2752,12 @@ mod view_tests {
             std::thread::sleep(std::time::Duration::from_millis(30));
             rt.frame(1.0 / 60.0);
 
+            // Rows of the old, taller grid fade out over a few frames:
+            // let them go before measuring what is mounted.
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                rt.frame(1.0 / 60.0);
+            }
             let (rows, pane_rect) = pane_rows(&rt, &pane_key);
             assert!(!rows.is_empty(), "the pane drew its grid at {w}x{h}");
             let pane_bottom = pane_rect[1] + pane_rect[3];
