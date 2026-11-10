@@ -775,6 +775,7 @@ impl EditorState {
             return;
         }
         let mut doc = crate::editor::draft::OpenDoc::new(path, &file);
+        doc.code.set_indent_choice(self.indent_choice);
         doc.reveal_line = line;
         // Fresh document: arm the highlight debounce so the initial text is
         // coloured once the quiet period passes.
@@ -815,6 +816,7 @@ impl EditorState {
             return;
         }
         let mut doc = crate::editor::draft::OpenDoc::new(path.to_string(), &file);
+        doc.code.set_indent_choice(self.indent_choice);
         doc.reveal_line = self.doc.as_ref().and_then(|d| d.reveal_line);
         doc.highlight_dirty_at = Some(std::time::Instant::now());
         self.doc = Some(doc);
@@ -949,6 +951,24 @@ impl EditorState {
             self.history.layout_dirty = false;
             self.history.layout_save_pending = true;
         }
+    }
+
+    /// Apply a new indent-unit override: mirror it into every mounted code
+    /// surface and persist through the same project-level settings lane as
+    /// the history layout. A refused queue simply retries on the next press.
+    pub fn set_indent_choice(&mut self, choice: crate::editor::indent::UnitChoice) {
+        self.indent_choice = choice;
+        if let Some(doc) = self.doc.as_mut() {
+            doc.code.set_indent_choice(choice);
+        }
+        self.scratch_code.set_indent_choice(choice);
+        let _ = enqueue(
+            &mut self.backend,
+            Job::project(Req::SetSetting {
+                key: crate::editor::indent::INDENT_KEY.to_string(),
+                value: choice.store_value(),
+            }),
+        );
     }
 
     /// Queue a worktree-list read for `project_id`, marking the sidebar's
