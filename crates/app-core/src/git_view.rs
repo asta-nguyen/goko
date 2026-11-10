@@ -8,7 +8,7 @@ use crate::error::{BridgeError, Code};
 use crate::worktrees;
 use protocol::message::ErrorCode;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Diffs, text reads, and file saves are capped at 1 MiB.
 const CAP: usize = 1024 * 1024;
+/// `git blame --porcelain` repeats the file's whole text plus a metadata
+/// block per commit, so its output is several times the file's size.
+const BLAME_CAP: usize = 8 * 1024 * 1024;
 const SEARCH_OUTPUT_CAP: usize = 256 * 1024;
 const SEARCH_MATCH_CAP: usize = 500;
 const SEARCH_PREVIEW_CHARS: usize = 300;
@@ -157,6 +160,34 @@ pub struct GitViewSearchMatch {
 pub struct GitViewSearch {
     pub matches: Vec<GitViewSearchMatch>,
     pub truncated: bool,
+}
+
+/// One source line's blame: who last touched it, when, and in which commit.
+///
+/// Lines are indexed by their 1-based line number in the blamed file, so
+/// `lines[i]` describes line `i + 1`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewBlameLine {
+    /// 1-based line number in the blamed file.
+    pub line: u64,
+    /// Author name of the commit that last touched the line.
+    pub author: String,
+    /// Commit time, epoch milliseconds.
+    pub time: u64,
+    /// Full commit oid the line was last touched in.
+    pub commit: String,
+    /// `true` for lines the working tree changed but never committed — Git
+    /// attributes them to the uncommitted state, not to an author.
+    pub uncommitted: bool,
+}
+
+/// Per-line blame for one file in the checkout.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewBlame {
+    /// Checkout-relative path.
+    pub path: String,
+    /// One entry per blamed line, in file order.
+    pub lines: Vec<GitViewBlameLine>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -944,6 +975,108 @@ fn atomic_replace(
             format!("could not save the file: {error}"),
         )
     })
+}
+
+/// Who last touched each line of a file, and in which commit.
+///
+/// `git blame --porcelain` prints one header per blamed line
+/// (`<sha> <orig-line> <final-line> [<num-lines-in-group>]`), followed by the
+/// commit's metadata (`author`, `author-time`, …) the FIRST time that commit
+/// appears, then the TAB-prefixed source line. A commit that reappears later
+/// (non-contiguous lines) is NOT described again, so the parser remembers
+/// every commit it has seen.
+///
+/// The working tree is blamed, not `HEAD`: an uncommitted line is reported
+/// with the all-zero sha and the author "Not Committed Yet".
+pub fn blame(checkout: &Path, path: &str) -> Result<GitViewBlame, BridgeError> {
+    let rel = relative_path(path)?;
+    let rel_text = rel.to_string_lossy().into_owned();
+    // Porcelain repeats the whole file's text, so the output is larger than
+    // the file: a 1 MiB file with many commits exceeds the usual read cap.
+    let (out, truncated) = worktrees::git_bounded(
+        checkout,
+        &["blame", "--porcelain", "--", &rel_text],
+        BLAME_CAP,
+    )?;
+    if truncated {
+        return Err(invalid("the file is too large to blame"));
+    }
+    Ok(GitViewBlame {
+        path: rel_text,
+        lines: parse_blame_porcelain(&out),
+    })
+}
+
+/// Parse `git blame --porcelain` output into per-line entries.
+fn parse_blame_porcelain(out: &[u8]) -> Vec<GitViewBlameLine> {
+    let mut lines = Vec::new();
+    // Every commit seen so far: Git describes a commit only the first time it
+    // appears, so its author and time are remembered here.
+    let mut commits: HashMap<String, (String, u64)> = HashMap::new();
+    // The header of the line currently being read.
+    let mut pending: Option<(String, u64)> = None;
+    for raw in out.split(|b| *b == b'\n') {
+        if raw.is_empty() {
+            continue;
+        }
+        // The source line of a blamed line, prefixed by a TAB.
+        if raw.starts_with(b"\t") {
+            let Some((sha, line)) = pending.take() else {
+                continue;
+            };
+            let (author, time) = commits.get(&sha).cloned().unwrap_or_default();
+            lines.push(GitViewBlameLine {
+                line,
+                author,
+                time,
+                commit: sha.clone(),
+                uncommitted: sha.chars().all(|c| c == '0'),
+            });
+            continue;
+        }
+        let text = lossy(raw);
+        // A header: `<sha> <orig-line> <final-line> [<num-lines>]`.
+        if let Some((sha, line)) = parse_blame_header(&text) {
+            pending = Some((sha, line));
+            continue;
+        }
+        // Commit metadata, printed right after the header of a commit Git
+        // has not described yet.
+        let described = pending
+            .as_ref()
+            .map(|(sha, _)| !commits.contains_key(sha))
+            .unwrap_or(false);
+        if described {
+            let sha = pending
+                .as_ref()
+                .map(|(sha, _)| sha.clone())
+                .unwrap_or_default();
+            if let Some(author) = text.strip_prefix("author ") {
+                commits.entry(sha).or_default().0 = author.to_owned();
+                continue;
+            }
+            if let Some(time) = text.strip_prefix("author-time ") {
+                let entry = commits.entry(sha).or_default();
+                entry.1 = time.parse::<u64>().unwrap_or(0) * 1000;
+                continue;
+            }
+        }
+    }
+    lines
+}
+
+/// A `git blame --porcelain` header: the commit sha and the blamed file's
+/// 1-based line number.
+fn parse_blame_header(text: &str) -> Option<(String, u64)> {
+    let mut fields = text.split(' ');
+    let sha = fields.next()?;
+    // A sha-1 (40) or sha-256 (64) object id; metadata lines never match.
+    if !matches!(sha.len(), 40 | 64) || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let _original = fields.next()?;
+    let line = fields.next()?.parse::<u64>().ok()?;
+    Some((sha.to_owned(), line))
 }
 
 /// The repository-wide stash stack. `refs/stash` is shared by every linked
@@ -2017,7 +2150,48 @@ mod tests {
         file(&root, "second.txt").unwrap();
         let stack = stashes(&root).unwrap();
         stash_diff(&root, &stack[0].id).unwrap();
+        blame(&root, "second.txt").unwrap();
         assert_eq!(before, snapshot(&root));
+    }
+
+    #[test]
+    fn blame_attributes_each_line_to_its_last_author() {
+        let (_t, root) = repository("blame");
+        fs::write(root.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+        git_ok(&root, &["add", "tracked.txt"]);
+        git_ok(&root, &["commit", "-qm", "first"]);
+        // A second author touches only the middle line.
+        git_ok(&root, &["config", "user.name", "Second"]);
+        git_ok(&root, &["config", "user.email", "second@example.com"]);
+        fs::write(root.join("tracked.txt"), "one\ntwo changed\nthree\n").unwrap();
+        git_ok(&root, &["add", "tracked.txt"]);
+        git_ok(&root, &["commit", "-qm", "second"]);
+
+        let view = blame(&root, "tracked.txt").unwrap();
+        assert_eq!(view.path, "tracked.txt");
+        assert_eq!(view.lines.len(), 3);
+        assert_eq!(
+            view.lines
+                .iter()
+                .map(|l| (l.line, l.author.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "Tester"), (2, "Second"), (3, "Tester")]
+        );
+        assert!(view.lines.iter().all(|l| !l.uncommitted));
+        assert_eq!(view.lines[1].commit, head(&root));
+    }
+
+    #[test]
+    fn blame_marks_uncommitted_lines_and_rejects_unknown_paths() {
+        let (_t, root) = repository("blame-uncommitted");
+        // A change that was never committed is attributed to nobody.
+        fs::write(root.join("tracked.txt"), "tracked\nchanged\n").unwrap();
+        let view = blame(&root, "tracked.txt").unwrap();
+        assert!(view.lines[1].uncommitted);
+        assert_eq!(view.lines[1].author, "Not Committed Yet");
+        // A path outside the checkout never reaches Git.
+        assert!(blame(&root, "../escape.txt").is_err());
+        assert!(blame(&root, "missing.txt").is_err());
     }
 
     #[test]

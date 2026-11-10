@@ -529,6 +529,9 @@ fn editor_surface(s: &State, ink: &Ink) -> El {
             // syntax-highlight debounce armed for the new revision.
             st.editor.sync_quit_dirty();
             crate::editor::highlight::mark_edit(&mut st.editor);
+            // The blame annotations describe the file on disk — a dirty
+            // buffer hides the column until the save lands.
+            crate::editor::blame::sync_visibility(&mut st.editor);
             tx.wake_after(std::time::Duration::from_millis(150));
         })
         .on_save(|st: &mut State, _tx: &mut Tx| {
@@ -541,6 +544,9 @@ fn editor_surface(s: &State, ink: &Ink) -> El {
         )
         .on_indent(|st: &mut State, choice, _tx: &mut Tx| {
             st.editor.set_indent_choice(choice);
+        })
+        .on_blame(|st: &mut State, enabled, _tx: &mut Tx| {
+            crate::editor::blame::set_enabled(&mut st.editor, enabled);
         })
         .build(s, ink)
 }

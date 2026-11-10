@@ -36,6 +36,19 @@ pub enum HistoryField {
     Author,
     Commit,
     DetailHeight,
+    DetailWidth,
+}
+
+/// Where the commit detail pane sits relative to the table — a native-only
+/// setting (the desktop has no `detailPosition`); persisted as
+/// `detailPosition` ("bottom" | "right").
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DetailPosition {
+    /// Detail stacked below the table — the desktop layout.
+    #[default]
+    Bottom,
+    /// Detail docked beside the table's right edge.
+    Right,
 }
 
 /// One of the editor's horizontal list/detail splits that persists a width.
@@ -151,6 +164,11 @@ pub struct HistoryLayout {
     pub author: f64,
     pub commit: f64,
     pub detail_height: f64,
+    /// Detail pane width in [`DetailPosition::Right`] (ignored by Bottom);
+    /// `detailWidth` in the store document.
+    pub detail_width: f64,
+    /// Detail pane position; `detailPosition` in the store document.
+    pub detail_position: DetailPosition,
     /// Horizontal list/detail split widths for the Files/Changes/Stashes
     /// sections — serialized under `panes`, parsed per field like the rest.
     pub panes: PaneWidths,
@@ -163,6 +181,8 @@ pub const DEFAULT_LAYOUT: HistoryLayout = HistoryLayout {
     author: 128.0,
     commit: 80.0,
     detail_height: 320.0,
+    detail_width: 420.0,
+    detail_position: DetailPosition::Bottom,
     panes: PaneWidths {
         files_aside: crate::editor::pane_layout::FILES_ASIDE_DEFAULT,
         changes_list: crate::editor::pane_layout::CHANGES_LIST_DEFAULT,
@@ -207,6 +227,13 @@ impl HistoryField {
             // is still enforced by the drag on viewports that can fit it.
             HistoryField::DetailHeight => LayoutLimits {
                 min: f64::from(crate::editor::history::PATCH_MIN_H),
+                max: None,
+            },
+            // Like `detailHeight`, no static ceiling: the render clamp
+            // bounds the width against the measured row, and an oversized
+            // stored value snaps into view on the first drag.
+            HistoryField::DetailWidth => LayoutLimits {
+                min: 280.0,
                 max: None,
             },
         }
@@ -292,6 +319,16 @@ impl HistoryLayout {
                 HistoryField::DetailHeight.limits(),
                 DEFAULT_LAYOUT.detail_height,
             ),
+            detail_width: field(
+                "detailWidth",
+                HistoryField::DetailWidth.limits(),
+                DEFAULT_LAYOUT.detail_width,
+            ),
+            // Unknown or missing values fall back to Bottom per field.
+            detail_position: match record.get("detailPosition").and_then(Value::as_str) {
+                Some("right") => DetailPosition::Right,
+                _ => DetailPosition::Bottom,
+            },
             panes: PaneWidths {
                 files_aside: pane_field(record, PaneKind::FilesAside),
                 changes_list: pane_field(record, PaneKind::ChangesList),
@@ -317,6 +354,14 @@ impl HistoryLayout {
         record.insert("author".to_string(), json_number(self.author));
         record.insert("commit".to_string(), json_number(self.commit));
         record.insert("detailHeight".to_string(), json_number(self.detail_height));
+        record.insert("detailWidth".to_string(), json_number(self.detail_width));
+        record.insert(
+            "detailPosition".to_string(),
+            Value::from(match self.detail_position {
+                DetailPosition::Bottom => "bottom",
+                DetailPosition::Right => "right",
+            }),
+        );
         let mut panes = Map::new();
         for kind in [
             PaneKind::FilesAside,
@@ -351,6 +396,14 @@ impl HistoryLayout {
         }
     }
 
+    /// `setDetailWidth` — the Right-position counterpart of
+    /// [`HistoryLayout::set_detail_height`].
+    pub fn set_detail_width(&mut self, px: f64) {
+        if let Some(value) = bounded_number(px, HistoryField::DetailWidth.limits()) {
+            self.detail_width = value;
+        }
+    }
+
     /// `reset` on the desktop: restores one field to its default — `graph`
     /// becomes unset, the rest return to [`DEFAULT_LAYOUT`] values.
     pub fn reset(&mut self, field: HistoryField) {
@@ -360,6 +413,7 @@ impl HistoryLayout {
             HistoryField::Author => self.author = DEFAULT_LAYOUT.author,
             HistoryField::Commit => self.commit = DEFAULT_LAYOUT.commit,
             HistoryField::DetailHeight => self.detail_height = DEFAULT_LAYOUT.detail_height,
+            HistoryField::DetailWidth => self.detail_width = DEFAULT_LAYOUT.detail_width,
         }
     }
 }
@@ -474,6 +528,8 @@ mod tests {
                 "author": 128,
                 "commit": 80,
                 "detailHeight": 320,
+                "detailWidth": 420,
+                "detailPosition": "bottom",
                 "panes": {
                     "filesAside": 280,
                     "changesList": 300,
@@ -568,5 +624,55 @@ mod tests {
         panes.set(PaneKind::FilesAside, f64::NAN);
         panes.set(PaneKind::FilesAside, f64::INFINITY);
         assert_eq!(panes, PaneWidths::default());
+    }
+
+    #[test]
+    fn detail_position_and_width_default_without_storage() {
+        let layout = HistoryLayout::load(None);
+        assert_eq!(layout.detail_position, DetailPosition::Bottom);
+        assert_eq!(layout.detail_width, 420.0);
+    }
+
+    #[test]
+    fn detail_position_parses_known_and_falls_back() {
+        assert_eq!(
+            parse(r#"{"detailPosition":"right"}"#).detail_position,
+            DetailPosition::Right
+        );
+        assert_eq!(
+            parse(r#"{"detailPosition":"bottom"}"#).detail_position,
+            DetailPosition::Bottom
+        );
+        // Unknown, non-string and missing values all fall back per field.
+        for raw in [
+            r#"{"detailPosition":"left"}"#,
+            r#"{"detailPosition":1}"#,
+            r#"{"detailPosition":null}"#,
+            r#"{"date":200}"#,
+        ] {
+            assert_eq!(parse(raw).detail_position, DetailPosition::Bottom, "{raw}");
+        }
+    }
+
+    #[test]
+    fn detail_width_bounds_and_round_trips() {
+        // Below the 280 floor clamps; unbounded above like detailHeight.
+        assert_eq!(parse(r#"{"detailWidth":100}"#).detail_width, 280.0);
+        assert_eq!(parse(r#"{"detailWidth":500}"#).detail_width, 500.0);
+        assert_eq!(parse(r#"{"detailWidth":"wide"}"#).detail_width, 420.0);
+
+        let mut layout = DEFAULT_LAYOUT;
+        layout.detail_position = DetailPosition::Right;
+        layout.set_detail_width(600.0);
+        let stored = layout.to_json();
+        let value: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(value["detailWidth"], json_number(600.0));
+        assert_eq!(value["detailPosition"], Value::from("right"));
+        assert_eq!(HistoryLayout::parse(&stored), layout);
+
+        layout.set_detail_width(f64::NAN);
+        assert_eq!(layout.detail_width, 600.0, "non-finite writes are ignored");
+        layout.reset(HistoryField::DetailWidth);
+        assert_eq!(layout.detail_width, 420.0);
     }
 }

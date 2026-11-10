@@ -17,7 +17,7 @@ use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
 use protocol::message::Response;
 use protocol::session::SessionId;
-use rune::{Color, El, LineCap, Shape, Span, TextStyle, rich, text};
+use rune::{Color, El, LineCap, Shape, Span, TextStyle, text};
 
 use crate::daemon::{self, Output, SubscribeReply};
 use crate::theme::Ink;
@@ -744,9 +744,14 @@ fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
         }
         e
     } else {
-        rich(content, spans).font(TERM_FONT).color(ink.text)
+        // `rich` wraps at the element's width; a terminal row may never
+        // wrap — a wrapped row is two lines tall and pushes the grid's
+        // bottom rows out of the pane. `text` stays one line; the spans
+        // carry the per-run styling.
+        text(content).font(TERM_FONT).color(ink.text).spans(spans)
     };
-    el.shape(shape)
+    // A grid row is exactly one cell line, whatever the font says.
+    el.shape(shape).h(line_h)
 }
 
 // ---------------------------------------------------------------------------

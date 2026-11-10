@@ -288,6 +288,18 @@ impl EditorState {
                 }
                 self.scratch_code.set_indent_choice(choice);
             }
+            // The inline-blame toggle restores on the same lane: an absent
+            // value means the default (on).
+            (Req::GetSetting { key }, Ok(ReplyData::Setting(value)))
+                if key == crate::editor::blame::BLAME_KEY =>
+            {
+                let enabled = value.as_deref().unwrap_or("1") != "0";
+                self.apply_blame_enabled(enabled);
+                crate::editor::blame::sync_visibility(self);
+                if enabled {
+                    crate::editor::blame::request(self);
+                }
+            }
             (Req::GetSetting { key }, Err(e)) if key == crate::editor::lsp::SERVERS_KEY => {
                 // Un-pend + bounded retry live in lsp.rs; presets keep
                 // serving until a read succeeds.
@@ -452,6 +464,12 @@ impl EditorState {
             (Req::Highlight { path, .. }, Err(_)) => {
                 crate::editor::highlight::apply_error(self, path);
             }
+            (Req::Blame { path }, Ok(ReplyData::Blame(view))) => {
+                crate::editor::blame::apply(self, path, view);
+            }
+            (Req::Blame { path }, Err(e)) => {
+                crate::editor::blame::apply_error(self, path, &e);
+            }
             (Req::File { .. }, Err(e)) => {
                 self.doc_load = None;
                 self.notice = Some(err_notice(&e));
@@ -595,6 +613,10 @@ impl EditorState {
             // A landed save lets the LSP mirror emit its didSave — only
             // when the saved path is still the mirrored document.
             self.lsp_note_saved(&path);
+            // The saved file is what Git blames, so the annotations are
+            // re-read once the draft matches the disk again.
+            crate::editor::blame::sync_visibility(self);
+            crate::editor::blame::request(self);
         }
         match result {
             Ok(_) => {

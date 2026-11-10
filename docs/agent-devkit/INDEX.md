@@ -3,6 +3,7 @@
 ## Changes
 
 - [Rune editor indent: guides, Tab indent, auto-indent, unit config](changes/rune-editor-indent/delta.md)
+- [Rune inline blame: per-line author and age beside the code](changes/rune-inline-blame/delta.md)
 - [Native Rune language servers](changes/rune-native-lsp/design.md) ([tasks](changes/rune-native-lsp/tasks.md))
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))

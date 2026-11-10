@@ -5,6 +5,7 @@
 
 pub mod acp;
 pub mod backend;
+pub mod blame;
 pub mod changes;
 pub mod code;
 pub mod commit;

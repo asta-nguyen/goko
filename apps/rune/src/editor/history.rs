@@ -15,7 +15,9 @@ use std::collections::HashSet;
 use chrono::{DateTime, Local, TimeZone};
 use rune::{Color, Cursor, El, LineCap, Path, Shape, TextStyle, Tx, canvas, col, el, row};
 use rune_kit::Kit;
-use rune_kit::{Cell, MenuItem, Table, TableColumn, TableState, TableStyle, context_menu};
+use rune_kit::{
+    Cell, MenuItem, SegmentedControl, Table, TableColumn, TableState, TableStyle, context_menu,
+};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -23,7 +25,9 @@ use crate::editor::commit_detail;
 use crate::editor::history_graph::{
     GRAPH_PALETTE, GraphColor, GraphLayout, GraphRow, layout_graph,
 };
-use crate::editor::history_layout::{DEFAULT_LAYOUT, HistoryColumn, HistoryField, HistoryLayout};
+use crate::editor::history_layout::{
+    DEFAULT_LAYOUT, DetailPosition, HistoryColumn, HistoryField, HistoryLayout,
+};
 use crate::editor::patch::{self, Pane};
 use crate::editor::state::{HistoryRowMenu, HistoryState, Section};
 use crate::theme::{Ink, T11MN_BADGE, T12, T12M, btn_sm, txt};
@@ -34,6 +38,12 @@ const GRAPH_PAD: f32 = 8.0;
 const TABLE_MIN_H: f32 = 120.0;
 /// Desktop `DETAIL_HANDLE_HEIGHT` — the drag strip between table and detail.
 const DETAIL_HANDLE_H: f32 = 8.0;
+/// [`DETAIL_HANDLE_H`] turned sideways: the drag strip between the table and
+/// a Right-position detail.
+const DETAIL_HANDLE_W: f32 = 8.0;
+/// Minimum width the commit table keeps in Right position; the detail width
+/// clamp yields around it so the pane is never pushed off-screen.
+const TABLE_MIN_W: f32 = 360.0;
 /// Fixed toolbar height (`toolbar` below) — subtracted from the measured root
 /// when clamping the detail pane so the patch never lands below the window.
 const TOOLBAR_H: f32 = 34.0;
@@ -489,6 +499,7 @@ fn layout_px(l: &HistoryLayout, f: HistoryField) -> f64 {
         HistoryField::Author => l.author,
         HistoryField::Commit => l.commit,
         HistoryField::DetailHeight => l.detail_height,
+        HistoryField::DetailWidth => l.detail_width,
     }
 }
 
@@ -521,36 +532,67 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
         root = root.child(stale_notice(err, ink));
     }
 
-    root = root.child(table_view(s, ink, k).grow(1.0).min_h(TABLE_MIN_H));
+    if h.layout.detail_position == DetailPosition::Right {
+        // Table | handle | detail side by side. The detail takes its
+        // persisted width clamped against the measured row ([`detail_width_bounds`])
+        // so the table keeps [`TABLE_MIN_W`] and the pane is never pushed
+        // off-screen; flex shrink is the same display clamp `pane_layout`
+        // uses for the list asides.
+        let (wfloor, wmax) = detail_width_bounds(h);
+        let detail_w = h.layout.detail_width.clamp(wfloor, wmax) as f32;
+        root = root.child(
+            row()
+                .grow(1.0)
+                .min_h(0.0)
+                .w_full()
+                .child(table_view(s, ink, k).grow(1.0).min_w(TABLE_MIN_W).h_full())
+                .child(detail_width_handle(ink))
+                .child(
+                    // Fixed-width wrapper like the Bottom split's fixed-height
+                    // one: `detail_pane` branches root in `.grow(1.0)`, and a
+                    // column's grow is its height — `w(detail_w)` is the
+                    // wrapper's exact flex base, the pane inside fills it.
+                    col()
+                        .w(detail_w)
+                        .h_full()
+                        .shrink()
+                        .min_w(0.0)
+                        .border_sides([0.0, 0.0, 0.0, 1.0], ink.border)
+                        .child(detail_pane(s, ink, k)),
+                ),
+        );
+    } else {
+        root = root.child(table_view(s, ink, k).grow(1.0).min_h(TABLE_MIN_H));
 
-    // Detail height clamped to the measured container when known. The clamp
-    // subtracts every fixed sibling — toolbar, the stale-refresh notice when
-    // present, the table's minimum and the drag handle — so the detail pane
-    // (and therefore the patch) can never be pushed below the window, a case
-    // desktop's `detailMax` misses by the toolbar height. The persisted drag
-    // minimum (160) still governs the handle, but the *render* clamp may
-    // yield small: a short window gets whatever space the table's 120pt
-    // floor and the patch's 96pt leave, never a forced 160.
-    let (detail_floor, dmax) = detail_height_bounds(h);
-    let detail_h = h.layout.detail_height.clamp(detail_floor, dmax) as f32;
+        // Detail height clamped to the measured container when known. The clamp
+        // subtracts every fixed sibling — toolbar, the stale-refresh notice when
+        // present, the table's minimum and the drag handle — so the detail pane
+        // (and therefore the patch) can never be pushed below the window, a case
+        // desktop's `detailMax` misses by the toolbar height. The persisted drag
+        // minimum (160) still governs the handle, but the *render* clamp may
+        // yield small: a short window gets whatever space the table's 120pt
+        // floor and the patch's 96pt leave, never a forced 160.
+        let (detail_floor, dmax) = detail_height_bounds(h);
+        let detail_h = h.layout.detail_height.clamp(detail_floor, dmax) as f32;
 
-    root = root.child(detail_handle(ink));
-    root = root.child(
-        // Fixed-height wrapper: `detail_pane` branches root themselves in
-        // `.grow(1.0)`, and rune's `grow` sets `flex-basis: 0` — so `detail_h`
-        // applied to the pane directly would be only a flex *basis of zero*
-        // plus a free-space share, never the rendered height (the dead-handle
-        // bug: the boundary ignored `detailHeight` entirely). This wrapper
-        // never grows, so `h(detail_h)` is its exact flex base; the pane
-        // inside keeps `.grow(1)` and fills it. `shrink`+`min_h(0)` let the
-        // pane yield below content size on short windows.
-        col()
-            .h(detail_h)
-            .shrink()
-            .min_h(0.0)
-            .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
-            .child(detail_pane(s, ink, k)),
-    );
+        root = root.child(detail_handle(ink));
+        root = root.child(
+            // Fixed-height wrapper: `detail_pane` branches root themselves in
+            // `.grow(1.0)`, and rune's `grow` sets `flex-basis: 0` — so `detail_h`
+            // applied to the pane directly would be only a flex *basis of zero*
+            // plus a free-space share, never the rendered height (the dead-handle
+            // bug: the boundary ignored `detailHeight` entirely). This wrapper
+            // never grows, so `h(detail_h)` is its exact flex base; the pane
+            // inside keeps `.grow(1)` and fills it. `shrink`+`min_h(0)` let the
+            // pane yield below content size on short windows.
+            col()
+                .h(detail_h)
+                .shrink()
+                .min_h(0.0)
+                .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+                .child(detail_pane(s, ink, k)),
+        );
+    }
 
     // Commit-row context menu (desktop `HistoryTable` ContextMenu): opened
     // by a cell's secondary press at the stored point, dismissed by the
@@ -588,15 +630,23 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
     }
 
     // `on_layout_tx` fires only when this element's rect changes (>0.5pt), so
-    // it is kept solely for the detail-height clamp measurement. All
+    // it is kept solely for the detail-pane clamp measurements. All
     // &mut housekeeping lives in [`poll`], driven by `AppSpec::poll`.
     root = root.on_layout_tx(|st: &mut State, r: [f32; 4], tx: &mut Tx| {
-        let hgt = r[3];
+        let (hgt, wid) = (r[3], r[2]);
+        let mut wake = false;
         if (hgt - st.editor.history.measured_root_height).abs() > 0.5 {
             st.editor.history.measured_root_height = hgt;
-            // The detail-height clamp reads this measurement — schedule one
-            // more frame so the pane re-lays out against the real root
-            // height instead of the pre-measure estimate.
+            wake = true;
+        }
+        if (wid - st.editor.history.measured_root_width).abs() > 0.5 {
+            st.editor.history.measured_root_width = wid;
+            wake = true;
+        }
+        if wake {
+            // The detail clamps read these measurements — schedule one more
+            // frame so the panes re-lay out against the real root size
+            // instead of the pre-measure estimate.
             tx.wake_after(std::time::Duration::from_millis(16));
         }
     });
@@ -879,9 +929,12 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
             options.push(rune_kit::ComboboxOption::new(&b.ref_name, &b.name));
         }
     }
-    let select = rune_kit::Combobox::new("history-branch", &h.branch_picker, &options, |st: &mut State| {
-        &mut st.editor.history.branch_picker
-    })
+    let select = rune_kit::Combobox::new(
+        "history-branch",
+        &h.branch_picker,
+        &options,
+        |st: &mut State| &mut st.editor.history.branch_picker,
+    )
     .current(Some(h.branch.as_deref().unwrap_or(ALL_BRANCHES)))
     .placeholder("All branches")
     .search_placeholder("Search branches")
@@ -909,6 +962,31 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
     });
     bar = bar.child(select.build(k, layer));
 
+    // Detail position: Bottom stacks the pane under the table (desktop
+    // layout), Right docks it beside the table. Same persisted lane as the
+    // drag handles — `layout_dirty` arms `poll_layout_save`.
+    let pos = match h.layout.detail_position {
+        DetailPosition::Bottom => Some(0),
+        DetailPosition::Right => Some(1),
+    };
+    bar = bar.child(
+        SegmentedControl::new(&["Bottom", "Right"], pos)
+            .fit()
+            .label("Detail position")
+            .on_pick(|st: &mut State, i: usize, _tx: &mut Tx| {
+                let next = if i == 0 {
+                    DetailPosition::Bottom
+                } else {
+                    DetailPosition::Right
+                };
+                if st.editor.history.layout.detail_position != next {
+                    st.editor.history.layout.detail_position = next;
+                    st.editor.history.layout_dirty = true;
+                }
+            })
+            .build(k)
+            .help("Detail: bottom / right"),
+    );
     bar = bar.child(
         rune_kit::TextInput::new(&h.filter)
             .placeholder("Filter commits")
@@ -918,7 +996,9 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
             .on_edit(|st: &mut State| -> &mut rune::edit::TextEdit {
                 &mut st.editor.history.filter
             })
-            .build(k),
+            .build(k)
+            .shrink()
+            .min_w(120.0),
     );
 
     if filter_active(s) {
@@ -964,6 +1044,7 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
                 }
             }),
     );
+
     bar
 }
 
@@ -1527,6 +1608,59 @@ fn detail_handle(ink: &Ink) -> El {
         })
         .on_double_press(|st: &mut State| {
             st.editor.history.layout.reset(HistoryField::DetailHeight);
+            st.editor.history.layout_dirty = true;
+        })
+}
+
+/// `(render_floor, wmax)` for a Right-position detail pane from the measured
+/// root width — the horizontal mirror of [`detail_height_bounds`], and the
+/// single source for the view's render clamp AND the handle's drag clamp.
+/// `wmax` is `u32::MAX`-ish while the root width is unmeasured so the first
+/// frames still lay out; the floor yields below the 280 model minimum on
+/// windows too narrow to fit it beside [`TABLE_MIN_W`] — the detail
+/// compresses first, the table never does.
+fn detail_width_bounds(h: &HistoryState) -> (f64, f64) {
+    let container_w = h.measured_root_width;
+    let wmax = if container_w <= 0.0 {
+        f64::from(u32::MAX)
+    } else {
+        (container_w as f64 - TABLE_MIN_W as f64 - DETAIL_HANDLE_W as f64).max(0.0)
+    };
+    (HistoryField::DetailWidth.limits().min.min(wmax), wmax)
+}
+
+/// The vertical counterpart of [`detail_handle`]: an 8pt strip between the
+/// table and a Right-position detail. Dragging left grows the detail
+/// (`data - dx`), double-press restores the default width.
+fn detail_width_handle(ink: &Ink) -> El {
+    el().key("detail-width-handle")
+        .role("separator")
+        .label("Resize history detail width")
+        .w(DETAIL_HANDLE_W)
+        .h_full()
+        .cursor(Cursor::ResizeColumn)
+        .hover(ink.border)
+        .on_drag(|st: &mut State, d: &mut rune::Drag, _tx: &mut Tx| {
+            match d.phase {
+                rune::Phase::Down => {
+                    // Start from the EFFECTIVE rendered width, like the
+                    // height handle: an oversized stored width renders at
+                    // `wmax`, and dragging must move the visible boundary.
+                    let (floor, wmax) = detail_width_bounds(&st.editor.history);
+                    d.data = st.editor.history.layout.detail_width.clamp(floor, wmax) as f32;
+                }
+                rune::Phase::Move | rune::Phase::Up => {
+                    if !d.cancelled() {
+                        let (floor, wmax) = detail_width_bounds(&st.editor.history);
+                        let v = (d.data - d.dx).clamp(floor as f32, wmax as f32);
+                        st.editor.history.layout.set_detail_width(f64::from(v));
+                        st.editor.history.layout_dirty = true;
+                    }
+                }
+            }
+        })
+        .on_double_press(|st: &mut State| {
+            st.editor.history.layout.reset(HistoryField::DetailWidth);
             st.editor.history.layout_dirty = true;
         })
 }
@@ -2549,6 +2683,276 @@ mod tests {
         );
     }
 
+    // -- detail position: Right split --------------------------------------
+
+    /// History scene in Right position: same commits as `handle_scene`, with
+    /// `detail_position` flipped and `detail_width` persisted.
+    fn right_scene(detail_width: f64) -> State {
+        let mut s = handle_scene(320.0);
+        s.editor.history.layout.detail_position = DetailPosition::Right;
+        s.editor.history.layout.set_detail_width(detail_width);
+        s
+    }
+
+    fn width_grip(rt: &rune::Runtime<State>) -> rune::ElementInfo {
+        rt.elements()
+            .into_iter()
+            .find(|e| {
+                e.role == "separator" && e.label.as_deref() == Some("Resize history detail width")
+            })
+            .expect("detail width handle mounted")
+    }
+
+    fn drag_x(rt: &mut rune::Runtime<State>, x0: f32, y: f32, x1: f32) {
+        rt.pointer_move(x0, y);
+        rt.pointer_down(x0, y);
+        rt.frame(1.0 / 60.0);
+        for i in 1..=4 {
+            rt.pointer_move(x0 + (x1 - x0) * i as f32 / 4.0, y);
+            rt.frame(1.0 / 60.0);
+        }
+        rt.pointer_up(x1, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    /// The commit table's rendered width — the "Commit history" grid spans
+    /// exactly the space the flex row gives it.
+    fn table_width(rt: &rune::Runtime<State>) -> f32 {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.role == "grid" && e.label.as_deref() == Some("Commit history"))
+            .expect("commit table mounted")
+            .rect[2]
+    }
+
+    /// Right position mounts the vertical handle (not the horizontal one)
+    /// and renders table | handle | detail in one row. An oversized stored
+    /// width clamps to `wmax` — the detail never exceeds the row minus the
+    /// table's minimum — while a fitting width renders as stored.
+    #[test]
+    fn right_position_clamps_detail_width_and_keeps_table_min() {
+        use rune::{Env, Runtime};
+
+        let home = app_core::test_support::TempDir::new("history-right-clamp");
+        let _guard = HomeGuard::set(home.path());
+        let s = right_scene(5000.0);
+        let mut rt = Runtime::new(s, crate::view, (1200.0, 700.0), Env::new(true, 2.0));
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+
+        // Only the vertical handle exists in Right position.
+        assert!(width_grip(&rt).rect[3] > 100.0, "handle spans row height");
+        assert!(
+            !rt.elements().iter().any(|e| e
+                .label
+                .as_deref()
+                .is_some_and(|l| l.contains("history table and detail"))),
+            "horizontal handle unmounted in Right position"
+        );
+
+        let root_w = rt.state.editor.history.measured_root_width as f64;
+        assert!(root_w > 0.0, "root width measured");
+        let (floor, wmax) = detail_width_bounds(&rt.state.editor.history);
+        let expected = rt
+            .state
+            .editor
+            .history
+            .layout
+            .detail_width
+            .clamp(floor, wmax);
+        // 5000 stored → renders at wmax; the table keeps exactly TABLE_MIN_W
+        // because the clamp reserves it (plus the 8pt handle).
+        assert!(expected < 5000.0 && expected > 0.0, "clamped: {expected}");
+
+        let grid = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "grid" && e.label.as_deref() == Some("Commit history"))
+            .expect("commit table mounted");
+        let table_w = grid.rect[2];
+        assert!(
+            table_w >= TABLE_MIN_W - 1.0,
+            "table keeps its minimum: {table_w}"
+        );
+        // Detail right edge is the row's right edge (window width); its left
+        // edge is the handle's right edge.
+        let g = width_grip(&rt);
+        let detail_left = g.rect[0] + g.rect[2];
+        let detail_w = 1200.0 - detail_left;
+        assert!(
+            (detail_w - expected as f32).abs() < 2.0,
+            "rendered detail width {detail_w} == clamped {expected}"
+        );
+        // And the row accounts exactly: table + handle + detail == root width.
+        let accounted = table_w + g.rect[2] + detail_w;
+        assert!(
+            (accounted - root_w as f32).abs() < 2.0,
+            "row fills the root: {accounted} vs {root_w}"
+        );
+    }
+
+    /// A stored width inside the bounds renders un-clamped, and narrowing
+    /// the window re-clamps it (the stored value is the user's choice).
+    #[test]
+    fn right_position_renders_stored_width_then_reclamps() {
+        use rune::{Env, Runtime};
+
+        let home = app_core::test_support::TempDir::new("history-right-width");
+        let _guard = HomeGuard::set(home.path());
+        let s = right_scene(420.0);
+        let mut rt = Runtime::new(s, crate::view, (1200.0, 700.0), Env::new(true, 2.0));
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+        let root_w = rt.state.editor.history.measured_root_width as f64;
+        assert!(root_w > 0.0, "root width measured");
+        let (floor, wmax) = detail_width_bounds(&rt.state.editor.history);
+        assert!(
+            420.0 >= floor && 420.0 <= wmax,
+            "420 inside bounds at 1200px"
+        );
+        let g = width_grip(&rt);
+        let detail_w = 1200.0 - (g.rect[0] + g.rect[2]);
+        assert!(
+            (detail_w - 420.0).abs() < 2.0,
+            "stored 420 renders: {detail_w}"
+        );
+        assert!(table_width(&rt) > TABLE_MIN_W, "table keeps free space");
+
+        // Shrink the window below what 420 + table-min needs: the detail
+        // yields, the stored 420 stays.
+        rt.set_viewport((760.0, 700.0), 2.0);
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+        let root_w = rt.state.editor.history.measured_root_width as f64;
+        assert!(
+            root_w < 872.0,
+            "narrow window re-measured the root: {root_w}"
+        );
+        let (_, wmax) = detail_width_bounds(&rt.state.editor.history);
+        assert!(wmax < 420.0, "narrow row caps below stored: {wmax}");
+        assert_eq!(
+            rt.state.editor.history.layout.detail_width, 420.0,
+            "stored intent preserved"
+        );
+        let g = width_grip(&rt);
+        let detail_w = 760.0 - (g.rect[0] + g.rect[2]);
+        assert!(
+            (detail_w - wmax as f32).abs() < 2.0,
+            "detail re-clamped to {wmax}: {detail_w}"
+        );
+        assert!(
+            width_grip(&rt).rect[0] + width_grip(&rt).rect[2] + detail_w <= 760.5,
+            "detail stays on-screen at 760px"
+        );
+    }
+
+    /// Dragging the vertical handle left grows the persisted width and arms
+    /// the settings lane; a double-press restores the 420 default.
+    #[test]
+    fn right_detail_handle_drags_and_double_press_resets() {
+        use rune::{Env, Runtime};
+
+        let home = app_core::test_support::TempDir::new("history-right-drag");
+        let _guard = HomeGuard::set(home.path());
+        let s = right_scene(300.0);
+        let mut rt = Runtime::new(s, crate::view, (1200.0, 700.0), Env::new(true, 2.0));
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+        let g = width_grip(&rt);
+        assert!(
+            (g.rect[2] - DETAIL_HANDLE_W).abs() < 0.5,
+            "handle is the 8pt strip"
+        );
+        let (x, y) = (g.rect[0] + g.rect[2] / 2.0, g.rect[1] + g.rect[3] / 2.0);
+
+        // Drag LEFT 60px: the detail (right of the handle) grows.
+        drag_x(&mut rt, x, y, x - 60.0);
+        let persisted = rt.state.editor.history.layout.detail_width;
+        assert!(
+            (persisted - 360.0).abs() < 2.0,
+            "300 + 60 left-drag -> {persisted}"
+        );
+        assert!(rt.state.editor.history.layout_dirty);
+
+        // Double-press restores the default width.
+        let g = width_grip(&rt);
+        let (x, y) = (g.rect[0] + g.rect[2] / 2.0, g.rect[1] + g.rect[3] / 2.0);
+        for _ in 0..2 {
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(
+            rt.state.editor.history.layout.detail_width, 420.0,
+            "double-press resets to the default width"
+        );
+        assert!(rt.state.editor.history.layout_dirty);
+    }
+
+    /// The toolbar segmented control flips `detail_position` and arms the
+    /// same persistence lane the drag handles use.
+    #[test]
+    fn detail_position_toggle_flips_and_arms_persist() {
+        use rune::{Env, Runtime};
+
+        let home = app_core::test_support::TempDir::new("history-pos-toggle");
+        let _guard = HomeGuard::set(home.path());
+        let s = handle_scene(320.0);
+        let mut rt = Runtime::new(s, crate::view, (1200.0, 700.0), Env::new(true, 2.0));
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(
+            rt.state.editor.history.layout.detail_position,
+            DetailPosition::Bottom
+        );
+
+        let pick = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.role == "radio" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label:?} segment mounted"))
+        };
+        let r = pick(&rt, "Right").rect;
+        let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+
+        assert_eq!(
+            rt.state.editor.history.layout.detail_position,
+            DetailPosition::Right
+        );
+        assert!(rt.state.editor.history.layout_dirty, "toggle arms persist");
+        assert!(
+            rt.state
+                .editor
+                .history
+                .layout
+                .to_json()
+                .contains("\"detailPosition\":\"right\""),
+            "position serialized"
+        );
+        // The vertical handle mounts and the horizontal one unmounts.
+        assert!(width_grip(&rt).rect[3] > 100.0);
+
+        let r = pick(&rt, "Bottom").rect;
+        let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.editor.history.layout.detail_position,
+            DetailPosition::Bottom
+        );
+    }
+
     #[test]
     fn branch_combobox_opens_with_every_ref() {
         use rune::{Cx, Env, Runtime};
@@ -2571,7 +2975,10 @@ mod tests {
         let mut rt = Runtime::new(s, toolbar_view, (800.0, 300.0), Env::new(true, 2.0));
         rt.frame(0.0);
         let options = |rt: &Runtime<State>| {
-            rt.elements().into_iter().filter(|e| e.role == "option").count()
+            rt.elements()
+                .into_iter()
+                .filter(|e| e.role == "option")
+                .count()
         };
         assert_eq!(options(&rt), 0, "starts closed");
 
@@ -2580,7 +2987,10 @@ mod tests {
             .into_iter()
             .find(|e| e.key.as_deref() == Some("history-branch-value-trigger"))
             .expect("the combobox trigger is mounted");
-        let (x, y) = (trigger.rect[0] + 4.0, trigger.rect[1] + trigger.rect[3] / 2.0);
+        let (x, y) = (
+            trigger.rect[0] + 4.0,
+            trigger.rect[1] + trigger.rect[3] / 2.0,
+        );
         rt.pointer_move(x, y);
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);

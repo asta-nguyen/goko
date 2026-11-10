@@ -199,6 +199,9 @@ pub struct HistoryState {
     /// pane's render clamp. Kept per-state so parallel `Runtime` instances
     /// (tests, multi-window) never share a stale measurement.
     pub measured_root_height: f32,
+    /// History root width measured by `on_layout_tx`; feeds the Right
+    /// position's detail-width render clamp.
+    pub measured_root_width: f32,
     /// Detail pane height measured by `on_layout_tx`; feeds the metadata
     /// scroll cap in `commit_detail`.
     pub measured_detail_height: f32,
@@ -344,6 +347,10 @@ pub struct EditorState {
     /// Persisted indent-unit override (`auto` resolves per document); every
     /// mounted [`CodeState`] mirrors it via [`Self::set_indent_choice`].
     pub indent_choice: UnitChoice,
+    /// Whether the inline-blame column is shown. Persisted under
+    /// `goko.editor.blame`; the column itself additionally hides while the
+    /// draft is dirty — the annotations describe the file on disk.
+    pub blame_enabled: bool,
     /// Go-to-definition resolution in flight (one at a time).
     pub go_to: Option<GoToPending>,
     /// Token guarding an in-flight file load against stale replies.
@@ -469,6 +476,7 @@ impl EditorState {
                 diff: DiffState::new(Vec::new()),
                 table: TableState::new(),
                 measured_root_height: 0.0,
+                measured_root_width: 0.0,
                 measured_detail_height: 0.0,
                 row_menu: None,
                 copied_hash: None,
@@ -501,6 +509,7 @@ impl EditorState {
             doc: None,
             scratch_code: CodeState::new("", ""),
             indent_choice: UnitChoice::Auto,
+            blame_enabled: true,
             go_to: None,
             doc_load: None,
             doc_reload: None,

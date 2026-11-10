@@ -367,11 +367,10 @@ fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
 // pixels but text keeps its exact position, so fractional layouts drift text off-centre).
 const ROW_H: f32 = 28.0; // every row's pitch: project, worktree, session, "Worktrees"
 // Filled rows (active, selected) keep a 4 pt gap so neighbouring fills never merge into
-// one blob. The fill is an inset `row_layer` (`FILL_H` tall, `ROW_GAP` in from the top
-// and bottom) rather than a margin on the row, so every row keeps its exact 28 pt pitch
-// and the text/badges inside never move off the pixel grid.
+// one blob. The fill is an inset `row_layer` (`ROW_GAP` in from the top and bottom of
+// whatever height its row is) rather than a margin on the row, so every row keeps its
+// exact pitch and the text/badges inside never move off the pixel grid.
 const ROW_GAP: f32 = 2.0;
-const FILL_H: f32 = ROW_H - 2.0 * ROW_GAP; // 24
 const CELL: f32 = 24.0; // chevron cell
 const GUIDE: f32 = 15.0; // indent guide offset; ≈ under the chevron centre
 const SESSION_PL: f32 = 20.0; // session icon indent inside its list (was 40)
@@ -484,11 +483,13 @@ fn row_fill(ink: &Ink, active: bool) -> Color {
 /// The row's background: an inset, rounded layer under its content (add it as the
 /// row's first child). It carries the active / selected fill on the quick state
 /// spring and leaves a `ROW_GAP` channel above and below, so two filled rows stacked
-/// directly on each other still read as two.
-fn row_layer(fill: Color) -> El {
+/// directly on each other still read as two. `row_h` is the ROW's height: a two-line
+/// row (a project name over its branch) keeps the same channels around a taller fill,
+/// and the `active_edge` inside tracks it through `h_full`.
+fn row_layer(fill: Color, row_h: f32) -> El {
     el().absolute(0.0, ROW_GAP)
         .w_full()
-        .h(FILL_H)
+        .h(row_h - 2.0 * ROW_GAP)
         .radius(6.0)
         .fill(fill)
         .motion(theme::STATE_SPRING)
@@ -652,10 +653,13 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
 
     // Row: `flex items-center gap-1 rounded-md px-1 py-0.5` (gap 2, px 4, h 24).
     // Git projects carry the branch under the name, so the row grows to fit
-    // two lines; the rest keep the shared 28 pt pitch.
+    // two lines; the rest keep the shared 28 pt pitch. `row_h` is computed once
+    // so the fill and the active edge cover the branch line too — the fixed
+    // pitch left the wash short and the trailing icons looked pushed off it.
+    let row_h = if branch_el.is_some() { 40.0 } else { ROW_H };
     let mut row_el = row()
         .w_full()
-        .h(if branch_el.is_some() { 40.0 } else { ROW_H })
+        .h(row_h)
         .px(4.0)
         .gap(2.0)
         .items_center()
@@ -665,7 +669,7 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
         // only paints on the element that owns the press handler). The chevron keeps
         // its own handler and captures its own presses.
         .press(press_wash(ink))
-        .child(row_layer(row_fill(ink, active)).child(active_edge(ink, active)));
+        .child(row_layer(row_fill(ink, active), row_h).child(active_edge(ink, active)));
 
     // Chevron button 20×20; expanded chevron-down, collapsed chevron-right.
     let pid_toggle = pid.to_string();
@@ -702,17 +706,15 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
         .px(4.0)
         .gap(6.0)
         .items_center()
-        .child(
-            theme::ic(
-                if is_git {
-                    &theme::FOLDER_GIT2
-                } else {
-                    &theme::FOLDER
-                },
-                16.0,
-                ink.accent,
-            ),
-        )
+        .child(theme::ic(
+            if is_git {
+                &theme::FOLDER_GIT2
+            } else {
+                &theme::FOLDER
+            },
+            16.0,
+            ink.accent,
+        ))
         .child(texts);
     row_el = row_el.child(activate);
 
@@ -899,11 +901,10 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     };
     // bg-accent/10 + text-accent on the row; the fill is always present (alpha 0 when
     // not selected) so selecting is a colour transition, not a fill appearing.
-    b = b.child(row_layer(ink.accent.alpha(if selected {
-        0.10
-    } else {
-        0.0
-    })));
+    b = b.child(row_layer(
+        ink.accent.alpha(if selected { 0.10 } else { 0.0 }),
+        ROW_H,
+    ));
     let sid = info.id.clone();
     let wid = workspace_id.to_string();
     b = b.on_press(move |s: &mut State| {
@@ -927,25 +928,22 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
         s.session_shown_activity(&sv.info.id),
         &s.pulse,
     ));
-    // The agent CLIs running under the session: `↳ devin`, `↳ codex, devin ×2`.
-    let subagents = s.session_subagents(&sv.info.id);
-    if !subagents.is_empty() {
-        let label = app_core::subagents::subagent_label(&subagents);
-        b = b.child(
-            theme::txt(&format!("↳ {label}"), SUBS, ink.muted)
-                .group_color(ink.text)
-                .min_w(0.0)
-                .truncate(),
-        );
-    }
-    // The row's own actions: stop the session and close its pane. They sit
-    // in a fixed cell, so the row never shifts when they appear.
-    b = b.child(session_actions(ink, info.id.clone()));
+    // The label cell takes every point the badge and the action cell leave:
+    // its texts truncate inside it instead of pushing the actions off the
+    // trailing edge.
+    let mut texts = row().grow(1.0).min_w(0.0).gap(8.0).items_center();
     if let Some(l) = label {
         // label font-medium (sel→accent / ended→muted / else text) + title
-        // `text-xs text-muted` truncate.
-        b = b
-            .child(theme::txt(&l, NAME, rest).group_color(hovered))
+        // `text-xs text-muted` truncate. The label truncates too: a long
+        // `agent · account` name must elide inside the cell, not paint over
+        // the actions.
+        texts = texts
+            .child(
+                theme::txt(&l, NAME, rest)
+                    .group_color(hovered)
+                    .min_w(0.0)
+                    .truncate(),
+            )
             .child(
                 theme::txt(&title, SUB, ink.muted)
                     .group_color(ink.text)
@@ -954,13 +952,31 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
             );
     } else {
         // single title font-medium, same colour rule.
-        b = b.child(
+        texts = texts.child(
             theme::txt(&title, NAME, rest)
                 .group_color(hovered)
                 .min_w(0.0)
                 .truncate(),
         );
     }
+    // The agent CLIs running under the session: `↳ devin`, `↳ codex, devin ×2`.
+    // Trailing meta inside the label cell — ahead of the name it read as a
+    // wide gap between the icon and the label.
+    let subagents = s.session_subagents(&sv.info.id);
+    if !subagents.is_empty() {
+        let label = app_core::subagents::subagent_label(&subagents);
+        texts = texts.child(
+            theme::txt(&format!("↳ {label}"), SUBS, ink.muted)
+                .group_color(ink.text)
+                .min_w(0.0)
+                .truncate(),
+        );
+    }
+    b = b.child(texts);
+    // The row's own actions: stop the session and close its pane. They sit
+    // in a fixed cell at the trailing edge, so the row never shifts when
+    // they appear.
+    b = b.child(session_actions(ink, info.id.clone()));
     col().child(b)
 }
 
@@ -980,13 +996,20 @@ fn agent_badge(
     el().size(16.0, 16.0)
         .child(theme::ic(glyph, 16.0, color))
         // The state dot sits over the mark's corner, on a disc of the row's
-        // own background so no glyph shows through it.
+        // own background so no glyph shows through it. The dot layer is
+        // absolute so it centres ON the disc — as a flex sibling it would
+        // sit beside it and read as stray dots on the mark.
         .child(
             el().absolute(6.0, 6.0)
                 .size(10.0, 10.0)
                 .center()
                 .child(el().size(8.0, 8.0).radius(4.0).fill(row_bg))
-                .child(theme::state_dot(s.info.state, activity, angle, pulse, ink)),
+                .child(
+                    el().absolute(0.0, 0.0)
+                        .size(10.0, 10.0)
+                        .center()
+                        .child(theme::state_dot(s.info.state, activity, angle, pulse, ink)),
+                ),
         )
 }
 
@@ -1146,7 +1169,7 @@ fn worktree_node(
         .radius(6.0)
         .hover_group()
         .press(press_wash(ink))
-        .child(row_layer(row_fill(ink, active)).child(active_edge(ink, active)))
+        .child(row_layer(row_fill(ink, active), ROW_H).child(active_edge(ink, active)))
         .child(chevron(wt_open, ink).on_press(move |s: &mut State| {
             let cur = s
                 .worktrees_open
@@ -1235,7 +1258,7 @@ fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
         .radius(6.0)
         .hover_group()
         .press(press_wash(ink))
-        .child(row_layer(row_fill(ink, unassigned_active)))
+        .child(row_layer(row_fill(ink, unassigned_active), ROW_H))
         .child(
             theme::txt(
                 "Unassigned",
@@ -1329,5 +1352,300 @@ mod tests {
         s.launch_custom_session(target.clone(), "   ");
         assert!(s.notice.is_some(), "an empty command is refused");
         assert!(s.pending.is_empty(), "nothing was started");
+    }
+
+    /// A measured layout, not a source mirror: at the narrowest sidebar the
+    /// session label must start right after the icon and the Stop/Close
+    /// cell must sit at the row's trailing edge, not between them — the
+    /// regression that left a wide blank before the name.
+    #[test]
+    fn a_session_row_lays_label_by_the_icon_and_actions_trailing() {
+        use protocol::session::{SessionId, SessionInfo, SessionState};
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink)
+        }
+
+        let mut s = State::new(test_handle());
+        s.sidebar_width = MIN_SIDEBAR_W;
+        // A registered agent + its Default account give the row the wide
+        // `agent · account` label the narrow sidebar must truncate.
+        s.data.agents.push(data::AgentInfo {
+            id: "claude".into(),
+            label: "Claude Code".into(),
+            available: true,
+            path: Some("claude".into()),
+        });
+        s.data.accounts = Some(app_core::accounts::AccountsView {
+            claude: app_core::accounts::AgentView {
+                active: "default".into(),
+                items: vec![app_core::accounts::AccountView {
+                    id: "default".into(),
+                    name: "Default".into(),
+                    dir: "/home/user/.claude".into(),
+                    is_default: true,
+                }],
+            },
+            codex: app_core::accounts::AgentView {
+                active: String::new(),
+                items: Vec::new(),
+            },
+        });
+        let info = SessionInfo {
+            id: SessionId::new(),
+            title: "Work".into(),
+            argv: vec!["claude".into()],
+            cwd: "/tmp".into(),
+            state: SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        };
+        let key = data::SessionInfo::key(info.id);
+        s.session_metas.insert(
+            key.clone(),
+            app_core::store::SessionMeta {
+                session_id: key.clone(),
+                project_id: None,
+                agent: "claude".into(),
+                argv: info.argv.clone(),
+                cwd: info.cwd.clone(),
+                title: info.title.clone(),
+                created_at: 0,
+            },
+        );
+        // A running sub-agent adds `↳ devin` inside the label cell.
+        s.subagents.insert(
+            key.clone(),
+            vec![app_core::subagents::Subagent {
+                agent: "devin".into(),
+                pid: 4242,
+                command: "devin".into(),
+            }],
+        );
+        s.upsert_session(info);
+
+        let mut rt = Runtime::new(s, sidebar_view, (260.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+
+        let text = |t: &str| {
+            els.iter()
+                .position(|e| e.text.as_deref() == Some(t))
+                .unwrap_or_else(|| panic!("{t:?} not mounted"))
+        };
+        let label = &els[text("Claude Code · Default")];
+        let title = &els[text("Work")];
+        let subs = &els[text("↳ devin")];
+        let stop_key = format!("sidebar-action:stop:{key}");
+        let stop_idx = els
+            .iter()
+            .position(|e| e.key.as_deref() == Some(stop_key.as_str()))
+            .expect("stop action mounted");
+        // The action cell is the stop button's row; the label cell is the
+        // label text's row; the session row is the label cell's parent.
+        let actions = &els[els[stop_idx].parent.expect("actions cell")];
+        let texts = &els[label.parent.expect("label cell")];
+        let row_idx = texts.parent.expect("session row");
+        let row = &els[row_idx];
+        // The icon is the row's small square child ahead of the label cell.
+        let badge = els
+            .iter()
+            .find(|e| e.parent == Some(row_idx) && e.rect[2] <= 20.0 && e.rect[3] <= 20.0)
+            .expect("session icon");
+
+        // The label starts one gap after the icon — never the wide channel
+        // a mid-row action cell left before it.
+        let after_icon = label.rect[0] - (badge.rect[0] + badge.rect[2]);
+        assert!(
+            (4.0..=9.0).contains(&after_icon),
+            "label sits {after_icon:.1} pt after the icon, row {:?}",
+            row.rect,
+        );
+        // Stop/Close sit in the row's trailing cell after the label cell —
+        // they neither overlap the texts nor open a gap before them.
+        let texts_right = texts.rect[0] + texts.rect[2];
+        assert!(
+            actions.rect[0] >= texts_right - 0.01,
+            "actions {:?} overlap the label cell {:?}",
+            actions.rect,
+            texts.rect,
+        );
+        let row_right = row.rect[0] + row.rect[2];
+        let actions_right = actions.rect[0] + actions.rect[2];
+        assert!(
+            (actions_right - (row_right - 8.0)).abs() < 0.5,
+            "actions end at {actions_right:.1}, row's trailing edge {row_right:.1} - 8",
+        );
+        // A long `agent · account` label elides inside the label cell: its
+        // allocated right bound stays ahead of the action cell.
+        let label_right = label.rect[0] + label.rect[2];
+        assert!(
+            label_right <= texts_right + 0.01,
+            "label's allocated box {label_right:.1} escapes the label cell {texts_right:.1}",
+        );
+        assert!(
+            label_right <= actions.rect[0] + 0.01,
+            "label's allocated box {label_right:.1} reaches the action cell {:?}",
+            actions.rect,
+        );
+        // The title and the sub-agent line stay inside the label cell, after
+        // the label — nothing reopens a gap before the name.
+        assert!(subs.rect[0] >= title.rect[0], "↳ cell precedes the title");
+        assert!(
+            subs.rect[0] >= label.rect[0] + label.rect[2] - 0.01,
+            "↳ cell precedes the label"
+        );
+    }
+
+    /// A git project's branch subtitle grows its row to two lines; the wash
+    /// and the active edge must cover the whole row, not the 28 pt pitch —
+    /// the regression that left the branch hanging below the fill and the
+    /// menu icons looking pushed off the wash's middle.
+    #[test]
+    fn a_branch_project_row_paints_its_fill_and_edge_full_height() {
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink)
+        }
+
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![ProjectView {
+            project: app_core::store::Project {
+                id: "p1".into(),
+                name: "web".into(),
+                root: "/work/a/web".into(),
+                created_at: 0,
+            },
+            missing: false,
+        }];
+        s.editor.sidebar_worktrees.insert(
+            "p1".to_string(),
+            crate::editor::state::SidebarWorktrees {
+                list: Some(data::WorktreeList {
+                    repo: true,
+                    worktrees: vec![WorktreeInfo {
+                        name: "web".into(),
+                        path: "/work/a/web".into(),
+                        branch: Some("feature/sidebar".into()),
+                        head: "0123456789abcdef0123456789abcdef01234567".into(),
+                        is_root: true,
+                        missing: false,
+                        dirty: Some(false),
+                        changed: Some(0),
+                    }],
+                }),
+                loading: false,
+                error: None,
+            },
+        );
+        // The active checkout paints the wash and the edge the bug starved.
+        s.active_workspace = Some(data::checkout_key("p1", "/work/a/web"));
+
+        let mut rt = Runtime::new(s, sidebar_view, (260.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+
+        let row_idx = els
+            .iter()
+            .position(|e| e.key.as_deref() == Some("sidebar-project:p1"))
+            .expect("project row mounted");
+        let row = &els[row_idx];
+        assert!(
+            (row.rect[3] - 40.0).abs() < 0.5,
+            "branch project row {:?} is not the two-line 40 pt",
+            row.rect,
+        );
+
+        // The wash is the row's widest child — the edge-to-edge absolute layer.
+        let layer_idx = els
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.parent == Some(row_idx))
+            .max_by(|a, b| a.1.rect[2].partial_cmp(&b.1.rect[2]).unwrap())
+            .map(|(i, _)| i)
+            .expect("fill layer mounted");
+        let layer = &els[layer_idx];
+        // It spans the row minus its 2 pt channels, not the 28 pt pitch that
+        // left the branch's line bare.
+        assert!(
+            (layer.rect[3] - (row.rect[3] - 2.0 * ROW_GAP)).abs() < 0.5,
+            "fill layer {:?} does not cover the row {:?}",
+            layer.rect,
+            row.rect,
+        );
+        assert!(
+            (layer.rect[1] - (row.rect[1] + ROW_GAP)).abs() < 0.5,
+            "fill layer top {:?} loses its gap under row {:?}",
+            layer.rect,
+            row.rect,
+        );
+        let layer_bottom = layer.rect[1] + layer.rect[3];
+        let row_bottom = row.rect[1] + row.rect[3];
+        assert!(
+            (row_bottom - layer_bottom - ROW_GAP).abs() < 0.5,
+            "fill layer bottom {layer_bottom} loses its gap under row bottom {row_bottom}",
+        );
+        let branch = els
+            .iter()
+            .find(|e| e.text.as_deref() == Some("feature/sidebar"))
+            .expect("branch subtitle mounted");
+        assert!(
+            branch.rect[1] + branch.rect[3] <= layer_bottom + 0.01,
+            "branch {:?} spills below the wash {:?}",
+            branch.rect,
+            layer.rect,
+        );
+
+        // The active edge is the 2 pt bar inside the layer: centred on the
+        // row, spanning it minus its 3 pt insets — not the short pitch's bar.
+        let edge_idx = els
+            .iter()
+            .position(|e| e.parent == Some(layer_idx) && e.rect[2] <= 3.0)
+            .expect("active edge mounted");
+        let bar = els
+            .iter()
+            .find(|e| e.parent == Some(edge_idx))
+            .expect("edge bar mounted");
+        assert!(
+            (bar.rect[3] - (layer.rect[3] - 6.0)).abs() < 0.5,
+            "edge bar {:?} does not track the layer {:?}",
+            bar.rect,
+            layer.rect,
+        );
+        let row_mid = row.rect[1] + row.rect[3] / 2.0;
+        assert!(
+            ((bar.rect[1] + bar.rect[3] / 2.0) - row_mid).abs() < 0.5,
+            "edge bar {:?} is off the row's middle {row_mid}",
+            bar.rect,
+        );
+
+        // The menu icons stay at the trailing edge, centred on the whole row —
+        // exactly what the short wash made look misplaced.
+        for key in ["sidebar-action:new-session:p1", "sidebar-action:more:p1"] {
+            let btn = els
+                .iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("{key} mounted"));
+            assert!(
+                ((btn.rect[1] + btn.rect[3] / 2.0) - row_mid).abs() < 0.5,
+                "{key} {:?} is off the row's middle {row_mid}",
+                btn.rect,
+            );
+        }
+        let more = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some("sidebar-action:more:p1"))
+            .unwrap();
+        let row_right = row.rect[0] + row.rect[2];
+        let more_right = more.rect[0] + more.rect[2];
+        assert!(
+            more_right > row_right - 8.0 && more_right <= row_right - 3.0,
+            "actions end at {more_right}, row's trailing edge {row_right} - px(4)",
+        );
     }
 }
