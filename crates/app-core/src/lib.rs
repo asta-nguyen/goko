@@ -2,6 +2,7 @@
 //! the error type, the `goko.db` store, file/Git inspection and writes, agent
 //! and ACP support, GOKO_HOME resolution, and registered-project validation.
 
+pub mod accounts;
 pub mod acp;
 pub mod activity;
 pub mod agents;
@@ -15,4 +16,5 @@ pub mod store;
 pub mod subagents;
 #[doc(hidden)]
 pub mod test_support;
+pub mod usage;
 pub mod worktrees;

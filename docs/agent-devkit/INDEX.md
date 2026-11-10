@@ -11,6 +11,7 @@
 
 ## Archived changes
 
+- [Rune live sessions: daemon client, sidebar parity, terminal attach](changes/archive/rune-live-sessions/design.md) ([tasks](changes/archive/rune-live-sessions/tasks.md), [delta](changes/archive/rune-live-sessions/delta.md))
 - [Rune editor: full-file syntax highlighting](changes/archive/rune-full-highlight/delta.md)
 
 - [Editor History: Git Graph style table](changes/archive/2026-11-06-history-git-graph/design.md) ([tasks](changes/archive/2026-11-06-history-git-graph/tasks.md))

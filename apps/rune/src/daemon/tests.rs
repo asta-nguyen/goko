@@ -541,7 +541,7 @@ fn a_real_daemon_serves_a_session() {
         .expect("the daemon created the session");
 
     // Its output comes back through the kind-1 frames.
-    let (mut chunks, ready) = daemon
+    let (chunks, ready) = daemon
         .attach_output(session.id, false)
         .expect("subscribe to the session");
     ready

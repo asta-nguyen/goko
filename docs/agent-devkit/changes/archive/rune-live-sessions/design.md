@@ -146,8 +146,52 @@ Out of scope (deferred, recorded for a later change):
 
 ## Related context
 
-- [Rune chrome](../../../llm/domains/rune-chrome.md)
-- [Rune editor](../../../llm/domains/rune-editor.md)
-- [Architecture overview](../../../llm/architecture/overview.md)
+- [Rune chrome](../../../../llm/domains/rune-chrome.md)
+- [Rune editor](../../../../llm/domains/rune-editor.md)
+- [Architecture overview](../../../../llm/architecture/overview.md)
 - Prior art: `apps/desktop/src-tauri/src/daemon_client*` and
   `apps/desktop/src-tauri/src/activity.rs` (Tauri side, not reused directly).
+
+## User-authorized parity extension — 2026-11-10
+
+The user requested fixes for the review findings followed by porting Usage/quota,
+multiple accounts and account names, split terminal panes, full worktree creation,
+and finally Settings from `main`. This supersedes the original deferrals above
+for those features. Existing completed work and decisions remain historical.
+
+- Fix missing `SessionInfo.pid` test fixtures, duplicate terminal replay after
+  reconnect, repaint starvation during continuous output, and missing terminal
+  cell background/inverse/cursor rendering. Regression checks cover replay
+  overlap and subscription-reply ordering, continuous output and styled cells.
+- Reuse `main` accounts/usage logic in Tauri-free `app-core` APIs. Preserve the
+  existing accounts setting and implicit Default, safe sharing of noncredential
+  files, named-account launch environment and usage hooks. Removing an account
+  removes its stored row only. Never copy credentials or delete its folder.
+- Read usage and account state off the UI thread. Render active-account quotas,
+  reset information, unknown/error states and session account names inferred
+  from each session's own launch argv, independent of subsequent account switches.
+- Each terminal tab owns a recursive split tree. Each visible pane independently
+  attaches, parses, resizes and renders its session; focus routes input and
+  controls. Separators support dragging and keyboard resize. Closing a pane
+  stops/deletes its session, collapses its split and retains sibling sessions;
+  failures remain visible and retryable. Tab close applies to all its panes.
+- Match the desktop worktree form: path, new/existing local branch, base ref,
+  checked-out-branch validation, optional environment copy and partial-success
+  reporting when creation succeeds but copy fails. Keep existing app-core path
+  and filesystem protections and the editor draft guards.
+- Replace Settings placeholder last with native controls for the desktop
+  settings domains: editor, appearance, accounts and ACP agents. Preferences
+  persist through the shared store; System theme follows OS appearance. Expose
+  only functional controls; any native-editor capability gap must be reported,
+  not represented by an inert preference.
+- Keep Rune's existing density, reusable kit controls, accessible labels and
+  keyboard focus. Preserve Desktop callers, existing sessions and stored data.
+  No new dependencies, commits, pushes or real-account login actions are part
+  of implementation verification.
+
+Verification: focused Rust tests for each behavior, then workspace tests/build,
+format/Clippy, frontend tests/typecheck/build, and the wiki validator. Native UI
+verification uses isolated test data; actual provider login/quota availability
+requires user-owned accounts and is a verification limit, not fake test data.
+
+Settings clarification (user, 2026-11-10): Vim implementation is deferred to a separate change. Port Appearance, Accounts, ACP agents and existing native editor preferences; no inert Vim toggle.

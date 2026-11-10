@@ -253,7 +253,14 @@ fn notice_bar(notice: Notice, ink: &Ink) -> El {
 
 fn body(s: &State, pane: Pane, ink: &Ink, k: &Kit) -> El {
     if patch_loading(s, pane) && patch_for(s, pane).is_none() {
-        return centered(ink, pane.loading_label());
+        return col()
+            .grow(1.0)
+            .w_full()
+            .items_center()
+            .justify_center()
+            .gap(8.0)
+            .child(rune_kit::Spinner::new().color(ink.muted).build(k))
+            .child(theme::txt(pane.loading_label(), T12, ink.muted));
     }
     let Some(patch) = patch_for(s, pane) else {
         return centered(ink, pane.empty_hint());

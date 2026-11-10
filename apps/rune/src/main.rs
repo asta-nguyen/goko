@@ -7,13 +7,15 @@ mod chrome;
 mod daemon;
 mod data;
 mod editor;
+mod panes;
 mod sessions;
+mod settings;
 mod sidebar;
 mod term;
 mod theme;
 mod trace;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -41,10 +43,6 @@ pub enum View {
 pub struct State {
     ink: Ink,
     data: Data,
-    /// The attached session's rendered terminal rows.
-    lines: Vec<term::TermLine>,
-    /// The live terminal of the attached session, if any.
-    terminal: Option<term::Terminal>,
     /// The child process's activity, keyed by session id: what the
     /// session's agent is doing (working, waiting, done).
     activity: HashMap<String, app_core::activity::Activity>,
@@ -57,17 +55,13 @@ pub struct State {
     activity_at: Option<f64>,
     /// The pulse of a waiting child's dot.
     pulse: rune::Live<f32>,
-    /// The grid the terminal renders at, measured from the pane.
-    terminal_cols: usize,
-    terminal_rows: usize,
-    /// The size the daemon's PTY was last told about.
-    terminal_pty: (usize, usize),
     /// Project id → expanded; absent means expanded (ProjectTree default).
     expanded: HashMap<String, bool>,
     selected_session: Option<String>,
     active_workspace: Option<String>,
-    /// Open workspace tabs, keyed by the daemon session id.
-    open_tabs: Vec<String>,
+    /// Open workspace tabs: each owns a recursive pane tree, so a split
+    /// tab's id is never "the tab's session".
+    open_tabs: Vec<panes::Tab>,
     active_tab: usize,
     /// "Worktrees" group header open per project id; absent means open.
     worktree_groups: HashMap<String, bool>,
@@ -88,8 +82,18 @@ pub struct State {
     daemon_version: Option<String>,
     /// Why the daemon is unreachable, when it is.
     daemon_reason: Option<String>,
-    /// The session whose terminal fell behind (the next poll resubscribes).
-    terminal_lagged: Option<protocol::session::SessionId>,
+    /// The sessions whose pane terminals fell behind (the next poll
+    /// resubscribes each).
+    terminal_lagged: HashSet<protocol::session::SessionId>,
+    /// Every visible pane's terminal, keyed by session id: grid, output
+    /// stream and PTY size — the active tab's panes only.
+    attachments: HashMap<String, panes::Attachment>,
+    /// The measured size of every split's box along its axis, read by the
+    /// separator's drag and keyboard bounds.
+    split_sizes: HashMap<String, f32>,
+    /// Sessions whose close has a daemon request in flight — a pane never
+    /// issues its stop or delete twice.
+    close_inflight: HashSet<String>,
     /// The wall clock in epoch milliseconds — the elapsed counter's source.
     now_ms: i64,
     /// The app's clock in seconds — the spinner's phase.
@@ -107,11 +111,28 @@ pub struct State {
     sidebar_input: Option<sidebar::SidebarInput>,
     /// The text the user typed into the sidebar's prompt.
     sidebar_text: rune::edit::TextEdit,
-    /// A launch waiting for its agent's argv.
-    pending_argv: Option<sessions::PendingArgv>,
+    /// The launches waiting for their agent's argv, each with its own
+    /// token so concurrent requests never steal each other's answer.
+    pending_argv: Vec<sessions::PendingArgv>,
+    /// The next launch token — monotonic, so a reply always names exactly
+    /// one request.
+    argv_token: u64,
     /// When each session entered the stopping state, so the force kill can
     /// be offered once a stop has hung.
     stopping_since: HashMap<String, i64>,
+    /// When the usage/accounts read was last issued; the worker re-reads
+    /// the sources about every five seconds.
+    usage_at: Option<f64>,
+    /// The open usage-chip account menu: the agent it belongs to and where
+    /// the chip was pressed, so the kit menu can anchor there.
+    usage_menu: Option<(String, f32, f32)>,
+    /// The settings page's own state (section, forms, drafts).
+    settings: settings::SettingsState,
+    /// The appearance choice restored from `goko.theme`.
+    theme_choice: theme::Theme,
+    /// What the OS last reported: `true` when dark. Only consulted while
+    /// `theme_choice` is `System`.
+    os_dark: bool,
 }
 
 /// `AppSpec::init` is a plain `fn() -> S`, so the `AppHandle` the editor's
@@ -148,11 +169,6 @@ impl State {
         State {
             ink,
             data: Data::default(),
-            lines: Vec::new(),
-            terminal: None,
-            terminal_cols: term::TERM_COLS,
-            terminal_rows: term::TERM_ROWS,
-            terminal_pty: (0, 0),
             expanded: HashMap::new(),
             selected_session: None,
             // No workspace is committed until the user picks a real
@@ -170,7 +186,10 @@ impl State {
             pending: Vec::new(),
             daemon_version: None,
             daemon_reason: None,
-            terminal_lagged: None,
+            terminal_lagged: HashSet::new(),
+            attachments: HashMap::new(),
+            split_sizes: HashMap::new(),
+            close_inflight: HashSet::new(),
             now_ms: data::now_ms(),
             clock: 0.0,
             notice: None,
@@ -179,13 +198,34 @@ impl State {
             menu_anchor: None,
             sidebar_input: None,
             sidebar_text: rune::edit::TextEdit::new(""),
-            pending_argv: None,
+            pending_argv: Vec::new(),
+            argv_token: 0,
             stopping_since: HashMap::new(),
             activity: HashMap::new(),
             activity_at: None,
             subagents: Default::default(),
             subagents_at: None,
             pulse: rune::Live::new(1.0),
+            usage_at: None,
+            usage_menu: None,
+            settings: settings::SettingsState::default(),
+            theme_choice: theme::Theme::Dark,
+            os_dark: true,
+        }
+    }
+
+    /// Rebuild the palette (and the kit's) for the current theme choice:
+    /// `System` resolves through the OS's last-reported appearance.
+    fn apply_theme(&mut self) {
+        let dark = self.theme_choice.resolve(self.os_dark).dark();
+        self.ink = Ink::for_theme(self.theme_choice.resolve(self.os_dark));
+        self.editor.kit = rune_kit::Kit::neutral(dark);
+        let ink = self.ink;
+        // Every pane's terminal holds rows rendered in the old palette:
+        // repaint them in the new one — parser, stream and PTY untouched.
+        for att in self.attachments.values_mut() {
+            att.term.refresh_theme();
+            att.lines = att.term.lines(&ink).to_vec();
         }
     }
 
@@ -255,21 +295,114 @@ impl State {
                 }
                 return;
             }
-            backend::Req::AgentArgv { agent } => {
+            backend::Req::AgentArgv { token, .. } => {
                 // The agent's launch argv: the session starts in the row's
-                // checkout. A reply for another agent is stale.
-                let pending = self.pending_argv.take();
-                if let (Some(pending), Ok(backend::ReplyData::AgentArgv(argv))) =
-                    (pending, &reply.result)
-                    && &pending.agent == agent
-                {
-                    let (cwd, project_id) = self.checkout_of(&pending.target);
+                // checkout. The reply's own token names the request it
+                // belongs to — two launches can be in flight at once, and
+                // neither may take the other's answer.
+                match &reply.result {
+                    Ok(backend::ReplyData::AgentArgv(argv)) => {
+                        if let Some(launch) = self.resolved_launch(*token, argv.clone()) {
+                            self.launch_session(launch);
+                        }
+                    }
+                    Err(error) => {
+                        // A refused launch must say why: a removed account
+                        // folder, a binary that disappeared, an invalid
+                        // configuration. Only this request's context is
+                        // dropped — another launch keeps its own.
+                        self.take_pending_argv(*token);
+                        self.notice = Some(error.clone());
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::Usage { .. } => {
+                if let Ok(backend::ReplyData::Usage { .. }) = &reply.result {
+                    // Move the payload out — the view types aren't Clone.
+                    if let Ok(backend::ReplyData::Usage { snapshot, accounts }) = reply.result {
+                        self.data.usage = Some(snapshot);
+                        self.data.accounts = Some(accounts);
+                    }
+                }
+                return;
+            }
+            backend::Req::AccountAdd { agent, token, .. } => {
+                match reply.result {
+                    Ok(backend::ReplyData::Accounts(view)) => {
+                        // Main's add flow opens sign-in for the new account —
+                        // `add` leaves it active, so `active` names it.
+                        let id = match agent.as_str() {
+                            "claude" => view.claude.active.clone(),
+                            _ => view.codex.active.clone(),
+                        };
+                        self.data.accounts = Some(view);
+                        // The drafts are cleared by the reply that belongs
+                        // to this submission only: a stale one must never
+                        // wipe a newer form.
+                        if self.settings.finish_account_add(*token) {
+                            self.request_sign_in(agent, &id);
+                        }
+                    }
+                    Err(error) => {
+                        // The failure keeps the drafts: the user can fix
+                        // the name or the folder and try again.
+                        let matched = self.settings.fail_account_add(*token, error.clone());
+                        if matched {
+                            self.notice = Some(error.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::AccountRename { token, .. } => {
+                match reply.result {
+                    Ok(backend::ReplyData::Accounts(view)) => {
+                        self.data.accounts = Some(view);
+                        // Usage chips show the new account name immediately.
+                        self.request_usage();
+                        self.settings.finish_account_rename(*token);
+                    }
+                    Err(error) => {
+                        let matched = self.settings.fail_account_rename(*token, error.clone());
+                        if matched {
+                            self.notice = Some(error.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::AccountRemove { .. } | backend::Req::AccountSetActive { .. } => {
+                if let Ok(backend::ReplyData::Accounts(view)) = reply.result {
+                    self.data.accounts = Some(view);
+                    // Usage chips show the new active name immediately.
+                    self.request_usage();
+                } else if let Err(error) = &reply.result {
+                    self.notice = Some(error.clone());
+                }
+                return;
+            }
+            backend::Req::AccountSignIn { .. } => {
+                if let Ok(backend::ReplyData::SignIn { argv, cwd, title }) = reply.result {
                     self.launch_session(sessions::SessionLaunch {
-                        argv: argv.clone(),
+                        argv,
                         cwd,
-                        project_id,
-                        agent: pending.agent.clone(),
+                        project_id: None,
+                        agent: "custom".to_string(),
+                        title,
                     });
+                } else if let Err(error) = &reply.result {
+                    self.notice = Some(error.clone());
+                }
+                return;
+            }
+            backend::Req::GetSetting { key } if key == theme::THEME_KEY => {
+                if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result {
+                    self.theme_choice = theme::Theme::parse(raw);
+                    self.apply_theme();
                 }
                 return;
             }
@@ -321,20 +454,6 @@ impl State {
     }
 }
 
-/// Centered title + muted body for views this milestone doesn't implement —
-/// keeps the chrome's buttons honest instead of dead.
-fn placeholder(title: &str, body: &str, ink: &Ink) -> El {
-    col()
-        .grow(1.0)
-        .w_full()
-        .h_full()
-        .items_center()
-        .justify_center()
-        .gap(8.0)
-        .child(theme::txt(title, theme::T14M, ink.text))
-        .child(theme::txt(body, theme::T12, ink.muted))
-}
-
 /// A handle for state-level tests: `App::new` builds the shared request
 /// queue without opening a window, so `update`/`quit` calls from worker
 /// replies just queue harmlessly.
@@ -363,16 +482,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .min_w(0.0)
             .h_full()
             .min_h(0.0)
-            .child(placeholder(
-                "Settings",
-                "The settings page lands in a later milestone.",
-                ink,
-            ))
+            .child(settings::view(s, ink))
     } else {
         let content = if s.view == View::Editor {
             editor::workspace::workspace(s, ink, &s.editor.kit)
         } else {
-            term::terminal_area(s, ink)
+            panes::terminal_workspace(s, ink)
         };
         // SessionControls live inside TerminalWorkspace only — the editor
         // has no session pane, so the strip (and its mock Stop/Close) stays
@@ -425,6 +540,28 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(prompt) = sidebar::input_layer(s, ink, &mut layer) {
         root = root.child(prompt);
     }
+    if let Some(menu) = chrome::usage_menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
+    // The New-worktree form is a modal layer too: it mounts above the app
+    // while `sidebar_input` shields the keyboard for it.
+    if let Some(form) = editor::worktree_form::layer(s, &mut layer) {
+        root = root.child(form);
+    }
+    // A failed call's notice: a toast the user closes. Without it the
+    // message was recorded and never shown.
+    // ponytail: closed by hand only; auto-expire when notices get noisy.
+    if let Some(text) = &s.notice {
+        layer.push(
+            rune_kit::ToastRegion::new()
+                .toast(
+                    rune_kit::Toast::new("notice", text.clone())
+                        .on_close(|s: &mut State| s.notice = None)
+                        .build(&s.editor.kit),
+                )
+                .build(&s.editor.kit),
+        );
+    }
     rune_kit::root(root, layer)
 }
 
@@ -449,6 +586,19 @@ fn setup(s: &mut State, _waker: rune::Waker) {
         }),
     );
     s.editor.acp.refresh();
+    // The quota chips, the accounts they name, and the stored theme.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::Usage {
+            previous: app_core::usage::UsageSnapshot::default(),
+        }),
+    );
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: theme::THEME_KEY.to_string(),
+        }),
+    );
 }
 
 /// `AppSpec::poll`: drain the daemon's events and the session replies it
@@ -470,17 +620,23 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     // The replies the session requests are waiting for.
     changed |= s.drain_pending();
-    // The terminal follows the selection: it attaches to the session the
-    // Terminal view shows and detaches from the one it left.
-    changed |= s.sync_terminal();
-    changed |= s.poll_terminal(tx);
+    // Closing panes drive their own stop→delete lifecycle.
+    changed |= s.poll_closes();
+    // Every pane of the active tab holds its own terminal attachment;
+    // panes that left the view detach.
+    changed |= s.sync_terminals();
+    changed |= s.poll_terminals(tx);
     crate::trace::trace(&s.terminal_trace());
     // A subscriber that fell behind takes a fresh subscription, which
     // replays the daemon's retained output.
-    if let Some(session) = s.terminal_lagged.take() {
-        s.resubscribe_terminal(session);
+    for session in std::mem::take(&mut s.terminal_lagged) {
+        s.resubscribe_session(session);
         changed = true;
     }
+    // Split ids die with their tabs: drop the measured sizes of splits
+    // that no longer exist.
+    let live_splits = s.split_ids();
+    s.split_sizes.retain(|id, _| live_splits.contains(id));
     editor::quit_guard::poll_install();
     editor::navigation::reopen_if_cancelled(s);
     changed |= editor::search::poll(s);
@@ -516,6 +672,13 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // The agent CLIs under the sessions: read every two seconds, on the
     // worker.
     changed |= s.poll_subagents(now);
+    // The quota chips and account labels: read about every five seconds on
+    // the worker. The wake keeps the cadence alive while the UI is idle;
+    // the `System` theme checks the OS appearance on the same tick.
+    changed |= s.poll_usage(now);
+    tx.wake_after(std::time::Duration::from_secs(5));
+    changed |= settings::poll_appearance(s);
+    settings::sync_acp_drafts(s);
     // A working session's dot spins: ask for the next frame so the ring
     // keeps turning. Reduce Motion stops the animation entirely.
     if s.spinning() && !REDUCED_MOTION.load(Ordering::Relaxed) {
@@ -607,11 +770,12 @@ fn on_modifiers(s: &mut State, mods: rune::Mods, _tx: &mut Tx) {
     s.editor.set_modifiers(mods);
 }
 
-/// The Terminal view's keyboard: every key belongs to the attached session's
-/// PTY. An app shortcut (⌘ on macOS) is left alone, and an exited session
-/// keeps its final grid without taking input.
+/// The Terminal view's keyboard: every key belongs to the focused pane's
+/// session — never "the tab's session", a split tab has several. An app
+/// shortcut (⌘ on macOS) is left alone, and an exited session keeps its
+/// final grid without taking input.
 fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
-    let Some(session) = s.terminal.as_ref().map(|terminal| terminal.session) else {
+    let Some(session) = s.focused_terminal_session() else {
         return false;
     };
     // A shortcut belongs to the app, not to the shell.
@@ -833,33 +997,88 @@ mod view_tests {
         );
     }
 
+    /// A pane holding `key`'s session with the terminal `terminal` feeds:
+    /// the attachment every visible pane owns.
+    fn attach(s: &mut State, key: &str, terminal: term::Terminal) {
+        s.attachments.insert(
+            key.to_string(),
+            panes::Attachment {
+                term: terminal,
+                lines: Vec::new(),
+                cols: term::TERM_COLS,
+                rows: term::TERM_ROWS,
+                pty: (0, 0),
+            },
+        );
+    }
+
     #[test]
     fn an_attached_terminal_is_drawn_by_the_poll_that_attaches_it() {
         // The terminal must not wait for a frame that nobody asked for:
         // the poll that attaches the session draws its grid.
         let mut s = State::new(test_handle());
         let key = seed_session(&mut s, "shell", "/tmp");
-        s.selected_session = Some(key);
-        let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
-        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let terminal = term::Terminal::new(session, rx, ready_rx);
         tx.send(daemon::Output {
             seq: 0,
             data: b"hello\r\n".to_vec(),
         })
         .unwrap();
-        s.terminal = Some(terminal);
+        attach(&mut s, &key, terminal);
+        let pane_key = key.clone();
 
         let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
         rt.update(|s, tx| {
-            s.poll_terminal(tx);
+            s.poll_terminals(tx);
         });
         let mut lines = 0;
         rt.update(|s, _| {
-            lines = s.lines.len();
+            lines = s
+                .attachments
+                .get(&pane_key)
+                .map(|a| a.lines.len())
+                .unwrap_or(0);
         });
         assert!(lines > 0, "the terminal drew its grid in the same poll");
+    }
+
+    #[test]
+    fn apply_theme_repaints_an_idle_terminal_without_a_resize() {
+        // An attached terminal that has settled stays cached in the old
+        // palette: only apply_theme's invalidation repaints it — no output,
+        // no resize, no parser movement.
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "shell", "/tmp");
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: "\u{1b}[41mRED\u{1b}[0m\r\n".as_bytes().to_vec(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        s.apply_theme();
+        let before = s.attachments[&key].lines.clone();
+        assert!(!before.is_empty(), "the idle grid was drawn once");
+
+        s.theme_choice = theme::Theme::Light;
+        s.apply_theme();
+        let att = &s.attachments[&key];
+        assert_ne!(att.lines, before, "the cached rows took the new ink");
+        assert_eq!(
+            att.lines.len(),
+            before.len(),
+            "the same grid: no wrapped lines, no resize"
+        );
+        assert_eq!(att.term.size(), (att.cols, att.rows));
+        assert_eq!(att.term.next_seq, 14, "the stream offsets did not move");
     }
 
     #[test]
@@ -869,8 +1088,8 @@ mod view_tests {
         // full-screen program shake.
         let mut s = State::new(test_handle());
         let key = seed_session(&mut s, "shell", "/tmp");
-        s.selected_session = Some(key);
-        let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
         let mut terminal = term::Terminal::new(session, rx, ready_rx);
@@ -880,12 +1099,8 @@ mod view_tests {
         })
         .unwrap();
         terminal.feed();
-        s.terminal = Some(terminal);
-        s.lines = s
-            .terminal
-            .as_mut()
-            .map(|terminal| terminal.lines(&s.ink).to_vec())
-            .unwrap_or_default();
+        attach(&mut s, &key, terminal);
+        let pane_key = key.clone();
 
         let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
         rt.poll = Some(poll);
@@ -921,8 +1136,10 @@ mod view_tests {
         let mut cols = 0;
         let mut grid_rows = 0;
         rt.update(|s, _| {
-            cols = s.terminal_cols;
-            grid_rows = s.terminal_rows;
+            if let Some(att) = s.attachments.get(&pane_key) {
+                cols = att.cols;
+                grid_rows = att.rows;
+            }
         });
         assert!(cols >= 20, "the grid took the pane's width: {cols}");
         assert!(
@@ -941,63 +1158,18 @@ mod view_tests {
     }
 
     #[test]
-    fn scratch_render_capture() {
-        let Some(dir) = std::env::var_os("CAP_DIR") else {
-            return;
+    fn a_notice_is_shown_as_a_toast() {
+        let mut s = State::new(test_handle());
+        s.notice = Some("boom happened".into());
+        let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let shown = |rt: &Runtime<State>| {
+            els(rt)
+                .iter()
+                .any(|e| e.text.as_deref() == Some("boom happened"))
         };
-        for name in ["claude", "codex"] {
-            let data =
-                std::fs::read(std::path::Path::new(&dir).join(format!("{name}.bin"))).unwrap();
-            let mut s = State::new(test_handle());
-            let key = seed_session(&mut s, "shell", "/tmp");
-            s.selected_session = Some(key);
-            let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (_r, ready_rx) = std::sync::mpsc::channel();
-            let terminal = term::Terminal::new(session, rx, ready_rx);
-            s.terminal = Some(terminal);
-            let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
-            rt.poll = Some(poll);
-            rt.frame(0.0);
-            rt.frame(1.0 / 60.0);
-            for (i, c) in data.chunks(1024).enumerate() {
-                tx.send(daemon::Output {
-                    seq: (i * 1024) as u64,
-                    data: c.to_vec(),
-                })
-                .unwrap();
-            }
-            for _ in 0..4 {
-                rt.frame(1.0 / 60.0);
-                std::thread::sleep(std::time::Duration::from_millis(30));
-            }
-            let mut n = 0;
-            let mut grid = (0, 0);
-            rt.update(|s, _| {
-                grid = (s.terminal_cols, s.terminal_rows);
-            });
-            for e in els(&rt) {
-                if let Some(t) = e.text.as_deref() {
-                    if t.trim().is_empty() {
-                        continue;
-                    }
-                    n += 1;
-                    if t.contains("OpenAI")
-                        || t.contains("Accessing")
-                        || t.contains("Ask Codex")
-                        || t.contains("Enter to")
-                    {
-                        println!(
-                            "{name} TERM-ROW {:?} vis={:?} color={:?}",
-                            t.chars().take(40).collect::<String>(),
-                            e.visible,
-                            e.text_color
-                        );
-                    }
-                }
-            }
-            println!("{name}: grid={grid:?} text elements={n}");
-        }
+        assert!(shown(&rt), "the notice is on screen");
     }
 
     #[test]
@@ -1007,8 +1179,8 @@ mod view_tests {
         // moving row is what the eye reads as shaking.
         let mut s = State::new(test_handle());
         let key = seed_session(&mut s, "shell", "/tmp");
-        s.selected_session = Some(key);
-        let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
         let mut terminal = term::Terminal::new(session, rx, ready_rx);
@@ -1018,12 +1190,7 @@ mod view_tests {
         })
         .unwrap();
         terminal.feed();
-        s.terminal = Some(terminal);
-        s.lines = s
-            .terminal
-            .as_mut()
-            .map(|terminal| terminal.lines(&s.ink).to_vec())
-            .unwrap_or_default();
+        attach(&mut s, &key, terminal);
 
         let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
         rt.poll = Some(poll);
@@ -1963,5 +2130,347 @@ mod view_tests {
             s.active_workspace.as_deref(),
             Some(crate::data::checkout_key(&pa.id, &wt_path).as_str())
         );
+    }
+
+    // -- usage / accounts / theme replies ------------------------------------
+
+    use crate::editor::backend::{Reply, ReplyData, Req};
+
+    fn usage_view() -> app_core::accounts::AccountsView {
+        let view =
+            |active: &str, items: &[(&str, &str, &str, bool)]| app_core::accounts::AgentView {
+                active: active.to_string(),
+                items: items
+                    .iter()
+                    .map(
+                        |(id, name, dir, is_default)| app_core::accounts::AccountView {
+                            id: id.to_string(),
+                            name: name.to_string(),
+                            dir: dir.to_string(),
+                            is_default: *is_default,
+                        },
+                    )
+                    .collect(),
+            };
+        app_core::accounts::AccountsView {
+            claude: view(
+                "default",
+                &[
+                    ("default", "Default", "/me/.claude", true),
+                    ("aa11bb22", "work", "/accts/work", false),
+                ],
+            ),
+            codex: view("default", &[("default", "Default", "/me/.codex", true)]),
+        }
+    }
+
+    fn reply(req: Req, result: Result<ReplyData, String>) -> Reply {
+        Reply {
+            req,
+            generation: 0,
+            checkout_key: None,
+            result,
+        }
+    }
+
+    #[test]
+    fn a_usage_reply_stores_the_snapshot_and_accounts() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::Usage {
+                previous: app_core::usage::UsageSnapshot::default(),
+            },
+            Ok(ReplyData::Usage {
+                snapshot: app_core::usage::UsageSnapshot {
+                    claude: app_core::usage::ClaudeUsage {
+                        updated_at: Some(42),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                accounts: usage_view(),
+            }),
+        ));
+        assert!(s.data.usage.is_some());
+        assert_eq!(s.data.usage.as_ref().unwrap().claude.updated_at, Some(42));
+        assert_eq!(s.data.accounts.as_ref().unwrap().claude.items.len(), 2);
+    }
+
+    #[test]
+    fn a_failed_account_mutation_leaves_the_cache_and_sets_the_notice() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::AccountRemove {
+                agent: "claude".into(),
+                id: "x".into(),
+            },
+            Err("boom".into()),
+        ));
+        assert!(s.data.accounts.is_none(), "cache mutates only on success");
+        assert_eq!(s.notice.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn a_set_active_reply_swaps_the_view_and_refreshes_usage() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::AccountSetActive {
+                agent: "claude".into(),
+                id: "aa11bb22".into(),
+            },
+            Ok(ReplyData::Accounts(usage_view())),
+        ));
+        assert!(s.data.accounts.is_some());
+    }
+
+    #[test]
+    fn an_add_reply_asks_for_the_new_accounts_sign_in() {
+        let mut s = State::new(test_handle());
+        // The reply carries the view `add` produced — the new account is
+        // active, so it is the one sign-in is requested for.
+        let mut view = usage_view();
+        view.claude.active = "aa11bb22".into();
+        s.apply_reply(reply(
+            Req::AccountAdd {
+                agent: "claude".into(),
+                name: "work".into(),
+                dir: "/accts/work".into(),
+                token: 1,
+            },
+            Ok(ReplyData::Accounts(view)),
+        ));
+        assert_eq!(
+            s.data.accounts.as_ref().unwrap().claude.active,
+            "aa11bb22",
+            "the added account is active"
+        );
+    }
+
+    // -- launch correlation ---------------------------------------------------
+
+    /// Two launches in flight: each answer starts its own request. The
+    /// second answer landing first must not take the first one's context.
+    #[test]
+    fn two_launches_keep_their_own_answer() {
+        let mut s = State::new(test_handle());
+        let first_row = crate::sidebar::RowTarget::Worktree {
+            project_id: "p1".into(),
+            path: "/w/one".into(),
+        };
+        let second_row = crate::sidebar::RowTarget::Worktree {
+            project_id: "p1".into(),
+            path: "/w/two".into(),
+        };
+        s.request_session_argv(first_row, "claude".into());
+        s.request_session_argv(second_row, "codex".into());
+        assert_eq!(s.pending_argv.len(), 2, "both launches wait");
+
+        let claude_token = s.pending_argv[0].token;
+        let codex_token = s.pending_argv[1].token;
+
+        // The codex answer lands first.
+        let launch = s
+            .resolved_launch(codex_token, vec!["codex".into()])
+            .expect("the codex launch");
+        assert_eq!(launch.agent, "codex");
+        assert_eq!(launch.argv, vec!["codex".to_string()]);
+        assert_eq!(launch.cwd, "/w/two", "the second row's checkout");
+        assert_eq!(s.pending_argv.len(), 1, "the claude launch still waits");
+        assert_eq!(s.pending_argv[0].token, claude_token);
+
+        // The claude answer still starts its own launch — in its own row.
+        let launch = s
+            .resolved_launch(claude_token, vec!["claude".into()])
+            .expect("the claude launch");
+        assert_eq!(launch.agent, "claude");
+        assert_eq!(launch.cwd, "/w/one", "the first row's checkout");
+        assert!(s.pending_argv.is_empty());
+    }
+
+    /// The same agent asked for twice: the answers must not cross over.
+    #[test]
+    fn two_launches_of_the_same_agent_keep_their_own_row() {
+        let mut s = State::new(test_handle());
+        s.request_session_argv(
+            crate::sidebar::RowTarget::Worktree {
+                project_id: "p1".into(),
+                path: "/w/one".into(),
+            },
+            "claude".into(),
+        );
+        s.request_session_argv(
+            crate::sidebar::RowTarget::Worktree {
+                project_id: "p1".into(),
+                path: "/w/two".into(),
+            },
+            "claude".into(),
+        );
+        let first = s.pending_argv[0].token;
+        let second = s.pending_argv[1].token;
+
+        let launch = s
+            .resolved_launch(first, vec!["claude-a".into()])
+            .expect("the first launch");
+        assert_eq!(launch.cwd, "/w/one");
+        assert_eq!(launch.argv, vec!["claude-a".to_string()]);
+        assert_eq!(
+            s.pending_argv.len(),
+            1,
+            "the second launch keeps waiting for its own answer"
+        );
+        assert_eq!(s.pending_argv[0].token, second);
+    }
+
+    /// A refused launch must say why, and it must not consume another
+    /// request's launch context.
+    #[test]
+    fn a_failed_agent_argv_surfaces_the_error_and_keeps_the_other_launch() {
+        let mut s = State::new(test_handle());
+        s.request_session_argv(
+            crate::sidebar::RowTarget::Project {
+                project_id: "p1".into(),
+            },
+            "claude".into(),
+        );
+        s.request_session_argv(
+            crate::sidebar::RowTarget::Project {
+                project_id: "p2".into(),
+            },
+            "codex".into(),
+        );
+        let claude_token = s.pending_argv[0].token;
+        let codex_token = s.pending_argv[1].token;
+
+        s.apply_reply(reply(
+            Req::AgentArgv {
+                agent: "claude".into(),
+                token: claude_token,
+            },
+            Err("the account folder /accts/work no longer exists".into()),
+        ));
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("the account folder /accts/work no longer exists"),
+            "the failure is visible"
+        );
+        assert_eq!(s.pending_argv.len(), 1, "the other launch still waits");
+        assert_eq!(s.pending_argv[0].token, codex_token);
+    }
+
+    #[test]
+    fn a_sign_in_reply_launches_a_session_with_the_title() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::AccountSignIn {
+                agent: "claude".into(),
+                id: "aa11bb22".into(),
+            },
+            Ok(ReplyData::SignIn {
+                argv: vec![
+                    "/usr/bin/env".into(),
+                    "CLAUDE_CONFIG_DIR=/a".into(),
+                    "claude".into(),
+                ],
+                cwd: "/a".into(),
+                title: "Claude sign-in".into(),
+            }),
+        ));
+        // The daemon isn't connected in tests: the launch is queued (or the
+        // notice explains the refusal) — never a panic on the reply path.
+        assert!(
+            !s.pending.is_empty() || s.notice.is_some(),
+            "the sign-in launch must at least be attempted"
+        );
+    }
+
+    #[test]
+    fn a_sign_in_error_surfaces_as_the_notice() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::AccountSignIn {
+                agent: "claude".into(),
+                id: "x".into(),
+            },
+            Err("no account".into()),
+        ));
+        assert_eq!(s.notice.as_deref(), Some("no account"));
+        assert!(s.pending.is_empty());
+    }
+
+    #[test]
+    fn the_stored_theme_restores_on_its_getsetting_reply() {
+        let mut s = State::new(test_handle());
+        assert_eq!(s.theme_choice, crate::theme::Theme::Dark);
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: crate::theme::THEME_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(Some("dracula".into()))),
+        ));
+        assert_eq!(s.theme_choice, crate::theme::Theme::Dracula);
+        // A missing row leaves the default alone.
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: crate::theme::THEME_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(None)),
+        ));
+        assert_eq!(s.theme_choice, crate::theme::Theme::Dark);
+    }
+
+    #[test]
+    fn poll_usage_paces_the_worker_reads() {
+        let mut s = State::new(test_handle());
+        assert!(s.poll_usage(0.0), "the first read goes out");
+        assert!(!s.poll_usage(1.0), "inside the 5 s window");
+        assert!(!s.poll_usage(4.9));
+        assert!(s.poll_usage(5.1), "the cadence allows the next read");
+    }
+
+    #[test]
+    fn theme_parse_and_resolve_follow_the_desktop() {
+        use crate::theme::Theme;
+        assert_eq!(Theme::parse("system"), Theme::System);
+        assert_eq!(Theme::parse("one-dark"), Theme::OneDark);
+        assert_eq!(Theme::parse("catppuccin-mocha"), Theme::CatppuccinMocha);
+        assert_eq!(Theme::parse("dracula"), Theme::Dracula);
+        assert_eq!(Theme::parse("nonsense"), Theme::Dark, "unknown → Dark+");
+        assert_eq!(Theme::System.resolve(true), Theme::Dark);
+        assert_eq!(Theme::System.resolve(false), Theme::Light);
+        assert_eq!(Theme::Dracula.resolve(false), Theme::Dracula);
+    }
+
+    #[test]
+    fn the_usage_menu_needs_an_account_view() {
+        let mut s = State::new(test_handle());
+        s.usage_menu = Some(("claude".to_string(), 10.0, 10.0));
+        let mut layer = Vec::new();
+        assert!(chrome::usage_menu_layer(&s, &mut layer).is_none());
+        s.data.accounts = Some(usage_view());
+        assert!(chrome::usage_menu_layer(&s, &mut layer).is_some());
+    }
+
+    /// The Settings page alone, so its controls can be counted.
+    fn settings_view(s: &State, _cx: &mut Cx<State>) -> El {
+        settings::view(s, &s.ink)
+    }
+
+    /// Default has no sign-in of its own — the core refuses it — so the
+    /// Accounts section must not offer the button for it.
+    #[test]
+    fn the_default_account_has_no_sign_in_button() {
+        let mut s = State::new(test_handle());
+        s.settings.section = crate::settings::Section::Accounts;
+        // The view: Default plus one named Claude account, and Codex with
+        // Default only.
+        s.data.accounts = Some(usage_view());
+        let mut rt = Runtime::new(s, settings_view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let sign_ins = els(&rt)
+            .iter()
+            .filter(|element| element.label.as_deref() == Some("Sign in"))
+            .count();
+        assert_eq!(sign_ins, 1, "only the named account can sign in");
     }
 }

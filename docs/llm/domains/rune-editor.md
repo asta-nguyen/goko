@@ -1,7 +1,7 @@
 # Rune editor
 
 The `goko-rune` app's Editor view (`apps/rune`, Rune/wgpu/winit) is a native
-workspace over real registered projects and checkouts — not the mock terminal
+workspace over real registered projects and checkouts — not the terminal
 chrome described in [Rune chrome](rune-chrome.md). It offers five sections —
 Files, Changes, History, Stashes, and Servers (language servers) — backed by
 `crates/app-core`, the same Tauri-free Git/file/ACP/LSP/storage implementation
@@ -12,9 +12,9 @@ CodeMirror or a WebView.
 
 Scope boundaries, verified against current source:
 
-- The terminal and session chrome remains mock data (`apps/rune/src/data.rs`,
-  `term.rs`); the editor never reads mock session state and no live native
-  terminal/session producer exists.
+- The terminal and session chrome drives real daemon sessions
+  (`apps/rune/src/data.rs`, `term.rs`, `panes.rs`); the editor never reads
+  session state and no live native terminal/session producer exists.
 - Vim is deferred: the shared `editor.vim` setting still drives the Tauri
   editor only; Rune exposes no Vim control.
 - Language-server support covers hover and go-to-definition only;
@@ -92,7 +92,7 @@ Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `
 
 ### RNE-checkout-selection
 
-The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from the mock terminal session.
+The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from terminal sessions.
 
 #### Scenario: Pick project and worktree
 
@@ -238,7 +238,7 @@ The system SHALL accept an external open-file/line request only through the back
 - WHEN the request is processed
 - THEN it is rejected before any file opens
 
-Note: `navigation::external_open` is `#[allow(dead_code)]` — the OS-level producer (launch arg / open-URL event) is planned for the live-terminal milestone; only the consumer, validation, and once-only application exist and are tested today.
+Note: `navigation::external_open` is `#[allow(dead_code)]` — the OS-level producer (launch arg / open-URL event) remains deferred; only the consumer, validation, and once-only application exist and are tested today.
 
 Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`
 
@@ -430,7 +430,7 @@ Evidence: `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/workspace.rs`, 
 
 ### RNE-sidebar-sync
 
-The system SHALL keep the chrome sidebar's committed workspace and the editor's checkout selection in sync — activating the committed checkout when the Editor view opens, decoding `active_workspace` into project and checkout, ignoring `__unassigned__`, mock or vanished project ids, and an already-matching selection, through the same draft-guarded `SelectCheckout` path, and clearing the committed workspace when a project switch drops the checkout so no stale row stays highlighted.
+The system SHALL keep the chrome sidebar's committed workspace and the editor's checkout selection in sync — activating the committed checkout when the Editor view opens, decoding `active_workspace` into project and checkout, ignoring `__unassigned__`, unregistered or vanished project ids, and an already-matching selection, through the same draft-guarded `SelectCheckout` path, and clearing the committed workspace when a project switch drops the checkout so no stale row stays highlighted.
 
 #### Scenario: Editor opens on the committed checkout
 
@@ -440,7 +440,7 @@ The system SHALL keep the chrome sidebar's committed workspace and the editor's 
 
 #### Scenario: Unregistered workspace ignored
 
-- GIVEN `active_workspace` is `__unassigned__`, names an unregistered or mock project id, or no workspace is committed
+- GIVEN `active_workspace` is `__unassigned__`, names an unregistered or vanished project id, or no workspace is committed
 - WHEN the Editor view opens
 - THEN the view still switches but no project or checkout is selected
 
@@ -507,7 +507,7 @@ while keeping the tab strip; the session controls strip stays terminal-only.
 Editor selection happens in two places — the workspace's project and checkout
 pickers and the chrome sidebar's project/worktree rows — both routing
 `PendingNav::SelectCheckout`/`SelectProject` through `navigate` and never
-reading the mock terminal session. `EditorState` (`state.rs`) owns the
+reading terminal session state. `EditorState` (`state.rs`) owns the
 checkout identity (`project_id` + canonical path as `checkout_key`), the
 registered-project list with its loading/error flags, the per-project
 `sidebar_worktrees` entries behind the sidebar rows, the picker's `worktrees`
@@ -598,7 +598,7 @@ the index and working tree, commit creates a commit (hooks run), push updates
 the remote. File saves replace working-tree files atomically. ACP sessions
 spawn short-lived agent processes in temporary directories; LSP connections
 spawn configured server processes per checkout. None of these touch daemon
-session state — the daemon is not involved in the editor at all.
+session state — the daemon's session lifecycle is not involved in the editor.
 
 ## Side effects
 
@@ -653,7 +653,7 @@ session state — the daemon is not involved in the editor at all.
   32 servers, per-entry command/extension/disabled parsing) and merged over
   the builtin presets; malformed JSON surfaces a config error in the Servers
   section rather than failing the editor.
-- Terminal/session mock state is never consulted for editor authorization;
+- Terminal/session state is never consulted for editor authorization;
   conversely the editor performs no daemon or protocol calls.
 
 ## Error paths
@@ -704,7 +704,7 @@ documented in `quit_guard.rs` rather than silently claimed.
   selection guards; `src/main.rs` `view_tests` scenes cover editor
   workspace composition, the draft-guard modal, picker layout,
   session-controls absence in the Editor view, and the sidebar→editor
-  scenes — real-project listing with mock sessions under Unassigned, root
+  scenes — real-project listing with sessions under Unassigned, root
   and worktree row selection committing identity, dirty-guard
   Discard/Cancel, status rows, and real-backend fixtures driving
   cross-project selection including in-flight replies.
@@ -724,7 +724,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 
 ## Related
 
-- [Rune chrome](rune-chrome.md) — the mock terminal/session chrome and view switch
+- [Rune chrome](rune-chrome.md) — the daemon session chrome and view switch
 - [Desktop Editor](../architecture/editor.md) — the Tauri CodeMirror/Vim editor over the same `app-core` backend
 - [Architecture overview](../architecture/overview.md)
 

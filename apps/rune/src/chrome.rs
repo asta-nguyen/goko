@@ -10,6 +10,7 @@ use rune::{El, Spring, TextStyle, Transition, Tx, el, row, spacer};
 use crate::data;
 use crate::editor::backend;
 use crate::editor::navigation::{self, PendingNav};
+use crate::panes::{self, Tab};
 use crate::theme::{self, Ink, STATE_SPRING, T11M_LH, T12, T12M, T12TN, T14, T14M, T14S};
 use crate::{State, View};
 
@@ -89,10 +90,237 @@ fn connection_dot(connected: bool, ink: &Ink) -> El {
 
 /// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
 /// bg-panel px-4` (48 px, gap 12, px 16).
+/// One provider's quota chip: the name, the active account's name when the
+/// agent has more than one, and each window's `label value`. Mirrors
+/// UsageChips.tsx — `usageValue` turns an elapsed window into a muted
+/// "reset"; the chip exists only while it has limits or a second account.
+fn usage_chip_for(
+    s: &State,
+    agent: &'static str,
+    name: &'static str,
+    updated_at: Option<i64>,
+    limits: &[theme::ChipLimit],
+    ink: &Ink,
+) -> Option<El> {
+    let view = s.data.accounts.as_ref().map(|v| match agent {
+        "claude" => &v.claude,
+        _ => &v.codex,
+    });
+    let multi = view.is_some_and(|v| v.items.len() >= 2);
+    if limits.is_empty() && !multi {
+        return None;
+    }
+    let active_name = if multi {
+        view.and_then(|v| {
+            v.items
+                .iter()
+                .find(|item| item.id == v.active)
+                .map(|item| item.name.clone())
+        })
+    } else {
+        None
+    };
+    // `<name> · <account>`: the account sits muted inside the name span.
+    let mut chip = theme::usage_chip(name, limits, ink);
+    if let Some(account) = &active_name {
+        chip = chip.child(theme::txt(
+            &format!("· {account}"),
+            theme::T11M_LH,
+            ink.muted,
+        ));
+    }
+    let resets: Vec<String> = s
+        .data
+        .usage
+        .as_ref()
+        .map(|_| {
+            limits
+                .iter()
+                .map(|limit| format!("{} resets {}", limit.label, limit.reset_at))
+                .collect()
+        })
+        .unwrap_or_default();
+    let help = {
+        let mut lines = resets;
+        lines.push(format!("Updated {}", data::usage_age(updated_at, s.now_ms)));
+        lines.join("\n")
+    };
+    let agent = agent.to_string();
+    let mut chip = chip.help(help);
+    if multi {
+        chip = chip
+            .role("button")
+            .focusable(true)
+            .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
+                s.menu_anchor = Some((p.x, p.y));
+            })
+            .on_press(move |s: &mut State| {
+                let (x, y) = s.menu_anchor.unwrap_or((0.0, 0.0));
+                s.usage_menu = Some((agent.clone(), x, y));
+            });
+    }
+    Some(chip)
+}
+
+/// UsageChips.tsx: both providers' chips, hidden while there is nothing to
+/// say (no limits and no second account).
+fn usage_chips(s: &State, ink: &Ink) -> Vec<El> {
+    let Some(usage) = &s.data.usage else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let claude = [
+        usage.claude.five_hour.as_ref(),
+        usage.claude.seven_day.as_ref(),
+    ];
+    let claude_limits = chip_limits(&claude, "claude", s.now_ms);
+    if let Some(chip) = usage_chip_for(
+        s,
+        "claude",
+        "Claude",
+        usage.claude.updated_at,
+        &claude_limits,
+        ink,
+    ) {
+        out.push(chip);
+    }
+    let codex = [usage.codex.primary.as_ref(), usage.codex.secondary.as_ref()];
+    let codex_limits = chip_limits(&codex, "codex", s.now_ms);
+    if let Some(chip) = usage_chip_for(
+        s,
+        "codex",
+        "Codex",
+        usage.codex.updated_at,
+        &codex_limits,
+        ink,
+    ) {
+        out.push(chip);
+    }
+    out
+}
+
+/// One window's value as the chips show it: a window that has already
+/// reset reads "reset", never its last percentage.
+pub fn limit_value(limit: &app_core::usage::Limit, now_ms: i64) -> String {
+    if limit.resets_at * 1000 <= now_ms {
+        "reset".to_string()
+    } else {
+        format!("{}%", limit.used_pct.round() as i64)
+    }
+}
+
+/// `limitsFor` + `usageValue`: one rendered window per present limit.
+fn chip_limits(
+    limits: &[Option<&app_core::usage::Limit>],
+    provider: &str,
+    now_ms: i64,
+) -> Vec<theme::ChipLimit> {
+    limits
+        .iter()
+        .flatten()
+        .map(|limit| {
+            let reset = limit.resets_at * 1000 <= now_ms;
+            theme::ChipLimit {
+                label: data::window_label(limit.window_minutes, provider),
+                value: limit_value(limit, now_ms),
+                tone: if reset {
+                    theme::UsageTone::Muted
+                } else {
+                    theme::usage_tone(limit.used_pct)
+                },
+                reset_at: crate::data::relative_time(limit.resets_at * 1000 - now_ms),
+            }
+        })
+        .collect()
+}
+
+/// The account menu's quota line: the same expiry-aware values the chips
+/// show — a window that already reset reads "reset", never its last
+/// percentage.
+pub fn account_usage_summary(
+    usage: &app_core::usage::AccountUsage,
+    provider: &str,
+    now_ms: i64,
+) -> String {
+    usage
+        .limits
+        .iter()
+        .map(|limit| {
+            format!(
+                "{} {}",
+                data::window_label(limit.window_minutes, provider),
+                limit_value(limit, now_ms)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The multi-account chip's dropdown: pick the active account or jump to
+/// the Accounts settings section, like the desktop's AccountMenu.
+pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    let (agent, x, y) = s.usage_menu.clone()?;
+    let view = s.data.accounts.as_ref()?;
+    let agent_view = match agent.as_str() {
+        "claude" => &view.claude,
+        _ => &view.codex,
+    };
+    let mut menu = rune_kit::Menu::new("usage-menu").at(x, y).open(true);
+    for item in &agent_view.items {
+        let account_id = item.id.clone();
+        let account_name = item.name.clone();
+        let agent = agent.clone();
+        // AccountUsageSummary: the account's own limits, joined.
+        let summary = s
+            .data
+            .usage
+            .as_ref()
+            .and_then(|u| u.accounts.get(&format!("{}:{}", agent, account_id)))
+            .map(|usage| {
+                // The same expiry-aware value the chips show: a window
+                // that already reset must not keep its last percentage
+                // here.
+                account_usage_summary(usage, &agent, s.now_ms)
+            })
+            .unwrap_or_else(|| "No usage data".to_string());
+        let is_active = account_id == agent_view.active;
+        menu = menu.item(
+            rune_kit::MenuItem::new(account_name)
+                .checked(is_active)
+                .description(summary)
+                .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
+                    st.usage_menu = None;
+                    if !is_active {
+                        let _ = backend::enqueue(
+                            &mut st.editor.backend,
+                            backend::Job::project(backend::Req::AccountSetActive {
+                                agent: agent.clone(),
+                                id: account_id.clone(),
+                            }),
+                        );
+                    }
+                }),
+        );
+    }
+    menu = menu.item(rune_kit::MenuItem::new("Manage accounts…").on_select_tx(
+        |st: &mut State, tx: &mut Tx| {
+            st.usage_menu = None;
+            st.settings.section = crate::settings::Section::Accounts;
+            navigation::navigate(st, PendingNav::SetView(View::Settings), tx);
+        },
+    ));
+    Some(
+        menu.on_close(|st: &mut State| st.usage_menu = None)
+            .build(&s.editor.kit, layer),
+    )
+}
+
+/// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
+/// bg-panel px-4` (48 px, gap 12, px 16).
 pub fn header(s: &State, ink: &Ink) -> El {
     let mut right = row().gap(8.0).items_center();
-    for u in &s.data.usage {
-        right = right.child(theme::usage_chip(u.name, u.limits, ink));
+    for chip in usage_chips(s, ink) {
+        right = right.child(chip);
     }
     // ConnectionBadge only renders when the daemon is not connected; the mock
     // is connected, so it is absent — kept for the real-data swap. It arrives
@@ -175,14 +403,8 @@ const TAB: TextStyle = T12M.lh(16.0);
 
 pub fn tab_bar(s: &State, ink: &Ink) -> El {
     let mut tabs = row().grow(1.0).min_w(0.0).items_center().gap(4.0);
-    for (i, key) in s.open_tabs.iter().enumerate() {
-        // The tab's label is the session's own title; a session that is
-        // gone keeps its last title so the strip never flickers.
-        let title = s
-            .session_by_key(key)
-            .map(|view| view.title())
-            .unwrap_or_else(|| key.clone());
-        tabs = tabs.child(tab_el(key, &title, i, i == s.active_tab, ink));
+    for (i, tab) in s.open_tabs.iter().enumerate() {
+        tabs = tabs.child(tab_el(tab, i, i == s.active_tab, ink));
     }
     // A border is drawn inside the box without shrinking the space children are
     // centred in, so a 40 pt bar with a bottom line centred its 32 pt tabs in 40 and
@@ -218,79 +440,115 @@ pub fn tab_bar(s: &State, ink: &Ink) -> El {
                         cwd,
                         project_id,
                         agent: "shell".to_string(),
+                        title: String::new(),
                     });
                 },
             ),
         )
-        .child(split_button(&theme::COLUMNS_2, "Split side by side", ink))
-        .child(split_button(&theme::ROWS_2, "Split stacked", ink))
+        .child(split_button(
+            &theme::COLUMNS_2,
+            "Split side by side",
+            panes::Direction::SideBySide,
+            s.can_split(),
+            ink,
+        ))
+        .child(split_button(
+            &theme::ROWS_2,
+            "Split stacked",
+            panes::Direction::Stacked,
+            s.can_split(),
+            ink,
+        ))
         .child(view_switch(s, ink))
 }
 
-/// The split-pane buttons are inert until the layout milestone, so they say so: dim,
-/// no hover or press (a hover on a button that does nothing promises something it
-/// won't deliver), skipped by Tab, and a tooltip that names what's missing.
-fn split_button(icon: &'static rune::Icon, label: &str, ink: &Ink) -> El {
-    el().key(format!("split:{label}"))
+/// A split-pane button: another shell session lands beside the focused
+/// pane in the same checkout, as a second pane. Disabled until a pane is
+/// focused and the daemon is connected — a hover on a button that does
+/// nothing promises something it won't deliver.
+fn split_button(
+    icon: &'static rune::Icon,
+    label: &str,
+    direction: panes::Direction,
+    enabled: bool,
+    ink: &Ink,
+) -> El {
+    let mut b = el()
+        .key(format!("split:{label}"))
         .size(28.0, 28.0)
         .radius(8.0)
         .center()
-        .opacity(0.4)
         .role("button")
         .label(label)
-        .disabled(true)
-        .help(format!("{label} — coming with pane layouts"))
-        .child(theme::ic(icon, 16.0, ink.text))
-}
-
-/// Point selection at whatever `active_tab` resolves to after the tab list
-/// changed; clears it when the active title has no session. Shared by tab
-/// close/select, New tab and Close pane.
-fn sync_selection(s: &mut State) {
-    s.sync_selection();
+        .child(theme::ic(
+            icon,
+            16.0,
+            if enabled { ink.text } else { ink.muted },
+        ));
+    if enabled {
+        b = b
+            .hover(ink.text.alpha(0.08))
+            .press(ink.text.alpha(0.12))
+            .press_scale(0.95)
+            .motion(STATE_SPRING)
+            .help(label.to_string())
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press(move |s: &mut State| s.split_active(direction));
+    } else {
+        b = b.opacity(0.4).disabled(true).help(format!(
+            "{label} — connect the daemon and focus a terminal pane"
+        ));
+    }
+    b
 }
 
 /// Session tab pill: `bg-bg/50 rounded-lg`; the active tab gets `bg-bg`. Close X on
-/// every tab. Clicking a tab selects the session with that title; the X closes the
-/// tab.
+/// every tab. Clicking a tab selects its active pane's session; the X begins the
+/// tab's close — every pane's session is stopped and deleted, and the tab drops
+/// as its last pane leaves.
 ///
 /// Hover is a text-colour wash plus a lift of the title to full text colour, never
 /// `ink.bg`: that is exactly the active fill, so a `bg` hover made a hovered inactive
-/// tab indistinguishable from the active one. Tabs are keyed by session id so closing
-/// one slides its neighbours into place instead of re-labelling them in place.
-fn tab_el(key: &str, title: &str, index: usize, active: bool, ink: &Ink) -> El {
+/// tab indistinguishable from the active one. Tabs carry their own id — a split tab
+/// has several sessions, so "the tab's session" does not exist.
+fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
+    let title = tab.title.clone();
     // The close X sits in a 20 pt box with 6 pt right padding: the 12 pt glyph then
     // has 10 pt to the pill's edge, matching the title's 10 pt on the left. It owns
     // its hover (`hover_alone`), so the pill doesn't wash under the pointer too.
-    let close = el()
-        .key(format!("close:{key}"))
+    let mut close = el()
+        .key(format!("close:{}", tab.id))
         .size(20.0, 20.0)
         .center()
         .radius(6.0)
-        .hover_group()
-        .hover_alone()
-        .hover(ink.text.alpha(0.12))
-        .press(ink.text.alpha(0.18))
-        .press_scale(0.9)
         .role("button")
         .label(format!("Close {title}"))
-        .help("Close tab")
-        .focusable(true)
-        .tab_index(-1)
-        .child(theme::ic(&theme::X, 12.0, ink.muted).group_color(ink.text))
-        .on_press(move |s: &mut State| {
-            s.open_tabs.remove(index);
-            if index < s.active_tab {
-                s.active_tab -= 1;
-            }
-            if s.active_tab >= s.open_tabs.len() {
-                s.active_tab = s.open_tabs.len().saturating_sub(1);
-            }
-            sync_selection(s);
-        });
+        .child(theme::ic(&theme::X, 12.0, ink.muted).group_color(ink.text));
+    if tab.closing {
+        close = close
+            .opacity(0.4)
+            .disabled(true)
+            .help("This tab is closing");
+    } else {
+        close = close
+            .hover_group()
+            .hover_alone()
+            .hover(ink.text.alpha(0.12))
+            .press(ink.text.alpha(0.18))
+            .press_scale(0.9)
+            .help("Close tab".to_string())
+            .focusable(true)
+            .tab_index(-1)
+            .on_press(move |s: &mut State| {
+                // Every pane in the tab enters the close lifecycle; the
+                // tab itself drops when its last pane leaves.
+                s.begin_close_tab(index);
+            });
+    }
 
-    row()
-        .key(format!("tab:{key}"))
+    let mut pill = row()
+        .key(format!("tab:{}", tab.id))
         .h(32.0)
         .gap(6.0)
         .items_center()
@@ -303,20 +561,23 @@ fn tab_el(key: &str, title: &str, index: usize, active: bool, ink: &Ink) -> El {
         .press(ink.text.alpha(0.10))
         .motion(STATE_SPRING)
         .role("tab")
-        .label(title)
+        .label(title.clone())
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
         .child(
-            theme::txt(title, TAB, if active { ink.text } else { ink.muted })
+            theme::txt(&title, TAB, if active { ink.text } else { ink.muted })
                 .group_color(ink.text)
                 .max_w(160.0)
                 .truncate(),
-        )
-        .child(close)
-        .on_press(move |s: &mut State| {
-            s.active_tab = index;
-            sync_selection(s);
-        })
+        );
+    if tab.closing {
+        pill = pill
+            .opacity(0.6)
+            .child(theme::txt("closing", theme::T11, ink.muted));
+    }
+    pill.child(close).on_press(move |s: &mut State| {
+        s.activate_tab(index);
+    })
 }
 
 /// View-switch geometry. The track's border is drawn inside its box and the content
@@ -537,14 +798,12 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         }
     });
 
-    // Close pane drops the session: the daemon deletes it, the app drops
-    // its metadata and its tab, then focuses whatever the active tab
-    // resolves to.
+    // Close pane closes the focused pane: its session is stopped (force),
+    // deleted once it exits, and the split collapses around it — the
+    // desktop's pane close. The daemon drives the lifecycle; a failure
+    // stays on the pane until Retry.
     let close = theme::btn_sm("Close pane", None, false, ink).on_press(|s: &mut State| {
-        let Some(id) = s.selected_session.clone() else {
-            return;
-        };
-        s.delete_session(&id);
+        s.close_focused_pane();
     });
 
     row()
@@ -561,4 +820,49 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .child(elapsed)
         .child(spacer())
         .child(row().gap(8.0).items_center().child(stop).child(close))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app_core::usage::{AccountUsage, Limit};
+
+    fn limit(used_pct: f64, resets_at: i64) -> Limit {
+        Limit {
+            used_pct,
+            resets_at,
+            window_minutes: 300,
+        }
+    }
+
+    /// A window that already reset reads "reset" — never its last
+    /// percentage, even at 100%.
+    #[test]
+    fn an_expired_window_reads_reset_not_its_percentage() {
+        let now_ms = 1_700_000_000_000;
+        let expired = limit(100.0, (now_ms / 1000) - 10);
+        assert_eq!(limit_value(&expired, now_ms), "reset");
+        let usage = AccountUsage {
+            limits: vec![expired],
+            updated_at: Some(now_ms),
+        };
+        assert_eq!(
+            account_usage_summary(&usage, "claude", now_ms),
+            "5h reset",
+            "the account menu must not show a spent window's percentage"
+        );
+    }
+
+    /// A window that is still running shows its percentage.
+    #[test]
+    fn a_live_window_shows_its_percentage() {
+        let now_ms = 1_700_000_000_000;
+        let live = limit(42.4, (now_ms / 1000) + 600);
+        assert_eq!(limit_value(&live, now_ms), "42%");
+        let usage = AccountUsage {
+            limits: vec![live],
+            updated_at: Some(now_ms),
+        };
+        assert_eq!(account_usage_summary(&usage, "claude", now_ms), "5h 42%");
+    }
 }

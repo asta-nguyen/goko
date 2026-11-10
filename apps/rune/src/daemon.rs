@@ -167,6 +167,11 @@ pub struct Daemon {
 impl Daemon {
     /// Start the runtime thread. `wake` runs after every event push so the
     /// app's `poll` drains it promptly.
+    ///
+    /// The tests never spawn a daemon of their own — they drive the
+    /// client against a fake or a real one they started themselves — so
+    /// this entry point is unused there.
+    #[cfg_attr(test, allow(dead_code))]
     pub fn spawn(wake: impl Fn() + Send + Sync + 'static) -> Daemon {
         let home = app_core::home::home_dir().unwrap_or_else(|_| PathBuf::from("/"));
         Self::spawn_runtime(home, Mode::Spawn, wake)

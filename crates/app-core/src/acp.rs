@@ -937,20 +937,62 @@ pub async fn agents_set(
             });
         }
     }
-    let text = serde_json::to_string(&stored).map_err(|error| {
+    write_overrides(storage, &stored)?;
+    let after = agents_get(storage)?;
+    disconnect_changed(hub, &before, &after).await?;
+    Ok(after)
+}
+
+/// Drop the stored override for `agent_id`, restoring the preset while
+/// leaving every other saved agent untouched. The Settings page's Reset
+/// must persist the removal: dropping the local draft alone lets the next
+/// store read recreate the customized row.
+pub async fn agents_reset(
+    storage: &Storage,
+    hub: &AcpHub,
+    agent_id: &str,
+) -> Result<Vec<AcpAgent>, BridgeError> {
+    if preset(agent_id).is_none() {
+        return Err(not_found(format!("unknown ACP agent '{agent_id}'")));
+    }
+    let before = agents_get(storage)?;
+    let mut stored: Vec<AcpOverride> = storage
+        .get()?
+        .get_setting(AGENTS_KEY)?
+        .as_deref()
+        .map(|text| serde_json::from_str(text).unwrap_or_default())
+        .unwrap_or_default();
+    stored.retain(|row| row.id != agent_id);
+    write_overrides(storage, &stored)?;
+    let after = agents_get(storage)?;
+    disconnect_changed(hub, &before, &after).await?;
+    Ok(after)
+}
+
+/// Encode and persist the whole `acp.agents` row list.
+fn write_overrides(storage: &Storage, stored: &[AcpOverride]) -> Result<(), BridgeError> {
+    let text = serde_json::to_string(stored).map_err(|error| {
         BridgeError::new(
             Code::Storage,
             format!("cannot encode the ACP agents: {error}"),
         )
     })?;
-    storage.get()?.set_setting(AGENTS_KEY, &text)?;
-    let after = agents_get(storage)?;
+    storage.get()?.set_setting(AGENTS_KEY, &text)
+}
+
+/// A changed `enabled` or `command` invalidates a live connection: the
+/// next Generate must launch the new configuration.
+async fn disconnect_changed(
+    hub: &AcpHub,
+    before: &[AcpAgent],
+    after: &[AcpAgent],
+) -> Result<(), BridgeError> {
     for (was, now) in before.iter().zip(after.iter()) {
         if was.enabled && (!now.enabled || was.command != now.command) {
             hub.disconnect(&was.id).await?;
         }
     }
-    Ok(after)
+    Ok(())
 }
 
 /// One override row must name a preset, carry a parseable command with a
@@ -2167,6 +2209,73 @@ mod tests {
             .unwrap();
         assert!(opencode.is_default);
         assert!(opencode.enabled);
+    }
+
+    #[tokio::test]
+    async fn agents_reset_removes_only_that_override_and_restores_the_preset() {
+        let dir = TempDir::new("acp-reset");
+        let storage = storage(&dir);
+        let hub = AcpHub::new();
+
+        agents_set(
+            &storage,
+            &hub,
+            vec![
+                AcpOverride {
+                    id: "opencode".into(),
+                    enabled: false,
+                    command: "custom acp".into(),
+                    prompt: "custom prompt".into(),
+                },
+                AcpOverride {
+                    id: "claude".into(),
+                    enabled: true,
+                    command: "claude-custom acp".into(),
+                    prompt: "keep me".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        // Reset one agent: its row disappears, the unrelated override stays.
+        let agents = agents_reset(&storage, &hub, "opencode").await.unwrap();
+        let opencode = agents.iter().find(|a| a.id == "opencode").unwrap();
+        assert!(opencode.is_default, "the preset is restored");
+        assert!(opencode.enabled);
+        assert_eq!(opencode.command, "opencode acp");
+        assert_eq!(opencode.prompt, "");
+
+        let stored = storage
+            .get()
+            .unwrap()
+            .get_setting("acp.agents")
+            .unwrap()
+            .unwrap();
+        let rows: Vec<AcpOverride> = serde_json::from_str(&stored).unwrap();
+        assert_eq!(rows.len(), 1, "only the claude override remains");
+        assert_eq!(rows[0].id, "claude");
+
+        // Reloading from the store keeps the reset: the draft sync can no
+        // longer resurrect the customized opencode row.
+        let reloaded = agents_get(&storage).unwrap();
+        let opencode = reloaded.iter().find(|a| a.id == "opencode").unwrap();
+        assert_eq!(opencode.command, "opencode acp");
+        let claude = reloaded.iter().find(|a| a.id == "claude").unwrap();
+        assert_eq!(claude.command, "claude-custom acp");
+        assert_eq!(claude.prompt, "keep me");
+
+        // An unknown agent is refused and changes nothing.
+        assert!(agents_reset(&storage, &hub, "ghost").await.is_err());
+        let stored = storage
+            .get()
+            .unwrap()
+            .get_setting("acp.agents")
+            .unwrap()
+            .unwrap();
+        let rows: Vec<AcpOverride> = serde_json::from_str(&stored).unwrap();
+        assert_eq!(rows.len(), 1);
+        hub.shutdown().await;
     }
 
     #[test]

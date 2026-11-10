@@ -53,6 +53,18 @@ enum AcpCmd {
         /// skipped when a pick happened while the worker read the store.
         pick_seq: u64,
     },
+    /// The Settings ACP page's save: validate and store the override rows
+    /// and disconnect agents whose `enabled`/`command` changed — the
+    /// desktop's `acp_agents_set`. Runs here because `agents_set` needs the
+    /// hub this thread owns.
+    SetAgents {
+        overrides: Vec<app_core::acp::AcpOverride>,
+    },
+    /// The Settings ACP page's Reset: drop one agent's stored override so
+    /// the preset is restored, preserving every other saved agent.
+    ResetAgent {
+        agent_id: String,
+    },
     Shutdown,
 }
 
@@ -114,6 +126,20 @@ impl Acp {
     pub fn refresh(&mut self) {
         self.send(AcpCmd::RefreshAgents {
             pick_seq: self.pick_seq,
+        });
+    }
+
+    /// Store the settings page's override rows, then republish the agents
+    /// so the page and the commit picker see the effective list.
+    pub fn set_agents(&mut self, overrides: Vec<app_core::acp::AcpOverride>) {
+        self.send(AcpCmd::SetAgents { overrides });
+    }
+
+    /// Reset one agent to its preset, through the same runtime that owns
+    /// the hub and the settings store.
+    pub fn reset_agent(&mut self, agent_id: &str) {
+        self.send(AcpCmd::ResetAgent {
+            agent_id: agent_id.to_string(),
         });
     }
 
@@ -240,7 +266,7 @@ fn runtime_main(handle: AppHandle<State>, ready: mpsc::Sender<UnboundedSender<Ac
         publish_agents(&handle, &hub, &storage, 0);
 
         while let Some(cmd) = rx.recv().await {
-            if dispatch(&hub, &storage, &handle, cmd) {
+            if dispatch(&hub, &storage, &handle, cmd).await {
                 break;
             }
         }
@@ -275,7 +301,7 @@ fn canonical_checkout(
 /// tests can drive the same dispatch against a real `AcpHub` and a temp
 /// `Storage` — `AppHandle::update` deliveries just queue without the app
 /// loop, which is harmless for the assertions these tests make.
-fn dispatch(
+async fn dispatch(
     hub: &AcpHub,
     storage: &Option<Storage>,
     handle: &AppHandle<State>,
@@ -283,6 +309,44 @@ fn dispatch(
 ) -> bool {
     match cmd {
         AcpCmd::RefreshAgents { pick_seq } => publish_agents(handle, hub, storage, pick_seq),
+        AcpCmd::SetAgents { overrides } => {
+            let Some(store) = storage.as_ref() else {
+                let hh = handle.clone();
+                hh.update(|s: &mut State, _| {
+                    s.notice = Some("the settings store is unavailable".into());
+                });
+                return false;
+            };
+            // A bad row rejects the whole save; the error surfaces as the
+            // app's notice like every other worker-side failure.
+            let result = acp::agents_set(store, hub, overrides).await;
+            if let Err(error) = result {
+                let hh = handle.clone();
+                let message = error.to_string();
+                hh.update(move |s: &mut State, _| {
+                    s.notice = Some(message);
+                });
+            }
+            publish_agents(handle, hub, storage, 0);
+        }
+        AcpCmd::ResetAgent { agent_id } => {
+            let Some(store) = storage.as_ref() else {
+                let hh = handle.clone();
+                hh.update(|s: &mut State, _| {
+                    s.notice = Some("the settings store is unavailable".into());
+                });
+                return false;
+            };
+            let result = acp::agents_reset(store, hub, &agent_id).await;
+            if let Err(error) = result {
+                let hh = handle.clone();
+                let message = error.to_string();
+                hh.update(move |s: &mut State, _| {
+                    s.notice = Some(message);
+                });
+            }
+            publish_agents(handle, hub, storage, 0);
+        }
         AcpCmd::PersistAgent { agent_id, pick } => {
             // Same `settings` row the desktop's `commit.agent` mutation
             // writes — synchronous SQLite on this worker, acked back so a
@@ -940,15 +1004,18 @@ mod tests {
 
         // The worker writes `commit.agent`; the ack queues harmlessly
         // without the app loop.
-        assert!(!dispatch(
-            &hub,
-            &storage,
-            &handle,
-            AcpCmd::PersistAgent {
-                agent_id: "opencode".into(),
-                pick: 1,
-            },
-        ));
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::PersistAgent {
+                    agent_id: "opencode".into(),
+                    pick: 1,
+                },
+            )
+            .await
+        );
         let saved = storage
             .as_ref()
             .unwrap()
@@ -1087,19 +1154,22 @@ mod tests {
         // Generate through the aliased UI path: the worker validates and
         // canonicalizes for Git work, but keys the hub job on the raw
         // path — the same string Cancel will send.
-        assert!(!dispatch(
-            &hub,
-            &storage,
-            &handle,
-            AcpCmd::Generate {
-                agent_id: "opencode".into(),
-                project_id: project_id.clone(),
-                checkout_path: raw_checkout.clone(),
-                checkout_key: key,
-                run: 1,
-                draft_snapshot: "draft".into(),
-            },
-        ));
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::Generate {
+                    agent_id: "opencode".into(),
+                    project_id: project_id.clone(),
+                    checkout_path: raw_checkout.clone(),
+                    checkout_key: key,
+                    run: 1,
+                    draft_snapshot: "draft".into(),
+                },
+            )
+            .await
+        );
         wait_log(home.path(), "prompt").await;
 
         // The prompt proves Git/cwd work ran against the canonical
@@ -1117,19 +1187,154 @@ mod tests {
         );
 
         // Cancel carries the same raw UI path; it must still find the job.
-        assert!(!dispatch(
-            &hub,
-            &storage,
-            &handle,
-            AcpCmd::Cancel {
-                project_id,
-                checkout_path: raw_checkout,
-            },
-        ));
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::Cancel {
+                    project_id,
+                    checkout_path: raw_checkout,
+                },
+            )
+            .await
+        );
         wait_log(home.path(), "session_cancel").await;
 
         // The connection survives the cancelled turn.
         assert_eq!(hub.status()["opencode"].state, AgentState::Connected);
+        hub.shutdown().await;
+    }
+
+    /// The Settings page's save rides `agents_set` on this runtime: a valid
+    /// override is stored and republished, a bad row stores nothing.
+    #[tokio::test]
+    async fn set_agents_stores_valid_rows_and_rejects_bad_ones() {
+        use super::{AcpCmd, dispatch};
+        use app_core::acp::AcpHub;
+        use app_core::store::Storage;
+        use app_core::test_support::TempDir;
+
+        let home = TempDir::new("acp-set-agents");
+        let storage = Some(Storage::open(home.path()));
+        let hub = AcpHub::new();
+        let handle = crate::test_handle();
+
+        let preset_id = app_core::acp::agents_get(storage.as_ref().unwrap())
+            .unwrap()
+            .first()
+            .unwrap()
+            .id
+            .clone();
+        let overrides = vec![app_core::acp::AcpOverride {
+            id: preset_id.clone(),
+            enabled: true,
+            command: "fake-acp --flag".into(),
+            prompt: "new prompt".into(),
+        }];
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::SetAgents {
+                    overrides: overrides.clone(),
+                },
+            )
+            .await
+        );
+        let agents = app_core::acp::agents_get(storage.as_ref().unwrap()).unwrap();
+        let saved = agents.iter().find(|a| a.id == preset_id).unwrap();
+        assert_eq!(saved.command, "fake-acp --flag");
+        assert_eq!(saved.prompt, "new prompt");
+
+        // A row naming no preset rejects the whole call — nothing stores.
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::SetAgents {
+                    overrides: vec![app_core::acp::AcpOverride {
+                        id: "ghost".into(),
+                        enabled: true,
+                        command: "x".into(),
+                        prompt: "y".into(),
+                    }],
+                },
+            )
+            .await
+        );
+        let agents = app_core::acp::agents_get(storage.as_ref().unwrap()).unwrap();
+        let saved = agents.iter().find(|a| a.id == preset_id).unwrap();
+        assert_eq!(saved.command, "fake-acp --flag", "the earlier save stands");
+        hub.shutdown().await;
+    }
+
+    /// The Settings page's Reset persists: the stored override is gone and
+    /// the preset is back — a local draft alone would let the next store
+    /// read recreate the customized row.
+    #[tokio::test]
+    async fn reset_agent_removes_the_stored_override() {
+        use super::{AcpCmd, dispatch};
+        use app_core::acp::AcpHub;
+        use app_core::store::Storage;
+        use app_core::test_support::TempDir;
+
+        let home = TempDir::new("acp-reset-agent");
+        let storage = Some(Storage::open(home.path()));
+        let hub = AcpHub::new();
+        let handle = crate::test_handle();
+
+        let preset_id = app_core::acp::agents_get(storage.as_ref().unwrap())
+            .unwrap()
+            .first()
+            .unwrap()
+            .id
+            .clone();
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::SetAgents {
+                    overrides: vec![app_core::acp::AcpOverride {
+                        id: preset_id.clone(),
+                        enabled: true,
+                        command: "fake-acp --flag".into(),
+                        prompt: "new prompt".into(),
+                    }],
+                },
+            )
+            .await
+        );
+        let saved = app_core::acp::agents_get(storage.as_ref().unwrap())
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == preset_id)
+            .unwrap();
+        assert_eq!(saved.command, "fake-acp --flag");
+        assert!(!saved.is_default);
+
+        // Reset restores the preset and stores nothing for that agent.
+        assert!(
+            !dispatch(
+                &hub,
+                &storage,
+                &handle,
+                AcpCmd::ResetAgent {
+                    agent_id: preset_id.clone(),
+                },
+            )
+            .await
+        );
+        let after = app_core::acp::agents_get(storage.as_ref().unwrap())
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == preset_id)
+            .unwrap();
+        assert!(after.is_default, "the preset is back: {after:?}");
+        assert_ne!(after.command, "fake-acp --flag");
         hub.shutdown().await;
     }
 }
