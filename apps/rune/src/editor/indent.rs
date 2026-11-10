@@ -119,10 +119,12 @@ pub fn leading_ws_len(line: &str) -> usize {
     leading_ws(line).len()
 }
 
-/// Detect the dominant indentation unit across up to `sample` indented lines:
-/// space runs are scored by their width, tab runs count as one level each.
-/// Ties resolve to the narrower space width, then tabs. `None` when no line
-/// is indented.
+/// Detect the dominant indentation unit across up to `sample` indented lines,
+/// VS Code-style: each *increase* in a line's indent over the previous
+/// non-blank line votes for that step (2..=8 spaces; wider jumps are
+/// continuation alignment), and each tab-depth increase votes for tabs. Ties
+/// resolve to the narrower space width, then tabs. `None` when no line is
+/// indented.
 pub fn sniff_unit(text: &str, sample: usize) -> Option<IndentUnit> {
     // Cap the scanned prefix at a char boundary so huge/minified files stay
     // cheap; detection only needs the document's opening style anyway.
@@ -134,20 +136,26 @@ pub fn sniff_unit(text: &str, sample: usize) -> Option<IndentUnit> {
     let mut space_scores: std::collections::BTreeMap<u8, u32> = Default::default();
     let mut tabs = 0u32;
     let mut seen = 0usize;
+    let mut prev = 0usize; // previous non-blank line's leading-ws length
     for line in text.lines() {
         if seen >= sample {
             break;
         }
         let ws = leading_ws(line);
-        if ws.is_empty() || ws.len() == line.len() {
+        if ws.len() == line.len() {
             continue; // blank or whitespace-only lines carry no signal
         }
-        seen += 1;
-        if ws.contains('\t') {
-            tabs += 1;
-        } else {
-            *space_scores.entry(ws.len() as u8).or_default() += 1;
+        if !ws.is_empty() {
+            seen += 1;
+            if ws.len() > prev {
+                if ws.contains('\t') {
+                    tabs += 1;
+                } else if (2..=8).contains(&(ws.len() - prev)) {
+                    *space_scores.entry((ws.len() - prev) as u8).or_default() += 1;
+                }
+            }
         }
+        prev = ws.len();
     }
     // Best space width: highest score, narrowest width on ties.
     let best_space = space_scores
@@ -427,11 +435,18 @@ mod tests {
 
     #[test]
     fn sniff_prefers_dominant_space_width() {
-        let doc = "fn a() {\n    x();\n    y();\n    z();\n}\nfn b() {\n  p();\n}\n";
+        let doc = "fn a() {\n    x();\n}\nfn b() {\n    y();\n}\nfn c() {\n  p();\n}\n";
         assert_eq!(sniff_unit(doc, 100), Some(IndentUnit::Spaces(4)));
         // An exact tie resolves to the narrower width.
         let tie = "a {\n    x\n}\nb {\n  y\n}\n";
         assert_eq!(sniff_unit(tie, 100), Some(IndentUnit::Spaces(2)));
+    }
+
+    #[test]
+    fn sniff_uses_step_not_absolute_width() {
+        // Nested 4-space code has more 8-wide lines than 4-wide ones.
+        let doc = "impl A {\n    fn f() {\n        a();\n        b();\n        c();\n    }\n}\n";
+        assert_eq!(sniff_unit(doc, 100), Some(IndentUnit::Spaces(4)));
     }
 
     #[test]

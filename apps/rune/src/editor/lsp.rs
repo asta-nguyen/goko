@@ -1749,7 +1749,9 @@ fn hover_plaintext(value: &Value) -> Option<String> {
     let hover: lsp_types::Hover = serde_json::from_value(value.clone()).ok()?;
     let marked = |m: &lsp_types::MarkedString| match m {
         lsp_types::MarkedString::String(s) => s.clone(),
-        lsp_types::MarkedString::LanguageString(ls) => ls.value.clone(),
+        lsp_types::MarkedString::LanguageString(ls) => {
+            format!("```{}\n{}\n```", ls.language, ls.value)
+        }
     };
     let raw = match &hover.contents {
         lsp_types::HoverContents::Scalar(m) => marked(m),
@@ -1845,7 +1847,6 @@ pub fn take_fallback(ed: &mut EditorState) -> Option<GoToRequest> {
 pub fn hover_layer(
     s: &crate::State,
     cx: &rune::Cx<crate::State>,
-    ink: &crate::theme::Ink,
     k: &Kit,
 ) -> Option<El> {
     let text = s.editor.lsp_hover_text()?;
@@ -1855,10 +1856,15 @@ pub fn hover_layer(
         .w(1.0)
         .h(1.0)
         .key(HOVER_ANCHOR);
-    let mut body = col().padding(8.0).gap(2.0).max_w(480.0);
-    for line in text.lines() {
-        body = body.child(crate::theme::txt(line, crate::theme::T12, ink.text));
-    }
+    // The markdown root is `w_full`, which has no parent width to resolve
+    // against inside a shrink-wrapped card — give it an explicit width sized
+    // to the longest line (~8pt/char), clamped to the old 480pt cap.
+    let longest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    let width = (longest as f32 * 8.0).clamp(160.0, 480.0);
+    let body = col()
+        .w(width + 16.0)
+        .padding(8.0)
+        .child(rune_kit::markdown::Markdown::new(text).build(k));
     let card = rune_kit::popover::raised(k, body, k.radius.md).anchored_fit(
         HOVER_ANCHOR,
         rune::Side::Bottom,
