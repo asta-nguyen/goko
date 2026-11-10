@@ -1,0 +1,19 @@
+apps/rune/src/main.rs
+  s_d8e3497c7cad69::t_417ba42cb09bd8 603-619
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0718b1b778a41833000472d06ec10fc5e64d8efc",
+  "prompts": {},
+  "sessions": {
+    "s_d8e3497c7cad69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50002657-a61a-439e-b741-68c2cac4aba5",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
