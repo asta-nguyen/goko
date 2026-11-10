@@ -574,6 +574,40 @@ fn validate_target(target: &Path) -> Result<(), BridgeError> {
     }
 }
 
+/// Remove a linked worktree: `git worktree remove <path>`. The project's
+/// own root checkout is never removed, and a checkout with uncommitted
+/// work needs `force` — the caller's decision.
+pub fn remove(root: &Path, path: &str, force: bool) -> Result<(), BridgeError> {
+    let listed = list(root)?;
+    if !listed.repo {
+        return Err(invalid("the project root is not a Git worktree"));
+    }
+    let target = normalize_path(&lexical_absolute(root, Path::new(path)))?;
+    let mut matched = None;
+    for worktree in &listed.worktrees {
+        let candidate = normalize_path(&lexical_absolute(root, Path::new(&worktree.path)))?;
+        if candidate == target {
+            matched = Some(worktree.is_root);
+            break;
+        }
+    }
+    match matched {
+        None => Err(invalid(format!(
+            "'{path}' is not a linked worktree of this project"
+        ))),
+        Some(true) => Err(invalid("the project's root checkout cannot be removed")),
+        Some(false) => Ok(()),
+    }?;
+    let target = target.to_string_lossy().to_string();
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(target.as_str());
+    git(root, &args)?;
+    Ok(())
+}
+
 pub fn lexical_absolute(root: &Path, path: &Path) -> PathBuf {
     let path = if path.is_absolute() {
         path.to_path_buf()

@@ -3,12 +3,12 @@
 //! real components' measurements (App.tsx header, TerminalWorkspace tab strip,
 //! SessionControls breadcrumb + state badge + elapsed + actions).
 
-use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_3;
 
 use rune::{El, Spring, TextStyle, Transition, Tx, el, row, spacer};
 
 use crate::data;
+use crate::editor::backend;
 use crate::editor::navigation::{self, PendingNav};
 use crate::theme::{self, Ink, STATE_SPRING, T11M_LH, T12, T12M, T12TN, T14, T14M, T14S};
 use crate::{State, View};
@@ -175,8 +175,14 @@ const TAB: TextStyle = T12M.lh(16.0);
 
 pub fn tab_bar(s: &State, ink: &Ink) -> El {
     let mut tabs = row().grow(1.0).min_w(0.0).items_center().gap(4.0);
-    for (i, title) in s.open_tabs.iter().enumerate() {
-        tabs = tabs.child(tab_el(title, i, i == s.active_tab, ink));
+    for (i, key) in s.open_tabs.iter().enumerate() {
+        // The tab's label is the session's own title; a session that is
+        // gone keeps its last title so the strip never flickers.
+        let title = s
+            .session_by_key(key)
+            .map(|view| view.title())
+            .unwrap_or_else(|| key.clone());
+        tabs = tabs.child(tab_el(key, &title, i, i == s.active_tab, ink));
     }
     // A border is drawn inside the box without shrinking the space children are
     // centred in, so a 40 pt bar with a bottom line centred its 32 pt tabs in 40 and
@@ -196,12 +202,23 @@ pub fn tab_bar(s: &State, ink: &Ink) -> El {
         .child(
             theme::btn_sm("New tab", Some((&theme::PLUS, 14.0)), false, ink).on_press(
                 |s: &mut State| {
-                    // Mock session_create: a shell session titled like the
-                    // tab, then the sidebar's activate-and-focus path.
-                    let title = data::spawn_shell(&mut s.data);
-                    s.open_tabs.push(title);
-                    s.active_tab = s.open_tabs.len() - 1;
-                    sync_selection(s);
+                    // A real shell session in the active checkout: the
+                    // daemon owns the session, the app records why it
+                    // exists.
+                    let cwd = s
+                        .editor
+                        .checkout
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .or_else(|| std::env::var("HOME").ok())
+                        .unwrap_or_else(|| "/".to_string());
+                    let project_id = s.editor.project_id.clone();
+                    s.launch_session(crate::sessions::SessionLaunch {
+                        argv: vec![backend::default_shell()],
+                        cwd,
+                        project_id,
+                        agent: "shell".to_string(),
+                    });
                 },
             ),
         )
@@ -230,33 +247,7 @@ fn split_button(icon: &'static rune::Icon, label: &str, ink: &Ink) -> El {
 /// changed; clears it when the active title has no session. Shared by tab
 /// close/select, New tab and Close pane.
 fn sync_selection(s: &mut State) {
-    // Only real registered project ids can name a workspace — mock session
-    // project ids resolve to Unassigned so a tab click can never fabricate
-    // editor identity.
-    let known: HashSet<&str> = s
-        .editor
-        .projects
-        .iter()
-        .map(|p| p.project.id.as_str())
-        .collect();
-    let found = s.open_tabs.get(s.active_tab).and_then(|t| {
-        s.data.sessions.iter().find(|v| v.title() == *t).map(|sv| {
-            (
-                sv.info.id.clone(),
-                data::workspace_for_session(&s.data, sv, &known),
-            )
-        })
-    });
-    match found {
-        Some((id, ws)) => {
-            s.selected_session = Some(id);
-            s.active_workspace = Some(ws);
-        }
-        None => {
-            s.selected_session = None;
-            s.active_workspace = None;
-        }
-    }
+    s.sync_selection();
 }
 
 /// Session tab pill: `bg-bg/50 rounded-lg`; the active tab gets `bg-bg`. Close X on
@@ -265,14 +256,14 @@ fn sync_selection(s: &mut State) {
 ///
 /// Hover is a text-colour wash plus a lift of the title to full text colour, never
 /// `ink.bg`: that is exactly the active fill, so a `bg` hover made a hovered inactive
-/// tab indistinguishable from the active one. Tabs are keyed by title so closing one
-/// slides its neighbours into place instead of re-labelling them in place.
-fn tab_el(title: &str, index: usize, active: bool, ink: &Ink) -> El {
+/// tab indistinguishable from the active one. Tabs are keyed by session id so closing
+/// one slides its neighbours into place instead of re-labelling them in place.
+fn tab_el(key: &str, title: &str, index: usize, active: bool, ink: &Ink) -> El {
     // The close X sits in a 20 pt box with 6 pt right padding: the 12 pt glyph then
     // has 10 pt to the pill's edge, matching the title's 10 pt on the left. It owns
     // its hover (`hover_alone`), so the pill doesn't wash under the pointer too.
     let close = el()
-        .key(format!("close:{title}"))
+        .key(format!("close:{key}"))
         .size(20.0, 20.0)
         .center()
         .radius(6.0)
@@ -299,7 +290,7 @@ fn tab_el(title: &str, index: usize, active: bool, ink: &Ink) -> El {
         });
 
     row()
-        .key(format!("tab:{title}"))
+        .key(format!("tab:{key}"))
         .h(32.0)
         .gap(6.0)
         .items_center()
@@ -465,8 +456,8 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .meta
         .as_ref()
         .and_then(|m| m.project_id.as_deref())
-        .and_then(|pid| s.data.projects.iter().find(|p| p.id == pid))
-        .map(|p| p.name.as_str());
+        .and_then(|pid| s.editor.projects.iter().find(|p| p.project.id == pid))
+        .map(|p| p.project.name.as_str());
     let agent = sv
         .agent_label(&s.data.agents)
         .filter(|a| !a.eq_ignore_ascii_case(title.as_str()));
@@ -486,7 +477,8 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
     crumb = crumb.child(theme::txt(&title, T14M, ink.text).truncate());
 
     // StateBadge + StateDot's tone dot: `rounded border border-border px-1.5
-    // py-0.5 text-xs` + TONE, with the activity-aware dot ahead of the label.
+    // py-0.5 text-xs` + TONE, with the tone dot ahead of the label. A
+    // working session draws a spinning accent ring instead of the dot.
     let badge = row()
         .radius(4.0)
         .border(1.0, ink.border)
@@ -494,11 +486,7 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .py(2.0)
         .gap(4.0)
         .items_center()
-        .child(
-            el().size(6.0, 6.0)
-                .radius(3.0)
-                .fill(info.state.dot_color(sv.activity, ink)),
-        )
+        .child(theme::state_dot(info.state, s.spinner_angle(), ink))
         .child(theme::txt(
             info.state.label(),
             T12,
@@ -508,9 +496,9 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
     // Elapsed: ticks while live, frozen at ended_at otherwise.
     let live = info.state.controls_live();
     let end = if live {
-        data::MOCK_NOW_MS
+        s.now_ms
     } else {
-        info.ended_at.unwrap_or(data::MOCK_NOW_MS)
+        info.ended_at.unwrap_or(s.now_ms)
     };
     let elapsed = theme::txt(
         &data::format_elapsed(end - info.started_at),
@@ -519,54 +507,42 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
     );
 
     // Stop is disabled when the state is not controllable or disconnected.
-    // Mock stop_session: a live session exits with a frozen ended_at.
-    let mut stop = theme::btn_sm("Stop", None, true, ink);
+    // The daemon decides when the session is really gone: the row follows
+    // its `session.updated` event. An interactive shell ignores SIGTERM,
+    // so a stop that hangs offers the force kill after five seconds — the
+    // same escalation the desktop shows.
+    let force = s.force_kill_ready(&sv.info.id);
+    let mut stop = if force {
+        theme::btn_sm("Force kill", None, true, ink)
+    } else {
+        theme::btn_sm("Stop", None, true, ink)
+    };
     if !live || !s.data.connected {
         stop = stop.opacity(0.5);
     }
-    let stop = stop.on_press(|s: &mut State| {
+    let stop = stop.on_press(move |s: &mut State| {
         let Some(id) = s.selected_session.clone() else {
             return;
         };
-        if let Some(sv) = s.data.sessions.iter_mut().find(|v| v.info.id == id)
-            && sv.info.state.controls_live()
+        if s.session_by_key(&id)
+            .is_some_and(|view| view.info.state.controls_live())
         {
-            sv.info.state = data::SessionState::Exited;
-            sv.info.ended_at = Some(data::MOCK_NOW_MS);
-            sv.activity = None;
+            s.stop_session(&id, force);
         }
     });
 
-    // Close pane drops the session and its tab, then focuses whatever the
-    // active tab resolves to — the same path tab close takes.
+    // Close pane drops the session: the daemon deletes it, the app drops
+    // its metadata and its tab, then focuses whatever the active tab
+    // resolves to.
     let close = theme::btn_sm("Close pane", None, false, ink).on_press(|s: &mut State| {
         let Some(id) = s.selected_session.clone() else {
             return;
         };
-        let title = s
-            .data
-            .sessions
-            .iter()
-            .find(|v| v.info.id == id)
-            .map(|v| v.title());
-        s.data.sessions.retain(|v| v.info.id != id);
-        s.selected_session = None;
-        s.active_workspace = None;
-        if let Some(title) = title
-            && let Some(pos) = s.open_tabs.iter().position(|t| *t == title)
-        {
-            s.open_tabs.remove(pos);
-            if pos < s.active_tab {
-                s.active_tab -= 1;
-            }
-            if s.active_tab >= s.open_tabs.len() {
-                s.active_tab = s.open_tabs.len().saturating_sub(1);
-            }
-        }
-        sync_selection(s);
+        s.delete_session(&id);
     });
 
     row()
+        .key("controls-bar")
         .w_full()
         .items_center()
         .gap(12.0)

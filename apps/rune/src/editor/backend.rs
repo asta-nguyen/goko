@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 
+use app_core::agents::{self, AgentInfo};
 use app_core::error::BridgeError;
 use app_core::git_view::{
     self, GitViewBranch, GitViewChanges, GitViewDiff, GitViewFile, GitViewHistory, GitViewSearch,
@@ -20,7 +21,7 @@ use app_core::git_write::{self, GitCommitResult, GitPushResult};
 #[cfg(not(test))]
 use app_core::home;
 use app_core::projects::{self, ProjectView};
-use app_core::store::Storage;
+use app_core::store::{SessionMeta, Storage};
 use app_core::worktrees::{self, WorktreeList};
 use rune::AppHandle;
 
@@ -52,6 +53,37 @@ pub enum Req {
     SetSetting {
         key: String,
         value: String,
+    },
+    /// Every stored session metadata row — the app's join table between a
+    /// daemon session and the project/agent it belongs to.
+    SessionMetaList,
+    /// Record why a daemon session exists (its project and agent).
+    InsertSessionMeta(SessionMeta),
+    /// Drop a session's metadata row (the session was deleted).
+    DeleteSessionMeta(String),
+    /// The agents a session can be started with, discovered on the worker.
+    Agents,
+    /// The launch argv for one agent, resolved on the worker: the binary on
+    /// `PATH`, the default shell for `shell`, Claude's own hooks.
+    AgentArgv {
+        agent: String,
+    },
+    /// Create a linked worktree for a project.
+    CreateWorktree {
+        project_id: String,
+        path: String,
+        mode: String,
+        branch: String,
+        base: Option<String>,
+    },
+    /// Remove a linked worktree.
+    RemoveWorktree {
+        project_id: String,
+        path: String,
+    },
+    /// Remove a registered project.
+    RemoveProject {
+        id: String,
     },
     // reads (all take the job's checkout)
     Changes,
@@ -149,6 +181,14 @@ pub enum ReplyData {
     Added(ProjectView),
     Worktrees(WorktreeList),
     Setting(Option<String>),
+    /// The stored session metadata rows.
+    SessionMetas(Vec<SessionMeta>),
+    /// The discovered agents.
+    Agents(Vec<AgentInfo>),
+    /// The resolved launch argv of one agent.
+    AgentArgv(Vec<String>),
+    /// The worktree a create request made.
+    Worktree(app_core::worktrees::WorktreeInfo),
     Changes(GitViewChanges),
     Diff(GitViewDiff),
     History(GitViewHistory),
@@ -310,6 +350,11 @@ fn is_mutating(req: &Req) -> bool {
         req,
         Req::AddProject(_)
             | Req::SetSetting { .. }
+            | Req::InsertSessionMeta(_)
+            | Req::DeleteSessionMeta(_)
+            | Req::CreateWorktree { .. }
+            | Req::RemoveWorktree { .. }
+            | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
             | Req::Stage { .. }
             | Req::Unstage { .. }
@@ -360,7 +405,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
             };
             let h = handle.clone();
             handle.update(move |s: &mut State, _tx| {
-                s.editor.apply_reply(reply);
+                s.apply_reply(reply);
                 let _ = &h;
             });
             continue;
@@ -368,7 +413,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
         let reply = run_job(&storage, &job);
         let h = handle.clone();
         handle.update(move |s: &mut State, _tx| {
-            s.editor.apply_reply(reply);
+            s.apply_reply(reply);
             // The Changes section keeps its patch-pane selection valid —
             // the desktop's "select first change" effect, run where a
             // `&mut State` exists (replies land outside the render pass).
@@ -398,6 +443,46 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
         }),
         Req::SetSetting { key, value } => storage_req(storage, |store| {
             store.set_setting(key, value).map(|_| ReplyData::Ok)
+        }),
+        Req::SessionMetaList => storage_req(storage, |store| {
+            store.list_session_meta().map(ReplyData::SessionMetas)
+        }),
+        Req::InsertSessionMeta(meta) => storage_req(storage, |store| {
+            store.insert_session_meta(meta).map(|_| ReplyData::Ok)
+        }),
+        Req::DeleteSessionMeta(id) => storage_req(storage, |store| {
+            store.delete_session_meta(id).map(|_| ReplyData::Ok)
+        }),
+        Req::Agents => Ok(ReplyData::Agents(agents::discover(
+            std::env::var_os("PATH").as_deref(),
+            &default_shell(),
+        ))),
+        Req::AgentArgv { agent } => agent_argv(agent),
+        Req::CreateWorktree {
+            project_id,
+            path,
+            mode,
+            branch,
+            base,
+        } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            worktrees::create(
+                std::path::Path::new(&root),
+                path,
+                mode,
+                branch,
+                base.as_deref(),
+            )
+            .map(ReplyData::Worktree)
+        }),
+        Req::RemoveWorktree { project_id, path } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            // A dirty checkout would refuse the removal; the user asked for
+            // it explicitly, so the force flag is the caller's choice.
+            worktrees::remove(std::path::Path::new(&root), path, true).map(|_| ReplyData::Ok)
+        }),
+        Req::RemoveProject { id } => storage_req(storage, |store| {
+            projects::remove_project(store, id).map(|_| ReplyData::Ok)
         }),
         Req::ExternalOpen {
             project_id,
@@ -452,6 +537,54 @@ fn storage_req<T>(
     };
     let store = storage.get().map_err(|e| e.to_string())?;
     f(store).map_err(|e| e.to_string())
+}
+
+/// The shell a `shell` session runs: `$SHELL`, else `/bin/zsh` — the same
+/// rule the desktop's `default_shell` uses.
+pub fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+/// Where Claude's usage and activity hooks write. Tests use a temp
+/// directory so no real `GOKO_HOME` is touched.
+fn agent_home() -> PathBuf {
+    #[cfg(not(test))]
+    {
+        home::home_dir().unwrap_or_default()
+    }
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join("goko-rune-agent-home")
+    }
+}
+
+/// The launch argv for `agent`, resolved the way the desktop resolves it:
+/// the binary on `PATH`, the default shell for `shell`, and Claude's own
+/// statusline/hooks for `claude`.
+fn agent_argv(agent: &str) -> Result<ReplyData, String> {
+    let (goko_home, original_statusline) = if agent == "claude" {
+        let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")));
+        let original =
+            config_dir.and_then(|dir| agents::original_statusline(&dir.join("settings.json")));
+        (agent_home(), original)
+    } else {
+        (PathBuf::new(), None)
+    };
+    agents::argv_for(
+        agent,
+        std::env::var_os("PATH").as_deref(),
+        &default_shell(),
+        &goko_home,
+        original_statusline.as_deref(),
+    )
+    .map(ReplyData::AgentArgv)
+    .map_err(|error| error.to_string())
 }
 
 /// Resolve the job's checkout identity against the registered project list
@@ -529,6 +662,14 @@ fn run_checkout(
         | Req::Worktrees(_)
         | Req::GetSetting { .. }
         | Req::SetSetting { .. }
+        | Req::SessionMetaList
+        | Req::InsertSessionMeta(_)
+        | Req::DeleteSessionMeta(_)
+        | Req::Agents
+        | Req::AgentArgv { .. }
+        | Req::CreateWorktree { .. }
+        | Req::RemoveWorktree { .. }
+        | Req::RemoveProject { .. }
         | Req::ExternalOpen { .. }
         | Req::Highlight { .. } => Err("non-checkout request on checkout lane".into()),
     }
