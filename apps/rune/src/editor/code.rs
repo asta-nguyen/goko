@@ -138,6 +138,7 @@ impl CodeState {
     }
 
     /// Re-resolve [`Self::indent_unit`] from the current text/path/choice.
+    /// Runs on load and choice change only, so typing never flips the unit.
     fn resolve_indent(&mut self) {
         self.indent_unit = indent::resolve(&self.edit.text, &self.path, self.indent_choice);
     }
@@ -157,7 +158,6 @@ impl CodeState {
         self.revision += 1;
         self.sync_gutter();
         self.find.refresh(&self.edit.text);
-        self.resolve_indent();
     }
 
     /// The scanner language for [`Self::path`], when one exists.

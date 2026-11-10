@@ -520,7 +520,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // Caret-anchored LSP hover card: mounts only once `Cx::caret` has
     // measured the field's caret in window points.
     if s.view == View::Editor
-        && let Some(layer) = editor::lsp::hover_layer(s, cx, ink, &s.editor.kit)
+        && let Some(layer) = editor::lsp::hover_layer(s, cx, &s.editor.kit)
     {
         root = root.child(layer);
     }
