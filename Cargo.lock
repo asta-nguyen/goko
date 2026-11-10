@@ -1988,6 +1988,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "app-core",
+ "base64 0.23.1",
  "chrono",
  "lsp-types",
  "objc2 0.5.3",
@@ -1997,6 +1998,7 @@ dependencies = [
  "rune",
  "rune-highlights",
  "rune-kit",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -4,20 +4,29 @@
 //! drafts with Save/Discard/Cancel guards).
 
 mod chrome;
+mod daemon;
 mod data;
 mod editor;
+mod sessions;
 mod sidebar;
 mod term;
 mod theme;
+mod trace;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rune::{AppSpec, Cx, El, Tx, col, row};
 
 use crate::data::Data;
 use crate::editor::backend;
 use crate::theme::Ink;
+
+/// The system's Reduce Motion setting, mirrored by the view — the only
+/// place that can read it. Under it the spinner stands still and no frame
+/// is asked for.
+static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
 
 /// The workspace column's content mode: the terminal stub, the editor
 /// workspace, or the app-level settings page that replaces the whole column
@@ -32,12 +41,20 @@ pub enum View {
 pub struct State {
     ink: Ink,
     data: Data,
+    /// The attached session's rendered terminal rows.
     lines: Vec<term::TermLine>,
+    /// The live terminal of the attached session, if any.
+    terminal: Option<term::Terminal>,
+    /// The grid the terminal renders at, measured from the pane.
+    terminal_cols: usize,
+    terminal_rows: usize,
+    /// The size the daemon's PTY was last told about.
+    terminal_pty: (usize, usize),
     /// Project id → expanded; absent means expanded (ProjectTree default).
     expanded: HashMap<String, bool>,
     selected_session: Option<String>,
     active_workspace: Option<String>,
-    /// Open workspace tabs (titles); seeded from `Data::tabs`.
+    /// Open workspace tabs, keyed by the daemon session id.
     open_tabs: Vec<String>,
     active_tab: usize,
     /// "Worktrees" group header open per project id; absent means open.
@@ -49,6 +66,40 @@ pub struct State {
     /// The native editor workspace: projects/checkouts, sections, docs,
     /// backend worker and ACP runtime.
     editor: editor::state::EditorState,
+    /// The daemon client: every session read and write goes through it.
+    daemon: daemon::Daemon,
+    /// The stored session metadata rows, keyed by session id.
+    session_metas: HashMap<String, app_core::store::SessionMeta>,
+    /// Daemon requests whose replies are drained in `poll`.
+    pending: Vec<sessions::Pending>,
+    /// The daemon version the last handshake reported.
+    daemon_version: Option<String>,
+    /// Why the daemon is unreachable, when it is.
+    daemon_reason: Option<String>,
+    /// The session whose terminal fell behind (the next poll resubscribes).
+    terminal_lagged: Option<protocol::session::SessionId>,
+    /// The wall clock in epoch milliseconds — the elapsed counter's source.
+    now_ms: i64,
+    /// The app's clock in seconds — the spinner's phase.
+    clock: f64,
+    /// A notice from the last failed daemon call.
+    notice: Option<String>,
+    /// The sidebar's width in pixels.
+    sidebar_width: f32,
+    /// The open sidebar menu: the row it belongs to and what it offers.
+    sidebar_menu: Option<(sidebar::RowTarget, sidebar::MenuKind)>,
+    /// Where the menu opens — the pointer's last position over the row's
+    /// action button.
+    menu_anchor: Option<(f32, f32)>,
+    /// The text the sidebar asks the user for.
+    sidebar_input: Option<sidebar::SidebarInput>,
+    /// The text the user typed into the sidebar's prompt.
+    sidebar_text: rune::edit::TextEdit,
+    /// A launch waiting for its agent's argv.
+    pending_argv: Option<sessions::PendingArgv>,
+    /// When each session entered the stopping state, so the force kill can
+    /// be offered once a stop has hung.
+    stopping_since: HashMap<String, i64>,
 }
 
 /// `AppSpec::init` is a plain `fn() -> S`, so the `AppHandle` the editor's
@@ -67,32 +118,177 @@ fn init_state() -> State {
 impl State {
     fn new(handle: rune::AppHandle<State>) -> State {
         let ink = Ink::new();
-        let data = data::mock_data();
-        let lines = term::real_term_lines(&ink);
-        let open_tabs = data.tabs.clone();
-        let active_tab = data.active_tab;
         let kit = rune_kit::Kit::neutral(true);
         // Workers own their storage connections; nothing here touches
         // GOKO_HOME on the UI thread.
-        let editor = editor::state::EditorState::new(kit, handle);
+        let editor = editor::state::EditorState::new(kit, handle.clone());
+        // The daemon client runs on its own runtime thread; it wakes the
+        // event loop after every event so `poll` drains it promptly.
+        #[cfg(not(test))]
+        let daemon = daemon::Daemon::spawn({
+            let handle = handle.clone();
+            move || handle.wake()
+        });
+        // Tests never touch a real daemon: the client stays disconnected
+        // and the session state is driven by synthetic events.
+        #[cfg(test)]
+        let daemon = daemon::Daemon::spawn_disconnected();
         State {
             ink,
-            data,
-            lines,
+            data: Data::default(),
+            lines: Vec::new(),
+            terminal: None,
+            terminal_cols: term::TERM_COLS,
+            terminal_rows: term::TERM_ROWS,
+            terminal_pty: (0, 0),
             expanded: HashMap::new(),
-            selected_session: Some("sess-devin-spike".to_string()),
+            selected_session: None,
             // No workspace is committed until the user picks a real
             // registered project/checkout in the sidebar (or the editor
-            // pickers) — the mock data layer must never seed editor
-            // identity.
+            // pickers) — no session may seed editor identity.
             active_workspace: None,
-            open_tabs,
-            active_tab,
+            open_tabs: Vec::new(),
+            active_tab: 0,
             worktree_groups: HashMap::new(),
             worktrees_open: HashMap::new(),
             view: View::Terminal,
             editor,
+            daemon,
+            session_metas: HashMap::new(),
+            pending: Vec::new(),
+            daemon_version: None,
+            daemon_reason: None,
+            terminal_lagged: None,
+            now_ms: data::now_ms(),
+            clock: 0.0,
+            notice: None,
+            sidebar_width: sidebar::DEFAULT_SIDEBAR_W,
+            sidebar_menu: None,
+            menu_anchor: None,
+            sidebar_input: None,
+            sidebar_text: rune::edit::TextEdit::new(""),
+            pending_argv: None,
+            stopping_since: HashMap::new(),
         }
+    }
+
+    /// The spinner's angle: the app clock's phase, or a still ring under
+    /// Reduce Motion.
+    pub fn spinner_angle(&self) -> f32 {
+        if REDUCED_MOTION.load(Ordering::Relaxed) {
+            return 0.0;
+        }
+        (self.clock as f32 * 2.4) % std::f32::consts::TAU
+    }
+
+    /// `true` while a session works — its dot spins.
+    pub fn spinning(&self) -> bool {
+        self.data
+            .sessions
+            .iter()
+            .any(|view| view.info.state.working())
+    }
+
+    /// Save the sidebar's width, so it survives the next launch. The write
+    /// rides the worker lane like every other settings change.
+    pub fn persist_sidebar_width(&mut self) {
+        let width = self.sidebar_width.round();
+        let _ = backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::SetSetting {
+                key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
+                value: format!("{width}"),
+            }),
+        );
+    }
+
+    /// Apply one backend reply: the app-level kinds land here, the editor's
+    /// own kinds in the editor state.
+    pub fn apply_reply(&mut self, reply: backend::Reply) {
+        match &reply.req {
+            backend::Req::SessionMetaList => {
+                if let Ok(backend::ReplyData::SessionMetas(rows)) = &reply.result {
+                    let metas: HashMap<String, app_core::store::SessionMeta> = rows
+                        .iter()
+                        .map(|meta| (meta.session_id.clone(), meta.clone()))
+                        .collect();
+                    self.session_metas = metas.clone();
+                    // The rows join the metadata now that it is known.
+                    for view in self.data.sessions.iter_mut() {
+                        view.meta = metas.get(&view.info.id).cloned();
+                    }
+                }
+                return;
+            }
+            backend::Req::Agents => {
+                if let Ok(backend::ReplyData::Agents(agents)) = &reply.result {
+                    self.data.agents = agents.clone();
+                }
+                return;
+            }
+            backend::Req::AgentArgv { agent } => {
+                // The agent's launch argv: the session starts in the row's
+                // checkout. A reply for another agent is stale.
+                let pending = self.pending_argv.take();
+                if let (Some(pending), Ok(backend::ReplyData::AgentArgv(argv))) =
+                    (pending, &reply.result)
+                    && &pending.agent == agent
+                {
+                    let (cwd, project_id) = self.checkout_of(&pending.target);
+                    self.launch_session(sessions::SessionLaunch {
+                        argv: argv.clone(),
+                        cwd,
+                        project_id,
+                        agent: pending.agent.clone(),
+                    });
+                }
+                return;
+            }
+            backend::Req::CreateWorktree { project_id, .. } => {
+                // The new checkout joins the project's list.
+                if reply.result.is_ok() {
+                    self.editor.request_worktrees(project_id);
+                }
+                return;
+            }
+            backend::Req::RemoveWorktree { project_id, .. } => {
+                // The list is stale without the removed checkout.
+                if reply.result.is_ok() {
+                    self.editor.request_worktrees(project_id);
+                }
+                return;
+            }
+            backend::Req::RemoveProject { id } => {
+                if reply.result.is_ok() {
+                    self.editor.refresh_projects();
+                    // The sessions of a removed project lose their project:
+                    // they render under Unassigned from now on.
+                    for view in self.data.sessions.iter_mut() {
+                        if let Some(meta) = view.meta.as_mut()
+                            && meta.project_id.as_deref() == Some(id.as_str())
+                        {
+                            meta.project_id = None;
+                        }
+                    }
+                    for meta in self.session_metas.values_mut() {
+                        if meta.project_id.as_deref() == Some(id.as_str()) {
+                            meta.project_id = None;
+                        }
+                    }
+                }
+                return;
+            }
+            backend::Req::GetSetting { key } if key == sidebar::SIDEBAR_WIDTH_KEY => {
+                if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
+                    && let Ok(width) = raw.parse::<f32>()
+                {
+                    self.sidebar_width = sidebar::clamp_width(width);
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.editor.apply_reply(reply);
     }
 }
 
@@ -129,6 +325,9 @@ pub(crate) fn test_handle() -> rune::AppHandle<State> {
 /// Editor/Terminal keep the tab strip + controls and swap only the content.
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let ink = &s.ink;
+    // The view is the only place that can read the system's Reduce Motion
+    // setting; the poll needs it to know whether to keep frames coming.
+    REDUCED_MOTION.store(cx.system_reduced_motion(), Ordering::Relaxed);
     let workspace = if s.view == View::Settings {
         col()
             .grow(1.0)
@@ -171,7 +370,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .min_h(0.0)
                 .w_full()
                 .child(sidebar::sidebar(s, ink))
-                .child(sidebar::separator(ink))
+                .child(sidebar::separator(s, ink))
                 .child(workspace),
         );
     // Caret-anchored LSP hover card: mounts only once `Cx::caret` has
@@ -188,11 +387,21 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             root = root.child(l);
         }
     }
-    root
+    // The sidebar's menus and its text prompt mount above the app: they are
+    // overlays, not part of the tree.
+    let mut layer = Vec::new();
+    if let Some(menu) = sidebar::menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
+    if let Some(prompt) = sidebar::input_layer(s, ink, &mut layer) {
+        root = root.child(prompt);
+    }
+    rune_kit::root(root, layer)
 }
 
 /// `AppSpec::setup`: kick the initial project list, history-layout restore,
-/// and ACP agent discovery once the state exists.
+/// the session metadata and agent reads, the sidebar width restore, and ACP
+/// agent discovery once the state exists.
 fn setup(s: &mut State, _waker: rune::Waker) {
     s.editor.refresh_projects();
     // History pane sizes persist in the shared settings store; the read runs
@@ -203,14 +412,53 @@ fn setup(s: &mut State, _waker: rune::Waker) {
             key: editor::history_layout::HISTORY_LAYOUT_KEY.to_string(),
         }),
     );
+    // The session metadata rows and the agents the New-session menu lists
+    // come from the same worker lane.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::SessionMetaList),
+    );
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::Agents),
+    );
+    // The sidebar's width survives restarts.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
+        }),
+    );
     s.editor.acp.refresh();
 }
 
-/// `AppSpec::poll`: drain editor housekeeping — quit-guard swizzle install,
-/// cancelled-close reopen, search debounce, save-resume navigation, queued
-/// external opens, and pending line reveals.
-fn poll(s: &mut State, _now: f64, tx: &mut Tx) -> bool {
+/// `AppSpec::poll`: drain the daemon's events and the session replies it
+/// is waiting for, then the editor housekeeping — quit-guard swizzle
+/// install, cancelled-close reopen, search debounce, save-resume
+/// navigation, queued external opens, and pending line reveals.
+fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    s.clock = now;
+    s.now_ms = data::now_ms();
+    // The daemon's events: the session rows, the connection state and the
+    // terminal's lag notices all land here.
+    for event in s.daemon.take_events() {
+        s.apply_daemon_event(event);
+        changed = true;
+    }
+    // The replies the session requests are waiting for.
+    changed |= s.drain_pending();
+    // The terminal follows the selection: it attaches to the session the
+    // Terminal view shows and detaches from the one it left.
+    changed |= s.sync_terminal();
+    changed |= s.poll_terminal(tx);
+    crate::trace::trace(&s.terminal_trace());
+    // A subscriber that fell behind takes a fresh subscription, which
+    // replays the daemon's retained output.
+    if let Some(session) = s.terminal_lagged.take() {
+        s.resubscribe_terminal(session);
+        changed = true;
+    }
     editor::quit_guard::poll_install();
     editor::navigation::reopen_if_cancelled(s);
     changed |= editor::search::poll(s);
@@ -241,6 +489,12 @@ fn poll(s: &mut State, _now: f64, tx: &mut Tx) -> bool {
     // auto-select, jump_to consumption, table↔layout sync, detail fetches.
     changed |= editor::history::poll(s, tx);
     s.editor.poll_layout_save();
+    // A working session's dot spins: ask for the next frame so the ring
+    // keeps turning. Reduce Motion stops the animation entirely.
+    if s.spinning() && !REDUCED_MOTION.load(Ordering::Relaxed) {
+        tx.wake_after(std::time::Duration::from_millis(33));
+        changed = true;
+    }
     if let Some(doc) = s.editor.doc.as_mut()
         && let Some(line) = doc.reveal_line.take()
     {
@@ -259,22 +513,32 @@ fn on_close(s: &mut State, tx: &mut Tx) {
     editor::navigation::on_window_close(s, tx);
 }
 
-/// Real quit (post-veto or clean): shut the backend and ACP runtimes down
-/// with the app — `Backend::shutdown` refuses new jobs, lets accepted
-/// mutating jobs finish, then joins; `Acp::shutdown` joins its runtime
-/// thread after `hub.shutdown()`.
+/// Real quit (post-veto or clean): shut the backend, ACP and daemon
+/// runtimes down with the app — `Backend::shutdown` refuses new jobs, lets
+/// accepted mutating jobs finish, then joins; `Acp::shutdown` joins its
+/// runtime thread after `hub.shutdown()`; `Daemon::shutdown` ends the
+/// supervisor and drops every pending reply.
 fn on_quit(s: &mut State, _tx: &mut Tx) {
     s.editor.backend.shutdown();
     s.editor.acp.shutdown();
     s.editor.lsp.shutdown();
+    s.daemon.shutdown();
     s.editor.sync_quit_dirty();
 }
 
-/// Unhandled keys: the editor's global chords and section/list shortcuts
-/// first (⌘S/⌘F/⌘⇧F/⌘P, 1–4, j/k, Enter — `editor::keyboard`), the quick-open
+/// Unhandled keys: the Terminal view hands them to the attached session's
+/// PTY; the editor's global chords and section/list shortcuts come first
+/// (⌘S/⌘F/⌘⇧F/⌘P, 1–4, j/k, Enter — `editor::keyboard`), the quick-open
 /// palette owns every key while open, then F12 runs go-to-definition at the
 /// caret (LSP first, heuristic fallback) and Esc dismisses the hover card.
 fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    // The sidebar's prompt owns the keyboard while it is open.
+    if s.sidebar_input.is_some() {
+        return false;
+    }
+    if s.view == View::Terminal {
+        return terminal_key(s, ev);
+    }
     if s.view != View::Editor {
         return false;
     }
@@ -314,6 +578,32 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
 /// active document's `CodeState`.
 fn on_modifiers(s: &mut State, mods: rune::Mods, _tx: &mut Tx) {
     s.editor.set_modifiers(mods);
+}
+
+/// The Terminal view's keyboard: every key belongs to the attached session's
+/// PTY. An app shortcut (⌘ on macOS) is left alone, and an exited session
+/// keeps its final grid without taking input.
+fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
+    let Some(session) = s.terminal.as_ref().map(|terminal| terminal.session) else {
+        return false;
+    };
+    // A shortcut belongs to the app, not to the shell.
+    if ev.mods.cmd && !ev.mods.ctrl {
+        return false;
+    }
+    let live = s
+        .data
+        .sessions
+        .iter()
+        .any(|view| view.info.session_id == session && view.info.state.live());
+    if !live {
+        return false;
+    }
+    let Some(bytes) = term::key_bytes(ev) else {
+        return false;
+    };
+    s.write_terminal(session, &bytes);
+    true
 }
 
 fn main() {
@@ -477,23 +767,283 @@ mod view_tests {
         );
     }
 
+    /// A daemon session in the scene, exactly as the client's `session.list`
+    /// delivers it: no metadata row unless the test adds one.
+    fn seed_session(s: &mut State, title: &str, cwd: &str) -> String {
+        let info = protocol::session::SessionInfo {
+            id: protocol::session::SessionId::new(),
+            title: title.into(),
+            argv: vec!["/bin/zsh".into()],
+            cwd: cwd.into(),
+            state: protocol::session::SessionState::Running,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        };
+        let key = crate::data::SessionInfo::key(info.id);
+        s.upsert_session(info);
+        key
+    }
+
     #[test]
     fn editor_view_hides_terminal_session_controls() {
-        // State::new keeps `selected_session` + mock sessions: before the
-        // fix the controls bar rendered Stop/Close pane inside the editor.
-        let s = editor_scene();
+        // A selected session in the Editor view: before the fix the
+        // controls bar rendered Stop/Close pane inside the editor.
+        let mut s = editor_scene();
+        let key = seed_session(&mut s, "shell", "/tmp");
+        s.selected_session = Some(key);
         assert!(s.selected_session.is_some());
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
+        // The controls strip itself must not be mounted in the Editor view.
+        assert!(
+            !els(&rt)
+                .iter()
+                .any(|el| el.key.as_deref() == Some("controls-bar")),
+            "the session controls leaked into the editor"
+        );
+    }
+
+    #[test]
+    fn an_attached_terminal_is_drawn_by_the_poll_that_attaches_it() {
+        // The terminal must not wait for a frame that nobody asked for:
+        // the poll that attaches the session draws its grid.
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "shell", "/tmp");
+        s.selected_session = Some(key);
+        let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: b"hello\r\n".to_vec(),
+        })
+        .unwrap();
+        s.terminal = Some(terminal);
+
+        let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.update(|s, tx| {
+            s.poll_terminal(tx);
+        });
+        let mut lines = 0;
+        rt.update(|s, _| {
+            lines = s.lines.len();
+        });
+        assert!(lines > 0, "the terminal drew its grid in the same poll");
+    }
+
+    #[test]
+    fn the_terminal_grid_fits_the_pane() {
+        // The grid follows the pane: a line that wrapped would make the
+        // content taller than the viewport, and that is what made a
+        // full-screen program shake.
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "shell", "/tmp");
+        s.selected_session = Some(key);
+        let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: "x".repeat(400).into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        s.terminal = Some(terminal);
+        s.lines = s
+            .terminal
+            .as_mut()
+            .map(|terminal| terminal.lines(&s.ink).to_vec())
+            .unwrap_or_default();
+
+        let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        // The first layout measures the pane and resizes the grid; the
+        // poll then draws the grid at its new size.
+        rt.frame(1.0 / 60.0);
+
+        // Every drawn row is one line tall: nothing wrapped.
+        let mut rows = 0;
+        let mut height = 0.0;
+        let mut widest = 0.0_f32;
         for e in els(&rt) {
-            for text in [e.label.as_deref(), e.text.as_deref()]
-                .into_iter()
-                .flatten()
-            {
-                assert_ne!(text, "Stop", "session control leaked into editor");
-                assert_ne!(text, "Close pane", "session control leaked into editor");
+            let Some(text) = e.text.as_deref() else {
+                continue;
+            };
+            if !text.starts_with("xxx") {
+                continue;
             }
+            rows += 1;
+            height += e.visible[3];
+            widest = widest.max(e.visible[2]);
+            assert!(
+                e.visible[3] <= 17.0,
+                "a terminal row wrapped: height {} for {text:?}",
+                e.visible[3]
+            );
         }
+        assert!(rows > 0, "the terminal drew its grid");
+
+        // The grid took the pane's size, and the drawn grid fits inside
+        // it — the pane never has to scroll, so the content never jumps.
+        let mut cols = 0;
+        let mut grid_rows = 0;
+        rt.update(|s, _| {
+            cols = s.terminal_cols;
+            grid_rows = s.terminal_rows;
+        });
+        assert!(cols >= 20, "the grid took the pane's width: {cols}");
+        assert!(
+            grid_rows >= 4,
+            "the grid took the pane's height: {grid_rows}"
+        );
+        let pane = 1512.0 - sidebar::DEFAULT_SIDEBAR_W - 8.0 - 2.0 * 8.0;
+        assert!(
+            widest <= pane,
+            "the grid is wider than the pane: {widest} > {pane}"
+        );
+        assert!(
+            height <= 814.0 - 48.0 - 41.0 - 40.0,
+            "the grid is taller than the pane: {height}"
+        );
+    }
+
+    #[test]
+    fn scratch_render_capture() {
+        let Some(dir) = std::env::var_os("CAP_DIR") else {
+            return;
+        };
+        for name in ["claude", "codex"] {
+            let data =
+                std::fs::read(std::path::Path::new(&dir).join(format!("{name}.bin"))).unwrap();
+            let mut s = State::new(test_handle());
+            let key = seed_session(&mut s, "shell", "/tmp");
+            s.selected_session = Some(key);
+            let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (_r, ready_rx) = std::sync::mpsc::channel();
+            let terminal = term::Terminal::new(session, rx, ready_rx);
+            s.terminal = Some(terminal);
+            let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
+            rt.poll = Some(poll);
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+            for (i, c) in data.chunks(1024).enumerate() {
+                tx.send(daemon::Output {
+                    seq: (i * 1024) as u64,
+                    data: c.to_vec(),
+                })
+                .unwrap();
+            }
+            for _ in 0..4 {
+                rt.frame(1.0 / 60.0);
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            let mut n = 0;
+            let mut grid = (0, 0);
+            rt.update(|s, _| {
+                grid = (s.terminal_cols, s.terminal_rows);
+            });
+            for e in els(&rt) {
+                if let Some(t) = e.text.as_deref() {
+                    if t.trim().is_empty() {
+                        continue;
+                    }
+                    n += 1;
+                    if t.contains("OpenAI")
+                        || t.contains("Accessing")
+                        || t.contains("Ask Codex")
+                        || t.contains("Enter to")
+                    {
+                        println!(
+                            "{name} TERM-ROW {:?} vis={:?} color={:?}",
+                            t.chars().take(40).collect::<String>(),
+                            e.visible,
+                            e.text_color
+                        );
+                    }
+                }
+            }
+            println!("{name}: grid={grid:?} text elements={n}");
+        }
+    }
+
+    #[test]
+    fn a_full_screen_redraw_does_not_move_the_grid() {
+        // What an agent TUI does: rewrite every row of the screen. The
+        // grid may change, but the rows must stay where they are — a
+        // moving row is what the eye reads as shaking.
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "shell", "/tmp");
+        s.selected_session = Some(key);
+        let session = s.session_id(&s.selected_session.clone().unwrap()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: "x".repeat(400).into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        s.terminal = Some(terminal);
+        s.lines = s
+            .terminal
+            .as_mut()
+            .map(|terminal| terminal.lines(&s.ink).to_vec())
+            .unwrap_or_default();
+
+        let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+
+        let rows_of = |rt: &Runtime<State>| -> Vec<[f32; 4]> {
+            els(rt)
+                .iter()
+                .filter(|e| e.text.as_deref().is_some_and(|t| t.starts_with("xxx")))
+                .map(|e| e.visible)
+                .collect()
+        };
+        let before = rows_of(&rt);
+        assert!(!before.is_empty(), "the terminal drew its grid");
+
+        // The redraw: every row is rewritten, with the cursor jumping home.
+        let mut redraw = String::from("\u{1b}[H");
+        for line in 0..20 {
+            redraw.push_str(&format!("\u{1b}[{};1Hxxx{line} {}", line, "y".repeat(120)));
+        }
+        tx.send(daemon::Output {
+            seq: 1,
+            data: redraw.into_bytes(),
+        })
+        .unwrap();
+        rt.frame(1.0 / 60.0);
+        // The repaint waits for the burst to settle.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        rt.frame(1.0 / 60.0);
+
+        let after = rows_of(&rt);
+        assert!(after.len() >= 2, "the redraw drew its rows");
+        // The grid starts where it did: the redraw changed the content,
+        // not the layout.
+        assert_eq!(
+            before.first().unwrap()[1],
+            after.first().unwrap()[1],
+            "the grid moved: {:?} -> {:?}",
+            before.first().unwrap(),
+            after.first().unwrap()
+        );
+        // And its rows sit on the line grid.
+        let gap = after[1][1] - after[0][1];
+        assert!(
+            (gap - 16.0).abs() < 1.0,
+            "the rows are not on the line grid: {gap}"
+        );
     }
 
     #[test]
@@ -847,8 +1397,11 @@ mod view_tests {
     }
 
     #[test]
-    fn sidebar_lists_real_projects_and_mock_sessions_stay_unassigned() {
-        let s = sidebar_scene();
+    fn sidebar_lists_real_projects_and_sessions_without_metadata_stay_unassigned() {
+        let mut s = sidebar_scene();
+        // A daemon session with no stored metadata row: it belongs to no
+        // registered project, so it renders under Unassigned.
+        seed_session(&mut s, "fix-auth-flow", "/work/a/web");
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
         let e = els(&rt);
@@ -865,7 +1418,7 @@ mod view_tests {
                 "missing {key}"
             );
         }
-        // Mock project ids never become sidebar rows — they are not
+        // Unregistered project ids never become sidebar rows — they are not
         // registered projects, so nothing may select them as identity.
         for mock in ["proj-goko", "proj-notes"] {
             assert!(
@@ -874,8 +1427,8 @@ mod view_tests {
                 "mock project {mock} leaked into the sidebar"
             );
         }
-        // Mock session rows render under Unassigned, never nested under a
-        // real project — the honest terminal/session boundary.
+        // The session renders under Unassigned, never nested under a real
+        // project — the honest terminal/session boundary.
         let texts: Vec<&str> = e
             .iter()
             .filter_map(|el| el.text.as_deref().or(el.label.as_deref()))

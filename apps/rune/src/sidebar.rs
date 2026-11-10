@@ -12,15 +12,341 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use app_core::projects::ProjectView;
-use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, row, spacer};
+use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, row};
+use rune_kit::MenuItem;
 
 use crate::State;
 use crate::data::{self, SessionView, WorktreeInfo};
 use crate::editor::backend::{Job, Req};
 use crate::editor::navigation::{self, PendingNav};
-use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T12TN, T128};
+use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T12M, T128};
 
-const SIDEBAR_W: f32 = 320.0; // PANEL_LIMITS.projectTree.defaultWidth
+/// The sidebar's default width in pixels (`rune.sidebar_width` restores a
+/// different one on the next launch).
+pub const DEFAULT_SIDEBAR_W: f32 = 320.0;
+/// The narrowest the sidebar may be dragged to.
+pub const MIN_SIDEBAR_W: f32 = 220.0;
+/// The widest the sidebar may be dragged to.
+pub const MAX_SIDEBAR_W: f32 = 480.0;
+/// The settings key the width is stored under.
+pub const SIDEBAR_WIDTH_KEY: &str = "rune.sidebar_width";
+
+/// Clamp a sidebar width to the draggable range.
+pub fn clamp_width(width: f32) -> f32 {
+    width.clamp(MIN_SIDEBAR_W, MAX_SIDEBAR_W)
+}
+
+// ---------------------------------------------------------------------------
+// Row actions — the hover-revealed menus
+// ---------------------------------------------------------------------------
+
+/// The row a menu belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowTarget {
+    /// A registered project's root checkout.
+    Project { project_id: String },
+    /// A linked worktree of a project.
+    Worktree { project_id: String, path: String },
+    /// A daemon session.
+    Session { session_id: String },
+}
+
+/// What a row's action button opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuKind {
+    /// The agents a session can be started with.
+    NewSession,
+    /// The row's other commands.
+    More,
+}
+
+impl RowTarget {
+    /// The row's identity — every action button's key carries it, so two
+    /// rows never share one.
+    pub fn identity(&self) -> String {
+        match self {
+            RowTarget::Project { project_id } => project_id.clone(),
+            RowTarget::Worktree { path, .. } => path.clone(),
+            RowTarget::Session { session_id } => session_id.clone(),
+        }
+    }
+}
+
+/// A text the sidebar asks the user for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SidebarInput {
+    /// The command a custom session runs.
+    CustomCommand { target: RowTarget },
+    /// The name of a new worktree.
+    NewWorktree { project_id: String },
+}
+
+/// The width of the action cell: the buttons are always there, so the row's
+/// text never shifts when they appear.
+const ACTIONS_W: f32 = 44.0;
+
+/// A row's hover action: a small icon button that fades in with the row's
+/// hover and never moves anything.
+fn action_button(
+    ink: &Ink,
+    icon: &'static rune::Icon,
+    label: &str,
+    key: String,
+    action: impl Fn(&mut State) + 'static,
+) -> El {
+    el().key(key)
+        .size(20.0, 20.0)
+        .center()
+        .radius(4.0)
+        .hover_group()
+        .hover(ink.text.alpha(0.10))
+        .press(ink.text.alpha(0.16))
+        .press_scale(0.92)
+        .group_opacity(0.0, 1.0)
+        .role("button")
+        .label(label)
+        .help(label)
+        .focusable(true)
+        .tab_index(-1)
+        .child(theme::ic(icon, 12.0, ink.muted).group_color(ink.text))
+        // The menu opens where the pointer is: the button remembers the
+        // last position it saw.
+        .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
+            s.menu_anchor = Some((p.x, p.y));
+        })
+        .on_press(action)
+}
+
+/// The actions a project or worktree row offers: a session to start and
+/// the row's other commands.
+fn checkout_actions(ink: &Ink, target: RowTarget) -> El {
+    let new_session = target.clone();
+    let more = target;
+    let identity = new_session.identity();
+    row()
+        .w(ACTIONS_W)
+        .h(ROW_H)
+        .gap(2.0)
+        .items_center()
+        .child(action_button(
+            ink,
+            &theme::PLUS,
+            "New session",
+            format!("sidebar-action:new-session:{identity}"),
+            move |s: &mut State| {
+                s.open_menu(new_session.clone(), MenuKind::NewSession);
+            },
+        ))
+        .child(action_button(
+            ink,
+            &theme::MORE,
+            "More actions",
+            format!("sidebar-action:more:{identity}"),
+            move |s: &mut State| {
+                s.open_menu(more.clone(), MenuKind::More);
+            },
+        ))
+}
+
+/// The actions a session row offers: stop it and close its pane.
+fn session_actions(ink: &Ink, session_id: String) -> El {
+    let stop = session_id.clone();
+    let close = session_id.clone();
+    row()
+        .w(ACTIONS_W)
+        .h(ROW_H)
+        .gap(2.0)
+        .items_center()
+        .child(action_button(
+            ink,
+            &theme::SQUARE,
+            "Stop session",
+            format!("sidebar-action:stop:{session_id}"),
+            move |s: &mut State| {
+                s.stop_session(&stop, false);
+            },
+        ))
+        .child(action_button(
+            ink,
+            &theme::X,
+            "Close pane",
+            format!("sidebar-action:close:{session_id}"),
+            move |s: &mut State| {
+                s.delete_session(&close);
+            },
+        ))
+}
+
+/// The open menu, as a kit layer. `None` when no menu is open.
+pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    let (target, kind) = s.sidebar_menu.clone()?;
+    let (x, y) = s.menu_anchor.unwrap_or((0.0, 0.0));
+    let mut menu = rune_kit::Menu::new("sidebar-menu").at(x, y).open(true);
+    match kind {
+        MenuKind::NewSession => {
+            for agent in &s.data.agents {
+                let agent_id = agent.id.clone();
+                let label = agent.label.clone();
+                let available = agent.available;
+                let target = target.clone();
+                menu = menu.item(MenuItem::new(label).disabled(!available).on_select_tx(
+                    move |st: &mut State, _tx: &mut Tx| {
+                        st.sidebar_menu = None;
+                        st.request_session_argv(target.clone(), agent_id.clone());
+                    },
+                ));
+            }
+            menu = menu.item(MenuItem::new("Custom command…").on_select_tx(
+                move |st: &mut State, _tx: &mut Tx| {
+                    st.sidebar_menu = None;
+                    st.ask_for_input(SidebarInput::CustomCommand {
+                        target: target.clone(),
+                    });
+                },
+            ));
+        }
+        MenuKind::More => {
+            let open_target = target.clone();
+            menu = menu.item(MenuItem::new("Open Editor").on_select_tx(
+                move |st: &mut State, tx: &mut Tx| {
+                    st.sidebar_menu = None;
+                    let (project_id, checkout) = match &open_target {
+                        RowTarget::Project { project_id } => (
+                            project_id.clone(),
+                            st.editor
+                                .projects
+                                .iter()
+                                .find(|project| project.project.id == *project_id)
+                                .map(|project| PathBuf::from(&project.project.root)),
+                        ),
+                        RowTarget::Worktree { project_id, path } => {
+                            (project_id.clone(), Some(PathBuf::from(path)))
+                        }
+                        RowTarget::Session { .. } => (String::new(), None),
+                    };
+                    let Some(checkout) = checkout else {
+                        return;
+                    };
+                    navigation::navigate(
+                        st,
+                        PendingNav::SelectCheckout {
+                            project_id,
+                            checkout,
+                        },
+                        tx,
+                    );
+                },
+            ));
+            let project_id = match &target {
+                RowTarget::Project { project_id } | RowTarget::Worktree { project_id, .. } => {
+                    project_id.clone()
+                }
+                RowTarget::Session { .. } => String::new(),
+            };
+            if !project_id.is_empty() {
+                let pid = project_id.clone();
+                menu = menu.item(MenuItem::new("Refresh worktrees").on_select_tx(
+                    move |st: &mut State, _tx: &mut Tx| {
+                        st.sidebar_menu = None;
+                        st.editor.request_worktrees(&pid);
+                    },
+                ));
+                let pid = project_id.clone();
+                menu = menu.item(MenuItem::new("Create worktree").on_select_tx(
+                    move |st: &mut State, _tx: &mut Tx| {
+                        st.sidebar_menu = None;
+                        st.ask_for_input(SidebarInput::NewWorktree {
+                            project_id: pid.clone(),
+                        });
+                    },
+                ));
+            }
+            match &target {
+                RowTarget::Worktree { project_id, path } => {
+                    let pid = project_id.clone();
+                    let path = path.clone();
+                    menu = menu.item(MenuItem::new("Remove worktree").danger(true).on_select_tx(
+                        move |st: &mut State, _tx: &mut Tx| {
+                            st.sidebar_menu = None;
+                            st.remove_worktree(&pid, &path);
+                        },
+                    ));
+                }
+                RowTarget::Project { project_id } => {
+                    let pid = project_id.clone();
+                    menu = menu.item(MenuItem::new("Remove project").danger(true).on_select_tx(
+                        move |st: &mut State, _tx: &mut Tx| {
+                            st.sidebar_menu = None;
+                            st.remove_project(&pid);
+                        },
+                    ));
+                }
+                RowTarget::Session { .. } => {}
+            }
+        }
+    }
+    Some(
+        menu.on_close(|st: &mut State| st.sidebar_menu = None)
+            .build(&s.editor.kit, layer),
+    )
+}
+
+/// The sidebar's text prompt, as a kit layer: the command a custom session
+/// runs, or the name of a new worktree.
+pub fn input_layer(s: &State, ink: &Ink, layer: &mut Vec<El>) -> Option<El> {
+    let input = s.sidebar_input.clone()?;
+    let (placeholder, title) = match &input {
+        SidebarInput::CustomCommand { .. } => ("Command to run…", "New session"),
+        SidebarInput::NewWorktree { .. } => ("Worktree name…", "New worktree"),
+    };
+    let field = rune_kit::TextInput::new(&s.sidebar_text)
+        .placeholder(placeholder)
+        .width(None)
+        .on_edit(|st: &mut State| -> &mut rune::edit::TextEdit { &mut st.sidebar_text })
+        .on_key(input_key)
+        .build(&s.editor.kit);
+    // The scrim closes the prompt without taking the text with it.
+    layer.push(rune_kit::scrim("sidebar-input", |st: &mut State| {
+        st.sidebar_input = None;
+    }));
+    Some(
+        col()
+            .key("sidebar-input")
+            .w(320.0)
+            .gap(8.0)
+            .padding(12.0)
+            .radius(8.0)
+            .fill(ink.panel)
+            .child(theme::txt(title, T12M, ink.text))
+            .child(field),
+    )
+}
+
+/// The prompt's keys: Enter applies, Escape cancels.
+fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
+    match ev.key {
+        rune::Key::Enter => {
+            let text = s.sidebar_text.text.trim().to_string();
+            let input = s.sidebar_input.take();
+            s.sidebar_text = rune::edit::TextEdit::new("");
+            match input {
+                Some(SidebarInput::CustomCommand { target }) => {
+                    s.launch_custom_session(target, &text);
+                }
+                Some(SidebarInput::NewWorktree { project_id }) => {
+                    s.create_worktree(&project_id, &text);
+                }
+                None => {}
+            }
+            true
+        }
+        rune::Key::Escape => {
+            s.sidebar_input = None;
+            true
+        }
+        _ => false,
+    }
+}
 
 // Density: the compact scale. Heights and vertical offsets are multiples of 4 pt so rows,
 // badges and text land on whole device pixels at 1x/1.25x/1.5x/2x (boxes snap to device
@@ -41,7 +367,6 @@ const BRANCH: TextStyle = T11.lh(16.0); // inline branch (was T11, on its own li
 // Header / meta text on the same 16 pt line box, so it sits on whole pixels in its row.
 const HDR: TextStyle = T11ST.lh(16.0); // "PROJECTS", "Unassigned"
 const HDR_M: TextStyle = T11M.lh(16.0); // "Other sessions"
-const PCT: TextStyle = T12TN.lh(16.0); // session context %
 
 /// Hover lifts the TEXT, never the background. A background hover can't be told apart
 /// from (or blur into) a filled neighbour (active, selected); a text lift reads on any
@@ -203,7 +528,7 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         list = list.child(unassigned_node(s, ink, &unassigned));
     }
 
-    col().w(SIDEBAR_W).h_full().fill(ink.panel).child(
+    col().w(s.sidebar_width).h_full().fill(ink.panel).child(
         col()
             .w_full()
             .h_full()
@@ -226,11 +551,34 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
 }
 
 /// ResizableSplit separator: an 8 px zone with a 1 px border line centred,
-/// full height.
-pub fn separator(ink: &Ink) -> El {
+/// full height. Dragging it resizes the sidebar between 220 and 480 px; the
+/// width is saved when the drag ends, so it survives the next launch.
+pub fn separator(_s: &State, ink: &Ink) -> El {
     el().w(8.0)
         .h_full()
+        .role("separator")
+        .label("Resize sidebar")
+        .focusable(true)
         .child(el().absolute(3.5, 0.0).w(1.0).h_full().fill(ink.border))
+        .on_drag(|s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+            match d.phase {
+                rune::Phase::Down => {
+                    // The grab offset: the width follows the pointer from
+                    // where the drag started.
+                    d.data = s.sidebar_width;
+                }
+                rune::Phase::Move => {
+                    tx.instant();
+                    s.sidebar_width = clamp_width(d.data + d.dx);
+                }
+                rune::Phase::Up => s.persist_sidebar_width(),
+            }
+        })
+        // The arrow keys resize the sidebar too, like AppKit's split views.
+        .on_step(|s: &mut State, steps, _| {
+            s.sidebar_width = clamp_width(s.sidebar_width + steps as f32 * 8.0);
+            s.persist_sidebar_width();
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +710,12 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
     );
     // The REVEAL hover-only action menus are opacity-0 by default — omitted,
     // matching the real app's resting render.
+    row_el = row_el.child(checkout_actions(
+        ink,
+        RowTarget::Project {
+            project_id: pid.to_string(),
+        },
+    ));
 
     let mut node = col().child(row_el);
     // A failed worktree read for THIS project surfaces under its row —
@@ -502,19 +856,12 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     })));
     let sid = info.id.clone();
     let wid = workspace_id.to_string();
-    let tab_title = title.clone();
     b = b.on_press(move |s: &mut State| {
         s.selected_session = Some(sid.clone());
         s.active_workspace = Some(wid.clone());
         // Activating a session activates its workspace tab, opening one when
-        // the title isn't open yet — like TerminalWorkspace's focus path.
-        match s.open_tabs.iter().position(|t| *t == tab_title) {
-            Some(i) => s.active_tab = i,
-            None => {
-                s.open_tabs.push(tab_title.clone());
-                s.active_tab = s.open_tabs.len() - 1;
-            }
-        }
+        // the session isn't open yet — like TerminalWorkspace's focus path.
+        s.focus_session_tab(&sid);
     });
 
     let badge_bg = if selected {
@@ -522,7 +869,10 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     } else {
         ink.panel
     };
-    b = b.child(agent_badge(sv, ink, badge_bg));
+    b = b.child(agent_badge(sv, ink, badge_bg, s.spinner_angle()));
+    // The row's own actions: stop the session and close its pane. They sit
+    // in a fixed cell, so the row never shifts when they appear.
+    b = b.child(session_actions(ink, info.id.clone()));
     if let Some(l) = label {
         // label font-medium (sel→accent / ended→muted / else text) + title
         // `text-xs text-muted` truncate.
@@ -543,19 +893,6 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
                 .truncate(),
         );
     }
-    if let Some(pct) = sv.context_pct {
-        // usageTone(): >=90 danger, >=80 warning, else muted; ml-auto tnum.
-        let tone = if pct >= 90.0 {
-            ink.danger
-        } else if pct >= 80.0 {
-            ink.warning
-        } else {
-            ink.muted
-        };
-        b = b
-            .child(spacer())
-            .child(theme::txt(&format!("{}%", pct.round() as u8), PCT, tone));
-    }
     col().child(b)
 }
 
@@ -563,22 +900,18 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
 /// `row_bg` (panel, or the selected row's accent tint, so no halo shows through)
 /// under an 8 px dot, both centred at (14,14)
 /// (`-bottom-0.5 -right-0.5 size-2.5 ring-2`).
-fn agent_badge(sv: &SessionView, ink: &Ink, row_bg: Color) -> El {
-    let (glyph, color) = theme::agent_glyph(sv.agent_id(), ink);
-    let dot = sv.info.state.dot_color(sv.activity, ink);
+fn agent_badge(s: &SessionView, ink: &Ink, row_bg: Color, angle: f32) -> El {
+    let (glyph, color) = theme::agent_glyph(s.agent_id(), ink);
     el().size(16.0, 16.0)
         .child(theme::ic(glyph, 16.0, color))
+        // The state dot sits over the mark's corner, on a disc of the row's
+        // own background so no glyph shows through it.
         .child(
-            el().absolute(8.0, 8.0)
-                .size(12.0, 12.0)
-                .radius(6.0)
-                .fill(row_bg),
-        )
-        .child(
-            el().absolute(10.0, 10.0)
-                .size(8.0, 8.0)
-                .radius(4.0)
-                .fill(dot),
+            el().absolute(6.0, 6.0)
+                .size(10.0, 10.0)
+                .center()
+                .child(el().size(8.0, 8.0).radius(4.0).fill(row_bg))
+                .child(theme::state_dot(s.info.state, angle, ink)),
         )
 }
 
@@ -748,6 +1081,13 @@ fn worktree_node(
     if show_count {
         row_el = row_el.child(theme::count_badge(attached.len(), ink).mr(4.0));
     }
+    row_el = row_el.child(checkout_actions(
+        ink,
+        RowTarget::Worktree {
+            project_id: project_id.to_string(),
+            path: wt.path.clone(),
+        },
+    ));
     // A worktree row selects its EXACT registered checkout path — the press
     // routes through the same draft-guarded `SelectCheckout` as the project
     // root row, so identity and highlight only move together, post-guard.
@@ -853,4 +1193,59 @@ fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
             data::UNASSIGNED_WORKSPACE,
             false,
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_handle;
+
+    #[test]
+    fn the_sidebar_width_is_clamped_to_its_range() {
+        assert_eq!(clamp_width(219.0), MIN_SIDEBAR_W);
+        assert_eq!(clamp_width(220.0), 220.0);
+        assert_eq!(clamp_width(320.0), 320.0);
+        assert_eq!(clamp_width(480.0), 480.0);
+        assert_eq!(clamp_width(481.0), MAX_SIDEBAR_W);
+    }
+
+    #[test]
+    fn a_stored_width_is_applied_clamped() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(crate::editor::backend::Reply {
+            req: crate::editor::backend::Req::GetSetting {
+                key: SIDEBAR_WIDTH_KEY.to_string(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Ok(crate::editor::backend::ReplyData::Setting(Some(
+                "300".to_string(),
+            ))),
+        });
+        assert_eq!(s.sidebar_width, 300.0);
+
+        // A width outside the range never reaches the layout.
+        s.apply_reply(crate::editor::backend::Reply {
+            req: crate::editor::backend::Req::GetSetting {
+                key: SIDEBAR_WIDTH_KEY.to_string(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Ok(crate::editor::backend::ReplyData::Setting(Some(
+                "900".to_string(),
+            ))),
+        });
+        assert_eq!(s.sidebar_width, MAX_SIDEBAR_W);
+    }
+
+    #[test]
+    fn a_custom_command_needs_something_to_run() {
+        let mut s = State::new(test_handle());
+        let target = RowTarget::Project {
+            project_id: "p1".into(),
+        };
+        s.launch_custom_session(target.clone(), "   ");
+        assert!(s.notice.is_some(), "an empty command is refused");
+        assert!(s.pending.is_empty(), "nothing was started");
+    }
 }

@@ -18,6 +18,8 @@ The approved S1 plan places the Rust protocol and daemon in `crates/protocol/` a
 
 Root `dev`, `build`, and `typecheck` scripts target `apps/desktop`. `pnpm tauri dev` runs from `apps/desktop` (use `pnpm -C apps/desktop tauri dev`); Vite uses port 5173 with `strictPort`, so a stale dev server fails the launch. The root `test` script has no target until Vitest arrives in s1-10.
 
+The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare binary opens **no window** — without a bundle, LaunchServices never activates the app, so its window is never ordered in. Run it through `apps/rune/run-macos.sh [release|debug]`, which builds the workspace, assembles `target/Goko.app` (the app plus `gokod` beside it, so the app can start the daemon) and launches it. The daemon client spawns `gokod` out of `GOKO_HOME` (`app_core::home::home_dir`), so a fresh home gets its own daemon.
+
 ## Skills
 
 - `brainstorm-feature`: `.agents/skills/brainstorm-feature/SKILL.md`
@@ -46,7 +48,7 @@ reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
 
-You own the final outcome. Use Devin CLI with `--model swe-2-flash-max --permission-mode dangerous` as the default executor for implementation, tests, and fixes. Verify that the model ID is available; never silently substitute another model.
+<!--You own the final outcome. Use Devin CLI with `--model swe-2-flash-max --permission-mode dangerous` as the default executor for implementation, tests, and fixes. Verify that the model ID is available; never silently substitute another model.
 
 Your role is to define bounded tasks, coordinate execution, review results, and verify the working product. Delegate execution to Devin; avoid repeating its exploration or implementation yourself.
 
@@ -65,4 +67,4 @@ Execution rules:
 - Continue through implementation, integration, verification, and necessary documentation. Stop only when the requested outcome is verified, the user asks to stop, or a genuine blocker requires user input.
 - Do not commit, push, deploy, or modify unrelated user data without authorization.
 
-Use the free `swe-2-flash-max` model extensively to conserve coordinator quota, but optimize for total completion time and correctness—not agent count or token usage.
+Use the free `swe-2-flash-max` model extensively to conserve coordinator quota, but optimize for total completion time and correctness—not agent count or token usage.-->

@@ -3,7 +3,7 @@
 //! + agent-logo + goko-mark icon bodies, and the small builders shared by the
 //!   chrome regions. Ported from the verified rune-spike `fidelity.rs`.
 
-use rune::{Color, El, Icon, Spring, TextStyle, icon, row, text};
+use rune::{Color, El, Icon, Spring, TextStyle, el, icon, row, text};
 
 pub fn c(hex: &str) -> Color {
     rune::color::hex(hex).expect("palette hex")
@@ -198,6 +198,27 @@ stroke_icon!(
     "<path d=\"M12 9v4\"/>",
     "<path d=\"M12 17h.01\"/>"
 );
+// The spinner a working session shows instead of the plain state dot
+// (lucide "loader-circle"): one open arc, turned by the app's clock.
+stroke_icon!(
+    LOADER,
+    "loader-circle",
+    "<path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/>"
+);
+// A row's "more actions" button (lucide "ellipsis").
+stroke_icon!(
+    MORE,
+    "ellipsis",
+    "<circle cx=\"12\" cy=\"12\" r=\"1\"/>",
+    "<circle cx=\"19\" cy=\"12\" r=\"1\"/>",
+    "<circle cx=\"5\" cy=\"12\" r=\"1\"/>"
+);
+// The stop button of a session row (lucide "square").
+stroke_icon!(
+    SQUARE,
+    "square",
+    "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/>"
+);
 
 // Agent marks — fill icons from agent-logos.ts, tinted via .color() like
 // AgentIcon.tsx does (claude keeps its brand orange, the rest currentColor).
@@ -258,6 +279,19 @@ pub fn txt(s: &str, style: TextStyle, color: Color) -> El {
 
 pub fn ic(i: &'static Icon, size: f32, color: Color) -> El {
     icon(i, size).color(color)
+}
+
+/// The state dot a session row carries: a 6 px tone disc, or — while the
+/// session works — the spinning accent ring (the loader arc, turned by
+/// `angle`). Under Reduce Motion the ring stands still.
+pub fn state_dot(state: crate::data::SessionState, angle: f32, ink: &Ink) -> El {
+    if state.working() {
+        el().size(10.0, 10.0)
+            .center()
+            .child(ic(&LOADER, 10.0, ink.accent).icon_rotation(angle))
+    } else {
+        el().size(6.0, 6.0).radius(3.0).fill(state.dot_color(ink))
+    }
 }
 
 /// Badge variant="secondary" + Count's min-w-6 justify-center px-1.5 tnum.
