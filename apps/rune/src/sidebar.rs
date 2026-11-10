@@ -648,11 +648,14 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
 
     let workspace_id = data::checkout_key(pid, &project.project.root);
     let active = s.active_workspace.as_deref() == Some(workspace_id.as_str());
+    let branch_el = branch_subtitle(is_git, root, ink);
 
     // Row: `flex items-center gap-1 rounded-md px-1 py-0.5` (gap 2, px 4, h 24).
+    // Git projects carry the branch under the name, so the row grows to fit
+    // two lines; the rest keep the shared 28 pt pitch.
     let mut row_el = row()
         .w_full()
-        .h(ROW_H)
+        .h(if branch_el.is_some() { 40.0 } else { ROW_H })
         .px(4.0)
         .gap(2.0)
         .items_center()
@@ -671,36 +674,46 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
         s.expanded.insert(pid_toggle.clone(), !cur);
     }));
 
-    // Label cell: `flex-1 min-w-0 items-center gap-1.5 px-1 py-1.5` (gap 6, px 4,
-    // no vertical padding). The TSX's `active` → bg-secondary/70 was panel-on-panel
-    // and invisible, and its press state only covered this cell; the fill, edge and
-    // press now belong to the whole `row_el`.
-    let mut activate = row().grow(1.0).min_w(0.0).px(4.0).gap(6.0).items_center();
-    activate = activate
-        .child(theme::ic(
-            if is_git {
-                &theme::FOLDER_GIT2
-            } else {
-                &theme::FOLDER
-            },
-            16.0,
-            ink.accent,
-        ))
+    // Label cell: name (+ checkout status) over the branch in small muted
+    // text — the TSX's `active` → bg-secondary/70 was panel-on-panel and
+    // invisible, and its press state only covered this cell; the fill, edge
+    // and press now belong to the whole `row_el`.
+    let mut texts = col().grow(1.0).min_w(0.0);
+    texts = texts.child(
+        row()
+            .w_full()
+            .min_w(0.0)
+            .gap(6.0)
+            .items_center()
+            .child(
+                theme::txt(&project.project.name, NAME, ink.text)
+                    .group_color(lit(ink))
+                    .min_w(40.0)
+                    .truncate(),
+            )
+            .children(checkout_status(project.missing, root, ink)),
+    );
+    if let Some(branch) = branch_el {
+        texts = texts.child(branch);
+    }
+    let activate = row()
+        .grow(1.0)
+        .min_w(0.0)
+        .px(4.0)
+        .gap(6.0)
+        .items_center()
         .child(
-            row()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(6.0)
-                .items_center()
-                .child(
-                    theme::txt(&project.project.name, NAME, ink.text)
-                        .group_color(lit(ink))
-                        .min_w(40.0)
-                        .truncate(),
-                )
-                .children(checkout_status(project.missing, root, ink))
-                .children(branch_subtitle(is_git, root, ink)),
-        );
+            theme::ic(
+                if is_git {
+                    &theme::FOLDER_GIT2
+                } else {
+                    &theme::FOLDER
+                },
+                16.0,
+                ink.accent,
+            ),
+        )
+        .child(texts);
     row_el = row_el.child(activate);
 
     // Collapsed && sessions>0 → Count badge.
