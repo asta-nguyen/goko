@@ -1428,10 +1428,33 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 .shrink()
                 .children(lines),
         );
+    // The input method follows the focused, live pane's cursor: the
+    // marked text is drawn there and the candidate window opens beside it.
+    if focused
+        && pane.closing_at.is_none()
+        && let Some(att) = s.attachments.get(&key)
+        && let Some((row, col)) = att.term.cursor_cell()
+    {
+        let (x, y) = (
+            PANE_PAD + col as f32 * cell_w,
+            PANE_PAD + row as f32 * line_h,
+        );
+        cell = cell.child(el().absolute(x, y).w(cell_w).h(line_h).ime_cursor());
+        if !s.preedit.is_empty() {
+            cell = cell.child(preedit_el(&s.preedit, ink).absolute(x, y));
+        }
+    }
     if pane.closing_at.is_some() {
         cell = cell.child(closing_badge(s, ink, pane, &key));
     }
     cell
+}
+
+/// The marked text an input method is composing, over the cursor's cell.
+fn preedit_el(text: &str, ink: &Ink) -> El {
+    el().fill(ink.accent.alpha(0.25))
+        .border(1.0, ink.accent.alpha(0.6))
+        .child(theme::txt(text, PANE_FONT, ink.text))
 }
 
 /// The pane's close progress: "Closing", the last error with Retry, and
