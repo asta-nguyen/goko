@@ -1,0 +1,31 @@
+apps/rune/src/panes.rs
+  s_6eaeab035ca28b::t_5a4498f5325ff4 1444,1454,1456
+  s_6eaeab035ca28b::t_a6c28101d67ebc 1431-1443,1445-1446,1453,1455,1457
+  s_6eaeab035ca28b::t_f5f1b7517ea83e 1458-1459
+apps/rune/src/main.rs
+  s_6eaeab035ca28b::t_a6c28101d67ebc 97-99,202,839-852,854-859,874-875
+  s_6eaeab035ca28b::t_2af9a48a1bd834 853
+  s_6eaeab035ca28b::t_12dd074bb947cd 2783-2839
+  s_6eaeab035ca28b::t_da823c51ee3f99 2782
+apps/rune/src/term.rs
+  s_6eaeab035ca28b::t_a6c28101d67ebc 345-354,962-985
+  s_6eaeab035ca28b::t_2af9a48a1bd834 804-823,934-948,986-987,1513
+  s_6eaeab035ca28b::t_a7debba2386ba3 676-679,1493-1512
+  s_6eaeab035ca28b::t_9d591d53f30839 949,988,1514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6bb8d8abb4cfc7bf0158b15c82aabc47282c97e8",
+  "prompts": {},
+  "sessions": {
+    "s_6eaeab035ca28b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e57d50bc-4dae-4efa-bc18-747d7367bc1d",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
