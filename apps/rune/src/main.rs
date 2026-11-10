@@ -92,6 +92,8 @@ pub struct State {
     /// layout fires only when its rect changes, so an attachment made after
     /// that (tab switch, new session) starts from this, not the default.
     pane_grids: HashMap<String, (usize, usize)>,
+    /// The pane (session key) a file drag is over: it draws the drop ring.
+    drop_pane: Option<String>,
     /// The measured size of every split's box along its axis, read by the
     /// separator's drag and keyboard bounds.
     split_sizes: HashMap<String, f32>,
@@ -193,6 +195,7 @@ impl State {
             terminal_lagged: HashSet::new(),
             attachments: HashMap::new(),
             pane_grids: HashMap::new(),
+            drop_pane: None,
             split_sizes: HashMap::new(),
             close_inflight: HashSet::new(),
             now_ms: data::now_ms(),
@@ -823,25 +826,10 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
     if ev.mods.cmd && !ev.mods.ctrl {
         return false;
     }
-    let live = s
-        .data
-        .sessions
-        .iter()
-        .any(|view| view.info.session_id == session && view.info.state.live());
-    if !live {
-        return false;
-    }
     let Some(bytes) = term::key_bytes(ev) else {
         return false;
     };
-    // Typing lands on the live screen, not on the history being read.
-    for att in s.attachments.values_mut() {
-        if att.term.session == session {
-            att.term.scroll_to_bottom();
-        }
-    }
-    s.write_terminal(session, &bytes);
-    true
+    s.type_into_terminal(session, &bytes)
 }
 
 fn main() {
@@ -2712,6 +2700,57 @@ mod view_tests {
         });
         rt.frame(1.0 / 60.0);
         assert_eq!(top(&mut rt), live, "typing returned to the live screen");
+    }
+
+    #[test]
+    fn files_dropped_on_a_pane_are_typed_into_its_session() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..200).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let pane_key = key.clone();
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let top = |rt: &mut Runtime<State>| {
+            let mut text = String::new();
+            rt.update(|s, _| text = s.attachments[&pane_key].lines[0].text());
+            text.trim_end().to_string()
+        };
+        let live = top(&mut rt);
+        rt.wheel_event(rune::WheelEvent::new(0.0, 160.0).at(700.0, 400.0));
+        rt.frame(1.0 / 60.0);
+        assert_ne!(top(&mut rt), live, "the view is in the history");
+
+        let file = std::path::PathBuf::from("/tmp/a b.txt");
+        rt.drag_files(vec![file.clone()], Some((700.0, 400.0)));
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(
+            rt.state.drop_pane.as_deref(),
+            Some(key.as_str()),
+            "the pane shows the drop ring"
+        );
+        rt.drop_files(vec![file], Some((700.0, 400.0)));
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.drop_pane, None, "the ring went with the drop");
+        assert_eq!(top(&mut rt), live, "the drop typed into the live session");
     }
 
     #[test]
