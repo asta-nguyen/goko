@@ -1,0 +1,19 @@
+AGENTS.md
+  s_6eaeab035ca28b::t_25fb6e82ffdd3c 50,70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "964ef986f3530015c2c21b5146b7cc876230439f",
+  "prompts": {},
+  "sessions": {
+    "s_6eaeab035ca28b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e57d50bc-4dae-4efa-bc18-747d7367bc1d",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
