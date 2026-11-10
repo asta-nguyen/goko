@@ -1,0 +1,25 @@
+apps/rune/Cargo.toml
+  s_979b3d3ceb4a3e::t_e44b447048d487 14
+apps/rune/src/settings.rs
+  s_979b3d3ceb4a3e::t_fefff4c22e820a 820-826,828
+apps/rune/src/editor/worktree_form.rs
+  s_979b3d3ceb4a3e::t_07034e49c2396a 554-560
+apps/rune/src/sidebar.rs
+  s_979b3d3ceb4a3e::t_474177e667bdfd 427-434
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b698c5125b69a625825cd1451e2928b3c6c8c3f3",
+  "prompts": {},
+  "sessions": {
+    "s_979b3d3ceb4a3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cumbersome-snowshoe",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
