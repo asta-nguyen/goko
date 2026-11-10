@@ -174,6 +174,7 @@ fn session_info(state: SessionState) -> SessionInfo {
         argv: vec!["zsh".into()],
         cwd: "/tmp".into(),
         state,
+        pid: None,
         exit_code: None,
         error: None,
         started_at: 1_700_000_000_000,

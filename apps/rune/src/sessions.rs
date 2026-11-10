@@ -582,6 +582,92 @@ impl State {
         }
     }
 
+    /// Read the child processes' activity: what each session's agent is
+    /// doing. The files are read on the worker; the UI only keeps the
+    /// answer.
+    pub fn poll_activity(&mut self, now: f64) -> bool {
+        if self.activity_at.is_some_and(|at| now - at < 1.0) {
+            return false;
+        }
+        self.activity_at = Some(now);
+        let sessions: Vec<app_core::activity::SessionActivity> = self
+            .data
+            .sessions
+            .iter()
+            .map(|view| app_core::activity::SessionActivity {
+                id: view.info.id.clone(),
+                argv: view.info.argv.clone(),
+                cwd: view.info.cwd.clone(),
+                started_at_ms: view.info.started_at,
+                running: view.info.state == data::SessionState::Running,
+                interrupted: view.info.state == data::SessionState::Interrupted,
+            })
+            .collect();
+        if sessions.is_empty() {
+            return false;
+        }
+        let previous = self.activity.clone();
+        crate::trace::trace(&format!("activity read for {} sessions", sessions.len()));
+        backend::enqueue(
+            &mut self.editor.backend,
+            Job::project(Req::Activity { sessions, previous }),
+        )
+    }
+
+    /// What the session's child process is doing.
+    pub fn session_activity(&self, key: &str) -> Option<app_core::activity::Activity> {
+        self.activity.get(key).copied()
+    }
+
+    /// The activity the dot shows: a running sub-agent means the session
+    /// is working — unless the agent is waiting for the user.
+    pub fn session_shown_activity(&self, key: &str) -> Option<app_core::activity::Activity> {
+        let activity = self.session_activity(key);
+        let has_subagents = !self.session_subagents(key).is_empty();
+        if has_subagents && activity != Some(app_core::activity::Activity::Waiting) {
+            return Some(app_core::activity::Activity::Working);
+        }
+        activity
+    }
+
+    /// Read the agent CLIs running under the sessions' process trees. The
+    /// process table is read on the worker.
+    pub fn poll_subagents(&mut self, now: f64) -> bool {
+        if self.subagents_at.is_some_and(|at| now - at < 2.0) {
+            return false;
+        }
+        self.subagents_at = Some(now);
+        let sessions: Vec<protocol::session::SessionInfo> = self
+            .data
+            .sessions
+            .iter()
+            .map(|view| protocol::session::SessionInfo {
+                id: view.info.session_id,
+                title: view.info.title.clone(),
+                argv: view.info.argv.clone(),
+                cwd: view.info.cwd.clone(),
+                state: view.info.state.into(),
+                pid: view.info.pid,
+                exit_code: view.info.exit_code,
+                error: view.info.error.clone(),
+                started_at: view.info.started_at,
+                ended_at: view.info.ended_at,
+            })
+            .collect();
+        if sessions.is_empty() {
+            return false;
+        }
+        backend::enqueue(
+            &mut self.editor.backend,
+            Job::project(Req::Subagents { sessions }),
+        )
+    }
+
+    /// The agent CLIs running under a session, as the row shows them.
+    pub fn session_subagents(&self, key: &str) -> Vec<app_core::subagents::Subagent> {
+        self.subagents.get(key).cloned().unwrap_or_default()
+    }
+
     /// A line describing the terminal's state, for the trace.
     pub fn terminal_trace(&self) -> String {
         let grid = self
@@ -743,6 +829,8 @@ pub struct PendingArgv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use crate::daemon::UiEvent;
     use crate::test_handle;
     use app_core::store::SessionMeta;
@@ -755,6 +843,7 @@ mod tests {
             argv: vec!["/bin/zsh".into()],
             cwd: "/work/repo".into(),
             state,
+            pid: None,
             exit_code: None,
             error: None,
             started_at: 1_700_000_000_000,
@@ -902,6 +991,86 @@ mod tests {
         exited.state = DaemonState::Exited;
         s.upsert_session(exited);
         assert!(!s.force_kill_ready(&key));
+    }
+
+    #[test]
+    fn a_running_sub_agent_makes_the_dot_spin() {
+        let mut s = state();
+        let key = seed_session_id(&mut s);
+        // Nothing is known about the child process yet.
+        assert_eq!(s.session_shown_activity(&key), None);
+
+        // The child is waiting for the user: the dot blinks amber.
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        assert_eq!(
+            s.session_shown_activity(&key),
+            Some(app_core::activity::Activity::Waiting)
+        );
+
+        // A sub-agent runs under the session: the session is working —
+        // unless the agent is waiting for the user, which wins.
+        s.activity.remove(&key);
+        s.subagents.insert(
+            key.clone(),
+            vec![app_core::subagents::Subagent {
+                agent: "devin".into(),
+                pid: 4242,
+                command: "devin".into(),
+            }],
+        );
+        assert_eq!(
+            s.session_shown_activity(&key),
+            Some(app_core::activity::Activity::Working)
+        );
+
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        assert_eq!(
+            s.session_shown_activity(&key),
+            Some(app_core::activity::Activity::Waiting)
+        );
+    }
+
+    #[test]
+    fn the_activity_says_what_the_child_process_is_doing() {
+        let mut s = state();
+        let key = seed_session_id(&mut s);
+        // The worker read the child's activity files.
+        s.apply_reply(crate::editor::backend::Reply {
+            req: Req::Activity {
+                sessions: Vec::new(),
+                previous: HashMap::new(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Ok(crate::editor::backend::ReplyData::Activity(HashMap::from(
+                [(key.clone(), app_core::activity::Activity::Working)],
+            ))),
+        });
+        assert_eq!(
+            s.session_activity(&key),
+            Some(app_core::activity::Activity::Working)
+        );
+    }
+
+    #[test]
+    fn the_activity_read_asks_the_worker_about_the_running_sessions() {
+        let mut s = state();
+        let key = seed_session_id(&mut s);
+        // The first poll asks; the next one waits for the tick.
+        assert!(s.poll_activity(0.0));
+        assert!(!s.poll_activity(0.5));
+        assert!(s.poll_activity(1.5));
+        let _ = key;
+    }
+
+    /// A session in the scene, with its key.
+    fn seed_session_id(s: &mut State) -> String {
+        let info = daemon_session(DaemonState::Running);
+        let key = crate::data::SessionInfo::key(info.id);
+        s.upsert_session(info);
+        key
     }
 
     #[test]

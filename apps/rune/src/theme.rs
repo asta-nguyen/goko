@@ -3,7 +3,7 @@
 //! + agent-logo + goko-mark icon bodies, and the small builders shared by the
 //!   chrome regions. Ported from the verified rune-spike `fidelity.rs`.
 
-use rune::{Color, El, Icon, Spring, TextStyle, el, icon, row, text};
+use rune::{Color, El, Icon, Live, Spring, TextStyle, el, icon, row, text};
 
 pub fn c(hex: &str) -> Color {
     rune::color::hex(hex).expect("palette hex")
@@ -281,16 +281,35 @@ pub fn ic(i: &'static Icon, size: f32, color: Color) -> El {
     icon(i, size).color(color)
 }
 
-/// The state dot a session row carries: a 6 px tone disc, or — while the
-/// session works — the spinning accent ring (the loader arc, turned by
-/// `angle`). Under Reduce Motion the ring stands still.
-pub fn state_dot(state: crate::data::SessionState, angle: f32, ink: &Ink) -> El {
-    if state.working() {
-        el().size(10.0, 10.0)
+/// The state dot a session row carries, told by the child process's
+/// activity:
+///
+/// - a working child shows the loading ring (the loader arc, turned by
+///   `angle`; under Reduce Motion it stands still),
+/// - a waiting child blinks amber (the pulse drives its opacity),
+/// - a finished child — and a session with nothing running — shows a
+///   green dot.
+pub fn state_dot(
+    state: crate::data::SessionState,
+    activity: Option<app_core::activity::Activity>,
+    angle: f32,
+    pulse: &Live<f32>,
+    ink: &Ink,
+) -> El {
+    if state.ended() {
+        return el().size(6.0, 6.0).radius(3.0).fill(state.dot_color(ink));
+    }
+    match activity {
+        Some(app_core::activity::Activity::Working) => el()
+            .size(10.0, 10.0)
             .center()
-            .child(ic(&LOADER, 10.0, ink.accent).icon_rotation(angle))
-    } else {
-        el().size(6.0, 6.0).radius(3.0).fill(state.dot_color(ink))
+            .child(ic(&LOADER, 10.0, ink.accent).icon_rotation(angle)),
+        Some(app_core::activity::Activity::Waiting) => el()
+            .size(6.0, 6.0)
+            .radius(3.0)
+            .fill(ink.warning)
+            .live_opacity(pulse),
+        _ => el().size(6.0, 6.0).radius(3.0).fill(ink.success),
     }
 }
 

@@ -52,6 +52,9 @@ pub struct SessionInfo {
     pub argv: Vec<String>,
     pub cwd: String,
     pub state: SessionState,
+    /// The PTY child's pid; `None` before spawn and for a failed spawn.
+    #[serde(default)]
+    pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
     /// Unix epoch milliseconds.
@@ -100,6 +103,7 @@ mod tests {
             argv: vec!["sh".into()],
             cwd: "/tmp".into(),
             state: SessionState::Running,
+            pid: None,
             exit_code: None,
             error: None,
             started_at: 1_700_000_000_000,
