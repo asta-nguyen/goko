@@ -1,0 +1,38 @@
+apps/rune/src/editor/mod.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 20
+apps/rune/src/editor/backend.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 778,819,956-971
+  s_979b3d3ceb4a3e::t_273abb25e22917 972-973
+apps/rune/src/main.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 432-436
+  s_979b3d3ceb4a3e::t_0d8ab3a50e8576 430-431
+apps/rune/src/editor/code.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 29-30,36,97-100,120-121,137-148,160,352-353,363,374,398-404,422,547-549,557-587,606,619,622-630,742-743,750,758-769,790-829
+  s_979b3d3ceb4a3e::t_666d5452b6d726 830-831
+apps/rune/src/editor/state.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 23,338-340,495
+docs/llm/domains/rune-editor.md
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 119,133-144,151,201-224,749,776
+apps/rune/src/editor/files.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 542-544
+apps/rune/src/editor/indent.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 1-604
+apps/rune/src/editor/backend/apply.rs
+  s_979b3d3ceb4a3e::t_6b0d4e65224ed3 133-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "40f70a8dd618369a4b321d6e249db67e2cc432e2",
+  "prompts": {},
+  "sessions": {
+    "s_979b3d3ceb4a3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cumbersome-snowshoe",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
