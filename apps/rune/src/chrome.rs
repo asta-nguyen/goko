@@ -317,7 +317,7 @@ pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
 
 /// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
 /// bg-panel px-4` (48 px, gap 12, px 16).
-pub fn header(s: &State, ink: &Ink) -> El {
+pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
     let mut right = row().gap(8.0).items_center();
     for chip in usage_chips(s, ink) {
         right = right.child(chip);
@@ -359,21 +359,17 @@ pub fn header(s: &State, ink: &Ink) -> El {
         .h(48.0)
         .fill(ink.panel)
         .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
-        .px(16.0)
+        .pr(16.0)
+        // macOS draws the traffic lights over the full-size content; start the
+        // wordmark past them (`inset` is 0 in full screen and off macOS).
+        .pl(if inset > 0.0 { inset + 12.0 } else { 16.0 })
         .gap(12.0)
         .items_center()
+        .window_drag()
         .child(
             row()
                 .gap(10.0)
                 .items_center()
-                .child(
-                    el().size(28.0, 28.0)
-                        .radius(8.0)
-                        .fill(ink.primary)
-                        .border(1.0, ink.white.alpha(0.14))
-                        .center()
-                        .child(theme::ic(&theme::GOKO_MARK, 16.0, ink.white)),
-                )
                 .child(
                     // 12 pt halo around the 6 pt dot: gap 5 keeps the dot's
                     // centre where the bare dot's was (8 pt gap + 3 pt radius).

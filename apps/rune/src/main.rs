@@ -507,7 +507,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .w_full()
         .h_full()
         .fill(ink.bg)
-        .child(chrome::header(s, ink))
+        .child(chrome::header(s, ink, cx.titlebar_inset()))
         .child(
             row()
                 .grow(1.0)
@@ -806,6 +806,8 @@ fn main() {
         on_key: Some(on_key),
         ..AppSpec::new("Goko", (1512.0, 814.0), init_state, view)
     })
+    // Centre the macOS traffic lights in the 48 pt header band.
+    .titlebar(rune::Titlebar::new(48.0))
     .keep_running()
     .on_close(on_close)
     .on_quit(on_quit)
