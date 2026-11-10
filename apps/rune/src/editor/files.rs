@@ -17,6 +17,7 @@ use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
 use crate::editor::navigation::{self, PendingNav};
 use crate::editor::pane_layout;
+use crate::editor::state::FileMark;
 use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 
 /// Files section root: toolbar (filter + search toggle + refresh), then
@@ -173,24 +174,35 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
             .justify_center()
             .child(theme::txt(&label, T12, tone));
     }
+    let dim = ink.muted;
     Tree::new(tree_get, tree_get_mut, FileNode::label)
-        .row(TreeItem::file)
+        .row(move |node, row| {
+            let item = TreeItem::file(node, row);
+            match node.data {
+                Some(FileMark::Tracked) | None => item,
+                // Ignored by Git: dimmed like VS Code; a collapsed ignored
+                // directory keeps its folder icon.
+                Some(FileMark::Ignored) => item.label_color(dim).icon_color(dim),
+                Some(FileMark::IgnoredDir) => item
+                    .icon(&rune_kit::glyphs::FOLDER)
+                    .label_color(dim)
+                    .icon_color(dim),
+            }
+        })
         // Press/double-press still route through these — `.on_key` below
         // replaces only the kit's key dispatch, not the row click handlers.
         .on_select(|st: &mut State, id: &str, tx: &mut Tx| {
             // Desktop parity: activating a file row opens it — a plain click
             // moves the cursor (this callback) and Enter/double-click routes
             // through `on_open`. Both land in the draft guard via `open_doc`.
-            let is_dir = st.editor.files.model.get(id).is_some_and(|n| n.dir);
-            if !is_dir {
+            if is_openable(st, id) {
                 open_doc(st, id, None, tx);
             }
         })
         .on_open(|st: &mut State, id: &str, tx: &mut Tx| {
             // Re-activating the already-selected file (Enter/Space or a
             // double-click) still opens — same-file requests only reveal.
-            let is_dir = st.editor.files.model.get(id).is_some_and(|n| n.dir);
-            if !is_dir {
+            if is_openable(st, id) {
                 open_doc(st, id, None, tx);
             }
         })
@@ -203,10 +215,19 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 /// key path; files open through the draft guard. Shared by cursor-move
 /// (`on_select`) and Enter/Space (`on_open`) — both had identical bodies.
 fn tree_activate(st: &mut State, id: &str, tx: &mut Tx) {
-    let is_dir = st.editor.files.model.get(id).is_some_and(|n| n.dir);
-    if !is_dir {
+    if is_openable(st, id) {
         open_doc(st, id, None, tx);
     }
+}
+
+/// A file row opens; a folder toggles, and an ignored directory (a leaf row)
+/// has nothing to open.
+fn is_openable(st: &State, id: &str) -> bool {
+    st.editor
+        .files
+        .model
+        .get(id)
+        .is_some_and(|n| !n.dir && n.data != Some(FileMark::IgnoredDir))
 }
 
 /// Composite tree key handler. `.on_key` replaces the tree's built-in
@@ -239,10 +260,10 @@ fn tree_key(st: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
 }
 
-fn tree_get(s: &State) -> &TreeModel<FileNode<()>> {
+fn tree_get(s: &State) -> &TreeModel<FileNode<FileMark>> {
     &s.editor.files.model
 }
-fn tree_get_mut(s: &mut State) -> &mut TreeModel<FileNode<()>> {
+fn tree_get_mut(s: &mut State) -> &mut TreeModel<FileNode<FileMark>> {
     &mut s.editor.files.model
 }
 
@@ -798,6 +819,28 @@ mod tests {
     /// The filter field must be a real editable TextEdit (`on_edit`): typed
     /// text lands in state and rebuilds the tree model — the inert-field
     /// regression this guards against.
+    #[test]
+    fn ignored_entries_join_the_tree_dimmed_and_an_ignored_dir_is_not_openable() {
+        let mut s = scene();
+        s.editor.files.ignored = vec![".env".into(), ".git/".into(), "target/".into()];
+        s.editor.rebuild_file_model();
+        let m = &s.editor.files.model;
+        assert_eq!(m.get(".env").unwrap().data, Some(FileMark::Ignored));
+        assert_eq!(m.get("target").unwrap().data, Some(FileMark::IgnoredDir));
+        assert_eq!(m.get(".git").unwrap().data, Some(FileMark::IgnoredDir));
+        assert_eq!(m.get("top.txt").unwrap().data, Some(FileMark::Tracked));
+        assert!(is_openable(&s, ".env"), "an ignored file opens");
+        assert!(!is_openable(&s, "target"), "an ignored directory is a leaf");
+        assert!(!is_openable(&s, "src"), "a folder toggles instead");
+        s.editor.files.filter = rune::edit::TextEdit::new(".env".to_string());
+        s.editor.rebuild_file_model();
+        assert!(
+            s.editor.files.model.get("target").is_none(),
+            "the filter applies"
+        );
+        assert!(s.editor.files.model.get(".env").is_some());
+    }
+
     #[test]
     fn filter_input_types_and_filters_tree() {
         let mut rt = Runtime::new(scene(), files_only, (900.0, 700.0), Env::new(true, 2.0));

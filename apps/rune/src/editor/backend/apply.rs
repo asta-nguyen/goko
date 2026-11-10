@@ -398,8 +398,9 @@ impl EditorState {
             (Req::Branches, Ok(ReplyData::Branches(branches))) => {
                 self.history.branches = branches;
             }
-            (Req::FileList, Ok(ReplyData::FileList(paths))) => {
+            (Req::FileList, Ok(ReplyData::FileList(paths, ignored))) => {
                 self.files.paths = paths;
+                self.files.ignored = ignored;
                 self.files.loading = false;
                 self.files.error = None;
                 self.rebuild_file_model();
@@ -1018,7 +1019,7 @@ mod tests {
             req: Req::FileList,
             generation: 0,
             checkout_key: None,
-            result: Ok(ReplyData::FileList(paths)),
+            result: Ok(ReplyData::FileList(paths, Vec::new())),
         }
     }
 

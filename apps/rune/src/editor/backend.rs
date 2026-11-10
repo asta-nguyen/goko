@@ -28,7 +28,7 @@ use app_core::worktrees::{self, WorktreeList};
 use rune::AppHandle;
 
 use crate::State;
-use crate::editor::state::{EditorState, Notice, Section};
+use crate::editor::state::{EditorState, FileMark, Notice, Section};
 use crate::editor::syntax;
 
 mod apply;
@@ -316,7 +316,8 @@ pub enum ReplyData {
     Diff(GitViewDiff),
     History(GitViewHistory),
     Branches(Vec<GitViewBranch>),
-    FileList(Vec<String>),
+    /// Tracked + non-ignored paths, then Git's ignored entries (`dir/` collapsed).
+    FileList(Vec<String>, Vec<String>),
     Search(GitViewSearch),
     File(GitViewFile),
     Highlight(crate::editor::syntax::HighlightResult),
@@ -1005,7 +1006,11 @@ fn run_checkout(
             .map(ReplyData::Branches)
             .map_err(|e| e.to_string()),
         Req::FileList => git_view::file_list(checkout)
-            .map(ReplyData::FileList)
+            .map(|paths| {
+                // The ignored entries only dim extra rows: a failure shows none.
+                let ignored = git_view::ignored_list(checkout).unwrap_or_default();
+                ReplyData::FileList(paths, ignored)
+            })
             .map_err(|e| e.to_string()),
         Req::Search { query } | Req::GoToSearch { query } => git_view::search(checkout, query)
             .map(ReplyData::Search)
@@ -1128,24 +1133,36 @@ impl EditorState {
     /// text (substring on the basename, like the desktop's filename filter).
     pub fn rebuild_file_model(&mut self) {
         let filter = self.files.filter.text.to_lowercase();
-        let paths: Vec<&str> = self
+        let keep = |p: &str| {
+            filter.is_empty()
+                || p.rsplit('/')
+                    .next()
+                    .unwrap_or(p)
+                    .to_lowercase()
+                    .contains(&filter)
+                || p.to_lowercase().contains(&filter)
+        };
+        let tracked = self
             .files
             .paths
             .iter()
             .map(String::as_str)
-            .filter(|p| {
-                filter.is_empty()
-                    || p.rsplit('/')
-                        .next()
-                        .unwrap_or(p)
-                        .to_lowercase()
-                        .contains(&filter)
-                    || p.to_lowercase().contains(&filter)
-            })
-            .collect();
+            .filter(|p| keep(p))
+            .map(|p| (p, FileMark::Tracked));
+        // Ignored entries sit beside the tracked ones, dimmed; an ignored
+        // directory is a leaf row (not expandable).
+        let ignored = self
+            .files
+            .ignored
+            .iter()
+            .filter(|p| keep(p.trim_end_matches('/')))
+            .map(|p| match p.strip_suffix('/') {
+                Some(dir) => (dir, FileMark::IgnoredDir),
+                None => (p.as_str(), FileMark::Ignored),
+            });
         self.files.model = rune_kit::FileTree::new()
             .dirs_first(true)
-            .build(paths.into_iter().map(|p| (p, ())));
+            .build(tracked.chain(ignored));
         self.files.model_checkout = self.checkout_key.clone();
     }
 

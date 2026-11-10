@@ -601,6 +601,34 @@ pub fn file_list(checkout: &Path) -> Result<Vec<String>, BridgeError> {
     Ok(paths)
 }
 
+/// What Git ignores, collapsed: an ignored file as its path, a wholly ignored
+/// directory as `dir/` (not expanded, so `target/` stays cheap), plus `.git/`,
+/// which Git never lists. Sorted; the Files tree shows these dimmed.
+pub fn ignored_list(checkout: &Path) -> Result<Vec<String>, BridgeError> {
+    let out = worktrees::git(
+        checkout,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ],
+    )?;
+    let mut paths: Vec<String> = out
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .map(lossy)
+        .collect();
+    if checkout.join(".git").exists() {
+        paths.push(".git/".to_owned());
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// Search tracked and non-ignored untracked text files without changing the checkout.
 pub fn search(checkout: &Path, query: &str) -> Result<GitViewSearch, BridgeError> {
     let query = query.trim();
@@ -1935,6 +1963,22 @@ mod tests {
                 "second.txt",
                 "tracked.txt"
             ]
+        );
+    }
+
+    #[test]
+    fn ignored_list_names_ignored_files_and_collapsed_dirs_and_git() {
+        let (_t, root) = repository("ignored-list");
+        fs::create_dir_all(root.join("ignored/deep")).unwrap();
+        fs::write(root.join("ignored/deep/f.txt"), "i\n").unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\n.env\n").unwrap();
+        git_ok(&root, &["add", ".gitignore"]);
+        fs::write(root.join(".env"), "K=1\n").unwrap();
+        fs::write(root.join("loose.txt"), "l\n").unwrap();
+
+        assert_eq!(
+            ignored_list(&root).unwrap(),
+            vec![".env", ".git/", "ignored/"]
         );
     }
 

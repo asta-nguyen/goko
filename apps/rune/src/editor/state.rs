@@ -67,15 +67,27 @@ pub struct Notice {
     pub stale: bool,
 }
 
+/// How the Files tree treats a row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileMark {
+    Tracked,
+    /// Ignored by Git: openable, dimmed.
+    Ignored,
+    /// A wholly ignored directory, shown as a dimmed leaf folder.
+    IgnoredDir,
+}
+
 pub struct FilesState {
     /// Every path `git ls-files` reported for the checkout (cached).
     pub paths: Vec<String>,
+    /// What Git ignores (`dir/` for a collapsed directory), shown dimmed.
+    pub ignored: Vec<String>,
     /// The filename filter text (what the input edits).
     pub filter: TextEdit,
     /// Content-search query input (debounced into `search.pending`).
     pub search_edit: TextEdit,
     /// The TreeModel the FileTree view renders; rebuilt from `paths`+`filter`.
-    pub model: TreeModel<FileNode<()>>,
+    pub model: TreeModel<FileNode<FileMark>>,
     pub model_checkout: Option<String>,
     pub loading: bool,
     pub error: Option<String>,
@@ -431,6 +443,7 @@ impl EditorState {
             notice: None,
             files: FilesState {
                 paths: Vec::new(),
+                ignored: Vec::new(),
                 filter: TextEdit::new(""),
                 search_edit: TextEdit::new(""),
                 model: TreeModel::new(),
