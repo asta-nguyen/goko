@@ -1,8 +1,4 @@
 /target/
-node_modules/
-dist/
-apps/desktop/src-tauri/gen/
-/apps/desktop/src-tauri/binaries/gokod-*
 .DS_Store
 /docs/.obsidian/
 /docs/Untitled*.md

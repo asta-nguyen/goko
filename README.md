@@ -1,123 +1,99 @@
 # Goko
 
-Goko is a macOS-first desktop app for running interactive command-line agents by
-project. The Tauri/React app talks to the Rust `gokod` daemon, which owns the
-terminal processes. Project and session metadata is stored separately in SQLite.
+Goko is a cross-platform desktop app (macOS, Linux and Windows) for running
+interactive command-line agents by project. The native Rune app (`apps/rune`) talks to the Rust `gokod` daemon, which
+owns the terminal processes. Project and session metadata is stored separately in
+SQLite. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
-## macOS prerequisites
+## Layout
 
-- macOS with Xcode Command Line Tools. Install them with `xcode-select --install`.
-  Full Xcode is only needed if you later build the iOS target.
+| Path | What it is |
+|---|---|
+| `apps/rune` | The native app (Cargo package `goko-rune`): UI, terminal, editor |
+| `crates/daemon` | `gokod`, the daemon that owns every PTY and child process |
+| `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
+| `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
+
+## Prerequisites
+
 - Rust stable, installed with [rustup](https://rustup.rs/).
-- Node.js 22.22.2 or newer in the 22.x line (or 24.15.0 or newer in the 24.x
-  line) and pnpm 10. The current lockfile includes packages with these Node
-  engine requirements.
+- macOS: Xcode Command Line Tools (`xcode-select --install`).
+- Linux: a C toolchain, `git`, and the X11/Wayland and GPU (Vulkan or OpenGL)
+  libraries that `winit`/`wgpu` need.
+- Windows: MSVC build tools and `git`.
 
-Tauri's [macOS prerequisites](https://v2.tauri.app/start/prerequisites/) explain
-the native toolchain requirements.
+No Node, pnpm or other toolchain is needed.
 
-## Install dependencies
-
-From the repository root:
+## Build
 
 ```sh
-pnpm install
+cargo build --workspace            # debug
+cargo build --workspace --release  # release
 ```
 
-## Run the macOS app in development
+Binaries land in `target/{debug,release}/`: `goko-rune` (the app) and `gokod`
+(the daemon).
 
-From the repository root:
+## Run locally
+
+The app starts `gokod` itself when no daemon answers on the socket, so you never
+start the daemon by hand (to run it alone: `cargo run -p daemon`; `gokod --version`
+prints its version, and a second instance prints `gokod: already running` and
+exits). It looks for `gokod` beside its own executable (override
+with `GOKO_DAEMON_BIN`), so build the whole workspace first.
+
+### macOS
+
+A bare binary opens no window on macOS, so `cargo run -p goko-rune` is not enough.
+Use the bundle script: it builds the workspace, assembles `target/Goko.app` with
+`gokod` beside it, kills any running instance, and launches the new build.
 
 ```sh
-pnpm -C apps/desktop tauri dev
+apps/rune/run-macos.sh          # release build (default)
+apps/rune/run-macos.sh debug    # faster build, slower app
 ```
 
-This starts the native Tauri window. Its `beforeDevCommand` builds `gokod` and
-starts Vite on port `5173`; you do not need to start the daemon separately. Vite
-uses `strictPort`, so stop a stale Goko dev server if port `5173` is already in
-use.
-
-To keep development data separate from your normal Goko data, set `GOKO_HOME`:
+### Linux
 
 ```sh
-GOKO_HOME=/tmp/goko-dev pnpm -C apps/desktop tauri dev
+cargo build --workspace --release
+target/release/goko-rune
 ```
 
-Without that variable, macOS data is stored under
-`~/Library/Application Support/Goko`.
+### Windows
 
-## Run the native Rune shell
+Not buildable yet: the daemon and its client currently use Unix domain sockets,
+`flock` and process groups (`killpg`), so the workspace only compiles on macOS and
+Linux. Windows needs a port of those parts (named pipe or TCP transport, a lock
+file, job objects) before it can run.
 
-The experimental native frontend (`apps/rune`, Cargo package `goko-rune`)
-builds and runs through the workspace — no pnpm or Vite needed:
+### Data and logs
+
+App data lives in `$GOKO_HOME`, default `~/Library/Application Support/Goko`
+(on every platform for now: the default is not yet per-OS, so set `GOKO_HOME` on
+Linux if you want an XDG path): `goko.db`, `daemon.sock`, `daemon.token`, `daemon.lock` and `daemon.log`.
+
+Keep development data separate from your normal data with a throwaway home:
 
 ```sh
-cargo run -p goko-rune
+GOKO_HOME=/tmp/goko-dev apps/rune/run-macos.sh   # Linux: GOKO_HOME=/tmp/goko-dev target/release/goko-rune
 ```
 
-It shares `goko.db` and `crates/app-core` with the desktop app but never
-connects to `gokod`: the terminal and session chrome is mock data, while the
-Editor view is a real workspace over registered projects and checkouts
-(Files, Changes, History, Stashes, Servers). See
-[ARCHITECTURE.md](ARCHITECTURE.md#shared-app-core-and-the-native-rune-shell).
+A fresh home gets its own daemon, so it never touches sessions in your real one.
+To reset everything, quit Goko and delete that directory.
 
-## Build macOS bundles
-
-Build for the current Mac architecture and generate the `.app` and `.dmg`:
+## Checks
 
 ```sh
-pnpm -C apps/desktop tauri build --bundles app,dmg
-```
-
-To package just one format, use `--bundles app` or `--bundles dmg`. Build
-artifacts go under `target/release/bundle/`; this workspace's Cargo target
-directory is at the repository root.
-
-On an Apple Silicon Mac the native target is `aarch64-apple-darwin`; Intel Macs
-use `x86_64-apple-darwin`. To build a universal macOS app, install both Rust
-targets and pass Tauri's universal target:
-
-```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-pnpm -C apps/desktop tauri build --target universal-apple-darwin --bundles app,dmg
-```
-
-See Tauri's [macOS bundle](https://v2.tauri.app/distribute/macos-application-bundle/)
-and [DMG](https://v2.tauri.app/distribute/dmg/) guides for distribution details.
-Building a bundle does not set up Developer ID signing or notarization; see
-[Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/) before
-distributing it outside your development machine.
-
-The build hook compiles and stages the matching `gokod` sidecar, so the app can
-start its daemon from inside the `.app` bundle. Bundle artifacts are unsigned
-unless a local signing identity is configured; they are intended for local
-testing until Developer ID signing and notarization are set up.
-
-The current build also warns that the bundle identifier `dev.goko.app` ends in
-`.app`; Tauri recommends changing it before distribution.
-
-## Other development checks
-
-The root `dev` and `build` scripts run Vite only. Use the Tauri command above to
-open the native desktop app.
-
-```sh
-pnpm typecheck
-pnpm test
-cargo test --workspace
+cargo test --workspace                     # protocol, daemon and app tests
 cargo fmt --check
 cargo clippy --workspace -- -D warnings
 ```
 
-## Architecture
+The daemon integration tests start the real `gokod` in a temporary `GOKO_HOME`.
 
-- [Architecture overview](ARCHITECTURE.md)
-- [S1 system contract](docs/agent-devkit/s1-contract.md)
+## Distribution
 
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md).
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+There are no installers yet. On macOS, `target/Goko.app` is an unsigned local
+bundle, fine for your own machine; sharing it needs Developer ID signing and
+notarization first. On Linux, ship `goko-rune` and `gokod` together in one directory.
