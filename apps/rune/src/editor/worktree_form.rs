@@ -551,8 +551,13 @@ fn choose_path(s: &mut State, tx: &mut Tx) {
             ..Default::default()
         },
         |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
-            let Ok(Some(path)) = result else {
-                return;
+            let path = match result {
+                Ok(Some(path)) => path,
+                Ok(None) => return,
+                Err(e) => {
+                    st.notice = Some(e.to_string());
+                    return;
+                }
             };
             let Some(f) = st.editor.worktree_form.as_mut() else {
                 return;

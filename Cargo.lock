@@ -4495,6 +4495,7 @@ dependencies = [
  "raw-window-handle",
  "raw-window-metal",
  "resvg",
+ "rfd",
  "rune-motion",
  "rune-staging",
  "rune-taffy",
