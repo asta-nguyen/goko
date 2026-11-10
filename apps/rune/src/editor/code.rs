@@ -26,13 +26,14 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use rune::{
-    Color, El, Key, KeyEvent, Link, LinkPaint, Live, ScrollPos, Span, TextEdit, TextHighlight,
-    TextStyle, Tx, col, row, text, text_input,
+    Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, ScrollPos, Shape, Span, TextEdit,
+    TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 
 use crate::editor::find::FindState;
 use crate::editor::go_to_definition as gtd;
+use crate::editor::indent::{self, IndentUnit, UnitChoice};
 use crate::editor::syntax::{self, HighlightResult};
 use crate::theme::{self, Ink, T11M_LH, T12};
 
@@ -93,6 +94,10 @@ pub struct CodeState {
     gutter_lines: usize,
     /// Increments per [`Self::reveal`] so each request runs once.
     pub reveal_nonce: u64,
+    /// Resolved indent unit for `Tab`/`Enter`/guides — see [`indent::resolve`].
+    pub indent_unit: IndentUnit,
+    /// Manual override mirrored from the parent; `Auto` re-detects per doc.
+    pub indent_choice: UnitChoice,
 }
 
 impl CodeState {
@@ -112,6 +117,8 @@ impl CodeState {
             gutter_text: String::new(),
             gutter_lines: 0,
             reveal_nonce: 0,
+            indent_unit: IndentUnit::Spaces(4),
+            indent_choice: UnitChoice::Auto,
         };
         c.load(path, text);
         c
@@ -127,6 +134,18 @@ impl CodeState {
         self.revision += 1;
         self.find.refresh(&self.edit.text);
         self.sync_gutter();
+        self.resolve_indent();
+    }
+
+    /// Re-resolve [`Self::indent_unit`] from the current text/path/choice.
+    fn resolve_indent(&mut self) {
+        self.indent_unit = indent::resolve(&self.edit.text, &self.path, self.indent_choice);
+    }
+
+    /// Apply a new manual override and re-resolve the unit.
+    pub fn set_indent_choice(&mut self, choice: UnitChoice) {
+        self.indent_choice = choice;
+        self.resolve_indent();
     }
 
     /// Call after any `edit` mutation that bypassed the input handlers
@@ -138,6 +157,7 @@ impl CodeState {
         self.revision += 1;
         self.sync_gutter();
         self.find.refresh(&self.edit.text);
+        self.resolve_indent();
     }
 
     /// The scanner language for [`Self::path`], when one exists.
@@ -329,6 +349,8 @@ impl CodeState {
 type StateCallback<S> = Rc<dyn Fn(&mut S, &mut Tx)>;
 /// Go-to callback: receives the clicked [`GoToRequest`].
 type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
+/// Indent-override callback: receives the next [`UnitChoice`] to persist.
+type IndentCallback<S> = Rc<dyn Fn(&mut S, UnitChoice, &mut Tx)>;
 
 /// The code surface view. `get`/`get_mut` reach the parent's [`CodeState`];
 /// callbacks are optional and generic over the app state `S`.
@@ -338,6 +360,7 @@ pub struct Code<S> {
     on_changed: Option<StateCallback<S>>,
     on_save: Option<StateCallback<S>>,
     on_go_to: Option<GoToCallback<S>>,
+    on_indent: Option<IndentCallback<S>>,
 }
 
 impl<S: 'static> Code<S> {
@@ -348,6 +371,7 @@ impl<S: 'static> Code<S> {
             on_changed: None,
             on_save: None,
             on_go_to: None,
+            on_indent: None,
         }
     }
 
@@ -371,6 +395,13 @@ impl<S: 'static> Code<S> {
         self
     }
 
+    /// Called when the indent chip is pressed; receives the next
+    /// [`UnitChoice`] in the Auto → 2 → 4 → 8 → Tab cycle.
+    pub fn on_indent(mut self, f: impl Fn(&mut S, UnitChoice, &mut Tx) + 'static) -> Code<S> {
+        self.on_indent = Some(Rc::new(f));
+        self
+    }
+
     pub fn build(self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
@@ -384,11 +415,11 @@ impl<S: 'static> Code<S> {
             row()
                 .grow(1.0)
                 .min_w(0.0)
-                .h_full()
                 .min_h(0.0)
                 .child(gutter_el(code, ink))
                 .child(self.surface(s, ink)),
         )
+        .child(self.indent_chip(s, ink))
     }
 
     /// Find bar: query field, match count, case toggle, prev/next/close.
@@ -513,11 +544,45 @@ impl<S: 'static> Code<S> {
                 scroll_size.set(at.viewport);
             });
         let mut wrap = col();
+        if let Some(guides) = guides_el(code, ink) {
+            wrap = wrap.child(guides);
+        }
         wrap = wrap.child(self.field(s, ink));
         if let Some(overlay) = self.go_to_overlay(code, ink) {
             wrap = wrap.child(overlay);
         }
         scroll.child(wrap)
+    }
+
+    /// Slim footer strip carrying the indent-unit chip. Always visible —
+    /// the setting is global, not per-document — right-aligned so it reads
+    /// as status chrome rather than a toolbar button.
+    fn indent_chip(&self, s: &S, ink: &Ink) -> El {
+        let code = (self.get)(s);
+        let choice = code.indent_choice;
+        let unit = code.indent_unit;
+        let label = if choice == UnitChoice::Auto {
+            format!("{} · auto", unit.label())
+        } else {
+            unit.label()
+        };
+        let get = self.get;
+        let on_indent = self.on_indent.clone();
+        row()
+            .w_full()
+            .h(22.0)
+            .px(10.0)
+            .items_center()
+            .justify_end()
+            .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+            .child(
+                theme::btn_sm(&label, None, false, ink).on_press_tx(move |st, tx| {
+                    let next = (get)(st).indent_choice.next();
+                    if let Some(cb) = &on_indent {
+                        cb(st, next, tx);
+                    }
+                }),
+            )
     }
 
     /// The editable `text_input` or the read-only selectable `text`, with
@@ -538,6 +603,7 @@ impl<S: 'static> Code<S> {
         let get_mut = self.get_mut;
         let on_changed = self.on_changed.clone();
         let on_submit_changed = self.on_changed.clone();
+        let on_changed_key = self.on_changed.clone();
         let on_save = self.on_save.clone();
         text_input(&code.edit, CODE_STYLE)
             .color(ink.text)
@@ -550,14 +616,18 @@ impl<S: 'static> Code<S> {
                 notify_changed(st, tx, get_mut, &on_changed);
             })
             .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
-                field_key(st, ev, tx, get_mut, &on_save)
+                field_key(st, ev, tx, get_mut, &on_save, &on_changed_key)
             })
             .on_submit(move |st: &mut S, tx: &mut Tx| {
-                // Rune emits Submit for Enter in a multiline field without
-                // mutating the text, and its change check already ran — the
-                // inserted newline must notify through the same path or
-                // revision/gutter/find/dirty state goes stale.
-                get_mut(st).edit.insert("\n");
+                // Enter keeps the line's indent (plus one level after an
+                // opener) — the inserted text still routes through the same
+                // change notification or revision/gutter/find state stales.
+                {
+                    let code = get_mut(st);
+                    let (a, b) = code.edit.range();
+                    let ins = indent::auto_indent(&code.edit.text, a.min(b), code.indent_unit);
+                    code.edit.insert(&ins);
+                }
                 notify_changed(st, tx, get_mut, &on_submit_changed);
             })
     }
@@ -669,17 +739,31 @@ fn notify_changed<S: 'static>(
 }
 
 /// Editor-field shortcuts, handled before the native editor sees the key:
-/// ⌘S save, ⌘F find, ⌘G/⇧⌘G match navigation, Esc closes the find bar.
+/// ⌘S save, ⌘F find, ⌘G/⇧⌘G match navigation, Esc closes the find bar, and
+/// Tab/⇧Tab line indentation via [`indent::plan_indent`].
 fn field_key<S: 'static>(
     st: &mut S,
     ev: &KeyEvent,
     tx: &mut Tx,
     get_mut: fn(&mut S) -> &mut CodeState,
     on_save: &Option<StateCallback<S>>,
+    on_changed: &Option<StateCallback<S>>,
 ) -> bool {
     if ev.is_command('s') {
         if let Some(cb) = on_save {
             cb(st, tx);
+        }
+        return true;
+    }
+    if ev.key == Key::Tab {
+        let code = get_mut(st);
+        let (a, b) = code.edit.range();
+        if let Some(e) = indent::plan_indent(&code.edit.text, a, b, code.indent_unit, ev.mods.shift)
+        {
+            code.edit.set_selection(e.start, e.end);
+            code.edit.insert(&e.text);
+            code.edit.set_selection(e.anchor, e.focus);
+            notify_changed(st, tx, get_mut, on_changed);
         }
         return true;
     }
@@ -701,6 +785,48 @@ fn field_key<S: 'static>(
         return true;
     }
     false
+}
+
+/// Indent guides: merged vertical ticks in document coordinates inside one
+/// canvas, mounted under the field in the scroll content so scrolling moves
+/// them natively. Ticks sit at each multiple of the indent unit a line's
+/// leading whitespace reaches; runs merge across contiguous lines so a
+/// block draws as a handful of segments, not one op per line.
+fn guides_el(code: &CodeState, ink: &Ink) -> Option<El> {
+    let lines = code.line_count();
+    if lines == 0 || lines > indent::MAX_GUIDE_LINES {
+        return None;
+    }
+    let cell_w = rune::text::advance("0", CODE_STYLE);
+    if cell_w <= 0.0 {
+        return None;
+    }
+    let cols = indent::indent_columns(&code.edit.text);
+    let runs = indent::guide_runs(&cols, code.indent_unit);
+    if runs.is_empty() {
+        return None;
+    }
+    let line_px = CODE_STYLE.line_px();
+    let mut shape = Shape::new();
+    let mut max_x = 0.0f32;
+    for (g, first, last) in runs {
+        // Half-pixel x keeps the 1px stroke centred on the column boundary.
+        let x = g as f32 * cell_w + 0.5;
+        shape = shape.line(
+            [x, first as f32 * line_px + 1.0],
+            [x, (last as f32 + 1.0) * line_px - 1.0],
+            1.0,
+            LineCap::Butt,
+            ink.border,
+        );
+        max_x = max_x.max(x);
+    }
+    Some(
+        canvas(shape)
+            .absolute(0.0, 0.0)
+            .size(max_x + cell_w, lines as f32 * line_px)
+            .a11y_hidden(),
+    )
 }
 
 /// Line-number gutter: one right-aligned numbers text shifted by the live

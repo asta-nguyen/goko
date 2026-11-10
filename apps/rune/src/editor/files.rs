@@ -539,6 +539,9 @@ fn editor_surface(s: &State, ink: &Ink) -> El {
                 navigation::start_go_to(st, req, tx);
             },
         )
+        .on_indent(|st: &mut State, choice, _tx: &mut Tx| {
+            st.editor.set_indent_choice(choice);
+        })
         .build(s, ink)
 }
 

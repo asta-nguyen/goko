@@ -130,6 +130,19 @@ impl EditorState {
             {
                 self.lsp.apply_config(value.as_deref());
             }
+            // Indent override restores before/after docs open: mirror it
+            // into whichever code surfaces exist right now.
+            (Req::GetSetting { key }, Ok(ReplyData::Setting(value)))
+                if key == crate::editor::indent::INDENT_KEY =>
+            {
+                let choice =
+                    crate::editor::indent::UnitChoice::parse(value.as_deref().unwrap_or("auto"));
+                self.indent_choice = choice;
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.code.set_indent_choice(choice);
+                }
+                self.scratch_code.set_indent_choice(choice);
+            }
             (Req::GetSetting { key }, Err(e)) if key == crate::editor::lsp::SERVERS_KEY => {
                 // Un-pend + bounded retry live in lsp.rs; presets keep
                 // serving until a read succeeds.
