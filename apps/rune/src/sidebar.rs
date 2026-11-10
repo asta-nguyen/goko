@@ -424,10 +424,14 @@ fn add_project(ink: &Ink) -> El {
                     ..Default::default()
                 },
                 |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
-                    if let Ok(Some(path)) = result {
-                        st.editor
-                            .backend
-                            .send(Job::project(Req::AddProject(path.display().to_string())));
+                    match result {
+                        Ok(Some(path)) => {
+                            st.editor
+                                .backend
+                                .send(Job::project(Req::AddProject(path.display().to_string())));
+                        }
+                        Ok(None) => {}
+                        Err(e) => st.notice = Some(e.to_string()),
                     }
                 },
             );

@@ -817,11 +817,15 @@ fn add_form(s: &State, ink: &Ink, agent: &str) -> El {
                                     {
                                         let agent = agent.clone();
                                         move |s: &mut State, result, _tx: &mut Tx| {
-                                            if let Ok(Some(path)) = result {
-                                                s.settings.add_dir.text =
-                                                    path.display().to_string();
-                                                let _ = agent;
+                                            match result {
+                                                Ok(Some(path)) => {
+                                                    s.settings.add_dir.text =
+                                                        path.display().to_string();
+                                                }
+                                                Ok(None) => {}
+                                                Err(e) => s.notice = Some(e.to_string()),
                                             }
+                                            let _ = agent;
                                         }
                                     },
                                 );
