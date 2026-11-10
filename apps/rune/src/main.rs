@@ -600,6 +600,23 @@ fn setup(s: &mut State, _waker: rune::Waker) {
             key: editor::history_layout::HISTORY_LAYOUT_KEY.to_string(),
         }),
     );
+    // The session metadata rows and the agents the New-session menu lists
+    // come from the same worker lane.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::SessionMetaList),
+    );
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::Agents),
+    );
+    // The sidebar's width survives restarts.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
+        }),
+    );
     // Indent-unit override restores on the same settings lane.
     let _ = backend::enqueue(
         &mut s.editor.backend,

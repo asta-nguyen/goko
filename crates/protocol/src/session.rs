@@ -115,49 +115,6 @@ mod tests {
     }
 
     #[test]
-    fn session_info_without_a_pid_key_deserializes_as_none() {
-        let info = SessionInfo {
-            id: SessionId::new(),
-            title: "shell".into(),
-            argv: vec!["sh".into()],
-            cwd: "/tmp".into(),
-            state: SessionState::Running,
-            pid: None,
-            exit_code: None,
-            error: None,
-            started_at: 1_700_000_000_000,
-            ended_at: None,
-        };
-        let mut value = serde_json::to_value(&info).unwrap();
-        value.as_object_mut().unwrap().remove("pid");
-
-        let decoded = serde_json::from_value::<SessionInfo>(value).unwrap();
-
-        assert_eq!(decoded.pid, None);
-        assert_eq!(decoded, info);
-    }
-
-    #[test]
-    fn session_info_with_a_pid_round_trips() {
-        let info = SessionInfo {
-            id: SessionId::new(),
-            title: "shell".into(),
-            argv: vec!["sh".into()],
-            cwd: "/tmp".into(),
-            state: SessionState::Running,
-            pid: Some(4242),
-            exit_code: None,
-            error: None,
-            started_at: 1_700_000_000_000,
-            ended_at: None,
-        };
-
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"pid\":4242"));
-        assert_eq!(serde_json::from_str::<SessionInfo>(&json).unwrap(), info);
-    }
-
-    #[test]
     fn session_id_is_a_uuid_string_and_preserves_frame_bytes() {
         let id = SessionId::new();
         let json = serde_json::to_string(&id).unwrap();

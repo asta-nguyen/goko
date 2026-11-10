@@ -28,7 +28,7 @@ Rune app (apps/rune)                          gokod (crates/daemon)
   language servers, and usage/activity readers.
 - Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
   holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
-  the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures (`usage/claude/<account-id>/<session-id>.json` for a named account), and
+  the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures, and
   `activity/claude/<session-id>` hook files holding `working`, `waiting`, or `done`
   (files older than seven days are pruned at app startup).
 
@@ -219,9 +219,6 @@ created | starting → failed
   The Stop action sends SIGTERM, so its exited banner can have no numeric code.
 - Every state change is broadcast as the full `SessionInfo` (capacity 64). A subscriber
   that falls behind is sent the current state of every session instead.
-- `SessionInfo.pid` is the PTY child's pid, set when the session becomes `running` and left `None`
-  before the spawn and for a failed spawn (an older daemon omits it, which reads as `None`). The
-  app uses it to find the processes under a session (see Sub-agent indicator).
 - For a live session, `SessionInfo.cwd` is the process's current directory. `list` and `get`
   refresh it before returning, and a 200 ms watcher emits `session.updated` only when it
   changes. If the OS cannot provide an absolute UTF-8 path, the daemon reports an empty

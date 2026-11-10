@@ -92,4 +92,4 @@ Activity is one of `working`, `waiting` (needs the user), `done` (turn finished)
 
 ## Related context
 
-- [Architecture overview](../../../../llm/architecture/overview.md)
+- [Architecture overview](../../../llm/architecture/overview.md)

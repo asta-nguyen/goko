@@ -6,9 +6,8 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 ## Pages
 
 - [Architecture overview](architecture/overview.md) — process topology, domains, and cross-domain dependencies
-- [Agent accounts](domains/agent-accounts.md) — Claude and Codex accounts: launching under an account, per-account usage, account folders, and the account switcher
 - [Desktop Editor](architecture/editor.md) — CodeMirror editing, Vim mode, Git content search, result navigation, and staging, commit, push, and ACP commit messages
-- [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, accounts, and ACP agents
+- [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, and ACP agents
 - [Desktop Theme](domains/desktop-theme.md) — dark and light palettes and theme preference behavior
 - [Rune chrome](domains/rune-chrome.md) — goko-rune header, workspace tab strip, and session controls strip on mock data
 - [Rune editor](domains/rune-editor.md) — native Files, Changes, History, Stashes, and Servers workspace over app-core with draft guards, worker isolation, and ACP commit messages
@@ -17,7 +16,6 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 
 | Prefix | Domain |
 |---|---|
-| ACC | Agent accounts |
 | EDT | Desktop Editor |
 | RNC | Rune chrome |
 | RNE | Rune editor |

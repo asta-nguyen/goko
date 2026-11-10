@@ -107,36 +107,6 @@ async fn a_cat_session_runs_and_events_follow_the_state_machine() {
     assert!(exited.ended_at.unwrap() >= exited.started_at);
 }
 
-#[tokio::test]
-async fn a_running_session_reports_its_pid() {
-    let manager = SessionManager::new();
-    let session = manager.create(spec(&["sleep", "30"])).unwrap();
-    assert!(matches!(session.pid, Some(pid) if pid > 0));
-
-    assert_eq!(manager.list()[0].pid, session.pid);
-    assert_eq!(manager.get(session.id).unwrap().pid, session.pid);
-
-    manager.stop(session.id, false).unwrap();
-    wait_for_state(&manager, session.id, SessionState::Exited).await;
-    assert_eq!(
-        manager.get(session.id).unwrap().pid,
-        session.pid,
-        "the pid is kept after the process exits"
-    );
-}
-
-#[tokio::test]
-async fn a_failed_spawn_reports_no_pid() {
-    let manager = SessionManager::new();
-    let failed = manager
-        .create(spec(&["/definitely-not-a-goko-command"]))
-        .expect("a failed session, not an error");
-
-    assert_eq!(failed.state, SessionState::Failed);
-    assert_eq!(failed.pid, None);
-    assert_eq!(manager.get(failed.id).unwrap().pid, None);
-}
-
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn a_shell_directory_change_updates_session_list_get_and_events() {

@@ -82,8 +82,8 @@ Files: `ARCHITECTURE.md`, `docs/llm/architecture/overview.md`
 Interfaces: consumes the finished behavior of tasks 2 to 5.
 Change: Record the activity module, the hook files, and the Codex limits (no `waiting`, same-directory ambiguity) where the agent adapters and usage are described; call `document-wiki`'s `## Task updates` for the overview page. Build with `pnpm tauri build --bundles app` and install to `/Applications` as before.
 Verify: on the installed app, a Claude session shows working after a prompt, done after the reply, and waiting on a permission prompt; a Codex session shows working then done; a Shell session keeps its plain dot; `cannot verify` is recorded for any step the user did not observe.
-Progress: done
-Result: Documentation part done: `docs/llm/architecture/overview.md` has the Agent activity section and `ARCHITECTURE.md` gained an Agent activity section on 2026-11-09 (the module, the hook files, the interrupt rule, and the Codex limits). The manual check on the built app was never recorded in this plan; the plan was closed on the user's instruction to archive all plans (2026-11-09), so the behaviors in the Verify line are cannot verify here.
+Progress: todo
+Result: none
 
 ### Task 7 — Interrupts end a turn (Claude keys + output, Codex `turn_aborted`)
 
@@ -119,10 +119,3 @@ Question: Devin CLI has its own hook system (`.devin/hooks.v1.json`).
 Decision: not in this change; injecting hooks per session without editing user config needs its own investigation.
 Impact: none for this change.
 Confirmed by user: not yet — proposed as a follow-up
-
-### D3 — The working marker is a spinner
-
-Question: the pulsing yellow `working` dot is hard to see.
-Decision: `working` shows a spinning accent-colored ring (a static ring when the system asks for reduced motion) instead of the pulsing warning-tone dot; `waiting` and `done` are unchanged. This supersedes "`working` pulses in the warning tone" in Behavior and in Global Constraints.
-Impact: `apps/desktop/src/features/sessions/StateBadge.tsx` and its test, and the wiki's overview page.
-Confirmed by user: 2026-11-08
