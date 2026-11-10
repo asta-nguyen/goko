@@ -1,0 +1,19 @@
+apps/rune/src/main.rs
+  s_fb1f435b18ef73::t_c4ab0696b23785 48-59,184-188,240-251,479-481,531-535,823
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "24e6115bc9207639ac37154e03038dd7b2b433f5",
+  "prompts": {},
+  "sessions": {
+    "s_fb1f435b18ef73": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "frost-wrench",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
