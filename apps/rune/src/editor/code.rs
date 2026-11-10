@@ -273,8 +273,8 @@ impl CodeState {
     }
 
     /// Comment/string byte ranges of the whole document, from the lexical
-    /// classifier — independent of the syntax colour budget, so exclusion
-    /// works past 32 KiB and while a highlight job is pending or stale.
+    /// classifier — independent of the highlight result, so exclusion works
+    /// document-wide and while a highlight job is pending or stale.
     fn trivia(&self) -> Vec<(Range<usize>, syntax::Trivia)> {
         syntax::trivia_ranges(&self.edit.text, self.language())
     }
@@ -475,13 +475,6 @@ impl<S: 'static> Code<S> {
             if r.token_capped {
                 (
                     format!("Syntax highlighting capped ({lang}) — the rest is plain text"),
-                    ink.warning,
-                )
-            } else if r.capped {
-                (
-                    format!(
-                        "Syntax highlighting covers the first 32 KiB ({lang}) — the rest is plain text"
-                    ),
                     ink.warning,
                 )
             } else {
@@ -837,7 +830,6 @@ mod tests {
         c.syntax = Some(HighlightResult {
             revision: c.revision,
             language: Some("rust".into()),
-            capped: false,
             token_capped: false,
             ranges: vec![(
                 0..2,
@@ -988,9 +980,9 @@ mod tests {
     }
 
     #[test]
-    fn go_to_ranges_excludes_trivia_past_colour_cap() {
-        // Past the 32 KiB colour budget the syntax result covers nothing, but
-        // comment/string exclusion must still work document-wide.
+    fn go_to_ranges_excludes_trivia_on_large_file() {
+        // Past the retired 32 KiB colour prefix the file now highlights in
+        // full, and comment/string exclusion keeps working document-wide.
         let mut text = String::new();
         while text.len() < 40 * 1024 {
             text.push_str("let value = 1;\n");
@@ -1002,7 +994,7 @@ mod tests {
             c.language(),
             &c.edit.text,
         ));
-        assert!(c.active_syntax().unwrap().capped);
+        assert!(!c.active_syntax().unwrap().token_capped);
         let ranges = c.go_to_ranges();
         let doc = c.edit.text.as_str();
         for r in &ranges {

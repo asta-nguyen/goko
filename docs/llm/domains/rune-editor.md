@@ -436,13 +436,19 @@ Evidence: `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/patch.rs`, `c
 
 ### RNE-syntax-highlight
 
-The system SHALL colour supported languages with rune-kit's syntax scanners, covering only the first 32 KiB of source (cut back to a line end) and at most 8192 ranges while showing a visible partial-highlighting notice, keeping the complete file editable up to the 1 MiB cap, rendering unknown languages as plain text, and computing highlights off the UI thread scoped to document revision so stale results never render.
+The system SHALL colour supported languages with rune-highlights lexers across the complete document up to the 1 MiB file cap — no byte-prefix truncation — while bounding coloured ranges at 131072 with a visible notice when that budget is reached, keeping the complete file editable, rendering unknown languages as plain text, and computing highlights off the UI thread scoped to document revision so stale results never render.
 
-#### Scenario: Large file partially highlighted
+#### Scenario: Large file fully highlighted
 
-- GIVEN a source file larger than 32 KiB or producing more than 8192 ranges
-- WHEN it opens
-- THEN only the budgeted prefix is coloured, a partial-highlighting notice shows, and the whole file remains editable
+- GIVEN a source file larger than 32 KiB in a supported language
+- WHEN its highlight result applies
+- THEN every line through the end of the file is coloured, no partial-highlighting notice shows, and the whole file remains editable
+
+#### Scenario: Range budget reached
+
+- GIVEN a document whose tokens exceed the 131072-range budget
+- WHEN its highlight result applies
+- THEN colouring stops at the budget, a visible capped notice shows, and the whole file remains editable
 
 #### Scenario: Stale highlight dropped
 
@@ -452,11 +458,11 @@ The system SHALL colour supported languages with rune-kit's syntax scanners, cov
 
 #### Scenario: Unknown language
 
-- GIVEN a file whose extension maps to no scanner
+- GIVEN a file whose extension maps to no lexer
 - WHEN it opens
 - THEN it renders as plain text and no highlight job is enqueued
 
-Evidence: `apps/rune/src/editor/syntax.rs`, `apps/rune/src/editor/highlight.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`
+Evidence: `apps/rune/src/editor/syntax.rs`, `apps/rune/src/editor/highlight.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/Cargo.toml`
 
 ## Flow
 
@@ -600,8 +606,9 @@ session state — the daemon is not involved in the editor at all.
 - Reads are generation-gated per request kind; writes are never
   generation-gated but always serialize on the one lane; the queue holds at
   most 128 pending jobs.
-- Highlighting is budgeted to 32 KiB / 8192 ranges per document revision;
-  editing itself is capped only by the 1 MiB file limit.
+- Highlighting lexes the complete document per revision through
+  `rune-highlights`, bounded only by a 131072-range safety budget; editing
+  itself is capped only by the 1 MiB file limit.
 - The draft guard is the only path off a dirty document; Discard reverts to
   the loaded original rather than deleting anything.
 - Stashes are read-only in this view; the repository-wide `refs/stash` is
