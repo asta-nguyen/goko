@@ -387,6 +387,35 @@ impl State {
         self.session_id(&pane.session)
     }
 
+    /// Type `bytes` into a live session, from the keyboard or a file drop.
+    /// An exited session takes nothing; a live one first returns to the
+    /// live screen, so typing never lands on the history being read.
+    pub fn type_into_terminal(&mut self, session: SessionId, bytes: &[u8]) -> bool {
+        let live = self
+            .data
+            .sessions
+            .iter()
+            .any(|view| view.info.session_id == session && view.info.state.live());
+        if !live {
+            return false;
+        }
+        for att in self.attachments.values_mut() {
+            if att.term.session == session {
+                att.term.scroll_to_bottom();
+            }
+        }
+        self.write_terminal(session, bytes);
+        true
+    }
+
+    /// Files dropped on a pane: focus it and type their escaped paths.
+    pub fn drop_files(&mut self, tab: &str, pane: &str, key: &str, files: &[std::path::PathBuf]) {
+        self.focus_pane(tab, pane);
+        if let Some(session) = self.session_id(key) {
+            self.type_into_terminal(session, term::dropped_paths_text(files).as_bytes());
+        }
+    }
+
     /// The focused pane's session key, for controls and close actions.
     pub fn focused_session_key(&self) -> Option<String> {
         let tab = self.current_tab()?;
@@ -1316,6 +1345,8 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let wheel_key = key.clone();
     let pid = pane.id.clone();
     let tid = tab.id.clone();
+    let (drop_tid, drop_pid, drop_key, hover_key) =
+        (tid.clone(), pid.clone(), key.clone(), key.clone());
     let focused = pane.id == tab.active_pane;
     let title = s
         .session_by_key(&key)
@@ -1330,7 +1361,9 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
         .get(&key)
         .map(|att| term::term_lines_el(&att.lines, ink))
         .unwrap_or_default();
-    let border = if focused {
+    let border = if s.drop_pane.as_deref() == Some(key.as_str()) {
+        ink.accent
+    } else if focused {
         ink.accent.alpha(0.4)
     } else {
         ink.accent.alpha(0.0)
@@ -1345,6 +1378,16 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
         .fill(ink.bg)
         .border(1.0, border)
         .on_press(move |s: &mut State| s.focus_pane(&tid, &pid))
+        .on_drop_files(move |s: &mut State, files, _tx: &mut Tx| {
+            s.drop_files(&drop_tid, &drop_pid, &drop_key, files);
+        })
+        .on_drop_hover(move |s: &mut State, over, _tx: &mut Tx| {
+            if over {
+                s.drop_pane = Some(hover_key.clone());
+            } else if s.drop_pane.as_deref() == Some(hover_key.as_str()) {
+                s.drop_pane = None;
+            }
+        })
         .on_wheel(move |s: &mut State, e: rune::WheelEvent, _tx: &mut Tx| {
             let ink = s.ink;
             let Some(att) = s.attachments.get_mut(&wheel_key) else {

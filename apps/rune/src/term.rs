@@ -787,6 +787,23 @@ fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
 // cursor, laid out on the monospace cell grid.
 // ---------------------------------------------------------------------------
 
+/// What a drop of `paths` types: each path with the shell's special
+/// characters backslash-escaped (as Terminal.app does), joined by spaces
+/// and followed by one.
+pub fn dropped_paths_text(paths: &[std::path::PathBuf]) -> String {
+    let mut text = String::new();
+    for path in paths {
+        for c in path.to_string_lossy().chars() {
+            if " \t!\"#$&'()*;<>?[\\]^`{|}".contains(c) {
+                text.push('\\');
+            }
+            text.push(c);
+        }
+        text.push(' ');
+    }
+    text
+}
+
 /// The monospace cell: one character's advance and the line height, both
 /// in points, measured from the same font the lines are drawn with.
 fn cell_metrics() -> (f32, f32) {
@@ -878,6 +895,18 @@ mod tests {
         term.scroll(40.0, 16.0);
         term.scroll_to_bottom();
         assert_eq!(first_line(&mut term, &ink()), live);
+    }
+
+    #[test]
+    fn dropped_paths_are_escaped_for_the_shell() {
+        let paths = [
+            std::path::PathBuf::from("/tmp/a b.txt"),
+            std::path::PathBuf::from("/tmp/it's(1).png"),
+        ];
+        assert_eq!(
+            dropped_paths_text(&paths),
+            "/tmp/a\\ b.txt /tmp/it\\'s\\(1\\).png "
+        );
     }
 
     #[test]
