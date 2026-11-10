@@ -1,24 +1,26 @@
-//! Syntax highlighting for the native code surface, on rune-kit's built-in
-//! scanners. Highlighting is a pure, `Send`-safe result the parent can compute
-//! on a worker thread and drop when its revision is stale; the UI converts the
-//! owned ranges to [`rune::Span`] decorations at render time.
+//! Syntax highlighting for the native code surface, on `rune-highlights`'s
+//! lexers (Pierre's Highlights — the same engine rune-kit's built-in
+//! highlighter uses upstream). Highlighting is a pure, `Send`-safe result the
+//! parent can compute on a worker thread and drop when its revision is stale;
+//! the UI converts the owned ranges to [`rune::Span`] decorations at render
+//! time.
 //!
-//! The scanner budget is rune-kit's own: only the first [`MAX_SOURCE_BYTES`]
-//! of a source — cut back to a line end — and its first [`MAX_RANGES`]
-//! coloured ranges get colour, scanned as ONE prefix so multiline language
-//! state (block comments, strings) is never split into independent chunks.
-//! The rest of the document stays plain and fully editable.
+//! The whole document is lexed — there is no byte-prefix cap. The only bound
+//! is [`MAX_RANGES`] coloured ranges, a guard against pathological inputs;
+//! past it colouring stops and the tail renders plain.
 
+use std::cell::RefCell;
 use std::ops::Range;
+use std::sync::OnceLock;
 
-use rune_kit::syntax::{self, Highlight};
+use rune_highlights::{Highlighter, Lang, Token};
+use rune_kit::syntax::{Highlight, Paint, Syntax};
 
-/// Mirrors `rune_kit::syntax`'s scanner budget: bytes of source coloured.
-pub const MAX_SOURCE_BYTES: usize = 32 * 1024;
-/// Mirrors `rune_kit::syntax`'s scanner budget: coloured ranges kept.
-pub const MAX_RANGES: usize = 8192;
+/// Coloured ranges kept per document; past this colouring stops (the file
+/// stays fully editable, the tail renders plain).
+pub const MAX_RANGES: usize = 128 * 1024;
 
-/// Filename → scanner language for the extensions the built-in scanners know.
+/// Filename → lexer language for the extensions `rune-highlights` knows.
 /// Anything else is plain text.
 pub fn language_for_path(path: &str) -> Option<&'static str> {
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -27,38 +29,79 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
 }
 
 fn language_for_ext(ext: &str) -> Option<&'static str> {
-    // Every name here is one `rune_kit::syntax::known` accepts.
+    // Every name here is one `Lang::from_name` accepts (its 211 aliases).
     Some(match ext {
         "rs" => "rust",
         "js" | "mjs" | "cjs" => "js",
         "jsx" => "jsx",
         "ts" | "mts" | "cts" => "ts",
         "tsx" => "tsx",
-        "json" | "jsonc" | "json5" => "json",
+        "json" | "jsonc" => "json",
+        "json5" => "json5",
+        "jsonl" => "jsonl",
         "py" | "pyi" | "py3" => "python",
         "go" => "go",
         "swift" => "swift",
-        "sh" | "bash" | "zsh" => "sh",
+        "sh" | "bash" | "zsh" | "shell" => "bash",
         "sql" => "sql",
-        "html" | "htm" | "xhtml" | "xml" | "svg" => "html",
+        "html" | "htm" | "xhtml" => "html",
+        "xml" | "xsd" | "svg" => "xml",
         "css" => "css",
+        "scss" => "scss",
+        "sass" => "sass",
+        "less" => "less",
         "yaml" | "yml" => "yaml",
         "diff" | "patch" => "diff",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" => "cpp",
+        "cs" | "csharp" => "csharp",
+        "m" | "mm" => "objective-c",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sc" | "sbt" => "scala",
+        "groovy" | "gvy" | "gy" | "gsh" => "groovy",
+        "gradle" => "gradle",
+        "rb" => "ruby",
+        "pl" | "pm" => "perl",
+        "lua" => "lua",
+        "dart" => "dart",
+        "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang",
+        "hs" => "haskell",
+        "clj" | "cljs" | "cljc" | "edn" => "clojure",
+        "php" => "php",
+        "r" | "rscript" => "r",
+        "jl" => "julia",
+        "nim" => "nim",
+        "zig" => "zig",
+        "sol" => "solidity",
+        "proto" => "protobuf",
+        "gql" | "graphql" => "graphql",
+        "tex" | "latex" => "latex",
+        "md" | "markdown" => "markdown",
+        "mdx" => "mdx",
+        "toml" => "toml",
+        "tf" | "tfvars" | "hcl" => "terraform",
+        "mk" | "make" | "makefile" => "makefile",
+        "cmake" => "cmake",
+        "nix" => "nix",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        "astro" => "astro",
+        "ps1" | "psm1" | "psd1" | "pwsh" => "powershell",
+        "bat" | "cmd" => "bat",
+        "wasm" | "wat" => "wasm",
+        "wgsl" => "wgsl",
+        "asm" | "s" => "asm",
+        "lisp" | "scm" | "el" => "lisp",
+        "pas" | "pp" => "pascal",
+        "fs" | "fsi" | "fsx" => "fsharp",
+        "f90" | "f95" | "f03" | "f08" => "fortran",
+        "cu" | "cuh" => "cuda",
+        "glsl" | "vert" | "frag" | "geom" => "glsl",
+        "hlsl" => "hlsl",
         _ => return None,
     })
-}
-
-/// How much of `text` the scanners colour: all of it, or the bytes up to the
-/// last line end within [`MAX_SOURCE_BYTES`] (0 when the first 32 KiB has no
-/// line end — the file then draws plain). Always a char boundary.
-pub fn coloured_len(text: &str) -> usize {
-    if text.len() <= MAX_SOURCE_BYTES {
-        return text.len();
-    }
-    text.as_bytes()[..MAX_SOURCE_BYTES]
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .unwrap_or(0)
 }
 
 /// One highlight job's output: owned, `Send`-safe ranges (no `Rc`, no UI
@@ -68,35 +111,134 @@ pub fn coloured_len(text: &str) -> usize {
 pub struct HighlightResult {
     /// The document revision this result describes.
     pub revision: u64,
-    /// The scanner language used, when the path named a known one.
+    /// The lexer language used, when the path named a known one.
     pub language: Option<String>,
-    /// The source exceeded [`MAX_SOURCE_BYTES`]: `ranges` cover only the
-    /// coloured prefix (cut at a line end); the tail renders plain.
-    pub capped: bool,
-    /// The range budget truncated colouring inside the prefix.
+    /// The range budget truncated colouring; `ranges` end where it did.
     pub token_capped: bool,
     /// `(byte range, paint)` pairs in document order — `rune_kit`'s
     /// [`Highlight`] alias, owned so it can cross a worker channel.
     pub ranges: Vec<Highlight>,
 }
 
+thread_local! {
+    /// One lexer instance per worker thread: `Highlighter` owns the module's
+    /// memory and is `!Sync`, so each lane thread keeps its own.
+    static LEXER: RefCell<Highlighter> = RefCell::new(Highlighter::new());
+}
+
 /// Highlight `text` for `language` (a [`language_for_path`] name, or `None`
-/// for plain text) at document `revision`. Pure aside from rune-kit's
-/// thread-local scan cache; safe to call on a worker thread.
+/// for plain text) at document `revision`. The complete source is lexed;
+/// only the [`MAX_RANGES`] budget can cut colouring short. Pure aside from
+/// the thread-local lexer; safe to call on a worker thread.
 pub fn highlight_revision(revision: u64, language: Option<&str>, text: &str) -> HighlightResult {
     let language = language.map(str::to_string);
-    let capped = text.len() > MAX_SOURCE_BYTES;
-    let prefix = coloured_len(text);
-    let ranges: Vec<Highlight> = syntax::highlight(language.as_deref(), &text[..prefix]).to_vec();
-    let token_capped = ranges.len() >= MAX_RANGES;
+    let mut ranges: Vec<Highlight> = Vec::new();
+    let mut token_capped = false;
+    if let Some(lang) = language.as_deref().and_then(Lang::from_name)
+        && lang != Lang::PLAIN
+    {
+        let tokens = LEXER.with_borrow_mut(|h| h.highlight(lang, text));
+        for (range, token) in tokens {
+            let Some(kind) = kind(token) else {
+                continue;
+            };
+            if let Some((last, Paint::Kind(prev))) = ranges.last_mut()
+                && last.end == range.start
+                && *prev == kind
+            {
+                last.end = range.end;
+                continue;
+            }
+            if ranges.len() == MAX_RANGES {
+                token_capped = true;
+                break;
+            }
+            ranges.push((range, Paint::Kind(kind)));
+        }
+    }
     HighlightResult {
         revision,
         language,
-        capped,
         token_capped,
         ranges,
     }
 }
+
+/// The old eleven-kind theme colour for a lexer token: its Zed capture
+/// name's, or failing that its nearest parent's (`keyword.control` is
+/// `keyword`). `None` draws in the code's own colour (embedded code,
+/// emphasis, JSX text, plain variables).
+fn kind(token: Token) -> Option<Syntax> {
+    static TABLE: OnceLock<[Option<Syntax>; Token::COUNT]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [None; Token::COUNT];
+        for t in Token::all() {
+            table[t.index()] = resolve(t.name());
+        }
+        table
+    })[token.index()]
+}
+
+fn resolve(mut name: &str) -> Option<Syntax> {
+    loop {
+        if let Some(&(_, k)) = KINDS.iter().find(|(n, _)| *n == name) {
+            return k;
+        }
+        name = &name[..name.rfind('.')?];
+    }
+}
+
+/// Capture name → [`Syntax`], mirroring upstream rune-kit's `syntax::kind`
+/// table collapsed onto the pinned theme's eleven kinds: kinds the theme
+/// lacks take their closest documented slot (`attribute` is property-like,
+/// `operator` is the theme's muted punctuation, `title` reads as a keyword,
+/// `variable` stays uncoloured).
+const KINDS: &[(&str, Option<Syntax>)] = &[
+    ("attribute", Some(Syntax::Property)),
+    ("boolean", Some(Syntax::Number)),
+    ("comment", Some(Syntax::Comment)),
+    ("constant", Some(Syntax::Number)),
+    ("constructor", Some(Syntax::Type)),
+    ("diff.minus", Some(Syntax::Deleted)),
+    ("diff.plus", Some(Syntax::Inserted)),
+    ("embedded", None),
+    ("emphasis", None),
+    ("enum", Some(Syntax::Type)),
+    ("function", Some(Syntax::Function)),
+    ("hint", Some(Syntax::Comment)),
+    ("keyword", Some(Syntax::Keyword)),
+    ("keyword.operator", Some(Syntax::Punctuation)),
+    ("label", Some(Syntax::Number)),
+    ("link_text", Some(Syntax::Keyword)),
+    ("link_uri", Some(Syntax::Keyword)),
+    ("namespace", Some(Syntax::Number)),
+    ("number", Some(Syntax::Number)),
+    ("operator", Some(Syntax::Punctuation)),
+    ("predictive", Some(Syntax::Comment)),
+    ("preproc", Some(Syntax::Keyword)),
+    ("primary", Some(Syntax::Keyword)),
+    ("property", Some(Syntax::Property)),
+    ("punctuation", Some(Syntax::Punctuation)),
+    ("punctuation.special", Some(Syntax::Keyword)),
+    ("selector", Some(Syntax::Keyword)),
+    ("selector.class", Some(Syntax::Type)),
+    ("selector.id", Some(Syntax::Type)),
+    ("selector.pseudo", Some(Syntax::Punctuation)),
+    ("string", Some(Syntax::String)),
+    ("string.escape", Some(Syntax::Number)),
+    ("string.regex", Some(Syntax::String)),
+    ("string.special", Some(Syntax::Number)),
+    ("tag", Some(Syntax::Keyword)),
+    ("tag.component.jsx", Some(Syntax::Type)),
+    ("text", None),
+    ("text.literal", Some(Syntax::String)),
+    ("title", Some(Syntax::Keyword)),
+    ("type", Some(Syntax::Type)),
+    ("variable", None),
+    ("variable.parameter", Some(Syntax::Parameter)),
+    ("variable.special", Some(Syntax::Number)),
+    ("variant", Some(Syntax::Number)),
+];
 
 // ---------------------------------------------------------------------------
 // Lexical trivia for go-to filtering
@@ -307,7 +449,7 @@ impl Dialect {
     fn for_name(lang: &str) -> Option<Dialect> {
         Some(match lang {
             "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" | "json" | "jsonc"
-            | "json5" | "javascript" | "typescript" => JS,
+            | "json5" | "jsonl" | "javascript" | "typescript" => JS,
             "rust" | "rs" => RUST,
             "go" | "golang" => GO,
             "swift" => SWIFT,
@@ -352,9 +494,9 @@ enum Mode {
     },
 }
 
-/// Comment and string-literal byte ranges of `text`, scanned whole — unlike
-/// the colour budget there is no size cap, so go-to exclusion works past the
-/// 32 KiB highlight prefix and while a syntax job is pending or stale.
+/// Comment and string-literal byte ranges of `text`, scanned whole — the
+/// classifier has no size cap, so go-to exclusion works document-wide and
+/// while a syntax job is pending or stale.
 /// Language comes from [`language_for_path`]; unknown languages get no trivia
 /// (plain text links everything, as the desktop's empty syntax tree does).
 pub fn trivia_ranges(text: &str, language: Option<&str>) -> Vec<(Range<usize>, Trivia)> {
@@ -772,37 +914,13 @@ mod tests {
         assert_eq!(language_for_path("App.TSX"), Some("tsx"));
         assert_eq!(language_for_path("dir.with.dots/file.test.ts"), Some("ts"));
         assert_eq!(language_for_path(".eslintrc.json"), Some("json"));
+        assert_eq!(language_for_path("main.go"), Some("go"));
+        assert_eq!(language_for_path("lib.rs.bk"), None);
         assert_eq!(language_for_path("Dockerfile"), None);
         assert_eq!(language_for_path("README"), None);
+        assert_eq!(language_for_path("notes.txt"), None);
         assert_eq!(language_for_path("x.unknownext"), None);
         assert_eq!(language_for_path("x."), None);
-    }
-
-    #[test]
-    fn coloured_len_respects_budget_and_line_ends() {
-        assert_eq!(coloured_len("short"), 5);
-        let small = "a".repeat(MAX_SOURCE_BYTES);
-        assert_eq!(coloured_len(&small), MAX_SOURCE_BYTES);
-        // Over budget: cut back to the last newline inside 32 KiB.
-        let mut big = String::from("x");
-        big.push_str(&"y".repeat(100));
-        big.push('\n');
-        big.push_str(&"z".repeat(MAX_SOURCE_BYTES));
-        big.push('\n');
-        big.push_str(&"tail".repeat(100));
-        let n = coloured_len(&big);
-        assert!(
-            n <= MAX_SOURCE_BYTES && big.as_bytes()[n] == b'\n'
-                || n == big.len().min(MAX_SOURCE_BYTES)
-        );
-        assert!(big.is_char_boundary(n));
-        // No line end in the first 32 KiB → nothing is coloured.
-        let one_line = "q".repeat(MAX_SOURCE_BYTES + 10);
-        assert_eq!(coloured_len(&one_line), 0);
-        // Multibyte text: the cut never lands inside a character.
-        let emoji = "🎉".repeat(MAX_SOURCE_BYTES / 4 + 10);
-        let n = coloured_len(&emoji);
-        assert!(emoji.is_char_boundary(n));
     }
 
     #[test]
@@ -811,7 +929,7 @@ mod tests {
         let r = highlight_revision(7, Some("rust"), src);
         assert_eq!(r.revision, 7);
         assert_eq!(r.language.as_deref(), Some("rust"));
-        assert!(!r.capped && !r.token_capped);
+        assert!(!r.token_capped);
         assert!(!r.ranges.is_empty());
         assert!(
             r.ranges
@@ -834,28 +952,61 @@ mod tests {
     }
 
     #[test]
-    fn highlight_reports_caps() {
-        // Over the source budget → capped, ranges stay inside the prefix.
+    fn highlight_covers_past_the_old_32kib_prefix() {
+        // Regression: the retired scanner stopped colouring at the first
+        // 32 KiB. The lexer now runs the whole document, so ranges must
+        // reach the tail of a larger file.
         let mut big = String::new();
-        while big.len() < MAX_SOURCE_BYTES + 100 {
-            big.push_str("let x = 1;\n");
+        while big.len() < 48 * 1024 {
+            big.push_str("let value = 1;\n");
         }
+        big.push_str("const tailName = \"end\";\n");
         let r = highlight_revision(1, Some("js"), &big);
-        assert!(r.capped);
-        let prefix = coloured_len(&big);
-        assert!(r.ranges.iter().all(|(range, _)| range.end <= prefix));
-        // Over the range budget → token_capped.
-        let many = "1 ".repeat(MAX_RANGES + 100);
+        assert!(!r.token_capped);
+        let last_end = r.ranges.last().map(|(range, _)| range.end).unwrap_or(0);
+        assert!(
+            last_end > big.len() - 64,
+            "colouring must reach the file tail: last range ends at {last_end} of {}",
+            big.len()
+        );
+        // Ranges stay ordered, non-overlapping and inside the document.
+        let mut prev_end = 0;
+        for (range, _) in &r.ranges {
+            assert!(range.start >= prev_end && range.end <= big.len());
+            assert!(big.is_char_boundary(range.start) && big.is_char_boundary(range.end));
+            prev_end = range.end;
+        }
+    }
+
+    #[test]
+    fn highlight_reports_range_cap() {
+        // Over the range budget → token_capped, colouring stops at it.
+        // `1+` lexes as number+operator pairs: two non-adjacent kinds per
+        // pair, so nothing merges and every token costs a range.
+        let many = "1+".repeat(MAX_RANGES / 2 + 100);
         let r = highlight_revision(2, Some("js"), &many);
         assert!(r.token_capped);
         assert_eq!(r.ranges.len(), MAX_RANGES);
     }
 
     #[test]
+    fn highlight_ranges_stay_on_char_boundaries() {
+        // Multibyte source: every emitted range is a valid str slice.
+        let src = "let s = \"héllo 🎉\";\n//  comment\nconst π = 3;\n";
+        let r = highlight_revision(4, Some("js"), src);
+        assert!(!r.ranges.is_empty());
+        for (range, _) in &r.ranges {
+            assert!(src.is_char_boundary(range.start));
+            assert!(src.is_char_boundary(range.end));
+            let _ = &src[range.clone()];
+        }
+    }
+
+    #[test]
     fn highlight_unknown_language_is_plain() {
         let r = highlight_revision(3, None, "anything at all");
         assert!(r.ranges.is_empty());
-        assert!(!r.capped);
+        assert!(!r.token_capped);
         assert_eq!(r.language, None);
         let r = highlight_revision(3, Some("cobol"), "anything at all");
         assert!(
