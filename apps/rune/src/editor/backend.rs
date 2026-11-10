@@ -234,6 +234,12 @@ pub enum Req {
     StashDiff {
         stash: String,
     },
+    /// Per-line blame for the open file: who last touched each line. The
+    /// reply is keyed to the path it was asked for, so a reply for a
+    /// document that has since been replaced is dropped.
+    Blame {
+        path: String,
+    },
     /// External open-file/line request: validated against the registered
     /// project+checkout on the worker (no UI-thread storage reads), then
     /// applied once as checkout switch + doc open.
@@ -316,6 +322,8 @@ pub enum ReplyData {
     Highlight(crate::editor::syntax::HighlightResult),
     Stashes(Vec<GitViewStash>),
     StashDiff(GitViewDiff),
+    /// Per-line blame for the file the request named.
+    Blame(app_core::git_view::GitViewBlame),
     ExternalOpen {
         checkout: PathBuf,
         path: String,
@@ -1009,6 +1017,9 @@ fn run_checkout(
         Req::StashDiff { stash } => git_view::stash_diff(checkout, stash)
             .map(ReplyData::StashDiff)
             .map_err(|e| e.to_string()),
+        Req::Blame { path } => git_view::blame(checkout, path)
+            .map(ReplyData::Blame)
+            .map_err(|e| e.to_string()),
         Req::SaveFile {
             path,
             expected,
@@ -1172,6 +1183,10 @@ impl EditorState {
         self.doc_reload = None;
         self.doc = Some(doc);
         self.activate_files();
+        // The blame annotations describe the file on disk — ask for them
+        // now that the document is open.
+        crate::editor::blame::sync_visibility(self);
+        crate::editor::blame::request(self);
     }
 
     /// `Req::ReloadFile` reply — the guard dialog's "Reload from disk":
@@ -1207,6 +1222,9 @@ impl EditorState {
         doc.highlight_dirty_at = Some(std::time::Instant::now());
         self.doc = Some(doc);
         self.sync_quit_dirty();
+        // The reloaded file changed on disk: its blame must be re-read.
+        crate::editor::blame::sync_visibility(self);
+        crate::editor::blame::request(self);
     }
 
     /// Kick the reads the active section needs. Called on section activation,
@@ -1357,6 +1375,29 @@ impl EditorState {
         );
     }
 
+    /// Mirror the inline-blame toggle into every mounted code surface.
+    pub fn apply_blame_enabled(&mut self, enabled: bool) {
+        self.blame_enabled = enabled;
+        if let Some(doc) = self.doc.as_mut() {
+            doc.code.blame_enabled = enabled;
+        }
+        self.scratch_code.blame_enabled = enabled;
+    }
+
+    /// Apply a new inline-blame toggle: mirror it into every mounted code
+    /// surface and persist it through the same project-level settings lane
+    /// as the indent override.
+    pub fn set_blame_enabled(&mut self, enabled: bool) {
+        self.apply_blame_enabled(enabled);
+        let _ = enqueue(
+            &mut self.backend,
+            Job::project(Req::SetSetting {
+                key: crate::editor::blame::BLAME_KEY.to_string(),
+                value: if enabled { "1".into() } else { "0".into() },
+            }),
+        );
+    }
+
     /// Queue a worktree-list read for `project_id`, marking the sidebar's
     /// per-project entry loading when the job is accepted. The reply lands
     /// in `sidebar_worktrees` — and in `worktrees` too when `project_id` is
@@ -1431,6 +1472,7 @@ fn kind_key(req: &Req) -> &'static str {
         Req::ReloadFile { .. } => "reloadfile",
         Req::Stashes => "stashes",
         Req::StashDiff { .. } => "stashdiff",
+        Req::Blame { .. } => "blame",
         Req::ExternalOpen { .. } => "externalopen",
         _ => "other",
     }

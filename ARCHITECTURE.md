@@ -282,6 +282,11 @@ Servers) over registered projects and validated checkouts, backed by
   desktop; the reply fills the draft only when unchanged.
 - Stashes are read-only and repository-wide; history persists its pane layout
   through the shared settings key `goko.history.layout`.
+- The code surface carries an optional inline-blame column: one annotation per
+  line (author + compact age) read through `app_core::git_view::blame` on the
+  same worker lane. Git blames the file on disk, so a dirty draft hides the
+  column and the annotations are re-read after the save lands; the toggle
+  persists under `goko.editor.blame`.
 - No Vim mode ships in `apps/rune` (the `editor.vim` setting remains
   desktop-only), and the external open-file consumer has no producer yet.
 

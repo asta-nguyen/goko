@@ -585,6 +585,13 @@ fn setup(s: &mut State, _waker: rune::Waker) {
             key: editor::indent::INDENT_KEY.to_string(),
         }),
     );
+    // The inline-blame toggle restores on the same settings lane.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: editor::blame::BLAME_KEY.to_string(),
+        }),
+    );
     s.editor.acp.refresh();
     // The quota chips, the accounts they name, and the stored theme.
     let _ = backend::enqueue(
@@ -647,6 +654,8 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         changed = true;
     }
     editor::highlight::poll(&mut s.editor, tx);
+    // The inline-blame column's relative ages roll over once a minute.
+    changed |= editor::blame::poll(&mut s.editor);
     // LSP: drain runtime messages, reconcile document sync, drive hover.
     changed |= editor::lsp::poll(&mut s.editor, tx);
     // Quick-open: rebuild matches when the path cache or checkout moved.
@@ -830,6 +839,7 @@ mod view_tests {
     use app_core::worktrees::{WorktreeInfo, WorktreeList};
     use rune::{Env, Key, KeyEvent, Mods, Runtime};
     use std::path::PathBuf;
+    use std::sync::mpsc;
 
     fn project(id: &str, name: &str, root: &str) -> ProjectView {
         ProjectView {
@@ -2474,5 +2484,238 @@ mod view_tests {
             .filter(|element| element.label.as_deref() == Some("Sign in"))
             .count();
         assert_eq!(sign_ins, 1, "only the named account can sign in");
+    }
+
+    // -- Terminal row geometry ------------------------------------------------
+
+    /// Whether the element `idx` sits under the element `ancestor` —
+    /// `ElementInfo::parent` chains up the mounted tree.
+    fn inside_ancestor(els: &[rune::ElementInfo], idx: usize, ancestor: usize) -> bool {
+        let mut i = Some(idx);
+        while let Some(n) = i {
+            if n == ancestor {
+                return true;
+            }
+            i = els[n].parent;
+        }
+        false
+    }
+
+    /// The text rows mounted inside the pane `pane_key`'s cell, plus the
+    /// cell's own rect — a pane holds exactly one terminal's grid.
+    fn pane_rows(rt: &Runtime<State>, pane_key: &str) -> (Vec<rune::ElementInfo>, [f32; 4]) {
+        let want = format!("pane:{}", panes::pane_id(pane_key));
+        let els = els(rt);
+        let cell = els
+            .iter()
+            .position(|e| e.key.as_deref() == Some(want.as_str()))
+            .expect("the pane cell is mounted");
+        let rows = els
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| e.text.is_some() && inside_ancestor(&els, *i, cell))
+            .map(|(_, e)| e.clone())
+            .collect();
+        (rows, els[cell].rect)
+    }
+
+    /// A frame like the agent TUI draws: styled banner lines (colour runs,
+    /// spaces to wrap at, and 'W's wider than the measured cell), a blank
+    /// stretch, then home. 'W' shapes wider than the cell in the test
+    /// fonts — what a real frame's wide glyphs do — so a wrapping row is
+    /// reproduced, not hoped for.
+    fn feed_tui_frame(tx: &mpsc::Sender<daemon::Output>, seq: &mut u64) {
+        let mut data = Vec::new();
+        for _ in 0..6 {
+            data.extend_from_slice("\u{1b}[31m".as_bytes());
+            data.extend_from_slice("W ".repeat(60).as_bytes());
+            data.extend_from_slice("\u{1b}[32m".as_bytes());
+            data.extend_from_slice("W ".repeat(60).as_bytes());
+            data.extend_from_slice("\u{1b}[0m\r\n".as_bytes());
+        }
+        data.extend_from_slice("\r\n".repeat(4).as_bytes());
+        data.extend_from_slice("\u{1b}[H".as_bytes());
+        let len = data.len() as u64;
+        tx.send(daemon::Output { seq: *seq, data }).unwrap();
+        *seq += len;
+    }
+
+    /// Address the input prompt onto the grid's last line — where a
+    /// full-screen program keeps its input frame.
+    fn feed_last_row_marker(tx: &mpsc::Sender<daemon::Output>, seq: &mut u64, row: usize) {
+        let data = format!("\u{1b}[{row};1H\u{276f} PROMPT-MARKER").into_bytes();
+        let len = data.len() as u64;
+        tx.send(daemon::Output { seq: *seq, data }).unwrap();
+        *seq += len;
+    }
+
+    /// The terminal's rows inside a column deliberately narrower than the
+    /// text: the same mount the pane gives, squeezed.
+    fn narrow_term_view(s: &State, _cx: &mut Cx<State>) -> El {
+        let rows = s
+            .attachments
+            .values()
+            .next()
+            .map(|att| term::term_lines_el(&att.lines, &s.ink))
+            .unwrap_or_default();
+        col().w(220.0).min_h(0.0).children(rows)
+    }
+
+    #[test]
+    fn a_terminal_row_stays_one_cell_line_wide_or_not() {
+        // Every drawn grid row is a single line: `rich` wrapped a row
+        // wider than the pane onto a second line, and the extra height
+        // pushed the grid's bottom rows — a TUI's input frame — out of
+        // view. Narrow the column under the rows to force the check.
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let mut seq = 0u64;
+        feed_tui_frame(&tx, &mut seq);
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let ink = s.ink;
+        let lines = s
+            .attachments
+            .get_mut(&key)
+            .unwrap()
+            .term
+            .lines(&ink)
+            .to_vec();
+        assert!(
+            lines.iter().any(|l| l.text().contains("W W")),
+            "the styled rows fed the grid"
+        );
+        s.attachments.get_mut(&key).unwrap().lines = lines;
+
+        let mut rt = Runtime::new(s, narrow_term_view, (400.0, 300.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        for e in els(&rt) {
+            let Some(text) = e.text.as_deref() else {
+                continue;
+            };
+            assert!(
+                e.rect[3] <= 17.0,
+                "a terminal row took {:.1}pt inside a narrow pane: {text:?}",
+                e.rect[3]
+            );
+        }
+    }
+
+    #[test]
+    fn the_last_terminal_row_stays_inside_its_pane() {
+        // The regression the missing Claude input frame reported: the
+        // grid's bottom row must land inside the pane, at full width and
+        // squeezed.
+        for (w, h) in [(1512.0, 814.0), (900.0, 560.0)] {
+            let mut s = State::new(test_handle());
+            let key = seed_session(&mut s, "claude", "/work/repo");
+            s.focus_session_tab(&key);
+            let session = s.session_id(&key).unwrap();
+            let (tx, rx) = mpsc::channel();
+            let (_ready_tx, ready_rx) = mpsc::channel();
+            let terminal = term::Terminal::new(session, rx, ready_rx);
+            attach(&mut s, &key, terminal);
+            let pane_key = key.clone();
+            let mut seq = 0u64;
+            feed_tui_frame(&tx, &mut seq);
+
+            let mut rt = Runtime::new(s, view, (w, h), Env::new(true, 2.0));
+            rt.poll = Some(poll);
+            rt.frame(0.0);
+            // The first layout measures the pane and resizes the grid.
+            rt.frame(1.0 / 60.0);
+
+            let mut rows = 0;
+            rt.update(|s, _| {
+                rows = s.attachments.get(&pane_key).unwrap().rows;
+            });
+            feed_last_row_marker(&tx, &mut seq, rows);
+            // The poll consumes the chunk (a burst opens), then the
+            // repaint waits for the output to settle.
+            rt.frame(1.0 / 60.0);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            rt.frame(1.0 / 60.0);
+
+            let (rows, pane_rect) = pane_rows(&rt, &pane_key);
+            assert!(!rows.is_empty(), "the pane drew its grid at {w}x{h}");
+            let pane_bottom = pane_rect[1] + pane_rect[3];
+            for row in &rows {
+                assert!(
+                    row.rect[3] <= 17.0,
+                    "a terminal row is {:.1}pt tall at {w}x{h}",
+                    row.rect[3]
+                );
+                assert!(
+                    row.rect[1] + row.rect[3] <= pane_bottom + 0.5,
+                    "a terminal row sits below its pane: {:?} vs {pane_bottom} at {w}x{h}",
+                    row.rect
+                );
+            }
+            assert!(
+                rows.iter().any(|e| e
+                    .text
+                    .as_deref()
+                    .is_some_and(|t| t.contains("PROMPT-MARKER"))),
+                "the input row on the grid's last line is mounted at {w}x{h}"
+            );
+        }
+    }
+
+    #[test]
+    fn split_panes_keep_their_last_rows_inside() {
+        // Two panes side by side: each is narrower, so a wrapped row
+        // pushes its bottom rows out sooner — both panes are checked.
+        let mut s = State::new(test_handle());
+        let a = seed_session(&mut s, "claude-a", "/work/repo");
+        s.focus_session_tab(&a);
+        let b = seed_session(&mut s, "claude-b", "/work/repo");
+        s.place_session(
+            &b,
+            "claude-b",
+            panes::Placement::Split {
+                tab: s.open_tabs[0].id.clone(),
+                pane: panes::pane_id(&a),
+                direction: panes::Direction::SideBySide,
+            },
+        );
+        for key in [&a, &b] {
+            let session = s.session_id(key).unwrap();
+            let (tx, rx) = mpsc::channel();
+            let (_ready_tx, ready_rx) = mpsc::channel();
+            let terminal = term::Terminal::new(session, rx, ready_rx);
+            let mut seq = 0u64;
+            feed_tui_frame(&tx, &mut seq);
+            attach(&mut s, key, terminal);
+        }
+        let (a2, b2) = (a.clone(), b.clone());
+
+        let mut rt = Runtime::new(s, view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        rt.frame(1.0 / 60.0);
+
+        for key in [&a2, &b2] {
+            let (rows, pane_rect) = pane_rows(&rt, key);
+            assert!(!rows.is_empty(), "pane {key} drew its grid");
+            let pane_bottom = pane_rect[1] + pane_rect[3];
+            for row in &rows {
+                assert!(
+                    row.rect[3] <= 17.0,
+                    "a terminal row is {:.1}pt tall in pane {key}",
+                    row.rect[3]
+                );
+                assert!(
+                    row.rect[1] + row.rect[3] <= pane_bottom + 0.5,
+                    "a terminal row sits below pane {key}: {:?} vs {pane_bottom}",
+                    row.rect
+                );
+            }
+        }
     }
 }

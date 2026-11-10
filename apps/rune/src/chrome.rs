@@ -367,21 +367,18 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
         .items_center()
         .window_drag()
         .child(
-            row()
-                .gap(10.0)
-                .items_center()
-                .child(
-                    // 12 pt halo around the 6 pt dot: gap 5 keeps the dot's
-                    // centre where the bare dot's was (8 pt gap + 3 pt radius).
-                    row()
-                        .key("status")
-                        .gap(5.0)
-                        .items_center()
-                        .label(status)
-                        .help(status)
-                        .child(theme::txt("goko", WORDMARK, ink.text))
-                        .child(connection_dot(s.data.connected, ink)),
-                ),
+            row().gap(10.0).items_center().child(
+                // 12 pt halo around the 6 pt dot: gap 5 keeps the dot's
+                // centre where the bare dot's was (8 pt gap + 3 pt radius).
+                row()
+                    .key("status")
+                    .gap(5.0)
+                    .items_center()
+                    .label(status)
+                    .help(status)
+                    .child(theme::txt("goko", WORDMARK, ink.text))
+                    .child(connection_dot(s.data.connected, ink)),
+            ),
         )
         .child(spacer())
         .child(right)

@@ -1844,11 +1844,7 @@ pub fn take_fallback(ed: &mut EditorState) -> Option<GoToRequest> {
 /// points — the card never mounts on a guessed position. The marker +
 /// card ride an out-of-flow wrapper so `anchored_fit` resolves the marker
 /// key and handles below/flip/clamp itself.
-pub fn hover_layer(
-    s: &crate::State,
-    cx: &rune::Cx<crate::State>,
-    k: &Kit,
-) -> Option<El> {
+pub fn hover_layer(s: &crate::State, cx: &rune::Cx<crate::State>, k: &Kit) -> Option<El> {
     let text = s.editor.lsp_hover_text()?;
     let caret = cx.caret(crate::editor::code::FIELD_KEY)?;
     let marker = rune::el()

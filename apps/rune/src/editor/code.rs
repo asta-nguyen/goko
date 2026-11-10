@@ -35,7 +35,7 @@ use crate::editor::find::FindState;
 use crate::editor::go_to_definition as gtd;
 use crate::editor::indent::{self, IndentUnit, UnitChoice};
 use crate::editor::syntax::{self, HighlightResult};
-use crate::theme::{self, Ink, T11M_LH, T12};
+use crate::theme::{self, Ink, T11M_LH, T12, T128};
 
 /// Key of the scroll viewport: the `scroll_into_view_in` scope and the target
 /// of `Tx::scroll_to_instant` reveals.
@@ -54,6 +54,8 @@ const QUERY_STYLE: TextStyle = TextStyle::new(12.0, 400.0).mono();
 /// Rendered match highlights are capped so huge files stay cheap; matches
 /// past the cap still navigate through `find_next`/`find_prev`.
 const MAX_MATCH_HIGHLIGHTS: usize = 512;
+/// Width of the inline-blame column beside the code.
+const BLAME_WIDTH: f32 = 168.0;
 
 /// A go-to-definition request: the token under the pointer or caret and its
 /// document byte range. The parent resolves it (imports via
@@ -82,6 +84,22 @@ pub struct CodeState {
     pub revision: u64,
     /// Latest worker highlight output; the view ignores stale revisions.
     pub syntax: Option<HighlightResult>,
+    /// Per-line blame for the open file — who last touched each line.
+    /// `None` until the first read lands.
+    pub blame: Option<crate::editor::blame::Blame>,
+    /// The blame annotations, one per line, rendered as the column's text.
+    /// Rebuilt when the blame changes and when the relative age rolls over.
+    pub blame_text: String,
+    /// The minute the rendered [`Self::blame_text`] was built for.
+    pub blame_bucket: u64,
+    /// Whether the inline blame column is shown for this document. The toggle
+    /// is global; the column additionally hides while the draft is dirty.
+    pub blame_visible: bool,
+    /// Whether the inline blame column is switched on at all (mirrored from
+    /// the editor's persisted setting).
+    pub blame_enabled: bool,
+    /// Why the last blame read failed — shown as the column's error line.
+    pub blame_error: Option<String>,
     /// Find panel state.
     pub find: FindState,
     /// Platform go-to modifier (⌘ on macOS, Ctrl elsewhere) as last reported
@@ -109,6 +127,12 @@ impl CodeState {
             read_only: false,
             revision: 0,
             syntax: None,
+            blame: None,
+            blame_text: String::new(),
+            blame_bucket: 0,
+            blame_visible: false,
+            blame_enabled: true,
+            blame_error: None,
             find: FindState::new(),
             go_to_mod: false,
             gutter_shift: Live::new([0.0, 0.0]),
@@ -339,6 +363,11 @@ impl CodeState {
         &self.gutter_text
     }
 
+    /// The rendered blame column: one annotation per document line.
+    pub fn blame_text(&self) -> &str {
+        &self.blame_text
+    }
+
     pub fn gutter_width(&self) -> f32 {
         let digits = self.gutter_lines.max(1).to_string().len();
         20.0 + digits as f32 * 8.0
@@ -351,6 +380,8 @@ type StateCallback<S> = Rc<dyn Fn(&mut S, &mut Tx)>;
 type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
 /// Indent-override callback: receives the next [`UnitChoice`] to persist.
 type IndentCallback<S> = Rc<dyn Fn(&mut S, UnitChoice, &mut Tx)>;
+/// Blame-toggle callback: receives the new enabled state.
+type BlameCallback<S> = Rc<dyn Fn(&mut S, bool, &mut Tx)>;
 
 /// The code surface view. `get`/`get_mut` reach the parent's [`CodeState`];
 /// callbacks are optional and generic over the app state `S`.
@@ -361,6 +392,7 @@ pub struct Code<S> {
     on_save: Option<StateCallback<S>>,
     on_go_to: Option<GoToCallback<S>>,
     on_indent: Option<IndentCallback<S>>,
+    on_blame: Option<BlameCallback<S>>,
 }
 
 impl<S: 'static> Code<S> {
@@ -372,6 +404,7 @@ impl<S: 'static> Code<S> {
             on_save: None,
             on_go_to: None,
             on_indent: None,
+            on_blame: None,
         }
     }
 
@@ -402,6 +435,12 @@ impl<S: 'static> Code<S> {
         self
     }
 
+    /// Called when the blame chip is pressed; receives the new enabled state.
+    pub fn on_blame(mut self, f: impl Fn(&mut S, bool, &mut Tx) + 'static) -> Code<S> {
+        self.on_blame = Some(Rc::new(f));
+        self
+    }
+
     pub fn build(self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
@@ -411,15 +450,21 @@ impl<S: 'static> Code<S> {
         if let Some(notice) = self.notice_bar(code, ink) {
             root = root.child(notice);
         }
-        root.child(
-            row()
-                .grow(1.0)
-                .min_w(0.0)
-                .min_h(0.0)
-                .child(gutter_el(code, ink))
-                .child(self.surface(s, ink)),
-        )
-        .child(self.indent_chip(s, ink))
+        if let Some(failure) = self.blame_error_bar(code, ink) {
+            root = root.child(failure);
+        }
+        let mut surface = row()
+            .grow(1.0)
+            .min_w(0.0)
+            .min_h(0.0)
+            .child(gutter_el(code, ink))
+            .child(self.surface(s, ink));
+        // The blame column is a sibling of the scroll surface: it scrolls
+        // with the code, one annotation per line.
+        if code.blame_visible {
+            surface = surface.child(blame_el(code, ink));
+        }
+        root.child(surface).child(self.footer(s, ink))
     }
 
     /// Find bar: query field, match count, case toggle, prev/next/close.
@@ -525,6 +570,25 @@ impl<S: 'static> Code<S> {
         )
     }
 
+    /// Slim status line for a failed blame read — an untracked path, a
+    /// binary file, or a Git error leaves the column empty.
+    fn blame_error_bar(&self, code: &CodeState, ink: &Ink) -> Option<El> {
+        let error = code.blame_error.as_ref()?;
+        Some(
+            row()
+                .w_full()
+                .h(22.0)
+                .px(10.0)
+                .items_center()
+                .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+                .child(theme::txt(
+                    &format!("Blame unavailable — {error}"),
+                    T11M_LH,
+                    ink.warning,
+                )),
+        )
+    }
+
     /// Scroll viewport + editor field(s) + optional go-to overlay.
     fn surface(&self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
@@ -554,9 +618,53 @@ impl<S: 'static> Code<S> {
         scroll.child(wrap)
     }
 
-    /// Slim footer strip carrying the indent-unit chip. Always visible —
-    /// the setting is global, not per-document — right-aligned so it reads
-    /// as status chrome rather than a toolbar button.
+    /// Slim footer strip carrying the blame toggle and the indent-unit chip.
+    /// Both settings are global, not per-document — right-aligned so they
+    /// read as status chrome rather than a toolbar.
+    fn footer(&self, s: &S, ink: &Ink) -> El {
+        row()
+            .w_full()
+            .h(22.0)
+            .px(10.0)
+            .gap(8.0)
+            .items_center()
+            .justify_end()
+            .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+            .child(self.blame_chip(s, ink))
+            .child(self.indent_chip(s, ink))
+    }
+
+    /// The inline-blame toggle chip. The chip stays visible even when the
+    /// column is hidden (a dirty draft hides the annotations, not the
+    /// setting), so it carries the on/off state in its own colour.
+    fn blame_chip(&self, s: &S, ink: &Ink) -> El {
+        let code = (self.get)(s);
+        let enabled = code.blame_enabled;
+        let get = self.get;
+        let on_blame = self.on_blame.clone();
+        let color = if enabled { ink.accent } else { ink.muted };
+        row()
+            .h(28.0)
+            .px(10.0)
+            .items_center()
+            .radius(8.0)
+            .child(theme::txt("Blame", T128, color))
+            .hover(ink.text.alpha(0.08))
+            .press(ink.text.alpha(0.12))
+            .press_scale(0.97)
+            .role("button")
+            .label("Blame")
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press_tx(move |st, tx| {
+                let next = !(get)(st).blame_enabled;
+                if let Some(cb) = &on_blame {
+                    cb(st, next, tx);
+                }
+            })
+    }
+
+    /// The indent-unit chip: Auto → 2 → 4 → 8 → Tab, persisted globally.
     fn indent_chip(&self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let choice = code.indent_choice;
@@ -568,21 +676,12 @@ impl<S: 'static> Code<S> {
         };
         let get = self.get;
         let on_indent = self.on_indent.clone();
-        row()
-            .w_full()
-            .h(22.0)
-            .px(10.0)
-            .items_center()
-            .justify_end()
-            .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
-            .child(
-                theme::btn_sm(&label, None, false, ink).on_press_tx(move |st, tx| {
-                    let next = (get)(st).indent_choice.next();
-                    if let Some(cb) = &on_indent {
-                        cb(st, next, tx);
-                    }
-                }),
-            )
+        theme::btn_sm(&label, None, false, ink).on_press_tx(move |st, tx| {
+            let next = (get)(st).indent_choice.next();
+            if let Some(cb) = &on_indent {
+                cb(st, next, tx);
+            }
+        })
     }
 
     /// The editable `text_input` or the read-only selectable `text`, with
@@ -841,6 +940,26 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
         .clip_rounded(0.0)
         .child(
             text(code.gutter_text())
+                .font(CODE_STYLE)
+                .color(ink.muted)
+                .pl(10.0)
+                .pr(10.0)
+                .live_offset(&shift),
+        )
+}
+
+/// Inline-blame column: one annotation per code line, shifted by the same
+/// live scroll offset the gutter uses so every row lines up with its line.
+fn blame_el(code: &CodeState, ink: &Ink) -> El {
+    let shift = code.gutter_shift.clone();
+    col()
+        .w(BLAME_WIDTH)
+        .h_full()
+        .fill(ink.bg)
+        .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+        .clip_rounded(0.0)
+        .child(
+            text(code.blame_text())
                 .font(CODE_STYLE)
                 .color(ink.muted)
                 .pl(10.0)
