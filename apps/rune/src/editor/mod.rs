@@ -17,6 +17,7 @@ pub mod highlight;
 pub mod history;
 pub mod history_graph;
 pub mod history_layout;
+pub mod indent;
 pub mod keyboard;
 pub mod lsp;
 pub mod navigation;

@@ -429,6 +429,13 @@ fn setup(s: &mut State, _waker: rune::Waker) {
             key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
         }),
     );
+    // Indent-unit override restores on the same settings lane.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: editor::indent::INDENT_KEY.to_string(),
+        }),
+    );
     s.editor.acp.refresh();
 }
 

@@ -20,6 +20,7 @@ use crate::editor::acp::Acp;
 use crate::editor::backend::Backend;
 use crate::editor::code::CodeState;
 use crate::editor::draft::OpenDoc;
+use crate::editor::indent::UnitChoice;
 use crate::editor::lsp::Lsp;
 use crate::editor::navigation::{self, Guard};
 use crate::editor::{history_layout, quit_guard};
@@ -334,6 +335,9 @@ pub struct EditorState {
     /// Scratch `CodeState` for the `Code` view's accessors when no document
     /// is open (the view is only mounted with a doc, so this is a fallback).
     pub scratch_code: CodeState,
+    /// Persisted indent-unit override (`auto` resolves per document); every
+    /// mounted [`CodeState`] mirrors it via [`Self::set_indent_choice`].
+    pub indent_choice: UnitChoice,
     /// Go-to-definition resolution in flight (one at a time).
     pub go_to: Option<GoToPending>,
     /// Token guarding an in-flight file load against stale replies.
@@ -488,6 +492,7 @@ impl EditorState {
             },
             doc: None,
             scratch_code: CodeState::new("", ""),
+            indent_choice: UnitChoice::Auto,
             go_to: None,
             doc_load: None,
             doc_reload: None,
