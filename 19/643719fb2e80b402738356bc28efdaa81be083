@@ -1,0 +1,38 @@
+docs/llm/domains/rune-editor.md
+  s_979b3d3ceb4a3e::t_be40158df80613 332-360
+  s_979b3d3ceb4a3e::t_c3d4938b09e19d 361
+crates/app-core/src/git_view.rs
+  s_e2b667fd4711f9::t_66a2fed94c2ce5 2170
+  s_e2b667fd4711f9::t_0c1621265b939b 1044-1051
+docs/agent-devkit/INDEX.md
+  s_979b3d3ceb4a3e::t_049bd7dc0739ad 13-14
+apps/rune/src/editor/code.rs
+  s_e2b667fd4711f9::t_ea200c74d81e29 955-965
+  s_e2b667fd4711f9::t_e17f0950f8db7e 966-968,976
+apps/rune/src/editor/files.rs
+  s_e2b667fd4711f9::t_f55e3208899da1 1056-1089
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "19643719fb2e80b402738356bc28efdaa81be083",
+  "prompts": {},
+  "sessions": {
+    "s_979b3d3ceb4a3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cumbersome-snowshoe",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e2b667fd4711f9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0889dfa8-9a8b-4221-802e-f03f7c76df2f",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
