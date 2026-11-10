@@ -6,11 +6,13 @@
 //! which serializes them for free. Replies reach the UI through
 //! `AppHandle::update`, which also wakes the event loop.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 
+use app_core::activity::{Activity, SessionActivity};
 use app_core::agents::{self, AgentInfo};
 use app_core::error::BridgeError;
 use app_core::git_view::{
@@ -84,6 +86,18 @@ pub enum Req {
     /// Remove a registered project.
     RemoveProject {
         id: String,
+    },
+    /// Read the child process's activity: what the session's agent is
+    /// doing (working, waiting, done). The worker reads the files the
+    /// agent writes; `previous` keeps the last value for a session whose
+    /// source cannot be read this tick.
+    Activity {
+        sessions: Vec<SessionActivity>,
+        previous: HashMap<String, Activity>,
+    },
+    /// The agent CLIs running under the sessions' process trees.
+    Subagents {
+        sessions: Vec<protocol::session::SessionInfo>,
     },
     // reads (all take the job's checkout)
     Changes,
@@ -189,6 +203,10 @@ pub enum ReplyData {
     AgentArgv(Vec<String>),
     /// The worktree a create request made.
     Worktree(app_core::worktrees::WorktreeInfo),
+    /// The child process's activity, keyed by session id.
+    Activity(HashMap<String, Activity>),
+    /// The agent CLIs under each session, keyed by session id.
+    Subagents(app_core::subagents::SubagentMap),
     Changes(GitViewChanges),
     Diff(GitViewDiff),
     History(GitViewHistory),
@@ -484,6 +502,31 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
         Req::RemoveProject { id } => storage_req(storage, |store| {
             projects::remove_project(store, id).map(|_| ReplyData::Ok)
         }),
+        Req::Subagents { sessions } => {
+            // The process table is read on the worker: `ps` is a command,
+            // not a file the UI thread should run.
+            let rows = process_table();
+            let mut map = app_core::subagents::compute_subagents(sessions, &rows);
+            // Codex 0.167 runs its agents under a shared `codex app-server`
+            // daemon: those are attributed through the thread id.
+            add_codex_daemon_agents(&mut map, sessions, &rows);
+            Ok(ReplyData::Subagents(map))
+        }
+        Req::Activity { sessions, previous } => {
+            // The files live in GOKO_HOME and the codex home; reading them
+            // is the worker's job.
+            let goko_home = agent_home();
+            let codex_home = app_core::activity::codex_home_from(
+                std::env::var("CODEX_HOME").ok().as_deref(),
+                std::env::var("HOME").ok().as_deref(),
+            );
+            Ok(ReplyData::Activity(app_core::activity::compute_activity(
+                sessions,
+                &goko_home,
+                codex_home.as_deref(),
+                previous,
+            )))
+        }
         Req::ExternalOpen {
             project_id,
             checkout_path,
@@ -537,6 +580,70 @@ fn storage_req<T>(
     };
     let store = storage.get().map_err(|e| e.to_string())?;
     f(store).map_err(|e| e.to_string())
+}
+
+/// The agents the shared `codex app-server` daemon runs for a session:
+/// they are attributed through the `CODEX_THREAD_ID` their tool calls
+/// carry, matched to the session by its rollout.
+fn add_codex_daemon_agents(
+    map: &mut app_core::subagents::SubagentMap,
+    sessions: &[protocol::session::SessionInfo],
+    rows: &[app_core::subagents::ProcessRow],
+) {
+    let codex_home = app_core::activity::codex_home_from(
+        std::env::var("CODEX_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    );
+    let Some(codex_home) = codex_home else {
+        return;
+    };
+    let agents = app_core::subagents::codex_daemon_agents(rows, map);
+    if agents.is_empty() {
+        return;
+    }
+    let pids: Vec<u32> = agents.iter().map(|row| row.pid).collect();
+    let threads = thread_ids(&pids);
+    let owners = app_core::subagents::thread_owners(
+        sessions,
+        &app_core::activity::recent_rollouts(&codex_home),
+    );
+    app_core::subagents::attribute_codex(map, &agents, &threads, &owners);
+}
+
+/// pid -> `CODEX_THREAD_ID`, read from the processes' environments.
+fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let joined = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-Eww", "-o", "pid=,command=", "-p", joined.as_str()])
+        .output()
+    else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    app_core::subagents::parse_thread_ids(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The process table: `pid`, `ppid` and the command of every process.
+fn process_table() -> Vec<app_core::subagents::ProcessRow> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axww", "-o", "pid=,ppid=,command="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    app_core::subagents::parse_ps(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The shell a `shell` session runs: `$SHELL`, else `/bin/zsh` — the same
@@ -670,6 +777,8 @@ fn run_checkout(
         | Req::CreateWorktree { .. }
         | Req::RemoveWorktree { .. }
         | Req::RemoveProject { .. }
+        | Req::Activity { .. }
+        | Req::Subagents { .. }
         | Req::ExternalOpen { .. }
         | Req::Highlight { .. } => Err("non-checkout request on checkout lane".into()),
     }

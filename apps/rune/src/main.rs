@@ -45,6 +45,18 @@ pub struct State {
     lines: Vec<term::TermLine>,
     /// The live terminal of the attached session, if any.
     terminal: Option<term::Terminal>,
+    /// The child process's activity, keyed by session id: what the
+    /// session's agent is doing (working, waiting, done).
+    activity: HashMap<String, app_core::activity::Activity>,
+    /// The agent CLIs running under each session's process tree.
+    subagents: app_core::subagents::SubagentMap,
+    /// When the sub-agents were last read; the reader polls every two
+    /// seconds.
+    subagents_at: Option<f64>,
+    /// When the activity was last read; the reader polls once a second.
+    activity_at: Option<f64>,
+    /// The pulse of a waiting child's dot.
+    pulse: rune::Live<f32>,
     /// The grid the terminal renders at, measured from the pane.
     terminal_cols: usize,
     terminal_rows: usize,
@@ -169,6 +181,11 @@ impl State {
             sidebar_text: rune::edit::TextEdit::new(""),
             pending_argv: None,
             stopping_since: HashMap::new(),
+            activity: HashMap::new(),
+            activity_at: None,
+            subagents: Default::default(),
+            subagents_at: None,
+            pulse: rune::Live::new(1.0),
         }
     }
 
@@ -217,6 +234,18 @@ impl State {
                     for view in self.data.sessions.iter_mut() {
                         view.meta = metas.get(&view.info.id).cloned();
                     }
+                }
+                return;
+            }
+            backend::Req::Subagents { .. } => {
+                if let Ok(backend::ReplyData::Subagents(subagents)) = &reply.result {
+                    self.subagents = subagents.clone();
+                }
+                return;
+            }
+            backend::Req::Activity { .. } => {
+                if let Ok(backend::ReplyData::Activity(activity)) = &reply.result {
+                    self.activity = activity.clone();
                 }
                 return;
             }
@@ -430,6 +459,9 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     s.clock = now;
     s.now_ms = data::now_ms();
+    // The waiting child's dot blinks on the app's clock.
+    s.pulse
+        .set(0.35 + 0.65 * (0.5 + 0.5 * (now as f32 * 3.0).sin()));
     // The daemon's events: the session rows, the connection state and the
     // terminal's lag notices all land here.
     for event in s.daemon.take_events() {
@@ -479,6 +511,11 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // auto-select, jump_to consumption, table↔layout sync, detail fetches.
     changed |= editor::history::poll(s, tx);
     s.editor.poll_layout_save();
+    // The child processes' activity: read once a second, on the worker.
+    changed |= s.poll_activity(now);
+    // The agent CLIs under the sessions: read every two seconds, on the
+    // worker.
+    changed |= s.poll_subagents(now);
     // A working session's dot spins: ask for the next frame so the ring
     // keeps turning. Reduce Motion stops the animation entirely.
     if s.spinning() && !REDUCED_MOTION.load(Ordering::Relaxed) {
@@ -766,6 +803,7 @@ mod view_tests {
             argv: vec!["/bin/zsh".into()],
             cwd: cwd.into(),
             state: protocol::session::SessionState::Running,
+            pid: None,
             exit_code: None,
             error: None,
             started_at: 0,

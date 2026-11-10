@@ -48,7 +48,7 @@ reading a large file. Search results are navigation; read current source as
 evidence. Query OpenEZ directly with the repository path; if unavailable,
 unindexed, or irrelevant, continue with FFF or `rg` and direct reads.
 
-<!--You own the final outcome. Use Devin CLI with `--model swe-2-flash-max --permission-mode dangerous` as the default executor for implementation, tests, and fixes. Verify that the model ID is available; never silently substitute another model.
+You own the final outcome. Use Devin CLI with `--model swe-2-flash-max --permission-mode dangerous` as the default executor for implementation, tests, and fixes. Verify that the model ID is available; never silently substitute another model.
 
 Your role is to define bounded tasks, coordinate execution, review results, and verify the working product. Delegate execution to Devin; avoid repeating its exploration or implementation yourself.
 
@@ -67,4 +67,4 @@ Execution rules:
 - Continue through implementation, integration, verification, and necessary documentation. Stop only when the requested outcome is verified, the user asks to stop, or a genuine blocker requires user input.
 - Do not commit, push, deploy, or modify unrelated user data without authorization.
 
-Use the free `swe-2-flash-max` model extensively to conserve coordinator quota, but optimize for total completion time and correctness—not agent count or token usage.-->
+Use the free `swe-2-flash-max` model extensively to conserve coordinator quota, but optimize for total completion time and correctness—not agent count or token usage.

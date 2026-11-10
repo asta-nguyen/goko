@@ -486,7 +486,13 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .py(2.0)
         .gap(4.0)
         .items_center()
-        .child(theme::state_dot(info.state, s.spinner_angle(), ink))
+        .child(theme::state_dot(
+            info.state,
+            s.session_shown_activity(&sv.info.id),
+            s.spinner_angle(),
+            &s.pulse,
+            ink,
+        ))
         .child(theme::txt(
             info.state.label(),
             T12,

@@ -365,6 +365,7 @@ const NAME: TextStyle = TextStyle::new(13.0, 500.0).lh(16.0); // was T14M
 const SUB: TextStyle = T12.lh(16.0); // session title (was T12)
 const BRANCH: TextStyle = T11.lh(16.0); // inline branch (was T11, on its own line)
 // Header / meta text on the same 16 pt line box, so it sits on whole pixels in its row.
+const SUBS: TextStyle = T11.lh(16.0); // the session's sub-agents
 const HDR: TextStyle = T11ST.lh(16.0); // "PROJECTS", "Unassigned"
 const HDR_M: TextStyle = T11M.lh(16.0); // "Other sessions"
 
@@ -869,7 +870,25 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     } else {
         ink.panel
     };
-    b = b.child(agent_badge(sv, ink, badge_bg, s.spinner_angle()));
+    b = b.child(agent_badge(
+        sv,
+        ink,
+        badge_bg,
+        s.spinner_angle(),
+        s.session_shown_activity(&sv.info.id),
+        &s.pulse,
+    ));
+    // The agent CLIs running under the session: `↳ devin`, `↳ codex, devin ×2`.
+    let subagents = s.session_subagents(&sv.info.id);
+    if !subagents.is_empty() {
+        let label = app_core::subagents::subagent_label(&subagents);
+        b = b.child(
+            theme::txt(&format!("↳ {label}"), SUBS, ink.muted)
+                .group_color(ink.text)
+                .min_w(0.0)
+                .truncate(),
+        );
+    }
     // The row's own actions: stop the session and close its pane. They sit
     // in a fixed cell, so the row never shifts when they appear.
     b = b.child(session_actions(ink, info.id.clone()));
@@ -900,7 +919,14 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
 /// `row_bg` (panel, or the selected row's accent tint, so no halo shows through)
 /// under an 8 px dot, both centred at (14,14)
 /// (`-bottom-0.5 -right-0.5 size-2.5 ring-2`).
-fn agent_badge(s: &SessionView, ink: &Ink, row_bg: Color, angle: f32) -> El {
+fn agent_badge(
+    s: &SessionView,
+    ink: &Ink,
+    row_bg: Color,
+    angle: f32,
+    activity: Option<app_core::activity::Activity>,
+    pulse: &rune::Live<f32>,
+) -> El {
     let (glyph, color) = theme::agent_glyph(s.agent_id(), ink);
     el().size(16.0, 16.0)
         .child(theme::ic(glyph, 16.0, color))
@@ -911,7 +937,7 @@ fn agent_badge(s: &SessionView, ink: &Ink, row_bg: Color, angle: f32) -> El {
                 .size(10.0, 10.0)
                 .center()
                 .child(el().size(8.0, 8.0).radius(4.0).fill(row_bg))
-                .child(theme::state_dot(s.info.state, angle, ink)),
+                .child(theme::state_dot(s.info.state, activity, angle, pulse, ink)),
         )
 }
 

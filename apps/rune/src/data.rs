@@ -94,6 +94,24 @@ impl SessionState {
     }
 }
 
+impl From<SessionState> for DaemonState {
+    fn from(state: SessionState) -> DaemonState {
+        match state {
+            SessionState::Created => DaemonState::Created,
+            SessionState::Starting => DaemonState::Starting,
+            SessionState::Running => DaemonState::Running,
+            SessionState::WaitingForInput => DaemonState::WaitingForInput,
+            SessionState::Idle => DaemonState::Idle,
+            SessionState::Stopping => DaemonState::Stopping,
+            SessionState::Exited => DaemonState::Exited,
+            SessionState::Failed => DaemonState::Failed,
+            SessionState::Disconnected => DaemonState::Disconnected,
+            SessionState::Interrupted => DaemonState::Interrupted,
+            SessionState::Unknown => DaemonState::Unknown,
+        }
+    }
+}
+
 impl From<DaemonState> for SessionState {
     fn from(state: DaemonState) -> SessionState {
         match state {
@@ -124,6 +142,8 @@ pub struct SessionInfo {
     pub argv: Vec<String>,
     pub cwd: String,
     pub state: SessionState,
+    /// The PTY child's pid; the sub-agent walk starts here.
+    pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
     pub started_at: i64,
@@ -146,6 +166,7 @@ impl From<DaemonSession> for SessionInfo {
             argv: info.argv,
             cwd: info.cwd,
             state: info.state.into(),
+            pid: info.pid,
             exit_code: info.exit_code,
             error: info.error,
             started_at: info.started_at,
@@ -387,6 +408,7 @@ mod tests {
             argv: vec!["/bin/zsh".into()],
             cwd: "/work/repo".into(),
             state,
+            pid: None,
             exit_code: None,
             error: None,
             started_at: 1_700_000_000_000,
