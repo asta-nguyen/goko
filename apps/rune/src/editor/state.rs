@@ -276,6 +276,18 @@ pub enum GoToStage {
     SearchName { name: String },
 }
 
+/// One project's sidebar worktree state: the last `Req::Worktrees` answer
+/// plus its in-flight/error flags. Kept on `EditorState` (keyed by project
+/// id, never by position) so a late reply can only ever land on the project
+/// it was asked for.
+#[derive(Default)]
+pub struct SidebarWorktrees {
+    /// Last successful list; `None` until the first reply lands.
+    pub list: Option<WorktreeList>,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
 pub struct EditorState {
     /// The shared rune-kit theme (dark palette matches `Ink`).
     pub kit: Kit,
@@ -285,6 +297,9 @@ pub struct EditorState {
     pub projects_loading: bool,
     pub projects_error: Option<String>,
     pub project_id: Option<String>,
+    /// Per-project worktree lists for the sidebar — every registered
+    /// project gets its own entry so replies can't cross projects.
+    pub sidebar_worktrees: HashMap<String, SidebarWorktrees>,
     pub worktrees: WorktreeList,
     pub worktrees_loading: bool,
     pub worktrees_error: Option<String>,
@@ -382,6 +397,7 @@ impl EditorState {
             projects_loading: false,
             projects_error: None,
             project_id: None,
+            sidebar_worktrees: HashMap::new(),
             worktrees: WorktreeList {
                 repo: false,
                 worktrees: Vec::new(),

@@ -149,26 +149,13 @@ pub struct Project {
     pub missing: bool,
 }
 
-/// src-tauri `WorktreeInfo`.
-#[derive(Clone, Debug)]
-pub struct WorktreeInfo {
-    pub name: String,
-    pub path: String,
-    pub branch: Option<String>,
-    pub head: String,
-    pub is_root: bool,
-    pub missing: bool,
-    /// `None` = git status unknown (renders the muted dot).
-    pub dirty: Option<bool>,
-    pub changed: Option<u32>,
-}
+/// src-tauri `WorktreeInfo` — the real `app_core::worktrees` shape. The
+/// mock dataset constructs the same type so the sidebar helpers serve both
+/// the mock terminal layer and the editor's registered-project data.
+pub use app_core::worktrees::WorktreeInfo;
 
 /// src-tauri `WorktreeList`: `repo` is false for non-git projects.
-#[derive(Clone, Debug)]
-pub struct ProjectWorktrees {
-    pub repo: bool,
-    pub worktrees: Vec<WorktreeInfo>,
-}
+pub use app_core::worktrees::WorktreeList as ProjectWorktrees;
 
 /// src-tauri `AgentInfo` (`agent_list`); the five presets from `agents.rs`.
 #[derive(Clone, Debug)]
@@ -298,11 +285,16 @@ pub fn sessions_for_checkout<'a>(
         .collect()
 }
 
-/// ProjectTree's `byProject`/`unassigned` partition: a session lands under its
-/// meta's project when that project exists, else under Unassigned.
-pub fn partition(data: &Data) -> (HashMap<&str, Vec<&SessionView>>, Vec<&SessionView>) {
-    let known: HashSet<&str> = data.projects.iter().map(|p| p.id.as_str()).collect();
-    let mut by_project: HashMap<&str, Vec<&SessionView>> = HashMap::new();
+/// ProjectTree's `byProject`/`unassigned` partition: a session lands under
+/// its meta's project only when that id is a REAL registered project —
+/// `known` comes from `editor.projects`, so mock session project ids can
+/// never masquerade as editor identity and every mock session renders under
+/// Unassigned.
+pub fn partition<'a>(
+    data: &'a Data,
+    known: &HashSet<&str>,
+) -> (HashMap<&'a str, Vec<&'a SessionView>>, Vec<&'a SessionView>) {
+    let mut by_project: HashMap<&'a str, Vec<&'a SessionView>> = HashMap::new();
     let mut unassigned = Vec::new();
     for session in &data.sessions {
         match session.meta.as_ref().and_then(|m| m.project_id.as_deref()) {
@@ -315,11 +307,17 @@ pub fn partition(data: &Data) -> (HashMap<&str, Vec<&SessionView>>, Vec<&Session
 
 /// Workspace a session row activates: its checkout's key for git projects,
 /// the project root's key otherwise, `UNASSIGNED_WORKSPACE` with no project —
-/// mirrors the workspace_id each sidebar group passes to SessionItems.
-pub fn workspace_for_session(data: &Data, sv: &SessionView) -> String {
+/// mirrors the workspace_id each sidebar group passes to SessionItems. Only
+/// ids in `known` (the registered projects) can produce a real workspace key;
+/// anything else resolves to Unassigned so a mock or stale project id never
+/// fabricates editor identity.
+pub fn workspace_for_session(data: &Data, sv: &SessionView, known: &HashSet<&str>) -> String {
     let Some(pid) = sv.meta.as_ref().and_then(|m| m.project_id.as_deref()) else {
         return UNASSIGNED_WORKSPACE.to_string();
     };
+    if !known.contains(pid) {
+        return UNASSIGNED_WORKSPACE.to_string();
+    }
     let Some(project) = data.projects.iter().find(|p| p.id == pid) else {
         return UNASSIGNED_WORKSPACE.to_string();
     };

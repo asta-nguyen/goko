@@ -2193,6 +2193,28 @@ mod tests {
         rt.frame(1.0 / 60.0);
     }
 
+    /// Frame until the detail boundary stops moving. The first frames can
+    /// render a different `detail_h` (unmeasured root → 160 floor) and rune's
+    /// layout spring then animates the change, so a fixed 4-frame wait can
+    /// catch a mid-flight height (e.g. 140 on the way to 97).
+    fn settle_detail(rt: &mut rune::Runtime<State>) {
+        let mut last = f32::NAN;
+        let mut stable = 0;
+        for _ in 0..180 {
+            rt.frame(1.0 / 60.0);
+            let y = detail_grip(rt).rect[1];
+            if (y - last).abs() < 0.25 {
+                stable += 1;
+                if stable >= 3 {
+                    return;
+                }
+            } else {
+                stable = 0;
+            }
+            last = y;
+        }
+    }
+
     /// CUA repro: with a persisted detail height far above the viewport
     /// clamp, BOTH drag directions used to write raw values that never
     /// moved the rendered boundary — the handle felt dead. The drag must
@@ -2397,8 +2419,7 @@ mod tests {
         let (x, y) = (g.rect[0] + g.rect[2] / 2.0, y_before + g.rect[3] / 2.0);
         drag_y(&mut rt, x, y, y + 300.0);
         assert_eq!(
-            rt.state.editor.history.layout.detail_height,
-            160.0,
+            rt.state.editor.history.layout.detail_height, 160.0,
             "drag floor is the comfortable 160"
         );
         let y_after = detail_grip(&rt).rect[1];
@@ -2433,6 +2454,9 @@ mod tests {
         for _ in 0..4 {
             rt.frame(1.0 / 60.0);
         }
+        // Test Runtime has no app poll wired — drive the sync seam directly,
+        // exactly what `history::poll` does every frame in the real app.
+        sync_layout_from_table(&mut rt.state);
         let json = rt.state.editor.history.layout.to_json();
         assert!(json.contains("\"graph\":198"), "graph persisted: {json}");
 
@@ -2440,15 +2464,13 @@ mod tests {
         let mut s2 = handle_scene(320.0);
         s2.editor.history.layout = HistoryLayout::load(Some(json.as_str()));
         seed_columns_from_layout(&mut s2.editor.history);
-        assert_eq!(
-            s2.editor.history.table.column_width("graph"),
-            Some(198.0)
-        );
+        assert_eq!(s2.editor.history.table.column_width("graph"), Some(198.0));
 
         let mut rt2 = Runtime::new(s2, crate::view, (900.0, 700.0), Env::new(true, 2.0));
         for _ in 0..4 {
             rt2.frame(1.0 / 60.0);
         }
+        sync_layout_from_table(&mut rt2.state);
         assert_eq!(
             rt2.state.editor.history.layout.graph,
             Some(198.0),
@@ -2471,9 +2493,13 @@ mod tests {
         for _ in 0..4 {
             rt2.frame(1.0 / 60.0);
         }
+        sync_layout_from_table(&mut rt2.state);
         assert_eq!(rt2.state.editor.history.layout.graph, None);
         let json2 = rt2.state.editor.history.layout.to_json();
-        assert!(!json2.contains("graph"), "graph omitted after reset: {json2}");
+        assert!(
+            !json2.contains("graph"),
+            "graph omitted after reset: {json2}"
+        );
     }
 
     /// A sub-160 `detailHeight` persisted at the 760×480 minimum must
@@ -2497,7 +2523,7 @@ mod tests {
         drag_y(&mut rt, x, y, y + 60.0);
         let persisted = rt.state.editor.history.layout.detail_height;
         assert!(
-            persisted < 160.0 && persisted >= 96.0,
+            (96.0..160.0).contains(&persisted),
             "persisted {persisted} is viewport-valid sub-floor"
         );
 
@@ -2515,9 +2541,7 @@ mod tests {
         let mut s2 = handle_scene(320.0);
         s2.editor.history.layout = HistoryLayout::load(Some(json.as_str()));
         let mut rt2 = Runtime::new(s2, crate::view, (760.0, 480.0), Env::new(true, 2.0));
-        for _ in 0..4 {
-            rt2.frame(1.0 / 60.0);
-        }
+        settle_detail(&mut rt2);
         let container = rt2.state.editor.history.measured_root_height as f64;
         let dmax = container - TOOLBAR_H as f64 - TABLE_MIN_H as f64 - DETAIL_HANDLE_H as f64;
         let floor = if dmax >= DETAIL_MIN {
@@ -2526,8 +2550,8 @@ mod tests {
             (PATCH_MIN_H as f64).min(dmax)
         };
         let rendered = loaded.detail_height.clamp(floor, dmax);
-        let expected_y = 480.0 - rendered as f32 - DETAIL_HANDLE_H;
         let g2 = detail_grip(&rt2);
+        let expected_y = 480.0 - rendered as f32 - DETAIL_HANDLE_H;
         assert!(
             (g2.rect[1] - expected_y).abs() < 2.0,
             "restored boundary: expected y={expected_y}, got {}",
@@ -2538,9 +2562,7 @@ mod tests {
         let mut s3 = handle_scene(320.0);
         s3.editor.history.layout = HistoryLayout::load(Some(json.as_str()));
         let mut rt3 = Runtime::new(s3, crate::view, (900.0, 700.0), Env::new(true, 2.0));
-        for _ in 0..4 {
-            rt3.frame(1.0 / 60.0);
-        }
+        settle_detail(&mut rt3);
         let expected_y3 = 700.0 - DETAIL_MIN as f32 - DETAIL_HANDLE_H;
         let g3 = detail_grip(&rt3);
         assert!(

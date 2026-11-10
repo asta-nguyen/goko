@@ -319,6 +319,24 @@ fn is_mutating(req: &Req) -> bool {
     )
 }
 
+/// Test-only backend whose job stream the caller drains itself: returns the
+/// `Backend` plus the receiving end, so tests can run each job through
+/// `run_job` against a temp `Storage` and apply replies in order — the same
+/// FIFO the worker thread produces, without threads or a real home.
+#[cfg(test)]
+pub(crate) fn channel_backend() -> (Backend, std::sync::mpsc::Receiver<Job>) {
+    let (tx, rx) = sync_channel(PENDING_CAP);
+    (
+        Backend {
+            tx: Some(tx),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            overloaded: false,
+        },
+        rx,
+    )
+}
+
 fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown: Arc<AtomicBool>) {
     // The worker owns its storage connection: `Storage` is `Send` but not
     // `Sync`, and the UI thread keeps its own for cheap settings reads.
@@ -362,7 +380,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
     }
 }
 
-fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
+pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
     let checkout_key = job.checkout_key.clone();
     let result = match &job.req {
         Req::Projects => storage_req(storage, |store| {
@@ -792,13 +810,56 @@ impl EditorState {
         }
     }
 
+    /// Queue a worktree-list read for `project_id`, marking the sidebar's
+    /// per-project entry loading when the job is accepted. The reply lands
+    /// in `sidebar_worktrees` — and in `worktrees` too when `project_id` is
+    /// the selected project. `true` means a reply is coming (fresh send or
+    /// already in flight); `false` means the bounded queue refused it.
+    pub fn request_worktrees(&mut self, project_id: &str) -> bool {
+        if self
+            .sidebar_worktrees
+            .get(project_id)
+            .is_some_and(|e| e.loading)
+        {
+            return true;
+        }
+        if self
+            .backend
+            .send(Job::project(Req::Worktrees(project_id.to_string())))
+        {
+            let entry = self
+                .sidebar_worktrees
+                .entry(project_id.to_string())
+                .or_default();
+            entry.loading = true;
+            entry.error = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Initial project list + worktree list for the selected project.
+    /// A refused `Projects` job must not leave `projects_loading` stuck —
+    /// the sidebar would spin forever with no error to show.
     pub fn refresh_projects(&mut self) {
-        self.projects_loading = true;
-        self.backend.send(Job::project(Req::Projects));
+        if self.backend.send(Job::project(Req::Projects)) {
+            self.projects_loading = true;
+            self.projects_error = None;
+        } else {
+            self.projects_loading = false;
+            self.projects_error =
+                Some("the editor queue is full; projects were not requested".into());
+        }
         if let Some(pid) = self.project_id.clone() {
-            self.worktrees_loading = true;
-            self.backend.send(Job::project(Req::Worktrees(pid)));
+            if self.request_worktrees(&pid) {
+                self.worktrees_loading = true;
+                self.worktrees_error = None;
+            } else {
+                self.worktrees_loading = false;
+                self.worktrees_error =
+                    Some("the editor queue is full; worktrees were not requested".into());
+            }
         }
     }
 }

@@ -8,10 +8,16 @@
 //! a compact 4-pt-grid scale (see the constants below), deliberately denser than
 //! the TSX.
 
-use rune::{Color, El, ScrollSpec, TextStyle, col, el, row, spacer};
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use app_core::projects::ProjectView;
+use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, row, spacer};
 
 use crate::State;
-use crate::data::{self, Project, SessionView, WorktreeInfo};
+use crate::data::{self, SessionView, WorktreeInfo};
+use crate::editor::backend::{Job, Req};
+use crate::editor::navigation::{self, PendingNav};
 use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T12TN, T128};
 
 const SIDEBAR_W: f32 = 320.0; // PANEL_LIMITS.projectTree.defaultWidth
@@ -55,8 +61,12 @@ fn press_wash(ink: &Ink) -> Color {
 }
 
 /// "Add Project": the same text-hover as the rows (icon and label brighten).
+/// Sends the real `Req::AddProject` through the editor backend — the folder
+/// dialog result is a path, registration stays worker-side like the
+/// editor's own picker.
 fn add_project(ink: &Ink) -> El {
     row()
+        .key("sidebar-add-project")
         .h(ROW_H)
         .pl(8.0)
         .pr(10.0)
@@ -67,6 +77,21 @@ fn add_project(ink: &Ink) -> El {
         .press(ink.text.alpha(0.12))
         .child(theme::ic(&theme::FOLDER_PLUS, 14.0, ink.text).group_color(lit(ink)))
         .child(theme::txt("Add Project", T128, ink.text).group_color(lit(ink)))
+        .on_press_tx(|_s: &mut State, tx: &mut Tx| {
+            tx.open_folder(
+                rune::file_dialog::FileDialogOptions {
+                    title: "Choose a project folder".into(),
+                    ..Default::default()
+                },
+                |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
+                    if let Ok(Some(path)) = result {
+                        st.editor
+                            .backend
+                            .send(Job::project(Req::AddProject(path.display().to_string())));
+                    }
+                },
+            );
+        })
 }
 
 /// Disclosure chevron. The glyph, not a box, takes the hover (muted → text), so a
@@ -126,8 +151,20 @@ fn row_layer(fill: Color) -> El {
 }
 
 /// `aside` (bg-panel) > section `flex min-h-0 flex-1 flex-col gap-2 p-3`.
+///
+/// Projects come from the editor's registered-project list — the same real
+/// `ProjectView`/`WorktreeList` data the pickers use — never from the mock
+/// `Data::projects`. Mock sessions can never join a real project id, so
+/// they all render under Unassigned and no fake session is ever associated
+/// with a registered project.
 pub fn sidebar(s: &State, ink: &Ink) -> El {
-    let (by_project, unassigned) = data::partition(&s.data);
+    let known: HashSet<&str> = s
+        .editor
+        .projects
+        .iter()
+        .map(|p| p.project.id.as_str())
+        .collect();
+    let (by_project, unassigned) = data::partition(&s.data, &known);
 
     let empty: &[&SessionView] = &[];
     let mut list = col()
@@ -139,9 +176,26 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         });
-    for project in &s.data.projects {
+    if s.editor.projects.is_empty() {
+        // Loading / error / empty are distinct honest states — the list
+        // never fabricates a project row.
+        let (text, tone) = if s.editor.projects_loading {
+            ("Loading projects…".to_string(), ink.muted)
+        } else if let Some(err) = &s.editor.projects_error {
+            (err.clone(), ink.danger)
+        } else {
+            (
+                "No projects registered. Add a project folder to start.".to_string(),
+                ink.muted,
+            )
+        };
+        list = list.child(status_row(&text, tone));
+    } else if let Some(err) = &s.editor.projects_error {
+        list = list.child(status_row(err, ink.danger));
+    }
+    for project in &s.editor.projects {
         let sessions = by_project
-            .get(project.id.as_str())
+            .get(project.project.id.as_str())
             .map_or(empty, Vec::as_slice);
         list = list.child(project_node(s, ink, project, sessions));
     }
@@ -183,13 +237,29 @@ pub fn separator(ink: &Ink) -> El {
 // ProjectNode
 // ---------------------------------------------------------------------------
 
-fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionView]) -> El {
-    let expanded = s.expanded.get(project.id.as_str()).copied().unwrap_or(true);
-    let wt_list = s.data.worktrees.get(project.id.as_str());
+/// One-line status inside the project list: initial loading, a projects
+/// error, or the empty registry. Never a fabricated project row.
+fn status_row(text: &str, tone: Color) -> El {
+    row()
+        .w_full()
+        .h(ROW_H)
+        .px(8.0)
+        .items_center()
+        .child(theme::txt(text, T12, tone).min_w(0.0).truncate())
+}
+
+fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&SessionView]) -> El {
+    let pid = project.project.id.as_str();
+    let expanded = s.expanded.get(pid).copied().unwrap_or(true);
+    // The sidebar's own per-project worktree state — loaded by the Projects
+    // reply's ensure pass and `request_worktrees`, never by position, so a
+    // late reply can only land on the project it was asked for.
+    let entry = s.editor.sidebar_worktrees.get(pid);
+    let wt_list = entry.and_then(|e| e.list.as_ref());
     let is_git = wt_list.is_some_and(|w| w.repo);
     let worktrees: &[WorktreeInfo] = wt_list.map_or(&[], |w| w.worktrees.as_slice());
     let root = worktrees.iter().find(|w| w.is_root);
-    let root_path = root.map_or(project.root.as_str(), |r| r.path.as_str());
+    let root_path = root.map_or(project.project.root.as_str(), |r| r.path.as_str());
 
     // rootSessions: checkout-filtered for git projects with a root entry,
     // otherwise every session the project owns.
@@ -209,7 +279,7 @@ fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionVie
         Vec::new()
     };
 
-    let workspace_id = data::checkout_key(&project.id, &project.root);
+    let workspace_id = data::checkout_key(pid, &project.project.root);
     let active = s.active_workspace.as_deref() == Some(workspace_id.as_str());
 
     // Row: `flex items-center gap-1 rounded-md px-1 py-0.5` (gap 2, px 4, h 24).
@@ -228,7 +298,7 @@ fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionVie
         .child(row_layer(row_fill(ink, active)).child(active_edge(ink, active)));
 
     // Chevron button 20×20; expanded chevron-down, collapsed chevron-right.
-    let pid_toggle = project.id.clone();
+    let pid_toggle = pid.to_string();
     row_el = row_el.child(chevron(expanded, ink).on_press(move |s: &mut State| {
         let cur = s.expanded.get(pid_toggle.as_str()).copied().unwrap_or(true);
         s.expanded.insert(pid_toggle.clone(), !cur);
@@ -238,7 +308,6 @@ fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionVie
     // no vertical padding). The TSX's `active` → bg-secondary/70 was panel-on-panel
     // and invisible, and its press state only covered this cell; the fill, edge and
     // press now belong to the whole `row_el`.
-    let pid_active = workspace_id.clone();
     let mut activate = row().grow(1.0).min_w(0.0).px(4.0).gap(6.0).items_center();
     activate = activate
         .child(theme::ic(
@@ -257,12 +326,12 @@ fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionVie
                 .gap(6.0)
                 .items_center()
                 .child(
-                    theme::txt(&project.name, NAME, ink.text)
+                    theme::txt(&project.project.name, NAME, ink.text)
                         .group_color(lit(ink))
                         .min_w(40.0)
                         .truncate(),
                 )
-                .children(checkout_status(project, root, ink))
+                .children(checkout_status(project.missing, root, ink))
                 .children(branch_subtitle(is_git, root, ink)),
         );
     row_el = row_el.child(activate);
@@ -273,18 +342,45 @@ fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionVie
         // other right-hand element, so insets match (badge, context %, group badges).
         row_el = row_el.child(theme::count_badge(sessions.len(), ink).mr(4.0));
     }
-    row_el = row_el.on_press(move |s: &mut State| {
-        s.active_workspace = Some(pid_active.clone());
-    });
+    // The root row selects the project ROOT checkout: the press routes
+    // through the draft guard as `SelectCheckout`, so a dirty draft prompts
+    // before any identity mutation and Cancel restores the previous
+    // workspace highlight along with everything else.
+    let pid_select = pid.to_string();
+    let root_checkout = PathBuf::from(&project.project.root);
+    row_el = row_el.key(format!("sidebar-project:{pid}")).on_press_tx(
+        move |s: &mut State, tx: &mut Tx| {
+            navigation::navigate(
+                s,
+                PendingNav::SelectCheckout {
+                    project_id: pid_select.clone(),
+                    checkout: root_checkout.clone(),
+                },
+                tx,
+            );
+        },
+    );
     // The REVEAL hover-only action menus are opacity-0 by default — omitted,
     // matching the real app's resting render.
 
     let mut node = col().child(row_el);
+    // A failed worktree read for THIS project surfaces under its row —
+    // same honest-error placement the desktop gives `worktreeQuery.error`.
+    if let Some(err) = entry.and_then(|e| e.error.as_ref()) {
+        node = node.child(
+            row()
+                .ml(GUIDE + 6.0)
+                .px(8.0)
+                .h(ROW_H)
+                .items_center()
+                .child(theme::txt(err, T11M, ink.danger).min_w(0.0).truncate()),
+        );
+    }
     if expanded {
         if !root_sessions.is_empty() {
             node = node.child(session_items(s, ink, &root_sessions, &workspace_id, true));
         }
-        if let Some(group) = worktree_group(s, ink, project, worktrees, sessions) {
+        if let Some(group) = worktree_group(s, ink, pid, worktrees, sessions) {
             node = node.child(group);
         }
         if !other_sessions.is_empty() {
@@ -297,8 +393,8 @@ fn project_node(s: &State, ink: &Ink, project: &Project, sessions: &[&SessionVie
 /// CheckoutStatus for a checkout row (and the project's root checkout):
 /// `missing` → warning badge, dirty==true → 6 px warning dot, dirty==null →
 /// 6 px muted dot, dirty==false → nothing.
-fn checkout_status(project: &Project, root: Option<&WorktreeInfo>, ink: &Ink) -> Option<El> {
-    if project.missing {
+fn checkout_status(missing: bool, root: Option<&WorktreeInfo>, ink: &Ink) -> Option<El> {
+    if missing {
         return Some(theme::missing_badge(ink));
     }
     checkout_status_of(root?, ink)
@@ -494,7 +590,7 @@ fn agent_badge(sv: &SessionView, ink: &Ink, row_bg: Color) -> El {
 fn worktree_group(
     s: &State,
     ink: &Ink,
-    project: &Project,
+    project_id: &str,
     worktrees: &[WorktreeInfo],
     sessions: &[&SessionView],
 ) -> Option<El> {
@@ -502,18 +598,14 @@ fn worktree_group(
     if linked.is_empty() {
         return None;
     }
-    let group_open = s
-        .worktree_groups
-        .get(project.id.as_str())
-        .copied()
-        .unwrap_or(true);
+    let group_open = s.worktree_groups.get(project_id).copied().unwrap_or(true);
     // Outer ul metrics; the whole header row is one toggle button.
     let mut outer = col()
         .ml(GUIDE)
         .pl(6.0)
         .gap(0.0)
         .border_sides([0.0, 0.0, 0.0, 1.0], ink.border);
-    let pid_group = project.id.clone();
+    let pid_group = project_id.to_string();
     outer = outer.child(
         row()
             .w_full()
@@ -570,8 +662,10 @@ fn worktree_group(
             .pl(6.0)
             .gap(0.0)
             .border_sides([0.0, 0.0, 0.0, 1.0], ink.border);
-        for wt in linked {
-            inner = inner.child(worktree_node(s, ink, project, wt, worktrees, sessions));
+        for (index, wt) in linked.iter().enumerate() {
+            inner = inner.child(worktree_node(
+                s, ink, project_id, wt, worktrees, sessions, index,
+            ));
         }
         outer = outer.child(inner);
     }
@@ -581,13 +675,14 @@ fn worktree_group(
 fn worktree_node(
     s: &State,
     ink: &Ink,
-    project: &Project,
+    project_id: &str,
     wt: &WorktreeInfo,
     worktrees: &[WorktreeInfo],
     sessions: &[&SessionView],
+    index: usize,
 ) -> El {
     let checkout_sessions = data::sessions_for_checkout(worktrees, sessions, &wt.path);
-    let workspace_id = data::checkout_key(&project.id, &wt.path);
+    let workspace_id = data::checkout_key(project_id, &wt.path);
     let active = s.active_workspace.as_deref() == Some(workspace_id.as_str());
     let branch_label = wt
         .branch
@@ -624,7 +719,6 @@ fn worktree_node(
     let attached = data::sessions_for_checkout(worktrees, &all, &wt.path);
     let show_count = !attached.is_empty() && (!wt_open || attached.len() > checkout_sessions.len());
 
-    let wid = workspace_id.clone();
     // Label cell only lays out; the fill, edge and press belong to the whole row.
     let activate = row().grow(1.0).min_w(0.0).px(4.0).gap(6.0).items_center();
     let wt_path = wt.path.clone();
@@ -654,9 +748,23 @@ fn worktree_node(
     if show_count {
         row_el = row_el.child(theme::count_badge(attached.len(), ink).mr(4.0));
     }
-    row_el = row_el.on_press(move |s: &mut State| {
-        s.active_workspace = Some(wid.clone());
-    });
+    // A worktree row selects its EXACT registered checkout path — the press
+    // routes through the same draft-guarded `SelectCheckout` as the project
+    // root row, so identity and highlight only move together, post-guard.
+    let pid_select = project_id.to_string();
+    let wt_checkout = PathBuf::from(&wt.path);
+    row_el = row_el
+        .key(format!("sidebar-worktree:{project_id}:{index}"))
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            navigation::navigate(
+                s,
+                PendingNav::SelectCheckout {
+                    project_id: pid_select.clone(),
+                    checkout: wt_checkout.clone(),
+                },
+                tx,
+            );
+        });
     let mut node = col().child(row_el);
     if wt_open && !checkout_sessions.is_empty() {
         node = node.child(session_items(
@@ -724,7 +832,8 @@ fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
         )
         .on_press(|s: &mut State| {
             s.active_workspace = Some(data::UNASSIGNED_WORKSPACE.to_string());
-        });
+        })
+        .key("sidebar-unassigned");
     col()
         .child(
             row()
