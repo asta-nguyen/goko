@@ -2,8 +2,6 @@
 
 ## Changes
 
-- [Rune editor indent: guides, Tab indent, auto-indent, unit config](changes/rune-editor-indent/delta.md)
-- [Rune inline blame: per-line author and age beside the code](changes/rune-inline-blame/delta.md)
 - [Native Rune language servers](changes/rune-native-lsp/design.md) ([tasks](changes/rune-native-lsp/tasks.md))
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))
@@ -12,6 +10,8 @@
 
 ## Archived changes
 
+- [Rune inline blame: per-line author and age beside the code](changes/archive/rune-inline-blame/delta.md)
+- [Rune editor indent: guides, Tab indent, auto-indent, unit config](changes/archive/rune-editor-indent/delta.md)
 - [Rune live sessions: daemon client, sidebar parity, terminal attach](changes/archive/rune-live-sessions/design.md) ([tasks](changes/archive/rune-live-sessions/tasks.md), [delta](changes/archive/rune-live-sessions/delta.md))
 - [Rune editor: full-file syntax highlighting](changes/archive/rune-full-highlight/delta.md)
 

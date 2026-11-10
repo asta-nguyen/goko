@@ -1053,6 +1053,40 @@ mod tests {
         assert!(s.editor.notice.is_some(), "refusal surfaces a notice");
     }
 
+    /// The inline-blame column and its toggle chip are part of the code
+    /// surface: the annotations sit beside the code, one row per line.
+    #[test]
+    fn the_blame_column_renders_beside_the_code() {
+        let mut s = scene();
+        open_text_doc(&mut s, "src/a.rs", "fn main() {}\nfn two() {}\n");
+        {
+            let doc = s.editor.doc.as_mut().unwrap();
+            doc.code.blame_visible = true;
+            doc.code.blame_text = "Alice · 1m\nBob · 2m".into();
+        }
+        let mut rt = Runtime::new(s, files_only, (1200.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let els = rt.elements();
+        let ls: Vec<&str> = els.iter().filter_map(|e| e.label.as_deref()).collect();
+        for e in &els {
+            if let Some(l) = &e.label {
+                if l == "Blame" || l.contains("Spaces") {
+                    println!(
+                        "PROBE {:?} role={} rect={:?} text={:?}",
+                        l, e.role, e.rect, e.text
+                    );
+                }
+            }
+        }
+        assert!(ls.contains(&"Blame"), "the blame chip is missing: {ls:?}");
+        let texts: Vec<&str> = els.iter().filter_map(|e| e.text.as_deref()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Alice · 1m")),
+            "the blame column is missing: {texts:?}"
+        );
+    }
+
     /// The doc bar mounts Show changes / Reload from disk / Save at the
     /// narrow 760px editor width, and Show changes routes through the guard
     /// into `changes::select_entry` + the Changes section.
