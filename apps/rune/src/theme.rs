@@ -12,6 +12,9 @@ pub fn c(hex: &str) -> Color {
 /// Palette — Goko default dark theme.
 #[derive(Clone, Copy)]
 pub struct Ink {
+    /// Whether the resolved palette is dark — mode-sensitive surfaces
+    /// (syntax tokens, subtle alphas) follow it rather than the theme id.
+    pub dark: bool,
     pub bg: Color,      // --bg #1e1e1e
     pub panel: Color,   // --panel #252526 (also --secondary)
     pub text: Color,    // --text #cccccc (also --foreground)
@@ -27,21 +30,132 @@ pub struct Ink {
     pub dim: Color,     // fallback for rare ANSI named colours
 }
 
+/// The appearance choice in Settings — the desktop's `Theme` (`goko.theme`).
+/// `System` resolves through the OS appearance at render time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Theme {
+    System,
+    Dark,
+    Light,
+    OneDark,
+    CatppuccinMocha,
+    Dracula,
+}
+
+impl Theme {
+    /// `use-theme.ts` `THEME_OPTIONS`, in the Settings picker's order.
+    pub const OPTIONS: [Theme; 6] = [
+        Theme::System,
+        Theme::Dark,
+        Theme::Light,
+        Theme::OneDark,
+        Theme::CatppuccinMocha,
+        Theme::Dracula,
+    ];
+
+    /// The option's label in the picker ("Dark+" is the dark default).
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::System => "System",
+            Theme::Dark => "Dark+",
+            Theme::Light => "Light",
+            Theme::OneDark => "One Dark",
+            Theme::CatppuccinMocha => "Catppuccin Mocha",
+            Theme::Dracula => "Dracula",
+        }
+    }
+
+    /// The value stored under `goko.theme`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+            Theme::OneDark => "one-dark",
+            Theme::CatppuccinMocha => "catppuccin-mocha",
+            Theme::Dracula => "dracula",
+        }
+    }
+
+    /// `storedTheme()`: a stored value, or `dark` when missing/unknown.
+    pub fn parse(value: &str) -> Theme {
+        Theme::OPTIONS
+            .iter()
+            .copied()
+            .find(|theme| theme.id() == value)
+            .unwrap_or(Theme::Dark)
+    }
+
+    /// `resolveTheme()`: `system` becomes the OS appearance; anything else
+    /// is already concrete.
+    pub fn resolve(self, os_dark: bool) -> Theme {
+        if self == Theme::System {
+            if os_dark { Theme::Dark } else { Theme::Light }
+        } else {
+            self
+        }
+    }
+
+    /// Whether the resolved palette is a dark one — the kit palettes and
+    /// light-on-dark details (submit ink, halo alphas) follow it.
+    pub fn dark(self) -> bool {
+        !matches!(self, Theme::Light)
+    }
+}
+
+/// The settings key the theme choice is stored under (`goko.theme`, the
+/// same name the desktop persists in local storage).
+pub const THEME_KEY: &str = "goko.theme";
+
 impl Ink {
+    /// The Dark+ palette — the shell's home theme.
     pub fn new() -> Self {
+        Ink::for_theme(Theme::Dark)
+    }
+
+    /// The palette for a resolved theme — `tokens.css` mapped onto the
+    /// fields the app reads (`accent` is `--accent-text`, `primary` is
+    /// `--accent`, `white` is `--primary-foreground`). `claude` keeps its
+    /// hardcoded brand orange and `dim` the ANSI fallback on every theme.
+    pub fn for_theme(theme: Theme) -> Self {
+        let (bg, panel, text, muted, accent, primary, border, success, warning, danger, fg) =
+            match theme {
+                Theme::Light => (
+                    "#f5f7fa", "#ffffff", "#1a2430", "#6c7a89", "#116c6b", "#116c6b", "#dce2e8",
+                    "#29784a", "#976a13", "#b84245", "#f5f7fa",
+                ),
+                Theme::OneDark => (
+                    "#282c34", "#21252b", "#abb2bf", "#7f848e", "#61afef", "#61afef", "#3e4451",
+                    "#98c379", "#e5c07b", "#e06c75", "#ffffff",
+                ),
+                Theme::CatppuccinMocha => (
+                    "#1e1e2e", "#181825", "#cdd6f4", "#a6adc8", "#89b4fa", "#cba6f7", "#45475a",
+                    "#a6e3a1", "#f9e2af", "#f38ba8", "#11111b",
+                ),
+                Theme::Dracula => (
+                    "#282a36", "#21222c", "#f8f8f2", "#6272a4", "#8be9fd", "#bd93f9", "#44475a",
+                    "#50fa7b", "#f1fa8c", "#ff5555", "#282a36",
+                ),
+                // Dark+ (and System before the OS answer is in).
+                _ => (
+                    "#1e1e1e", "#252526", "#cccccc", "#9d9d9d", "#3794ff", "#007acc", "#303031",
+                    "#6dd3a4", "#e8b86a", "#e87575", "#ffffff",
+                ),
+            };
         Ink {
-            bg: c("#1e1e1e"),
-            panel: c("#252526"),
-            text: c("#cccccc"),
-            muted: c("#9d9d9d"),
-            accent: c("#3794ff"),
-            primary: c("#007acc"),
-            border: c("#303031"),
-            success: c("#6dd3a4"),
-            warning: c("#e8b86a"),
-            danger: c("#e87575"),
+            dark: theme.dark(),
+            bg: c(bg),
+            panel: c(panel),
+            text: c(text),
+            muted: c(muted),
+            accent: c(accent),
+            primary: c(primary),
+            border: c(border),
+            success: c(success),
+            warning: c(warning),
+            danger: c(danger),
             claude: c("#D97757"),
-            white: c("#ffffff"),
+            white: c(fg),
             dim: c("#9d9d9d"),
         }
     }
@@ -327,12 +441,42 @@ pub fn count_badge(n: usize, ink: &Ink) -> El {
         .child(txt(&n.to_string(), T11MN_BADGE, ink.text))
 }
 
+/// One window's read on a usage chip: the label (`5h`, `7d`, `wk`), the
+/// value text (`42%`, `reset`), and how much of the quota is spent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageTone {
+    Muted,
+    Warning,
+    Danger,
+}
+
+/// One rendered quota window on a chip.
+#[derive(Clone, Debug)]
+pub struct ChipLimit {
+    pub label: String,
+    pub value: String,
+    pub tone: UsageTone,
+    /// The reset time as the tooltip reads it ("in 2h", "just now").
+    pub reset_at: String,
+}
+
+/// `usageTone()` from usage/tone.ts: >=90 danger, >=80 warning, else muted.
+pub fn usage_tone(pct: f64) -> UsageTone {
+    if pct >= 90.0 {
+        UsageTone::Danger
+    } else if pct >= 80.0 {
+        UsageTone::Warning
+    } else {
+        UsageTone::Muted
+    }
+}
+
 /// UsageChips' outline badge: name + per-window `label value` groups. Every
 /// child inherits the badge's 11 px / 500, so window labels and separators are
 /// medium too — only the percentage carries tnum. The `·` separators are chip
 /// children, not part of a window group, so they sit the same 6 pt from the value
 /// before them and the label after them.
-pub fn usage_chip(name: &'static str, limits: &[(&'static str, u8)], ink: &Ink) -> El {
+pub fn usage_chip(name: &str, limits: &[ChipLimit], ink: &Ink) -> El {
     let mut chip = row()
         .h(20.0)
         .px(8.0)
@@ -341,14 +485,11 @@ pub fn usage_chip(name: &'static str, limits: &[(&'static str, u8)], ink: &Ink) 
         .radius(10.0)
         .border(1.0, ink.border)
         .child(txt(name, T11M_LH, ink.text));
-    for (i, (window, pct)) in limits.iter().enumerate() {
-        // usageTone(): >=90 danger, >=80 warning, else muted.
-        let tone = if *pct >= 90 {
-            ink.danger
-        } else if *pct >= 80 {
-            ink.warning
-        } else {
-            ink.muted
+    for (i, limit) in limits.iter().enumerate() {
+        let tone = match limit.tone {
+            UsageTone::Danger => ink.danger,
+            UsageTone::Warning => ink.warning,
+            UsageTone::Muted => ink.muted,
         };
         if i > 0 {
             chip = chip.child(txt("·", T11M_LH, ink.muted));
@@ -357,8 +498,8 @@ pub fn usage_chip(name: &'static str, limits: &[(&'static str, u8)], ink: &Ink) 
             row()
                 .gap(4.0)
                 .items_center()
-                .child(txt(window, T11M_LH, ink.muted))
-                .child(txt(&format!("{pct}%"), T11MN_BADGE, tone)),
+                .child(txt(&limit.label, T11M_LH, ink.muted))
+                .child(txt(&limit.value, T11MN_BADGE, tone)),
         );
     }
     chip

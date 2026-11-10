@@ -30,3 +30,4 @@ pub mod stashes;
 pub mod state;
 pub mod syntax;
 pub mod workspace;
+pub mod worktree_form;

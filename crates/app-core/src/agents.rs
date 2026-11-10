@@ -5,6 +5,7 @@
 //! created, never earlier, so a binary that appears or disappears between `agent_list`
 //! and Start is handled on the launch path.
 
+use crate::accounts::{is_safe_account_id, LaunchAccount};
 use crate::error::{BridgeError, Code};
 use protocol::message::ErrorCode;
 use serde::Serialize;
@@ -98,15 +99,40 @@ pub fn discover(path_var: Option<&OsStr>, default_shell: &str) -> Vec<AgentInfo>
         .collect()
 }
 
-/// Launch argv for `agent`, resolved fresh: `[absolute resolved path]` for a real
-/// agent, `[default_shell]` for `shell`. An unknown id or a binary missing from
-/// `path_var` is `invalid_argument`.
+/// Launch argv for `agent` resolved to the implicit Default account — the
+/// pre-accounts behavior. Equivalent to [`argv_for_account`] with
+/// [`LaunchAccount::default`]; kept so existing callers need no account
+/// plumbing. New code that resolves accounts should call
+/// [`argv_for_account`] with [`crate::accounts::resolve`]'s result.
 pub fn argv_for(
     agent: &str,
     path_var: Option<&OsStr>,
     default_shell: &str,
     goko_home: &Path,
     original_statusline: Option<&str>,
+) -> Result<Vec<String>, BridgeError> {
+    argv_for_account(
+        agent,
+        path_var,
+        default_shell,
+        goko_home,
+        original_statusline,
+        &LaunchAccount::default(),
+    )
+}
+
+/// Launch argv for `agent` on `account`, resolved fresh: `[absolute resolved
+/// path]` for a real agent, `[default_shell]` for `shell`. A named Claude or
+/// Codex account prepends `/usr/bin/env NAME=<dir>`; Claude also captures
+/// usage under the account id. An unknown id or a binary missing from
+/// `path_var` is `invalid_argument`.
+pub fn argv_for_account(
+    agent: &str,
+    path_var: Option<&OsStr>,
+    default_shell: &str,
+    goko_home: &Path,
+    original_statusline: Option<&str>,
+    account: &LaunchAccount,
 ) -> Result<Vec<String>, BridgeError> {
     let adapter = ADAPTERS
         .iter()
@@ -128,12 +154,37 @@ pub fn argv_for(
                 )
                 .with_hint("install it or pick Shell")
             })?;
+            // A named Claude or Codex account sets its folder variable through
+            // `env`; the dir stays a single argv element even with spaces.
+            let env_word = match (agent, account.dir.as_ref()) {
+                ("claude", Some(dir)) => Some(format!("CLAUDE_CONFIG_DIR={}", dir.display())),
+                ("codex", Some(dir)) => Some(format!("CODEX_HOME={}", dir.display())),
+                _ => None,
+            };
             if agent != "claude" {
-                return Ok(vec![path.display().to_string()]);
+                return Ok(match env_word {
+                    Some(word) => vec!["/usr/bin/env".to_owned(), word, path.display().to_string()],
+                    None => vec![path.display().to_string()],
+                });
             }
 
             let session_id = Uuid::new_v4().to_string();
+            // A named account captures under its id; Default keeps the flat folder.
+            // The id joins a path, so it must be a single safe component —
+            // `resolve` normalizes stored ids, and this guards a
+            // hand-constructed `LaunchAccount`.
             let usage_dir = goko_home.join("usage/claude");
+            let usage_dir = if account.dir.is_some() {
+                if !is_safe_account_id(&account.id) {
+                    return Err(BridgeError::new(
+                        Code::Daemon(ErrorCode::InvalidArgument),
+                        format!("the account id '{}' cannot name a folder", account.id),
+                    ));
+                }
+                usage_dir.join(&account.id)
+            } else {
+                usage_dir
+            };
             fs::create_dir_all(&usage_dir).map_err(|error| {
                 BridgeError::new(
                     Code::Storage,
@@ -174,13 +225,18 @@ pub fn argv_for(
                     "PostToolUse": hook("working")?,
                 }
             });
-            Ok(vec![
+            let mut argv = match env_word {
+                Some(word) => vec!["/usr/bin/env".to_owned(), word],
+                None => Vec::new(),
+            };
+            argv.extend([
                 path.display().to_string(),
                 "--session-id".to_owned(),
                 session_id,
                 "--settings".to_owned(),
                 settings.to_string(),
-            ])
+            ]);
+            Ok(argv)
         }
     }
 }
@@ -217,6 +273,14 @@ fn shell_quote(value: &str, what: &str) -> Result<String, BridgeError> {
                 format!("Claude {what} command cannot be shell-quoted"),
             )
         })
+}
+
+/// Split a shell command line into words — quoting and escapes honoured,
+/// `None` when the line is empty or cannot be parsed. For launching a
+/// trusted generated command (like `accounts::sign_in_launch`'s), which a
+/// plain `split_whitespace` would break on a quoted path.
+pub fn shell_words(command: &str) -> Option<Vec<String>> {
+    shlex::split(command).filter(|words| !words.is_empty())
 }
 
 /// The first `name` under `path_var` that is an executable file.
@@ -509,5 +573,169 @@ mod tests {
 
         fs::remove_file(&settings).unwrap();
         assert_eq!(original_statusline(&settings), None);
+    }
+
+    #[test]
+    fn a_named_claude_account_prefixes_env_and_captures_under_its_id() {
+        let dir = TempDir::new("agents-claude-acct");
+        let bin = fake_bin(&dir, "claude", 0o755);
+        let path = path_var(&[dir.path()]);
+        let goko_home = dir.path().join("goko-home");
+        fs::create_dir_all(&goko_home).unwrap();
+        // The space proves the dir stays one argv element.
+        let account_dir = dir.path().join("account dir");
+        fs::create_dir_all(&account_dir).unwrap();
+        let account = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir.clone()),
+        };
+
+        let argv = argv_for_account(
+            "claude",
+            Some(&path),
+            "/bin/zsh",
+            &goko_home,
+            None,
+            &account,
+        )
+        .unwrap();
+
+        assert_eq!(argv.len(), 7);
+        assert_eq!(argv[0], "/usr/bin/env");
+        assert_eq!(
+            argv[1],
+            format!("CLAUDE_CONFIG_DIR={}", account_dir.display())
+        );
+        assert_eq!(
+            argv[2],
+            fs::canonicalize(bin).unwrap().display().to_string()
+        );
+        assert_eq!(argv[3], "--session-id");
+        let id = Uuid::parse_str(&argv[4]).unwrap();
+        assert_eq!(id.get_version_num(), 4);
+        assert_eq!(argv[5], "--settings");
+        let settings: Value = serde_json::from_str(&argv[6]).unwrap();
+        let capture = settings
+            .pointer("/statusLine/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(capture.contains(&format!("usage/claude/work/{id}.json")));
+        assert!(goko_home.join("usage/claude/work").is_dir());
+        // The activity file path is unchanged: activity/claude/<session-id>.
+        let hook = settings
+            .pointer("/hooks/Stop/0/hooks/0/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(hook.contains(
+            &goko_home
+                .join("activity/claude")
+                .join(&argv[4])
+                .display()
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn a_named_codex_account_prefixes_env_with_its_home() {
+        let dir = TempDir::new("agents-codex-acct");
+        let bin = fake_bin(&dir, "codex", 0o755);
+        let path = path_var(&[dir.path()]);
+        let account_dir = dir.path().join("codex account");
+        fs::create_dir_all(&account_dir).unwrap();
+        let account = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir.clone()),
+        };
+
+        let argv =
+            argv_for_account("codex", Some(&path), "/bin/zsh", dir.path(), None, &account).unwrap();
+
+        assert_eq!(
+            argv,
+            vec![
+                "/usr/bin/env".to_owned(),
+                format!("CODEX_HOME={}", account_dir.display()),
+                fs::canonicalize(bin).unwrap().display().to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn opencode_devin_and_shell_ignore_a_named_account() {
+        let dir = TempDir::new("agents-other-acct");
+        fake_bin(&dir, "opencode", 0o755);
+        fake_bin(&dir, "devin", 0o755);
+        let path = path_var(&[dir.path()]);
+        let account_dir = dir.path().join("account dir");
+        fs::create_dir_all(&account_dir).unwrap();
+        let named = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir),
+        };
+
+        for agent in ["opencode", "devin"] {
+            let default = argv_for(agent, Some(&path), "/bin/zsh", dir.path(), None).unwrap();
+            let launched =
+                argv_for_account(agent, Some(&path), "/bin/zsh", dir.path(), None, &named).unwrap();
+            assert_eq!(launched, default, "{agent}");
+            assert_eq!(launched.len(), 1, "{agent}");
+        }
+        assert_eq!(
+            argv_for_account("shell", Some(&path), "/bin/fish", dir.path(), None, &named).unwrap(),
+            vec!["/bin/fish".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_malformed_launch_account_cannot_escape_goko_home() {
+        let dir = TempDir::new("agents-claude-escape");
+        fake_bin(&dir, "claude", 0o755);
+        let path = path_var(&[dir.path()]);
+        let goko_home = dir.path().join("goko-home");
+        fs::create_dir_all(&goko_home).unwrap();
+        let account_dir = dir.path().join("account");
+        fs::create_dir_all(&account_dir).unwrap();
+
+        for bad_id in ["../../../escaped", "../x", "x/y", "/abs", "..", "a\\b"] {
+            let account = LaunchAccount {
+                id: bad_id.into(),
+                dir: Some(account_dir.clone()),
+            };
+            let error = argv_for_account(
+                "claude",
+                Some(&path),
+                "/bin/zsh",
+                &goko_home,
+                None,
+                &account,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code,
+                Code::Daemon(ErrorCode::InvalidArgument),
+                "id {bad_id:?}"
+            );
+        }
+
+        // Nothing escaped beside `goko-home`, and no usage dir was created.
+        assert!(!dir.path().join("escaped").exists());
+        assert!(!dir.path().join("x").exists());
+        assert!(!goko_home.join("usage").exists());
+        // A named account with a safe id still launches normally.
+        let account = LaunchAccount {
+            id: "work".into(),
+            dir: Some(account_dir),
+        };
+        assert!(argv_for_account(
+            "claude",
+            Some(&path),
+            "/bin/zsh",
+            &goko_home,
+            None,
+            &account,
+        )
+        .is_ok());
     }
 }

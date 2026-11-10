@@ -220,15 +220,6 @@ impl SessionView {
     }
 }
 
-/// Header usage chip: provider name plus `(window label, used_pct)` pairs —
-/// the real app builds these from `usage_get`'s five_hour/seven_day and
-/// codex primary/secondary limits via `windowLabel`.
-#[derive(Clone, Debug)]
-pub struct UsageChip {
-    pub name: &'static str,
-    pub limits: &'static [(&'static str, u8)],
-}
-
 /// Everything the view needs, produced by the daemon client and the store.
 #[derive(Clone, Debug, Default)]
 pub struct Data {
@@ -237,8 +228,12 @@ pub struct Data {
     /// The agents the backend discovered; the sidebar's New-session menu
     /// lists them.
     pub agents: Vec<AgentInfo>,
-    /// Usage chips — empty until the usage service lands.
-    pub usage: Vec<UsageChip>,
+    /// The last usage snapshot the worker published — the header's quota
+    /// chips and reset times come from it; `None` until the first read.
+    pub usage: Option<app_core::usage::UsageSnapshot>,
+    /// The accounts read with it — active account names on the chips and
+    /// the per-session account labels; `None` until the first read.
+    pub accounts: Option<app_core::accounts::AccountsView>,
     /// Whether the daemon client is connected.
     pub connected: bool,
 }
@@ -368,6 +363,120 @@ pub fn agent_label<'a>(agents: &'a [AgentInfo], id: &'a str) -> &'a str {
         .unwrap_or(if id == "custom" { "Custom" } else { id })
 }
 
+/// `windowLabel()` from usage/tone.ts: the short window tag on a chip.
+pub fn window_label(window_minutes: u64, provider: &str) -> String {
+    if window_minutes == 300 {
+        return "5h".to_string();
+    }
+    if window_minutes == 10_080 {
+        return if provider == "codex" { "wk" } else { "7d" }.to_string();
+    }
+    if window_minutes.is_multiple_of(1440) {
+        return format!("{}d", window_minutes / 1440);
+    }
+    if window_minutes.is_multiple_of(60) {
+        return format!("{}h", window_minutes / 60);
+    }
+    format!("{window_minutes}m")
+}
+
+/// `usageAge()` from usage/tone.ts: "Updated …" for the chip tooltip.
+pub fn usage_age(updated_at: Option<i64>, now_ms: i64) -> String {
+    let Some(updated_at) = updated_at else {
+        return "unknown".to_string();
+    };
+    let seconds = ((now_ms - updated_at) / 1000).max(0);
+    if seconds < 60 {
+        return format!("{seconds}s ago");
+    }
+    if seconds < 3600 {
+        return format!("{}m ago", seconds / 60);
+    }
+    if seconds < 86_400 {
+        return format!("{}h ago", seconds / 3600);
+    }
+    format!("{}d ago", seconds / 86_400)
+}
+
+/// The chip tooltip's reset phrase — main's `resetTime()` shows the local
+/// clock time, which std has no formatter for; a relative "in 2h"/"just
+/// now" says the same thing without a calendar.
+pub fn relative_time(delta_ms: i64) -> String {
+    if delta_ms <= 0 {
+        return "just now".to_string();
+    }
+    let seconds = delta_ms / 1000;
+    if seconds < 120 {
+        return format!("in {seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 120 {
+        return format!("in {minutes}m");
+    }
+    let hours = minutes / 60;
+    if hours < 48 {
+        let rem = minutes % 60;
+        return format!("in {hours}h {rem}m");
+    }
+    format!("in {}d", hours / 24)
+}
+
+/// `accountNameOf()` from services/accounts.ts: the account a session argv
+/// runs under, read from its OWN argv — never the current active account.
+/// The env-prefixed first word (`env CLAUDE_CONFIG_DIR=…`/`CODEX_HOME=…`)
+/// names a folder: a stored account's name when the folder matches one, the
+/// folder's last component when it matches none (a removed account), and
+/// the Default account's name when no env word is present.
+pub fn account_name_of(
+    agent: &str,
+    argv: &[String],
+    accounts: Option<&app_core::accounts::AccountsView>,
+) -> Option<String> {
+    fn last_component(dir: &str) -> String {
+        let trimmed = dir.trim_end_matches('/');
+        trimmed
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(dir)
+            .to_string()
+    }
+    let prefix = match agent {
+        "claude" => "CLAUDE_CONFIG_DIR=",
+        "codex" => "CODEX_HOME=",
+        _ => return None,
+    };
+    let view = accounts?;
+    let agent_view = match agent {
+        "claude" => &view.claude,
+        _ => &view.codex,
+    };
+    let word = (argv
+        .first()
+        .map(|first| last_component(first) == "env")
+        .unwrap_or(false))
+    .then(|| argv[1..].iter().find(|arg| arg.starts_with(prefix)))
+    .flatten();
+    match word {
+        None => agent_view
+            .items
+            .iter()
+            .find(|item| item.is_default)
+            .map(|item| item.name.clone()),
+        Some(word) => {
+            let dir = &word[prefix.len()..];
+            Some(
+                agent_view
+                    .items
+                    .iter()
+                    .find(|item| item.dir == dir)
+                    .map(|item| item.name.clone())
+                    .unwrap_or_else(|| last_component(dir)),
+            )
+        }
+    }
+}
+
 /// `sessionTitle` (`title || argv.join(" ")`).
 pub fn session_title(info: &SessionInfo) -> String {
     if info.title.is_empty() {
@@ -452,5 +561,165 @@ mod tests {
         assert_eq!(format_elapsed(14_000), "00:14");
         assert_eq!(format_elapsed(872_000), "14:32");
         assert_eq!(format_elapsed(3_725_000), "1:02:05");
+    }
+
+    // -- usage chips + account labels ----------------------------------------
+
+    fn accounts_view(
+        items: &[(&str, &str, &str, bool)],
+        active: &str,
+    ) -> app_core::accounts::AccountsView {
+        let agent_view = |items: &[(&str, &str, &str, bool)]| app_core::accounts::AgentView {
+            active: active.to_string(),
+            items: items
+                .iter()
+                .map(
+                    |(id, name, dir, is_default)| app_core::accounts::AccountView {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        dir: dir.to_string(),
+                        is_default: *is_default,
+                    },
+                )
+                .collect(),
+        };
+        app_core::accounts::AccountsView {
+            claude: agent_view(items),
+            codex: agent_view(&[]),
+        }
+    }
+
+    #[test]
+    fn account_labels_come_from_the_sessions_own_argv() {
+        let view = accounts_view(
+            &[
+                ("default", "Default", "/me/.claude", true),
+                ("a1b2c3d4", "work", "/accts/work dir", false),
+                ("e5f6a7b8", "play", "/accts/play", false),
+            ],
+            "a1b2c3d4",
+        );
+        let accounts = Some(&view);
+
+        // Plain argv → Default, even though `work` is the active account.
+        assert_eq!(
+            account_name_of("claude", &["claude".to_string()], accounts),
+            Some("Default".to_string())
+        );
+        // The env word names a stored account's folder → its name.
+        let argv = vec![
+            "/usr/bin/env".to_string(),
+            "CLAUDE_CONFIG_DIR=/accts/work dir".to_string(),
+            "claude".to_string(),
+        ];
+        assert_eq!(
+            account_name_of("claude", &argv, accounts),
+            Some("work".to_string())
+        );
+        // A folder no account owns (a removed account's) → its basename.
+        let argv = vec![
+            "/usr/bin/env".to_string(),
+            "CLAUDE_CONFIG_DIR=/accts/old".to_string(),
+            "claude".to_string(),
+        ];
+        assert_eq!(
+            account_name_of("claude", &argv, accounts),
+            Some("old".to_string())
+        );
+        // The label never follows a later active-account switch.
+        let view2 = accounts_view(
+            &[
+                ("default", "Default", "/me/.claude", true),
+                ("a1b2c3d4", "work", "/accts/work dir", false),
+                ("e5f6a7b8", "play", "/accts/play", false),
+            ],
+            "default",
+        );
+        let argv = vec![
+            "/usr/bin/env".to_string(),
+            "CLAUDE_CONFIG_DIR=/accts/play".to_string(),
+            "claude".to_string(),
+        ];
+        assert_eq!(
+            account_name_of("claude", &argv, Some(&view2)),
+            Some("play".to_string())
+        );
+        // Non-agent sessions and a missing view both say nothing.
+        assert_eq!(
+            account_name_of("shell", &["/bin/zsh".to_string()], accounts),
+            None
+        );
+        assert_eq!(
+            account_name_of("claude", &["claude".to_string()], None),
+            None
+        );
+    }
+
+    #[test]
+    fn account_labels_for_codex_read_codex_home() {
+        let view = app_core::accounts::AccountsView {
+            claude: app_core::accounts::AgentView {
+                active: "default".into(),
+                items: vec![],
+            },
+            codex: app_core::accounts::AgentView {
+                active: "a1".into(),
+                items: vec![
+                    app_core::accounts::AccountView {
+                        id: "default".into(),
+                        name: "Default".into(),
+                        dir: "/me/.codex".into(),
+                        is_default: true,
+                    },
+                    app_core::accounts::AccountView {
+                        id: "a1".into(),
+                        name: "side".into(),
+                        dir: "/accts/side".into(),
+                        is_default: false,
+                    },
+                ],
+            },
+        };
+        let argv = vec![
+            "/usr/bin/env".to_string(),
+            "CODEX_HOME=/accts/side".to_string(),
+            "codex".to_string(),
+        ];
+        assert_eq!(
+            account_name_of("codex", &argv, Some(&view)),
+            Some("side".to_string())
+        );
+        assert_eq!(
+            account_name_of("codex", &["codex".to_string()], Some(&view)),
+            Some("Default".to_string())
+        );
+    }
+
+    #[test]
+    fn window_labels_match_the_desktops() {
+        assert_eq!(window_label(300, "claude"), "5h");
+        assert_eq!(window_label(10_080, "claude"), "7d");
+        assert_eq!(window_label(10_080, "codex"), "wk");
+        assert_eq!(window_label(2880, "claude"), "2d");
+        assert_eq!(window_label(180, "claude"), "3h");
+        assert_eq!(window_label(45, "claude"), "45m");
+    }
+
+    #[test]
+    fn usage_age_formats_the_ages() {
+        assert_eq!(usage_age(None, 1_000), "unknown");
+        assert_eq!(usage_age(Some(1_000), 1_500), "0s ago");
+        assert_eq!(usage_age(Some(0), 61_000), "1m ago");
+        assert_eq!(usage_age(Some(0), 3_700_000), "1h ago");
+        assert_eq!(usage_age(Some(0), 90_000_000), "1d ago");
+    }
+
+    #[test]
+    fn relative_time_formats_the_reset_phrase() {
+        assert_eq!(relative_time(-1), "just now");
+        assert_eq!(relative_time(45_000), "in 45s");
+        assert_eq!(relative_time(9 * 60_000), "in 9m");
+        assert_eq!(relative_time(2 * 3_600_000 + 30 * 60_000), "in 2h 30m");
+        assert_eq!(relative_time(3 * 24 * 3_600_000), "in 3d");
     }
 }

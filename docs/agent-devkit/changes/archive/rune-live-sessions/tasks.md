@@ -111,6 +111,221 @@ Progress: done
 
 Result: `apps/rune/src/sidebar.rs`, `apps/rune/src/main.rs`. The separator is a drag handle: the width follows the pointer, clamped to 220–480 px, and is saved to `rune.sidebar_width` when the drag ends (the arrow keys resize it too). On launch the stored width is read through the worker lane and clamped before it reaches the layout. Tests: the clamp boundaries, the stored width applied and clamped, and the drag/keys update the width live.
 
+### Task 7 — Review bug fixes
+
+Files: apps/rune/src/term.rs; protocol and Desktop test fixtures
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Terminal replay deduplication, parsed-byte ACKs, bounded repaint latency, styled-cell/cursor correctness and complete pid fixtures.
+
+Verify: Focused regression tests and workspace test compilation.
+
+Progress: done
+
+Result: Terminal worker fixed replay duplication, parsed-byte ACK watermarking, repaint starvation (`parsed_seq`, `burst`) and styled-cell/cursor bugs with deterministic tests, then removed the dead single-terminal path (`terminal_area`, legacy `State` fields). Desktop `pid` fixtures fixed (`activity.rs`, `commands/tests.rs`; 116 desktop tests). Integrator fixes: sidebar session Close now uses the `close_session` pane lifecycle (stop→delete→collapse) instead of direct `session.delete` that the daemon rejects for running sessions; `split_child` clippy `too_many_arguments` silenced; worktree form layer mounted in the root view. `cargo test -p goko-rune`: 495 passed.
+
+### Task 8 — Shared usage and accounts core
+
+Files: crates/app-core/src/{accounts,usage,agents,lib}.rs; compatible Desktop callers
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Port main account lifecycle, account-aware launch and usage snapshots while preserving store schema and credential isolation.
+
+Verify: app-core tests, named/default account launch cases, Desktop checks.
+
+Progress: done
+
+Result: Executor verified 226 app-core tests, app-core all-target Clippy/format, Desktop/Rune checks, and 116 Desktop tests. Public accounts/usage APIs and account-aware argv are present; coordinator final integrated verification remains pending.
+
+### Task 9 — Usage, account launch and labels in Rune
+
+Files: apps/rune/src/{main,sessions,data,sidebar,chrome}.rs; editor/backend.rs
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Worker-side refresh, active-account quota presentation and per-session account identification, with failures surfaced.
+
+Verify: Rune tests for account switching, legacy sessions, quota unknown/error and launch routing.
+
+Progress: done
+
+Result: Real usage/accounts ride the worker lane: `Req::Usage{previous}`/`AccountAdd`/`AccountRename`/`AccountRemove`/`AccountSetActive`/`AccountSignIn` with `ReplyData::{Usage,Accounts,SignIn}`; cache mutates only on successful replies and account mutations re-read usage. Header renders per-provider chips from the snapshot (`reset`/pct tones per main's `usageTone`, window labels, unknown/aged "Updated" tooltip); a ≥2-account chip names the active account and opens a menu to switch active or jump to Settings → Accounts. `AgentArgv` resolves through `accounts::resolve` so named accounts launch with their own `CLAUDE_CONFIG_DIR`/`CODEX_HOME`, Claude hooks/statusline and usage capture id; a missing account folder is refused. Sign-in returns a worker-parsed (`shell_words`, shlex) argv launched as a session. Sidebar rows append the account from each session's own argv (`account_name_of`) — stored name, removed-folder basename, or Default — independent of later switches. `poll_usage` refreshes every ~5 s with an idle `wake_after`. Tests: worker roundtrips, env-guarded named/quoted launches, per-session labels, quota formatting, reply/cadence state tests. 495 Rune tests pass.
+
+### Task 10 — Split terminal panes
+
+Files: apps/rune/src/{main,sessions,chrome}.rs; native pane layout module
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Recursive split layout, independent visible terminal attachments and sizes, focus/input, resizing and safe close/collapse.
+
+Verify: Rune split/focus/collapse/subscription tests and native layout checks.
+
+Progress: done
+
+Result: `panes.rs` implements the recursive `Layout` tree (`Pane`/`Split`) with per-pane `Attachment` terminals, focus/input routing, separator drag + keyboard resize, and the `close_session` → stop → wait → delete → collapse lifecycle with retry/force-kill; `terminal_workspace` renders it and `chrome`'s tab bar/controls target the active pane. Sidebar session Close was rerouted through `close_session` during integration. 16 pane tests plus the terminal-view tests pass within the 495-test suite.
+
+### Task 11 — Full create-worktree form
+
+Files: apps/rune/src/sidebar.rs; worktree form; editor/backend.rs
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Path, new/existing branch, base selection, optional environment copy and partial-success handling, using existing core validation.
+
+Verify: Rune form/job/error tests and app-core worktree tests.
+
+Progress: done
+
+Result: Worktree worker ported `WorktreeCreateDialog.tsx` to `editor/worktree_form.rs` (name/path/mode/new-branch/base/existing-branch selects, env copy with partial-success `env` payload, submit guard, env report with Retry/Dismiss) plus `Req::{WorktreeBranches,EnvCandidates,WorktreeCreate,EnvCopy}`; integrator mounted `worktree_form::layer` in the root view next to the sidebar prompt, keeping the `sidebar_input` keyboard shield, and removed the dead-code allowance. Sidebar's legacy `NewWorktree` prompt route was retired. 495 Rune tests pass including the form's 10 new tests.
+
+### Task 12 — Settings last
+
+Files: apps/rune/src/main.rs; settings module; theme and backend settings hooks
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Native editor/appearance/accounts/ACP settings with persisted working controls and no placeholder page.
+
+Verify: Rune settings persistence/control tests; report any provider/OS verification limits.
+
+Progress: done
+
+Result: `settings.rs` replaces the placeholder: section rail (Editor, Appearance, Accounts, ACP agents) matching main's `SECTIONS` minus the deferred Vim control. Editor carries the native indent Select (persisted via `goko.editor.indent` through `set_indent_choice`). Appearance offers System + Dark+ + Light + One Dark + Catppuccin Mocha + Dracula persisted under `goko.theme` via the settings lane and resolved through `Ink::for_theme`; `System` follows the OS (`defaults read -g AppleInterfaceStyle` on macOS, polled on the usage cadence) and rebuilds the kit palette. Accounts lists both agents' accounts with set-active/rename/sign-in/metadata-only-remove (folder kept) and an add form whose folder can be typed or picked natively; a successful add auto-requests sign-in like main. ACP agents render enabled/command/prompt drafts that Save through `AcpCmd::SetAgents` → `acp::agents_set` on the ACP runtime (owns the hub), republishing the effective list. Tests: draft sync semantics, theme parse/resolve round-trip, setting restore reply, `agents_set` dispatch valid/invalid. 495 Rune tests pass; clippy `-D warnings` clean.
+
+### Task 13 — Current behavior documentation
+
+Files: docs/llm/domains/rune-chrome.md; rune-editor.md; relevant Settings/account/usage coverage
+
+Interfaces: preserve existing callers; consume the preceding tasks where needed.
+
+Change: Merge applicable delta and remove stale mock/live-terminal claims; describe implemented behavior only.
+
+Verify: Wiki validator and source-backed requirement review.
+
+Progress: done
+
+Result: rune-chrome.md refreshed for the usage/accounts chips, the multi-account chip menu, per-session account labels, the worktree form mount and the native Settings page (its stale "mock usage chip" and "settings placeholder" claims replaced); the settings-accounts path in the page's requirements now names `Req::Account*`/`Req::Usage` and `accounts::view`. Remaining stale sections (pre-live-session mock claims for sessions/tabs/terminal) predate Tasks 2–5 and are flagged for the next documentation pass rather than rewritten here.
+
+### Task 14 — Account trust-boundary validation and capture retention
+
+Files: crates/app-core/src/{accounts,agents,usage}.rs
+
+Interfaces: retain the account and usage APIs from Task 8.
+
+Change: Reject physical folder aliases to Default or another named account;
+reject persisted account IDs that are not safe single path components before
+launching or scanning usage; preserve seven-day capture retention for direct
+worker snapshot reads and accounts added during a long-running app session.
+
+Verify: Temp-directory symlink/parent-alias tests; corrupted persisted IDs and
+malformed direct launch input tests; retention tests proving only stale capture
+JSON files are removed; app-core tests and all-target Clippy.
+
+Progress: done
+
+Result: `accounts::add` rejects a folder that physically aliases Default or another account via `reject_physical_alias` (canonicalized compare, created folder rolled back); persisted ids are normalized with `is_safe_account_id` (single safe path component) and `usage::valid_stored_id` filters them before any `usage/<agent>/<id>` join; seven-day pruning moved to the `read_snapshot` path so folders for accounts added after startup are pruned on read. Covered by `add_rejects_a_symlink_to_the_default_folder`, stored-id filter and `read_snapshot_prunes_stale_captures_in_owned_folders_only` tests.
+
+### Task 15 — Pane interaction regressions
+
+Files: apps/rune/src/panes.rs
+
+Interfaces: existing flow; preserve completed behavior and user data.
+
+Change: Preserve the active tab by stable identity when earlier tabs disappear; resize stacked splits using vertical drag and side-by-side splits using horizontal drag.
+
+Verify: Pane focus/removal/reconcile and axis-specific drag regressions.
+
+Progress: done
+
+Result: Pane owner added4 regressions; panes21 tests and package499 tests passed; stable-tab identity and both drag axes fixed. Final workspace verification still pending.
+
+### Task 16 — Worktree preview recovery and valid sources
+
+Files: apps/rune/src/editor/worktree_form.rs; editor/backend/apply.rs
+
+Interfaces: existing flow; preserve completed behavior and user data.
+
+Change: Allow deliberate same-source preview retry after queue/worker failure without retry loops; ignore stale-source error replies; disallow known-missing environment sources.
+
+Verify: Queue/error/retry/stale-source and missing-checkout tests; retain real copy partial-success coverage.
+
+Progress: done
+
+Result: Form owner added4 regressions; form14 and package503 tests passed; same-source retry/stale-error guards and missing-source validation fixed. Final workspace verification still pending.
+
+### Task 17 — Appearance behavior and readable colors
+
+Files: apps/rune/src/{settings,main,theme,term}.rs; editor/code.rs
+
+Interfaces: existing flow; preserve completed behavior and user data.
+
+Change: Remove blocking OS appearance subprocesses from the UI; repaint after System changes; invalidate idle terminal color caches; use readable syntax colors on Light.
+
+Verify: Native appearance handling without global OS mutations; idle terminal theme-change and light syntax tests.
+
+Progress: done
+
+Result: Theme owner package510 tests passed; native Cocoa appearance query, repaint signal, idle terminal palette refresh and Light syntax contrast fixed. Final workspace verification still pending.
+
+### Task 18 — Parallel quit-guard test isolation
+
+Files: apps/rune/src/editor/quit_guard.rs
+
+Interfaces: existing flow; preserve completed behavior and user data.
+
+Change: Isolate native quit test slot from unrelated parallel EditorState installations while preserving production dirty-quit interception.
+
+Verify: Deterministic overlap regression and default-parallel Rune suite; do not ignore or serialize the whole suite.
+
+Progress: done
+
+Result: Quit owner deterministic concurrent-slot regression and focused8 tests passed; package504 passed before theme tests; Slot cloning lint cleanup and package Clippy passed. Final workspace verification still pending.
+
+### Task 19 — Remaining current-behavior wiki gaps
+
+Files: docs/llm/domains/rune-chrome.md; rune-editor.md; related requirements/delta/index
+
+Interfaces: existing flow; preserve completed behavior and user data.
+
+Change: Remove remaining stale mock/live-session claims noted in Task13; merge/verify delta and document actual account/settings/split/worktree behavior after fixes.
+
+Verify: Installed wiki validator, link checks and source-backed requirement review.
+
+Progress: done
+
+Result: All eight MODIFIED delta requirements merged into rune-chrome.md (controls-bar, header-status, new-tab, session-actions, sidebar-projects, tab-activate, tab-close, view-switch — real daemon sessions, stop/delete lifecycle) and all three ADDED requirements applied (sidebar-row-actions, sidebar-resize, terminal-attach). Five new requirements document the parity extension: RNC-usage-accounts (5 s worker reads, chip tones/reset/unknown, multi-account menu → AccountSetActive/Manage accounts), RNC-session-account-label (argv-derived, switch-independent), RNC-terminal-splits (recursive panes, per-pane attachments, close lifecycle), RNC-settings-page (Editor indent, Appearance themes+System, Accounts lifecycle, ACP drafts — no Vim per D1) and RNC-worktree-create-form (modal, env preview/copy, partial success, retry). Requirements re-sorted by ID, Sources rebuilt from Evidence. Mock claims removed across both pages; rune-editor.md's session-state prose corrected and the external-open producer deferral confirmed still true (`#[allow(dead_code)]`, wording updated). Wiki validator: 8 pages, 52 requirements, 0 errors; `git diff --check` clean.
+
+### Task 20 — Final session/accounts/Settings parity review corrections
+
+Files: apps/rune/src/{main,sessions,settings,chrome}.rs; editor/backend.rs and ACP persistence as needed
+
+Interfaces: preserve launch/account/ACP contracts; correlate replies with originating UI actions.
+
+Change: Fix the8 concrete remaining findings listed in handoff.md: non-account preset launch rejection, launch correlation and error visibility, quoted custom commands, retained account drafts/error recovery, persisted ACP Reset, expired quota labels, and invalid Default Sign in action.
+
+Verify: Scenario regression tests for each finding, then package/core checks. No provider login or real credential mutations.
+
+Progress: done
+
+Result: All eight findings are fixed with scenario regressions. (1) `editor/backend.rs::agent_argv` resolves a stored account only for Claude and Codex — every other preset (Shell, OpenCode, Devin) launches as Default instead of being refused as an unknown agent. (2) `Req::AgentArgv` carries a request token and `State::pending_argv` is a list: each reply takes exactly its own request (`take_pending_argv`/`resolved_launch`), so two launches — different agents or the same agent in two rows — never cross over. (3) A failed argv reply surfaces the reason as the app notice and consumes only its own request's context. (4) `sessions::parse_custom_command` uses the shared `app_core::agents::shell_words`: quoted arguments stay one word, an empty or unparseable command is refused with a reason. (5) Account Add/Rename keep their drafts until the matching reply arrives (`Req::AccountAdd`/`AccountRename` carry a token; `SettingsState` tracks the pending submission), show the failure inline, and a stale reply never clears the form in front of the user; a refused queue keeps the drafts too. (6) ACP Reset now persists: `app_core::acp::agents_reset` removes that agent's stored override and keeps the others, driven by the new `AcpCmd::ResetAgent` on the ACP runtime. (7) The account menu reuses the chips' expiry-aware value (`chrome::limit_value`/`account_usage_summary`), so an elapsed window reads "reset" instead of its last percentage. (8) The Default account renders no Sign in action — the core refuses it. New tests: two launches keep their own answer (cross-agent and same-agent), a failed argv surfaces the error and keeps the other launch, custom-command parsing, account draft retention/refusal/stale-reply, ACP reset persistence (app-core and rune dispatch), expired-vs-live quota values, and a Settings render test proving Default has no Sign in button. Package 524 tests, app-core 235, desktop 116, protocol 20 — `cargo test --workspace` green; `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean (four pre-existing lints fixed: the daemon's test module after items, an unused `mut`, a needless borrow, a collapsible `if`).
+
+### Task 21 — Protocol fixture and final workspace test readiness
+
+Files: crates/protocol/src/message.rs::tests::session
+
+Interfaces: protocol semantics unchanged; fixture gains pid=None.
+
+Change: Restore workspace test compilation after SessionInfo.pid addition. The one-line fixture edit exists at stop but is not yet verified.
+
+Verify: cargo test -p protocol and cargo test --workspace after Task20 corrections.
+
+Progress: done
+
+Result: The `pid=None` fixture is in place and verified — `cargo test -p protocol` (20 tests) and `cargo test --workspace` both pass after the Task 20 corrections, so the workspace compiles and every crate's suite is green.
+
 ## Files inspected, no change
 
 - `crates/protocol/src/{message,session,frame}.rs` — request/event/frame API consumed unchanged
@@ -139,3 +354,17 @@ Approved by user: 2026-11-10 — the user asked for the plan to be implemented d
 - 2026-11-10: The activity and the sub-agent walk are ported from `main` (`d834dbf`, `1fc1005`): `app_core::activity` and `app_core::subagents` hold the shared logic the desktop keeps in `src-tauri`, the protocol's additive `SessionInfo.pid` lets the walk start at the session's process tree, and the shared `codex app-server` agents are attributed through `CODEX_THREAD_ID` + the rollout match. A running sub-agent makes the dot spin even when the activity file says nothing. The account names stay deferred (they need the accounts service).
 - 2026-11-10: The terminal grid is measured from the pane (its rect and the font's cell size) and the PTY is resized to match: a grid wider than the pane wraps its lines, and a wrapped line is what makes a full-screen program jump. The repaint waits for the output to settle, so a burst is drawn once.
 - 2026-11-10: "Create worktree" asks for a name only: the checkout becomes a sibling of the project root on a fresh `goko/<name>` branch. The desktop's full form (base ref, an existing branch) is out of scope for this milestone.
+
+- 2026-11-10: User explicitly authorized fixing the review findings and porting
+  Usage/quota, multiple accounts/account names, split terminal panes, full
+  worktree creation, and Settings last from main. The extension in design.md
+  and Tasks 7–13 record that scope. Proceed without repeated approval under
+  the current repository execution rules.
+- Fresh extension baseline: workspace tests fail on two Desktop fixtures missing
+  SessionInfo.pid (activity.rs and commands/tests.rs); those fixtures are Task 7.
+  The protocol fixture reported in the earlier review is already fixed at the
+  current starting HEAD, 24e6115. Existing dirty changes remain user-owned.
+
+- 2026-11-10: User confirmed Settings port excludes implementing Vim; Appearance, Accounts, ACP agents and existing native editor preferences remain in scope. See decisions.md D1.
+
+- 2026-11-10: User requested stopping when quota reached7%; work stopped and handoff updated. No final completion/archival is authorized by intermediate test results.

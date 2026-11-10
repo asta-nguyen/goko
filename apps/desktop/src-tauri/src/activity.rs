@@ -699,6 +699,7 @@ mod tests {
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
             cwd: cwd.into(),
             state: SessionState::Running,
+            pid: None,
             exit_code: None,
             error: None,
             started_at,

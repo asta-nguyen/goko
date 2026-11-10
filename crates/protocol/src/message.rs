@@ -202,6 +202,7 @@ mod tests {
             argv: vec!["sh".into()],
             cwd: "/tmp".into(),
             state: SessionState::Running,
+            pid: None,
             exit_code: None,
             error: None,
             started_at: 1_700_000_000_000,

@@ -483,47 +483,6 @@ fn is_available_utf8_locale(locale: &str) -> bool {
     true
 }
 
-#[cfg(test)]
-mod locale_tests {
-    use super::{resolve_utf8_locale, DEFAULT_UTF8_LOCALE};
-
-    #[test]
-    fn locale_precedence_prefers_lc_all_then_lc_ctype_then_lang() {
-        assert_eq!(
-            resolve_utf8_locale(Some("en_US.UTF-8"), Some("C.UTF-8"), Some("en_US.UTF-8")),
-            ("en_US.UTF-8".into(), false)
-        );
-        assert_eq!(
-            resolve_utf8_locale(Some("C"), Some("C.UTF-8"), Some("en_US.UTF-8")),
-            ("C.UTF-8".into(), true)
-        );
-        assert_eq!(
-            resolve_utf8_locale(Some("C"), Some("POSIX"), Some("en_US.UTF-8")),
-            ("en_US.UTF-8".into(), true)
-        );
-    }
-
-    #[test]
-    fn locale_falls_back_when_inherited_locales_are_not_utf8() {
-        assert_eq!(
-            resolve_utf8_locale(Some("C"), Some("POSIX"), None),
-            ("en_US.UTF-8".into(), true)
-        );
-        assert_eq!(
-            resolve_utf8_locale(None, None, None),
-            ("en_US.UTF-8".into(), false)
-        );
-    }
-
-    #[test]
-    fn unavailable_utf8_named_locale_is_rejected() {
-        assert_eq!(
-            resolve_utf8_locale(Some("goko_missing_locale.UTF-8"), None, None),
-            (DEFAULT_UTF8_LOCALE.into(), true)
-        );
-    }
-}
-
 fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
     match fs::metadata(cwd) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -670,5 +629,46 @@ fn signal_group(process_group_id: libc::pid_t, signal: i32) -> std::io::Result<(
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+mod locale_tests {
+    use super::{resolve_utf8_locale, DEFAULT_UTF8_LOCALE};
+
+    #[test]
+    fn locale_precedence_prefers_lc_all_then_lc_ctype_then_lang() {
+        assert_eq!(
+            resolve_utf8_locale(Some("en_US.UTF-8"), Some("C.UTF-8"), Some("en_US.UTF-8")),
+            ("en_US.UTF-8".into(), false)
+        );
+        assert_eq!(
+            resolve_utf8_locale(Some("C"), Some("C.UTF-8"), Some("en_US.UTF-8")),
+            ("C.UTF-8".into(), true)
+        );
+        assert_eq!(
+            resolve_utf8_locale(Some("C"), Some("POSIX"), Some("en_US.UTF-8")),
+            ("en_US.UTF-8".into(), true)
+        );
+    }
+
+    #[test]
+    fn locale_falls_back_when_inherited_locales_are_not_utf8() {
+        assert_eq!(
+            resolve_utf8_locale(Some("C"), Some("POSIX"), None),
+            ("en_US.UTF-8".into(), true)
+        );
+        assert_eq!(
+            resolve_utf8_locale(None, None, None),
+            ("en_US.UTF-8".into(), false)
+        );
+    }
+
+    #[test]
+    fn unavailable_utf8_named_locale_is_rejected() {
+        assert_eq!(
+            resolve_utf8_locale(Some("goko_missing_locale.UTF-8"), None, None),
+            (DEFAULT_UTF8_LOCALE.into(), true)
+        );
     }
 }

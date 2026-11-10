@@ -691,6 +691,7 @@ async fn worktree_removal_waits_for_a_session_launch_to_finish_then_rechecks_ses
         argv: vec!["sh".into()],
         cwd: linked.display().to_string(),
         state: SessionState::Running,
+        pid: None,
         exit_code: None,
         error: None,
         started_at: 1,

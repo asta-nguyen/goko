@@ -171,8 +171,8 @@ pub struct HistoryState {
     pub branch: Option<String>,
     /// Branch filter options loaded for the picker.
     pub branches: Vec<GitViewBranch>,
-    /// Controlled open state for the branch `Select`.
-    pub branch_picker_open: bool,
+    /// Open/search state of the branch `Combobox`.
+    pub branch_picker: rune_kit::ComboboxState,
     pub loading: bool,
     pub loading_more: bool,
     pub error: Option<String>,
@@ -304,6 +304,12 @@ pub struct EditorState {
     pub worktrees: WorktreeList,
     pub worktrees_loading: bool,
     pub worktrees_error: Option<String>,
+    /// The "New worktree" dialog (`worktree_form.rs`): `Some` while open.
+    pub worktree_form: Option<crate::editor::worktree_form::Form>,
+    /// Env-copy reports shown under each project's sidebar worktree group
+    /// after a create resolves (partial success included), keyed by
+    /// project id — the desktop's per-row `envResult` Alert.
+    pub worktree_env: HashMap<String, crate::editor::worktree_form::EnvNotice>,
     /// Canonical validated checkout path backing every section.
     pub checkout: Option<PathBuf>,
     pub checkout_key: Option<String>,
@@ -408,6 +414,8 @@ impl EditorState {
             },
             worktrees_loading: false,
             worktrees_error: None,
+            worktree_form: None,
+            worktree_env: HashMap::new(),
             checkout: None,
             checkout_key: None,
             pending_checkout: None,
@@ -446,7 +454,7 @@ impl EditorState {
                 checkout: None,
                 branch: None,
                 branches: Vec::new(),
-                branch_picker_open: false,
+                branch_picker: rune_kit::ComboboxState::default(),
                 loading: false,
                 loading_more: false,
                 error: None,

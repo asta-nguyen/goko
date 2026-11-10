@@ -849,20 +849,38 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
         )
 }
 
-/// VS Code Dark+-inspired token hues on Goko's `#1e1e1e` surface.
+/// Token hues on the editor surface: VS Code Dark+'s on a dark palette,
+/// Light+'s on a light one — the Dark+ hues were unreadable on paper.
+/// Status-ink kinds (punctuation, diffs, parameters) follow the palette.
 fn syntax_theme(ink: &Ink) -> SyntaxTheme {
-    SyntaxTheme::neutral(true)
-        .with(Syntax::Keyword, theme::c("#569cd6"))
-        .with(Syntax::String, theme::c("#ce9178"))
-        .with(Syntax::Number, theme::c("#b5cea8"))
-        .with(Syntax::Comment, theme::c("#6a9955"))
-        .with(Syntax::Type, theme::c("#4ec9b0"))
-        .with(Syntax::Function, theme::c("#dcdcaa"))
-        .with(Syntax::Property, theme::c("#9cdcfe"))
-        .with(Syntax::Punctuation, ink.muted)
-        .with(Syntax::Inserted, ink.success)
-        .with(Syntax::Deleted, ink.danger)
-        .with(Syntax::Parameter, ink.text)
+    let theme = SyntaxTheme::neutral(ink.dark);
+    if ink.dark {
+        theme
+            .with(Syntax::Keyword, theme::c("#569cd6"))
+            .with(Syntax::String, theme::c("#ce9178"))
+            .with(Syntax::Number, theme::c("#b5cea8"))
+            .with(Syntax::Comment, theme::c("#6a9955"))
+            .with(Syntax::Type, theme::c("#4ec9b0"))
+            .with(Syntax::Function, theme::c("#dcdcaa"))
+            .with(Syntax::Property, theme::c("#9cdcfe"))
+            .with(Syntax::Punctuation, ink.muted)
+            .with(Syntax::Inserted, ink.success)
+            .with(Syntax::Deleted, ink.danger)
+            .with(Syntax::Parameter, ink.text)
+    } else {
+        theme
+            .with(Syntax::Keyword, theme::c("#0000ff"))
+            .with(Syntax::String, theme::c("#a31515"))
+            .with(Syntax::Number, theme::c("#087a51"))
+            .with(Syntax::Comment, theme::c("#008000"))
+            .with(Syntax::Type, theme::c("#1f6f84"))
+            .with(Syntax::Function, theme::c("#795e26"))
+            .with(Syntax::Property, theme::c("#001080"))
+            .with(Syntax::Punctuation, ink.muted)
+            .with(Syntax::Inserted, ink.success)
+            .with(Syntax::Deleted, ink.danger)
+            .with(Syntax::Parameter, ink.text)
+    }
 }
 
 /// Whether a go-to token is an import target (specifier or imported name) —
@@ -899,6 +917,45 @@ mod tests {
 
     fn state(path: &str, text: &str) -> CodeState {
         CodeState::new(path, text)
+    }
+
+    /// The WCAG contrast ratio of two opaque colours.
+    fn contrast(a: rune::Color, b: rune::Color) -> f32 {
+        let (hi, lo) = (
+            a.luminance().max(b.luminance()),
+            a.luminance().min(b.luminance()),
+        );
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn the_light_palette_keeps_tokens_readable() {
+        let ink = Ink::for_theme(theme::Theme::Light);
+        let theme = syntax_theme(&ink);
+        for kind in [
+            Syntax::Keyword,
+            Syntax::String,
+            Syntax::Number,
+            Syntax::Comment,
+            Syntax::Type,
+            Syntax::Function,
+            Syntax::Property,
+        ] {
+            let ratio = contrast(theme.color(kind), ink.bg);
+            assert!(
+                ratio >= 4.5,
+                "{kind:?} reads at only {ratio:.2}:1 on the light surface"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dark_palette_keeps_the_darker_hues() {
+        let ink = Ink::new();
+        let theme = syntax_theme(&ink);
+        assert_eq!(theme.color(Syntax::Keyword), theme::c("#569cd6"));
+        assert_eq!(theme.color(Syntax::Comment), theme::c("#6a9955"));
+        assert_eq!(theme.color(Syntax::Function), theme::c("#dcdcaa"));
     }
 
     #[test]

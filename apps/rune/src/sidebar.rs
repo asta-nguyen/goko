@@ -172,7 +172,7 @@ fn session_actions(ink: &Ink, session_id: String) -> El {
             "Close pane",
             format!("sidebar-action:close:{session_id}"),
             move |s: &mut State| {
-                s.delete_session(&close);
+                s.close_session(&close);
             },
         ))
 }
@@ -252,12 +252,22 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                     },
                 ));
                 let pid = project_id.clone();
+                // The row's checkout seeds the form's base ref: a worktree
+                // row uses its path, a project row its registered root.
+                let row_checkout = match &target {
+                    RowTarget::Worktree { path, .. } => path.clone(),
+                    _ => s
+                        .editor
+                        .projects
+                        .iter()
+                        .find(|p| p.project.id == project_id)
+                        .map(|p| p.project.root.clone())
+                        .unwrap_or_default(),
+                };
                 menu = menu.item(MenuItem::new("Create worktree").on_select_tx(
                     move |st: &mut State, _tx: &mut Tx| {
                         st.sidebar_menu = None;
-                        st.ask_for_input(SidebarInput::NewWorktree {
-                            project_id: pid.clone(),
-                        });
+                        crate::editor::worktree_form::open(st, &pid, &row_checkout);
                     },
                 ));
             }
@@ -292,12 +302,16 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
 }
 
 /// The sidebar's text prompt, as a kit layer: the command a custom session
-/// runs, or the name of a new worktree.
+/// runs. `NewWorktree` no longer mounts a prompt — it is the worktree
+/// form's keyboard shield (see `worktree_form::open`).
 pub fn input_layer(s: &State, ink: &Ink, layer: &mut Vec<El>) -> Option<El> {
     let input = s.sidebar_input.clone()?;
     let (placeholder, title) = match &input {
         SidebarInput::CustomCommand { .. } => ("Command to run…", "New session"),
-        SidebarInput::NewWorktree { .. } => ("Worktree name…", "New worktree"),
+        // `NewWorktree` is now the worktree form's keyboard shield (set by
+        // `worktree_form::open` so `on_key` returns early) — no prompt
+        // mounts for it; the name-only route is retired.
+        SidebarInput::NewWorktree { .. } => return None,
     };
     let field = rune_kit::TextInput::new(&s.sidebar_text)
         .placeholder(placeholder)
@@ -817,6 +831,24 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     let label = sv
         .agent_label(&s.data.agents)
         .filter(|l| !l.eq_ignore_ascii_case(title.as_str()));
+    // The account the session runs under, from its OWN launch argv — it
+    // never follows a later active-account switch (services/accounts.ts
+    // `accountNameOf`). Named-account argv carries the env folder; plain
+    // argv means the Default account; a folder matching no stored account
+    // shows its basename.
+    let account = sv
+        .meta
+        .as_ref()
+        .map(|meta| meta.agent.as_str())
+        .filter(|agent| *agent == "claude" || *agent == "codex")
+        .and_then(|agent| data::account_name_of(agent, &info.argv, s.data.accounts.as_ref()));
+    // The row's label joins the agent name and the account (`Claude ·
+    // work`), whichever parts exist.
+    let label: Option<String> = match (label, account) {
+        (Some(agent_label), Some(account)) => Some(format!("{agent_label} · {account}")),
+        (Some(agent_label), None) => Some(agent_label.to_string()),
+        (None, account) => account,
+    };
 
     // `w-full flex items-center gap-2 rounded-md py-1.5` + `pl-10 pr-2`
     // (indent) or `px-2` (Unassigned). The TSX's `hover:bg-bg/60` painted a dark
@@ -896,7 +928,7 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
         // label font-medium (sel→accent / ended→muted / else text) + title
         // `text-xs text-muted` truncate.
         b = b
-            .child(theme::txt(l, NAME, rest).group_color(hovered))
+            .child(theme::txt(&l, NAME, rest).group_color(hovered))
             .child(
                 theme::txt(&title, SUB, ink.muted)
                     .group_color(ink.text)
@@ -1024,6 +1056,13 @@ fn worktree_group(
         for (index, wt) in linked.iter().enumerate() {
             inner = inner.child(worktree_node(
                 s, ink, project_id, wt, worktrees, sessions, index,
+            ));
+        }
+        // The env-copy report a create left behind — the desktop's
+        // `envResult` Alert under the project, including partial success.
+        if let Some(notice) = s.editor.worktree_env.get(project_id) {
+            inner = inner.child(crate::editor::worktree_form::env_notice_card(
+                s, ink, project_id, notice,
             ));
         }
         outer = outer.child(inner);

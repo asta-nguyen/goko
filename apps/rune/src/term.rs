@@ -13,13 +13,12 @@ use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
 use protocol::message::Response;
 use protocol::session::SessionId;
-use rune::{Color, El, Span, TextStyle, Tx, col, el, rich, text};
+use rune::{Color, El, LineCap, Shape, Span, TextStyle, rich, text};
 
-use crate::State;
 use crate::daemon::{self, Output, SubscribeReply};
 use crate::theme::Ink;
 
@@ -34,16 +33,43 @@ struct TermRun {
     color: Color,
     weight: f32,
     italic: bool,
+    underline: Option<Color>,
 }
 
-/// One terminal row: styled runs of text, left to right.
+/// A span of cells sharing one background colour: the first cell, one past
+/// the last, and the colour to paint under the text. Adjacent cells with
+/// the same resolved colour merge into one span, so a solid block costs a
+/// single shape fill, not a fill per cell.
+#[derive(Clone, Debug, PartialEq)]
+struct Back {
+    start: usize,
+    end: usize,
+    color: Color,
+}
+
+/// The terminal cursor parked on this row: the cell it sits on, how many
+/// cells it covers (a wide glyph takes two) and how it is drawn.
+#[derive(Clone, Debug, PartialEq)]
+struct TermCursor {
+    col: usize,
+    span: usize,
+    shape: CursorShape,
+    color: Color,
+}
+
+/// One terminal row: styled runs of text, cell backgrounds and the cursor,
+/// left to right.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TermLine {
     runs: Vec<TermRun>,
+    backs: Vec<Back>,
+    cursor: Option<TermCursor>,
 }
 
 impl TermLine {
-    /// The row's text, runs joined.
+    /// The row's text, runs joined. Only the tests read it — the panes
+    /// draw the runs directly.
+    #[cfg(test)]
     pub fn text(&self) -> String {
         self.runs.iter().map(|run| run.text.as_str()).collect()
     }
@@ -92,7 +118,12 @@ pub struct Terminal {
     /// reply channel closes behind the answer, and a closed channel is no
     /// reason to drop the attachment.
     ready: Option<Receiver<Result<Response, BridgeError>>>,
-    /// The next byte the daemon will send — the flow-control watermark.
+    /// The stream offset the parser consumed through — the flow-control
+    /// watermark the daemon is acked against. A resubscribe replays the
+    /// retained buffer, so chunks at or before this offset are dropped and
+    /// later ones are trimmed to their unparsed tail. It only advances over
+    /// bytes the parser actually consumed, so an acknowledgement never
+    /// claims output that was not processed.
     pub next_seq: u64,
     /// The last byte acknowledged to the daemon.
     acked_seq: u64,
@@ -107,6 +138,10 @@ pub struct Terminal {
     rendered: bool,
     /// When the last chunk arrived.
     last: Instant,
+    /// When the current burst of unrendered output started. `None` while
+    /// nothing new waits to be drawn, so the first draw and a resize are
+    /// never held back.
+    burst: Option<Instant>,
 }
 
 impl Terminal {
@@ -133,6 +168,7 @@ impl Terminal {
             dirty: true,
             rendered: false,
             last: Instant::now(),
+            burst: None,
         }
     }
 
@@ -160,12 +196,21 @@ impl Terminal {
             // channel closes behind its answer) or the daemon is gone.
             Err(TryRecvError::Disconnected) => None,
         };
-        if let Some(Ok(subscribe)) = reply
-            && subscribe.next_seq > self.next_seq
+        // The reply's `next_seq` is where the live stream starts, not a
+        // watermark: the replayed bytes still have to arrive and be
+        // parsed before they can be acknowledged. What can be checked is
+        // the pair's consistency — the replay cannot start past the live
+        // stream's next byte.
+        if let Some(Ok(subscribe)) = &reply
+            && subscribe.replay_from > subscribe.next_seq
         {
-            // The stream continues after the replay: the acknowledgement
-            // watermark starts there.
-            self.next_seq = subscribe.next_seq;
+            return Some(Err(BridgeError::new(
+                Code::Daemon(protocol::message::ErrorCode::Malformed),
+                format!(
+                    "the daemon's subscribe reply is inconsistent: replay_from {} is past next_seq {}",
+                    subscribe.replay_from, subscribe.next_seq
+                ),
+            )));
         }
         reply
     }
@@ -173,29 +218,56 @@ impl Terminal {
     pub fn feed(&mut self) -> bool {
         let mut changed = false;
         while let Ok(chunk) = self.chunks.try_recv() {
-            self.parser.advance(&mut self.term, &chunk.data);
-            self.next_seq = chunk.seq + chunk.data.len() as u64;
+            let end = chunk.seq + chunk.data.len() as u64;
+            if end <= self.next_seq {
+                // A resubscribe replays bytes the parser already has.
+                continue;
+            }
+            // The replay can overlap the parsed tail: feed only the part
+            // that was not seen yet. A chunk ahead of `next_seq` is a
+            // gap the daemon already dropped — parse it whole.
+            let skip = self.next_seq.saturating_sub(chunk.seq) as usize;
+            let data = &chunk.data[skip.min(chunk.data.len())..];
+            if data.is_empty() {
+                continue;
+            }
+            self.parser.advance(&mut self.term, data);
+            self.next_seq = end;
             self.last = Instant::now();
             changed = true;
         }
         if changed {
             self.dirty = true;
+            if self.burst.is_none() {
+                self.burst = Some(Instant::now());
+            }
         }
         changed
     }
 
     /// How long the repaint may be held back: the output has to settle
     /// first, so a full-screen program is drawn once instead of line by
-    /// line. `None` means "repaint now".
+    /// line, but a stream that never goes quiet is still drawn once the
+    /// burst is `MAX_HOLD` old. `None` means "repaint now".
     pub fn hold(&self) -> Option<Duration> {
         if !self.dirty || !self.rendered {
             return None;
         }
-        let since = self.last.elapsed();
-        if since >= MAX_HOLD || since >= QUIET {
+        let quiet = QUIET.saturating_sub(self.last.elapsed());
+        if quiet.is_zero() {
+            // The output settled.
             return None;
         }
-        Some(QUIET - since)
+        let Some(burst) = self.burst else {
+            // Dirty without a burst is a resize: draw now.
+            return None;
+        };
+        let hold = MAX_HOLD.saturating_sub(burst.elapsed());
+        if hold.is_zero() {
+            // The burst is as old as a repaint may be.
+            return None;
+        }
+        Some(quiet.min(hold))
     }
 
     /// The rendered rows of the visible grid, repainted when the output
@@ -205,6 +277,7 @@ impl Terminal {
             self.lines = render_lines(&self.term, ink);
             self.dirty = false;
             self.rendered = true;
+            self.burst = None;
         }
         &self.lines
     }
@@ -232,15 +305,23 @@ impl Terminal {
         };
         self.term.resize(size);
         self.dirty = true;
-        // A resized grid is drawn at once: no output is settling.
-        self.last = Instant::now()
-            .checked_sub(QUIET)
-            .unwrap_or_else(Instant::now);
+        // A resized grid is drawn at once: no burst is settling.
+        self.burst = None;
     }
 
     /// The grid size the terminal renders at.
     pub fn size(&self) -> (usize, usize) {
         (self.term.grid().columns(), self.term.grid().screen_lines())
+    }
+
+    /// The palette changed while the grid did not: the cached rows repaint
+    /// in the new colours on the next `lines` call. The parser, the stream
+    /// offsets and the PTY size are untouched — no resize is faked.
+    pub fn refresh_theme(&mut self) {
+        self.dirty = true;
+        // A colour swap is not output still settling: draw now instead of
+        // outwaiting the burst hold.
+        self.burst = None;
     }
 
     /// The bytes the daemon sent that were not acknowledged yet. A
@@ -255,46 +336,6 @@ impl Terminal {
     }
 }
 
-/// A believable colored shell session as a PTY byte stream: SGR colour,
-/// bold/dim, 256-colour and truecolour escapes, \r\n line ends. Only the
-/// tests read it — the app renders the daemon's live stream.
-#[cfg(test)]
-const ANSI_TRANSCRIPT: &str = "\u{1b}[1;32muser@devbox\u{1b}[0m \u{1b}[34m~/Project/goko\u{1b}[0m \u{1b}[2m%\u{1b}[0m cargo test -p gokod\r\n\
-   \u{1b}[2mCompiling\u{1b}[0m gokod v0.4.1 (/home/user/Project/goko/crates/gokod)\r\n\
-    \u{1b}[2mFinished\u{1b}[0m `test` profile [unoptimized + debuginfo] target(s) in 4.21s\r\n\
-     \u{1b}[2mRunning\u{1b}[0m unittests src/lib.rs\r\n\
-\r\n\
-running 42 tests\r\n\
-test pty::spawn_with_size ... \u{1b}[32mok\u{1b}[0m\r\n\
-test proto::frame_roundtrip ... \u{1b}[32mok\u{1b}[0m\r\n\
-test session::attach_detach ... \u{1b}[32mok\u{1b}[0m\r\n\
-test scrollback::resize_reflow ... \u{1b}[32mok\u{1b}[0m\r\n\
-\r\n\
-\u{1b}[1;32mtest result: ok. 42 passed\u{1b}[0m; 0 failed; 0 ignored\r\n\
-\r\n\
-\u{1b}[1;32muser@devbox\u{1b}[0m \u{1b}[34m~/Project/goko\u{1b}[0m \u{1b}[2m%\u{1b}[0m git status\r\n\
-On branch main\r\n\
-Your branch is up to date with 'origin/main'.\r\n\
-\u{1b}[2mnothing to commit, working tree clean\u{1b}[0m\r\n\
-\r\n\
-\u{1b}[1;32muser@devbox\u{1b}[0m \u{1b}[34m~/Project/goko\u{1b}[0m \u{1b}[2m%\u{1b}[0m ./gokod --bad-flag\r\n\
-\u{1b}[31merror\u{1b}[0m: unexpected argument '--bad-flag' found\r\n\
-\r\n\
-  \u{1b}[2mtip: a similar argument exists: '--flags'\u{1b}[0m\r\n\
-\r\n\
-\u{1b}[1;32muser@devbox\u{1b}[0m \u{1b}[34m~/Project/goko\u{1b}[0m \u{1b}[2m%\u{1b}[0m ls -la target/\r\n\
-\u{1b}[34mdrwxr-xr-x\u{1b}[0m  2 user user  4096 Nov  8 18:51 .\r\n\
-\u{1b}[34mdrwxr-xr-x\u{1b}[0m 14 user user  4096 Nov  8 19:10 ..\r\n\
-\u{1b}[32m-rwxr-xr-x\u{1b}[0m  1 user user   12M Nov  8 19:10 goko-rune\r\n\
-\u{1b}[38;5;208m-rw-r--r--\u{1b}[0m  1 user user   24K Nov  8 18:58 ui.png\r\n\
-\u{1b}[38;2;180;142;255m-rw-r--r--\u{1b}[0m  1 user user   98K Nov  8 19:10 tree.json\r\n\
-\r\n\
-\u{1b}[1;32muser@devbox\u{1b}[0m \u{1b}[34m~/Project/goko\u{1b}[0m \u{1b}[2m%\u{1b}[0m \u{1b}[1mcargo build --release\u{1b}[0m\r\n\
-   \u{1b}[2mCompiling\u{1b}[0m rune v0.1.0\r\n\
-    \u{1b}[2mFinished\u{1b}[0m `release` profile [optimized] target(s) in 38.04s\r\n\
-\r\n\
-\u{1b}[1;32muser@devbox\u{1b}[0m \u{1b}[34m~/Project/goko\u{1b}[0m \u{1b}[2m%\u{1b}[0m \u{1b}[7m█\u{1b}[0m";
-
 /// The 16 ANSI colours exactly as xterm.js ships them. Goko's TerminalController
 /// only overrides background/foreground/cursor, so the real terminal renders
 /// this Tango palette on #1e1e1e — using it here is the fidelity-correct choice.
@@ -308,6 +349,16 @@ fn ansi16(i: u8) -> Color {
         r: rune::color::srgb_decode(((v >> 16) & 0xff) as f32 / 255.0),
         g: rune::color::srgb_decode(((v >> 8) & 0xff) as f32 / 255.0),
         b: rune::color::srgb_decode((v & 0xff) as f32 / 255.0),
+        a: 1.0,
+    }
+}
+
+/// A configured terminal colour (the `colors` table) as a rune colour.
+fn rgb_color(rgb: alacritty_terminal::vte::ansi::Rgb) -> Color {
+    Color {
+        r: rune::color::srgb_decode(rgb.r as f32 / 255.0),
+        g: rune::color::srgb_decode(rgb.g as f32 / 255.0),
+        b: rune::color::srgb_decode(rgb.b as f32 / 255.0),
         a: 1.0,
     }
 }
@@ -336,12 +387,7 @@ fn ansi_color(c: alacritty_terminal::vte::ansi::Color, ink: &Ink) -> Color {
             N::Background => ink.bg,
             _ => ink.dim,
         },
-        A::Spec(rgb) => Color {
-            r: rune::color::srgb_decode(rgb.r as f32 / 255.0),
-            g: rune::color::srgb_decode(rgb.g as f32 / 255.0),
-            b: rune::color::srgb_decode(rgb.b as f32 / 255.0),
-            a: 1.0,
-        },
+        A::Spec(rgb) => rgb_color(rgb),
         A::Indexed(i) => {
             let i = i as usize;
             match i {
@@ -381,62 +427,167 @@ fn ansi_color(c: alacritty_terminal::vte::ansi::Color, ink: &Ink) -> Color {
 
 /// Turn the terminal's visible grid rows into `TermLine`s.
 fn render_lines(term: &Term<VoidListener>, ink: &Ink) -> Vec<TermLine> {
+    use alacritty_terminal::vte::ansi::{Color as A, NamedColor as N};
+    let content = term.renderable_content();
     let rows = term.grid().screen_lines();
     let cols = term.grid().columns();
+    // `display_iter` and the cursor speak in grid lines, where the visible
+    // screen is `-display_offset..screen_lines-display_offset`; the row a
+    // cell lands on is its line plus the scroll offset.
+    let display_offset = content.display_offset as i32;
     let mut grid: Vec<Vec<&Cell>> = (0..rows).map(|_| Vec::with_capacity(cols)).collect();
-    for indexed in term.grid().display_iter() {
-        let line = indexed.point.line.0;
-        if (0..rows as i32).contains(&line) {
-            grid[line as usize].push(indexed.cell);
+    for indexed in content.display_iter {
+        let row = indexed.point.line.0 + display_offset;
+        if (0..rows as i32).contains(&row) {
+            grid[row as usize].push(indexed.cell);
         }
     }
 
+    // The cursor alacritty would draw: `renderable_content` already folds
+    // in the show/hide mode, vi mode and the wide-char spacer adjustment,
+    // and `Hidden` means there is nothing to paint — no fake trailing
+    // block. A block cursor is drawn by swapping the cell's colours in the
+    // row walk below; the other shapes become a `TermCursor` on their row.
+    let cursor = match content.cursor.shape {
+        CursorShape::Hidden => None,
+        shape => {
+            let point = content.cursor.point;
+            let (line, col) = (point.line.0 + display_offset, point.column.0);
+            if !(0..rows as i32).contains(&line) || col >= cols {
+                None
+            } else {
+                // A wide glyph's cursor covers both of its cells.
+                let span = usize::from(term.grid()[point].flags.contains(Flags::WIDE_CHAR)) + 1;
+                Some((line as usize, col, span, shape))
+            }
+        }
+    };
+    // A colour the terminal was configured with wins over the cell's ink.
+    let cursor_color = content.colors[N::Cursor].map(rgb_color);
+
     grid.into_iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row, cells)| {
             let mut runs: Vec<TermRun> = Vec::new();
+            let mut backs: Vec<Back> = Vec::new();
             let mut cur = String::new();
-            let mut cur_style: Option<(Color, f32, bool)> = None;
-            for cell in row {
-                if cell.flags.contains(Flags::HIDDEN) {
-                    cur.push(' ');
-                    continue;
-                }
-                let mut fg = ansi_color(cell.fg, ink);
+            let mut cur_style: Option<(Color, f32, bool, Option<Color>)> = None;
+            // The open background span: its first cell and colour.
+            let mut back_start: Option<usize> = None;
+            let mut back_color = Color::default();
+            let cursor_here = cursor.filter(|(line, ..)| *line == row);
+            // The ink under the cursor cell, for the non-block shapes.
+            let mut cursor_fg: Option<Color> = None;
+            for (col, cell) in cells.iter().enumerate() {
+                // INVERSE video swaps the cell's colours, as a terminal does.
+                let (fg_ansi, bg_ansi) = if cell.flags.contains(Flags::INVERSE) {
+                    (cell.bg, cell.fg)
+                } else {
+                    (cell.fg, cell.bg)
+                };
+                let mut fg = ansi_color(fg_ansi, ink);
                 if cell.flags.intersects(Flags::DIM | Flags::DIM_BOLD) {
                     // xterm.js draws DIM as the colour at 50% opacity over the
                     // background (.xterm-dim { color: multiplyOpacity(.5) }).
                     fg = fg.mix(ink.bg, 0.5);
                 }
-                // INVERSE video and per-cell backgrounds aren't representable —
-                // the trailing SGR-7 block cursor still reads as a light block.
+                let mut bg = match bg_ansi {
+                    A::Named(N::Background) => None,
+                    ansi => Some(ansi_color(ansi, ink)),
+                };
+                if cursor_here.is_some_and(|(_, at, ..)| at == col) {
+                    cursor_fg = Some(fg);
+                }
+                // A block cursor is the cell drawn inverse: its ink becomes
+                // the background and its background the ink.
+                if cursor_here.is_some_and(|(_, at, span, shape)| {
+                    shape == CursorShape::Block && (at..at + span).contains(&col)
+                }) {
+                    let inked = bg.unwrap_or(ink.bg);
+                    bg = Some(fg);
+                    fg = inked;
+                }
+                // Merge the cell into the open background span, or close it.
+                match bg {
+                    Some(color) if back_start.is_some() && color == back_color => {}
+                    Some(color) => {
+                        if let Some(start) = back_start.replace(col) {
+                            backs.push(Back {
+                                start,
+                                end: col,
+                                color: back_color,
+                            });
+                        }
+                        back_color = color;
+                    }
+                    None => {
+                        if let Some(start) = back_start.take() {
+                            backs.push(Back {
+                                start,
+                                end: col,
+                                color: back_color,
+                            });
+                        }
+                    }
+                }
+                // Wide-char spacers carry no glyph of their own — the wide
+                // glyph already spans their cells, so columns don't drift.
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                if cell.flags.contains(Flags::HIDDEN) {
+                    cur.push(' ');
+                    continue;
+                }
                 let weight = if cell.flags.intersects(Flags::BOLD | Flags::BOLD_ITALIC) {
                     700.0
                 } else {
                     400.0
                 };
                 let italic = cell.flags.contains(Flags::ITALIC);
-                let style = (fg, weight, italic);
+                let underline = cell.flags.intersects(Flags::ALL_UNDERLINES).then(|| {
+                    cell.underline_color()
+                        .map(|ansi| ansi_color(ansi, ink))
+                        .unwrap_or(fg)
+                });
+                let style = (fg, weight, italic, underline);
                 if cur_style != Some(style) {
                     if !cur.is_empty() {
-                        let (color, weight, italic) = cur_style.unwrap();
+                        let (color, weight, italic, underline) = cur_style.unwrap();
                         runs.push(TermRun {
                             text: std::mem::take(&mut cur),
                             color,
                             weight,
                             italic,
+                            underline,
                         });
                     }
                     cur_style = Some(style);
                 }
                 cur.push(cell.c);
+                // Combining marks ride on their base cell, zero-width.
+                for c in cell.zerowidth().into_iter().flatten() {
+                    cur.push(*c);
+                }
+            }
+            if let Some(start) = back_start.take() {
+                backs.push(Back {
+                    start,
+                    end: cells.len(),
+                    color: back_color,
+                });
             }
             if !cur.is_empty() {
-                let (color, weight, italic) = cur_style.unwrap();
+                let (color, weight, italic, underline) = cur_style.unwrap();
                 runs.push(TermRun {
                     text: cur,
                     color,
                     weight,
                     italic,
+                    underline,
                 });
             }
             if runs.is_empty() {
@@ -445,9 +596,23 @@ fn render_lines(term: &Term<VoidListener>, ink: &Ink) -> Vec<TermLine> {
                     color: ink.text,
                     weight: 400.0,
                     italic: false,
+                    underline: None,
                 });
             }
-            TermLine { runs }
+            let cursor = cursor_here.and_then(|(_, col, span, shape)| match shape {
+                CursorShape::Hidden | CursorShape::Block => None,
+                _ => Some(TermCursor {
+                    col,
+                    span,
+                    shape,
+                    color: cursor_color.or(cursor_fg).unwrap_or(ink.text),
+                }),
+            });
+            TermLine {
+                runs,
+                backs,
+                cursor,
+            }
         })
         .collect()
 }
@@ -491,7 +656,7 @@ pub fn key_bytes(ev: &rune::KeyEvent) -> Option<Vec<u8>> {
 /// 13 pt monospace on a 16 pt line — xterm fontSize 13 with a ~16 px cell.
 const TERM_FONT: TextStyle = TextStyle::new(13.0, 400.0).mono().lh(16.0);
 
-fn term_line_el(line: &TermLine, ink: &Ink) -> El {
+fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32) -> El {
     let mut content = String::new();
     let mut spans = Vec::with_capacity(line.runs.len());
     let mut at = 0usize;
@@ -504,79 +669,108 @@ fn term_line_el(line: &TermLine, ink: &Ink) -> El {
         if run.italic {
             sp = sp.italic();
         }
+        if let Some(underline) = run.underline {
+            sp = sp.underline(underline);
+        }
         spans.push(sp);
         content.push_str(&run.text);
         at = end;
     }
-    if line.runs.len() == 1 {
+    // The cell backgrounds and the cursor are shape fills in the text
+    // element's own points: they paint under the glyphs and line up with
+    // the cells by construction. One shape per row keeps a solid block to
+    // a single fill however many cells it covers.
+    let mut shape = Shape::new();
+    for back in &line.backs {
+        let x0 = back.start as f32 * cell_w;
+        let x1 = back.end as f32 * cell_w;
+        shape = shape.fill(
+            vec![[x0, 0.0], [x1, 0.0], [x1, line_h], [x0, line_h]],
+            back.color,
+        );
+    }
+    if let Some(cursor) = &line.cursor {
+        let x = cursor.col as f32 * cell_w;
+        let w = cursor.span as f32 * cell_w;
+        shape = match cursor.shape {
+            CursorShape::Block | CursorShape::Hidden => shape,
+            CursorShape::Underline => {
+                let t = (line_h * 0.15).max(1.0);
+                shape.fill(
+                    vec![
+                        [x, line_h - t],
+                        [x + w, line_h - t],
+                        [x + w, line_h],
+                        [x, line_h],
+                    ],
+                    cursor.color,
+                )
+            }
+            CursorShape::Beam => {
+                let t = (cell_w * 0.22).max(1.0);
+                shape.fill(
+                    vec![[x, 0.0], [x + t, 0.0], [x + t, line_h], [x, line_h]],
+                    cursor.color,
+                )
+            }
+            CursorShape::HollowBlock => {
+                let i = 1.0;
+                shape.stroke_with(
+                    vec![
+                        [x + i, i],
+                        [x + w - i, i],
+                        [x + w - i, line_h - i],
+                        [x + i, line_h - i],
+                    ],
+                    true,
+                    1.5,
+                    LineCap::Butt,
+                    cursor.color,
+                )
+            }
+        };
+    }
+    let el = if line.runs.len() == 1 {
         let r = &line.runs[0];
-        text(content)
+        let mut e = text(content)
             .font(TextStyle {
                 weight: r.weight,
                 italic: r.italic,
                 ..TERM_FONT
             })
-            .color(r.color)
+            .color(r.color);
+        if r.underline.is_some() {
+            e = e.spans(spans);
+        }
+        e
     } else {
         rich(content, spans).font(TERM_FONT).color(ink.text)
-    }
+    };
+    el.shape(shape)
 }
 
 // ---------------------------------------------------------------------------
-// Terminal area — bg-bg, focused pane ring-1 ring-inset ring-accent/40, xterm
-// host inset-2 (8 px) around the line grid.
+// Line elements — the rows a pane draws: text over cell backgrounds and the
+// cursor, laid out on the monospace cell grid.
 // ---------------------------------------------------------------------------
 
-/// The pane's inner padding — the host inset around the line grid.
-const PAD: f32 = 8.0;
-
-/// The terminal area: the attached session's live PTY grid.
-///
-/// The grid follows the pane: it is measured from the pane's own rect, so
-/// the session draws exactly what fits. A grid wider than the pane would
-/// wrap its lines — and a wrapped line makes the view taller, which
-/// scrolls, which moves the content: a full-screen program would shake.
-/// The grid is the viewport here (no scroll view), the way a terminal
-/// shows the screen it draws on.
-pub fn terminal_area(s: &State, ink: &Ink) -> El {
-    // The monospace cell: one character's advance and the line height, both
-    // in points, measured from the same font the lines are drawn with.
+/// The monospace cell: one character's advance and the line height, both
+/// in points, measured from the same font the lines are drawn with.
+fn cell_metrics() -> (f32, f32) {
     let cell_w = rune::text::advance("M", TERM_FONT).max(1.0);
     let (_, line_h) = rune::text::measure("M", &[], TERM_FONT, None);
-    let line_h = line_h.max(1.0);
-    el().grow(1.0)
-        .min_h(0.0)
-        .min_w(0.0)
-        .w_full()
-        .fill(ink.bg)
-        // ring-inset ring-accent/40: a 1 px accent line just inside the pane edge.
-        .border(1.0, ink.accent.alpha(0.4))
-        .on_layout_tx(move |s: &mut State, rect: [f32; 4], tx: &mut Tx| {
-            // A point to spare on the width: a line that is a hair too
-            // wide would wrap, and a wrapped line is what makes the
-            // content jump.
-            let cols = ((rect[2] - 2.0 * PAD - 1.0) / cell_w).floor().max(20.0) as usize;
-            let rows = ((rect[3] - 2.0 * PAD) / line_h).floor().max(4.0) as usize;
-            if (cols, rows) != (s.terminal_cols, s.terminal_rows) {
-                s.terminal_cols = cols;
-                s.terminal_rows = rows;
-                s.resize_terminal_grid();
-                crate::trace::trace(&format!("layout rect={rect:?} grid={cols}x{rows}"));
-                // The grid changed: its rows are drawn again on the next
-                // frame.
-                tx.wake_after(std::time::Duration::from_millis(16));
-            }
-        })
-        .child(
-            col()
-                .w_full()
-                .h_full()
-                .min_h(0.0)
-                .min_w(0.0)
-                .padding(PAD)
-                .shrink()
-                .children(s.lines.iter().map(|l| term_line_el(l, ink))),
-        )
+    (cell_w, line_h.max(1.0))
+}
+
+/// A pane's rendered rows as elements: the mono cell metrics every pane
+/// shares, so each split's backgrounds and cursor line up with the cells
+/// its grid was sized to.
+pub fn term_lines_el(lines: &[TermLine], ink: &Ink) -> Vec<El> {
+    let (cell_w, line_h) = cell_metrics();
+    lines
+        .iter()
+        .map(|l| term_line_el(l, ink, cell_w, line_h))
+        .collect()
 }
 
 #[cfg(test)]
@@ -746,13 +940,14 @@ mod tests {
         term.feed();
         assert!(!settled_lines(&mut term, &ink()).is_empty());
 
-        // A full-screen redraw arrives in many pieces.
+        // A full-screen redraw arrives in many pieces; `seq` is the byte
+        // offset of each chunk's first byte, so it advances by chunk len.
+        let mut seq = term.next_seq;
         for line in 0..8 {
-            tx.send(Output {
-                seq: line + 1,
-                data: format!("\u{1b}[Hline {line}\r\n").into_bytes(),
-            })
-            .unwrap();
+            let data = format!("\u{1b}[Hline {line}\r\n").into_bytes();
+            let len = data.len() as u64;
+            tx.send(Output { seq, data }).unwrap();
+            seq += len;
         }
         assert!(term.feed());
         // The repaint waits for the burst to end: the screen is drawn
@@ -767,6 +962,133 @@ mod tests {
                 .any(|line| line.runs.iter().any(|run| run.text.contains("line 7"))),
             "the whole burst landed: {lines:?}"
         );
+    }
+
+    #[test]
+    fn a_resubscribe_replay_is_not_parsed_twice() {
+        let (mut term, tx) = terminal();
+        let bytes = b"hello\r\nworld\r\n".to_vec();
+        tx.send(Output {
+            seq: 0,
+            data: bytes.clone(),
+        })
+        .unwrap();
+        term.feed();
+        let before = settled_lines(&mut term, &ink());
+        assert!(
+            before.iter().any(|line| line.text().contains("world")),
+            "the first draw landed: {before:?}"
+        );
+
+        // The daemon replays its retained buffer on resubscribe: every
+        // byte is behind the parser already and must be skipped.
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
+        term.resubscribe(rrx, ready_rx);
+        rtx.send(Output {
+            seq: 0,
+            data: bytes,
+        })
+        .unwrap();
+        assert!(!term.feed(), "the replayed bytes were already parsed");
+        assert_eq!(term.lines(&ink()), &before[..]);
+    }
+
+    #[test]
+    fn a_replay_overlapping_the_parsed_tail_is_trimmed() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: b"hello".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.next_seq, 5);
+
+        // The retained buffer starts before what was parsed: only the
+        // tail of the chunk is new.
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        let (_ready_tx, ready_rx) = std::sync::mpsc::channel();
+        term.resubscribe(rrx, ready_rx);
+        rtx.send(Output {
+            seq: 2,
+            data: b"llo world".to_vec(),
+        })
+        .unwrap();
+        assert!(term.feed());
+        assert_eq!(term.next_seq, 11);
+        assert_eq!(first_line(&mut term, &ink()), "hello world");
+    }
+
+    #[test]
+    fn the_subscribe_reply_does_not_move_the_ack_watermark() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut term = Terminal::new(SessionId::new(), rx, ready_rx);
+        ready_tx
+            .send(Ok(Response {
+                id: 1,
+                outcome: protocol::message::ResponseOutcome::Result {
+                    result: serde_json::json!({ "replay_from": 30, "next_seq": 42 }),
+                },
+            }))
+            .unwrap();
+        let reply = term
+            .subscribe_reply()
+            .expect("the answer is there")
+            .unwrap();
+        assert_eq!(reply.next_seq, 42);
+        // The replay has not arrived: nothing is acknowledged yet.
+        assert_eq!(term.next_seq, 0);
+
+        // The first replay may start at a nonzero offset: the gap is the
+        // daemon's dropped head, the chunk itself is parsed whole.
+        tx.send(Output {
+            seq: 30,
+            data: vec![b'x'; 12],
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.next_seq, 42);
+    }
+
+    #[test]
+    fn a_continuous_burst_is_held_for_at_most_max_hold() {
+        let (mut term, tx) = terminal();
+        // Draw once so later output counts as a burst.
+        tx.send(Output {
+            seq: 0,
+            data: b"ready\r\n".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert!(!settled_lines(&mut term, &ink()).is_empty());
+
+        // New output opens a burst. Chunks keep arriving, so the quiet
+        // window never opens — but the burst still ages past MAX_HOLD.
+        tx.send(Output {
+            seq: 7,
+            data: b"x".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert!(term.hold().is_some());
+        term.last = Instant::now();
+        term.burst = Some(Instant::now() - MAX_HOLD - Duration::from_millis(1));
+        assert!(term.hold().is_none(), "MAX_HOLD bounds a busy stream");
+
+        // The forced draw forgets the burst; the next chunk opens a new
+        // one that is held again.
+        term.lines(&ink());
+        assert!(term.burst.is_none());
+        tx.send(Output {
+            seq: 8,
+            data: b"y".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert!(term.burst.is_some());
+        assert!(term.hold().is_some());
     }
 
     #[test]
@@ -792,6 +1114,175 @@ mod tests {
                 .any(|line| line.runs.iter().any(|run| run.text.contains("hello"))),
             "the text survived the resize"
         );
+    }
+
+    #[test]
+    fn ansi_backgrounds_become_cell_spans() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: "\u{1b}[41mRED\u{1b}[42mGRN\u{1b}[0m plain\r\n"
+                .as_bytes()
+                .to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        let backs = &lines[0].backs;
+        assert_eq!(backs.len(), 2, "one span per colour run: {backs:?}");
+        assert_eq!((backs[0].start, backs[0].end), (0, 3));
+        assert_eq!(backs[0].color, ansi16(1));
+        assert_eq!((backs[1].start, backs[1].end), (3, 6));
+        assert_eq!(backs[1].color, ansi16(2));
+        // " plain" has the default background: no span covers it.
+        assert!(backs.iter().all(|b| b.end <= 6));
+    }
+
+    #[test]
+    fn background_spans_merge_across_style_runs() {
+        let (mut term, tx) = terminal();
+        // The fg changes mid-span; the bg does not, so one span covers all
+        // three cells instead of one per styled run.
+        tx.send(Output {
+            seq: 0,
+            data: "\u{1b}[41mRE\u{1b}[31mD\u{1b}[0m\r\n".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        assert_eq!(lines[0].backs.len(), 1, "{:?}", lines[0].backs);
+        assert_eq!((lines[0].backs[0].start, lines[0].backs[0].end), (0, 3));
+    }
+
+    #[test]
+    fn inverse_video_swaps_the_cell_colours() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: "\u{1b}[7mINV\u{1b}[0m\r\n".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        let ink = ink();
+        // SGR 7 swaps fg/bg: the cells' background becomes the text ink
+        // and their ink the pane background.
+        assert_eq!(lines[0].backs.len(), 1, "{:?}", lines[0].backs);
+        assert_eq!(lines[0].backs[0].color, ink.text);
+        assert_eq!(lines[0].runs[0].text.trim_end(), "INV");
+        assert_eq!(lines[0].runs[0].color, ink.bg);
+    }
+
+    #[test]
+    fn the_cursor_is_where_the_term_puts_it() {
+        let (mut term, tx) = terminal();
+        // An underline cursor so the marker is inspectable; the block
+        // shape is covered by the inverse-swap test below.
+        tx.send(Output {
+            seq: 0,
+            data: "\u{1b}[3 qabc\u{1b}[5;10H".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        let cursor = lines[4].cursor.as_ref().expect("the cursor sits on row 5");
+        assert_eq!((cursor.col, cursor.span), (9, 1));
+        assert_eq!(cursor.shape, CursorShape::Underline);
+        // The cell's own ink colours the cursor.
+        assert_eq!(cursor.color, ink().text);
+        // Every other row has no cursor.
+        assert!(
+            lines
+                .iter()
+                .enumerate()
+                .all(|(i, l)| i == 4 || l.cursor.is_none())
+        );
+
+        // ?25l hides it: nothing is painted, not even a marker.
+        tx.send(Output {
+            seq: 15,
+            data: "\u{1b}[?25l".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        assert!(lines.iter().all(|l| l.cursor.is_none()));
+    }
+
+    #[test]
+    fn a_block_cursor_is_the_cell_drawn_inverse() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: "ab".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        let ink = ink();
+        // The cursor sits on cell 2: its background span takes the cell's
+        // ink and its glyph the pane background.
+        let back = lines[0]
+            .backs
+            .iter()
+            .find(|b| b.start == 2 && b.end == 3)
+            .expect("the cursor cell is a background span");
+        assert_eq!(back.color, ink.text);
+        // No marker: the block shape paints through the cell swap.
+        assert!(lines[0].cursor.is_none());
+    }
+
+    #[test]
+    fn a_palette_swap_repaints_the_cached_rows() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: "\u{1b}[41mRED\u{1b}[0m".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let dark = ink();
+        let before = settled_lines(&mut term, &dark);
+        let light = Ink::for_theme(crate::theme::Theme::Light);
+        // Without a theme refresh the cached rows keep the old ink.
+        {
+            let stale = term.lines(&light);
+            assert_eq!(stale[0].runs[0].color, dark.text);
+        }
+        term.refresh_theme();
+        let after = settled_lines(&mut term, &light);
+        assert_eq!(after[0].text(), before[0].text(), "same grid, new ink");
+        // The resolved fg followed the palette; the ANSI bg did not.
+        assert_eq!(after[0].runs[0].color, light.text);
+        assert_eq!(after[0].backs[0].color, ansi16(1));
+        // The stream offsets and the parser did not move.
+        assert_eq!(term.next_seq, 12);
+    }
+
+    #[test]
+    fn wide_chars_and_combining_marks_keep_their_cells() {
+        let (mut term, tx) = terminal();
+        //  is a wide glyph (two cells), ́ a combining mark on 'e'.
+        tx.send(Output {
+            seq: 0,
+            data: "\u{1b}[3 qa\u{4e16}b e\u{301}\u{1b}[1;2H"
+                .as_bytes()
+                .to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        let text = lines[0].text();
+        assert!(
+            text.starts_with("a\u{4e16}b e\u{301}"),
+            "the wide glyph emits once and the mark stays on its base: {text:?}"
+        );
+        // No spacer cell became a space between  and b.
+        assert!(!text.contains("\u{4e16} "), "{text:?}");
+        // The cursor was addressed onto the wide glyph: it covers both
+        // of the glyph's cells.
+        let cursor = lines[0].cursor.as_ref().expect("cursor on the glyph");
+        assert_eq!((cursor.col, cursor.span), (1, 2));
     }
 
     #[test]
@@ -850,44 +1341,5 @@ mod tests {
         })
         .unwrap();
         assert_eq!(bytes, vec![0x03]);
-    }
-}
-
-#[cfg(test)]
-mod scratch_capture {
-    use super::*;
-    use crate::daemon::Output;
-
-    #[test]
-    fn dump_capture() {
-        let Some(dir) = std::env::var_os("CAP_DIR") else {
-            return;
-        };
-        for name in ["claude", "codex"] {
-            let data =
-                std::fs::read(std::path::Path::new(&dir).join(format!("{name}.bin"))).unwrap();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (_r, ready) = std::sync::mpsc::channel::<Result<Response, BridgeError>>();
-            let mut term = Terminal::new(SessionId::new(), rx, ready);
-            // feed in 1 KiB chunks like the daemon would
-            for (i, c) in data.chunks(1024).enumerate() {
-                tx.send(Output {
-                    seq: (i * 1024) as u64,
-                    data: c.to_vec(),
-                })
-                .unwrap();
-            }
-            term.feed();
-            std::thread::sleep(Duration::from_millis(30));
-            let ink = Ink::new();
-            let lines = term.lines(&ink).to_vec();
-            println!("===== {name}: {} lines", lines.len());
-            for (i, l) in lines.iter().enumerate() {
-                let t = l.text();
-                if !t.trim().is_empty() {
-                    println!("{i:2}: {}", t.trim_end());
-                }
-            }
-        }
     }
 }

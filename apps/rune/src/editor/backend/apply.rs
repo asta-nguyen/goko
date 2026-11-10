@@ -113,6 +113,151 @@ impl EditorState {
                 entry.loading = false;
                 entry.error = Some(e);
             }
+            // -- New-worktree form (project-level jobs, like `Worktrees`) --
+            (Req::WorktreeBranches { project_id }, Ok(ReplyData::WorktreeBranches(refs))) => {
+                if let Some(f) = self
+                    .worktree_form
+                    .as_mut()
+                    .filter(|f| f.project_id == *project_id)
+                {
+                    f.branches = Some(refs);
+                    f.branches_loading = false;
+                    f.branches_error = None;
+                    crate::editor::worktree_form::branches_loaded(f);
+                }
+            }
+            (Req::WorktreeBranches { project_id }, Err(e)) => {
+                if let Some(f) = self
+                    .worktree_form
+                    .as_mut()
+                    .filter(|f| f.project_id == *project_id)
+                {
+                    f.branches_loading = false;
+                    f.branches_error = Some(e);
+                }
+            }
+            (
+                Req::EnvCandidates {
+                    project_id,
+                    source_path,
+                },
+                Ok(ReplyData::EnvCandidates(files)),
+            ) => {
+                if let Some(f) = self
+                    .worktree_form
+                    .as_mut()
+                    .filter(|f| f.project_id == *project_id)
+                {
+                    // Only the preview that asked for THIS source applies —
+                    // a stale reply from a previous source would mislead.
+                    if f.env_requested.as_deref() == Some(source_path.as_str()) {
+                        f.env_files = Some(files);
+                        f.env_loading = false;
+                        f.env_error = None;
+                    }
+                }
+            }
+            (
+                Req::EnvCandidates {
+                    project_id,
+                    source_path,
+                },
+                Err(e),
+            ) => {
+                if let Some(f) = self
+                    .worktree_form
+                    .as_mut()
+                    .filter(|f| f.project_id == *project_id)
+                {
+                    // Same latch as the Ok arm: a stale source's error must
+                    // never clobber the preview the current source owns.
+                    // Clearing `env_requested` unlatches the failure so a
+                    // deliberate retry (toggle/Retry) can re-issue.
+                    if f.env_requested.as_deref() == Some(source_path.as_str()) {
+                        f.env_loading = false;
+                        f.env_error = Some(e);
+                        f.env_requested = None;
+                    }
+                }
+            }
+            (
+                Req::WorktreeCreate {
+                    project_id,
+                    env_source,
+                    ..
+                },
+                Ok(ReplyData::WorktreeCreated(created)),
+            ) => {
+                // The new checkout joins the project's list (same refresh
+                // the legacy `Req::CreateWorktree` reply triggers).
+                self.request_worktrees(project_id);
+                if let Some(env) = &created.env {
+                    let (report, error) = match env {
+                        Ok(report) => (Some(report.clone()), None),
+                        Err(e) => (None, Some(e.clone())),
+                    };
+                    self.worktree_env.insert(
+                        project_id.clone(),
+                        crate::editor::worktree_form::EnvNotice {
+                            source_path: env_source.clone().unwrap_or_default(),
+                            target_path: created.info.path.clone(),
+                            report,
+                            error,
+                            retrying: false,
+                        },
+                    );
+                }
+                if self
+                    .worktree_form
+                    .as_ref()
+                    .is_some_and(|f| f.project_id == *project_id)
+                {
+                    self.worktree_form = None;
+                }
+                // The desktop's `activateWorkspace(checkoutKey(project.id,
+                // worktree.path))`: navigate into the created checkout
+                // through `pending_apply`, so the draft guard still applies
+                // like any other checkout switch. A queued navigation wins
+                // — never clobber it.
+                if self.pending_apply.is_none()
+                    && self.guard.is_none()
+                    && self.save_resume.is_none()
+                {
+                    self.pending_apply =
+                        Some(crate::editor::navigation::PendingNav::SelectCheckout {
+                            project_id: project_id.clone(),
+                            checkout: PathBuf::from(&created.info.path),
+                        });
+                }
+            }
+            (Req::WorktreeCreate { project_id, .. }, Err(e)) => {
+                if let Some(f) = self
+                    .worktree_form
+                    .as_mut()
+                    .filter(|f| f.project_id == *project_id)
+                {
+                    f.submitting = false;
+                    f.error = Some(e);
+                } else {
+                    self.notice = Some(err_notice(&e));
+                }
+            }
+            (Req::EnvCopy { project_id, .. }, Ok(ReplyData::EnvCopy(report))) => {
+                if let Some(notice) = self.worktree_env.get_mut(project_id) {
+                    notice.report = Some(report);
+                    notice.error = None;
+                    notice.retrying = false;
+                }
+            }
+            (Req::EnvCopy { project_id, .. }, Err(e)) => {
+                if let Some(notice) = self.worktree_env.get_mut(project_id) {
+                    notice.report = None;
+                    notice.error = Some(e);
+                    notice.retrying = false;
+                } else {
+                    self.notice = Some(err_notice(&e));
+                }
+            }
             // `load` never fails: corrupt JSON falls back per field, exactly
             // like the desktop's readLayout. Other keys have no consumer yet.
             (Req::GetSetting { key }, Ok(ReplyData::Setting(value)))

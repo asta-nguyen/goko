@@ -66,9 +66,55 @@ pub enum Req {
     /// The agents a session can be started with, discovered on the worker.
     Agents,
     /// The launch argv for one agent, resolved on the worker: the binary on
-    /// `PATH`, the default shell for `shell`, Claude's own hooks.
+    /// `PATH`, the default shell for `shell`, Claude's own hooks — for the
+    /// account `accounts::resolve` names, so a named account launches with
+    /// its own `CLAUDE_CONFIG_DIR`/`CODEX_HOME`.
     AgentArgv {
         agent: String,
+        /// Correlates the reply with the row + agent that asked for it:
+        /// two launches can be in flight at once, so the reply's own
+        /// token — not the latest pending request — decides which one
+        /// starts.
+        token: u64,
+    },
+    /// One usage/accounts read: the snapshot plus the account view the
+    /// chips and session labels are drawn from. `previous` keeps the last
+    /// values for sources that cannot be read this tick.
+    Usage {
+        previous: app_core::usage::UsageSnapshot,
+    },
+    /// Add a named account (metadata + its folder), then activate it.
+    AccountAdd {
+        agent: String,
+        name: String,
+        dir: String,
+        /// Correlates the reply with the submission whose drafts it may
+        /// clear; a stale reply never wipes a newer form.
+        token: u64,
+    },
+    /// Rename a stored account row (metadata only).
+    AccountRename {
+        agent: String,
+        id: String,
+        name: String,
+        /// Correlates the reply with the inline editor that sent it.
+        token: u64,
+    },
+    /// Remove a stored account row — never its folder or credentials.
+    AccountRemove {
+        agent: String,
+        id: String,
+    },
+    /// Make `id` — `default` or a stored id — the agent's active account.
+    AccountSetActive {
+        agent: String,
+        id: String,
+    },
+    /// The agent's own login command for an added account, parsed into a
+    /// session-ready argv on the worker.
+    AccountSignIn {
+        agent: String,
+        id: String,
     },
     /// Create a linked worktree for a project.
     CreateWorktree {
@@ -77,6 +123,36 @@ pub enum Req {
         mode: String,
         branch: String,
         base: Option<String>,
+    },
+    /// Local branches (with their checked-out paths) and base refs for the
+    /// New-worktree form — `worktrees::branches`.
+    WorktreeBranches {
+        project_id: String,
+    },
+    /// The `.env*` files a checkout would offer to copy — the form's copy
+    /// preview (`worktrees::env_candidates`).
+    EnvCandidates {
+        project_id: String,
+        source_path: String,
+    },
+    /// The form's create: `worktrees::create` then, when `env_source` is
+    /// set, `worktrees::env_copy` into the new checkout. A copy failure is
+    /// carried inside `WorktreeCreated.env` (partial success), not as the
+    /// job's error — the worktree exists either way.
+    WorktreeCreate {
+        project_id: String,
+        path: String,
+        mode: String,
+        branch: String,
+        base: Option<String>,
+        env_source: Option<String>,
+    },
+    /// Retry an env copy into an existing checkout (the sidebar notice's
+    /// "Retry copy" — `worktrees::env_copy`).
+    EnvCopy {
+        project_id: String,
+        source_path: String,
+        target_path: String,
     },
     /// Remove a linked worktree.
     RemoveWorktree {
@@ -201,8 +277,31 @@ pub enum ReplyData {
     Agents(Vec<AgentInfo>),
     /// The resolved launch argv of one agent.
     AgentArgv(Vec<String>),
+    /// The usage snapshot plus the accounts view read with it.
+    Usage {
+        snapshot: app_core::usage::UsageSnapshot,
+        accounts: app_core::accounts::AccountsView,
+    },
+    /// The accounts view after an account mutation.
+    Accounts(app_core::accounts::AccountsView),
+    /// The sign-in session launch: parsed argv, account folder, title.
+    SignIn {
+        argv: Vec<String>,
+        cwd: String,
+        title: String,
+    },
     /// The worktree a create request made.
     Worktree(app_core::worktrees::WorktreeInfo),
+    /// Branches/bases for the New-worktree form.
+    WorktreeBranches(app_core::worktrees::WorktreeBranches),
+    /// The env-file preview for one source checkout.
+    EnvCandidates(Vec<app_core::worktrees::EnvFileCandidate>),
+    /// The form's create result: the new checkout plus the env copy's
+    /// outcome when one was asked for (`Err` = partial success — the
+    /// worktree exists, the copy failed).
+    WorktreeCreated(WorktreeCreated),
+    /// A standalone env copy result (the notice's retry).
+    EnvCopy(app_core::worktrees::EnvCopyReport),
     /// The child process's activity, keyed by session id.
     Activity(HashMap<String, Activity>),
     /// The agent CLIs under each session, keyed by session id.
@@ -230,6 +329,15 @@ pub enum ReplyData {
     Ok,
     Commit(GitCommitResult),
     Push(GitPushResult),
+}
+
+/// `Req::WorktreeCreate`'s reply payload: the created checkout plus the
+/// optional env-copy outcome. `env == Some(Err)` is the partial-success
+/// case the desktop reports as `envResult.error`.
+#[derive(Debug)]
+pub struct WorktreeCreated {
+    pub info: app_core::worktrees::WorktreeInfo,
+    pub env: Option<Result<app_core::worktrees::EnvCopyReport, String>>,
 }
 
 #[derive(Debug)]
@@ -370,7 +478,13 @@ fn is_mutating(req: &Req) -> bool {
             | Req::SetSetting { .. }
             | Req::InsertSessionMeta(_)
             | Req::DeleteSessionMeta(_)
+            | Req::AccountAdd { .. }
+            | Req::AccountRename { .. }
+            | Req::AccountRemove { .. }
+            | Req::AccountSetActive { .. }
             | Req::CreateWorktree { .. }
+            | Req::WorktreeCreate { .. }
+            | Req::EnvCopy { .. }
             | Req::RemoveWorktree { .. }
             | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
@@ -424,6 +538,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
             let h = handle.clone();
             handle.update(move |s: &mut State, _tx| {
                 s.apply_reply(reply);
+                crate::editor::worktree_form::after_reply(s);
                 let _ = &h;
             });
             continue;
@@ -432,6 +547,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
         let h = handle.clone();
         handle.update(move |s: &mut State, _tx| {
             s.apply_reply(reply);
+            crate::editor::worktree_form::after_reply(s);
             // The Changes section keeps its patch-pane selection valid —
             // the desktop's "select first change" effect, run where a
             // `&mut State` exists (replies land outside the render pass).
@@ -475,7 +591,73 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
             std::env::var_os("PATH").as_deref(),
             &default_shell(),
         ))),
-        Req::AgentArgv { agent } => agent_argv(agent),
+        Req::AgentArgv { agent, .. } => agent_argv(storage, agent),
+        Req::Usage { previous } => usage_snapshot(storage, previous),
+        Req::AccountAdd {
+            agent, name, dir, ..
+        } => storage_req(storage, |store| {
+            let default_dir = app_core::accounts::default_dir(agent);
+            let accounts = app_core::accounts::add(
+                store,
+                agent,
+                name,
+                dir,
+                default_dir.as_deref(),
+                std::env::var_os("HOME").as_deref(),
+            )?;
+            Ok(ReplyData::Accounts(app_core::accounts::view(&accounts)))
+        }),
+        Req::AccountRename {
+            agent, id, name, ..
+        } => storage_req(storage, |store| {
+            let accounts = app_core::accounts::rename(store, agent, id, name)?;
+            Ok(ReplyData::Accounts(app_core::accounts::view(&accounts)))
+        }),
+        Req::AccountRemove { agent, id } => storage_req(storage, |store| {
+            let accounts = app_core::accounts::remove(store, agent, id)?;
+            Ok(ReplyData::Accounts(app_core::accounts::view(&accounts)))
+        }),
+        Req::AccountSetActive { agent, id } => storage_req(storage, |store| {
+            let accounts = app_core::accounts::set_active(store, agent, id)?;
+            Ok(ReplyData::Accounts(app_core::accounts::view(&accounts)))
+        }),
+        Req::AccountSignIn { agent, id } => {
+            let Some(storage) = storage else {
+                return Reply {
+                    generation: job.generation,
+                    req: job.req.clone(),
+                    checkout_key,
+                    result: Err("storage is unavailable".into()),
+                };
+            };
+            let accounts = app_core::accounts::read(storage);
+            let result = app_core::accounts::sign_in_launch(
+                &accounts,
+                agent,
+                id,
+                std::env::var_os("PATH").as_deref(),
+            )
+            .and_then(|launch| {
+                app_core::agents::shell_words(&launch.command)
+                    .map(|argv| (argv, launch.cwd, launch.title))
+                    .ok_or_else(|| {
+                        BridgeError::new(
+                            app_core::error::Code::Daemon(
+                                protocol::message::ErrorCode::InvalidArgument,
+                            ),
+                            "the sign-in command cannot be parsed",
+                        )
+                    })
+            })
+            .map(|(argv, cwd, title)| ReplyData::SignIn { argv, cwd, title })
+            .map_err(|error| error.to_string());
+            return Reply {
+                generation: job.generation,
+                req: job.req.clone(),
+                checkout_key,
+                result,
+            };
+        }
         Req::CreateWorktree {
             project_id,
             path,
@@ -492,6 +674,45 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
                 base.as_deref(),
             )
             .map(ReplyData::Worktree)
+        }),
+        Req::WorktreeBranches { project_id } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            worktrees::branches(std::path::Path::new(&root)).map(ReplyData::WorktreeBranches)
+        }),
+        Req::EnvCandidates {
+            project_id,
+            source_path,
+        } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            worktrees::env_candidates(std::path::Path::new(&root), source_path)
+                .map(ReplyData::EnvCandidates)
+        }),
+        Req::WorktreeCreate {
+            project_id,
+            path,
+            mode,
+            branch,
+            base,
+            env_source,
+        } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            let root = std::path::Path::new(&root);
+            let info = worktrees::create(root, path, mode, branch, base.as_deref())?;
+            // Partial success: the checkout exists even when the copy
+            // fails — carry the copy's outcome, not a job-level error.
+            let env = env_source.as_ref().map(|source| {
+                worktrees::env_copy(root, source, &info.path).map_err(|e| e.to_string())
+            });
+            Ok(ReplyData::WorktreeCreated(WorktreeCreated { info, env }))
+        }),
+        Req::EnvCopy {
+            project_id,
+            source_path,
+            target_path,
+        } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            worktrees::env_copy(std::path::Path::new(&root), source_path, target_path)
+                .map(ReplyData::EnvCopy)
         }),
         Req::RemoveWorktree { project_id, path } => storage_req(storage, |store| {
             let root = projects::project_root(store, project_id)?;
@@ -670,28 +891,74 @@ fn agent_home() -> PathBuf {
 
 /// The launch argv for `agent`, resolved the way the desktop resolves it:
 /// the binary on `PATH`, the default shell for `shell`, and Claude's own
-/// statusline/hooks for `claude`.
-fn agent_argv(agent: &str) -> Result<ReplyData, String> {
+/// statusline/hooks for `claude` — under the account `accounts::resolve`
+/// names, so a named account carries its `CLAUDE_CONFIG_DIR`/`CODEX_HOME`
+/// and Claude captures usage under its id. A named account whose folder
+/// vanished is refused, and the original statusline is read from the
+/// account's own settings, never always Default's.
+fn agent_argv(storage: &Option<Storage>, agent: &str) -> Result<ReplyData, String> {
+    // Only Claude and Codex have stored accounts; every other adapter
+    // launches as Default. Asking `accounts::resolve` for e.g. `shell`
+    // would reject a perfectly valid preset.
+    let account = match (agent, storage.as_ref()) {
+        ("claude" | "codex", Some(storage)) => {
+            app_core::accounts::resolve(agent, storage).map_err(|error| error.to_string())?
+        }
+        _ => app_core::accounts::LaunchAccount::default(),
+    };
+    if let Some(dir) = &account.dir
+        && !dir.is_dir()
+    {
+        return Err(format!(
+            "the account folder {} no longer exists",
+            dir.display()
+        ));
+    }
     let (goko_home, original_statusline) = if agent == "claude" {
-        let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")));
+        let config_dir = account
+            .dir
+            .clone()
+            .or_else(|| app_core::accounts::default_dir("claude"));
         let original =
             config_dir.and_then(|dir| agents::original_statusline(&dir.join("settings.json")));
         (agent_home(), original)
     } else {
         (PathBuf::new(), None)
     };
-    agents::argv_for(
+    agents::argv_for_account(
         agent,
         std::env::var_os("PATH").as_deref(),
         &default_shell(),
         &goko_home,
         original_statusline.as_deref(),
+        &account,
     )
     .map(ReplyData::AgentArgv)
     .map_err(|error| error.to_string())
+}
+
+/// One usage/accounts read for the quota chips and the per-session account
+/// labels: the stored accounts (infallible — a broken store reads as
+/// Default-only), the Default folders resolved from the environment, and
+/// the snapshot folded over `previous` so a mid-write capture keeps its
+/// last values.
+fn usage_snapshot(
+    storage: &Option<Storage>,
+    previous: &app_core::usage::UsageSnapshot,
+) -> Result<ReplyData, String> {
+    let accounts = storage
+        .as_ref()
+        .map(app_core::accounts::read)
+        .unwrap_or_default();
+    let goko_home = agent_home();
+    let codex_home =
+        app_core::usage::codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"));
+    let snapshot =
+        app_core::usage::read_snapshot(&goko_home, codex_home.as_deref(), &accounts, previous);
+    Ok(ReplyData::Usage {
+        snapshot,
+        accounts: app_core::accounts::view(&accounts),
+    })
 }
 
 /// Resolve the job's checkout identity against the registered project list
@@ -774,7 +1041,17 @@ fn run_checkout(
         | Req::DeleteSessionMeta(_)
         | Req::Agents
         | Req::AgentArgv { .. }
+        | Req::Usage { .. }
+        | Req::AccountAdd { .. }
+        | Req::AccountRename { .. }
+        | Req::AccountRemove { .. }
+        | Req::AccountSetActive { .. }
+        | Req::AccountSignIn { .. }
         | Req::CreateWorktree { .. }
+        | Req::WorktreeBranches { .. }
+        | Req::EnvCandidates { .. }
+        | Req::WorktreeCreate { .. }
+        | Req::EnvCopy { .. }
         | Req::RemoveWorktree { .. }
         | Req::RemoveProject { .. }
         | Req::Activity { .. }
@@ -2160,6 +2437,357 @@ mod tests {
             Req::Push,
         ] {
             assert!(is_mutating(&req), "{req:?} must finish on shutdown");
+        }
+    }
+
+    // -- accounts + usage ----------------------------------------------------
+
+    use app_core::test_support::TempDir;
+
+    fn temp_storage(name: &str) -> (TempDir, Option<Storage>) {
+        let dir = TempDir::new(name);
+        let storage = Some(Storage::open(dir.path()));
+        (dir, storage)
+    }
+
+    fn accounts_of(reply: &Reply) -> &app_core::accounts::AccountsView {
+        match &reply.result {
+            Ok(ReplyData::Accounts(view)) => view,
+            other => panic!("expected Accounts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn account_add_rename_set_active_and_metadata_only_remove() {
+        let (dir, storage) = temp_storage("rune-acct-rt");
+        let acct_dir = dir.path().join("acct with space");
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountAdd {
+                agent: "claude".into(),
+                name: "work".into(),
+                dir: acct_dir.display().to_string(),
+                token: 1,
+            }),
+        );
+        let view = accounts_of(&reply);
+        assert_eq!(view.claude.items.len(), 2, "Default plus the new row");
+        let added = view
+            .claude
+            .items
+            .iter()
+            .find(|item| !item.is_default)
+            .expect("the named account");
+        assert_eq!(added.name, "work");
+        assert_eq!(view.claude.active, added.id, "add activates the account");
+        assert!(acct_dir.is_dir(), "add creates the folder");
+
+        let id = added.id.clone();
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountRename {
+                agent: "claude".into(),
+                id: id.clone(),
+                name: "work-renamed".into(),
+                token: 2,
+            }),
+        );
+        let view = accounts_of(&reply);
+        assert_eq!(
+            view.claude
+                .items
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.name.as_str()),
+            Some("work-renamed")
+        );
+
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountSetActive {
+                agent: "claude".into(),
+                id: "default".into(),
+            }),
+        );
+        assert_eq!(accounts_of(&reply).claude.active, "default");
+
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountRemove {
+                agent: "claude".into(),
+                id: id.clone(),
+            }),
+        );
+        assert_eq!(accounts_of(&reply).claude.items.len(), 1);
+        assert!(
+            acct_dir.is_dir(),
+            "remove is metadata-only: the folder and its credentials stay"
+        );
+    }
+
+    #[test]
+    fn account_add_rejects_a_duplicate_name() {
+        let (dir, storage) = temp_storage("rune-acct-dup");
+        let mk = || {
+            Job::project(Req::AccountAdd {
+                agent: "claude".into(),
+                name: "dup".into(),
+                dir: dir.path().join("a").display().to_string(),
+                token: 1,
+            })
+        };
+        assert!(run_job(&storage, &mk()).result.is_ok());
+        let reply = run_job(&storage, &mk());
+        assert!(reply.result.is_err(), "the second add must fail");
+    }
+
+    /// Only Claude and Codex carry accounts: every other preset launches
+    /// as Default instead of being refused as an unknown agent.
+    #[test]
+    fn agent_argv_serves_the_presets_without_accounts() {
+        let (dir, storage) = temp_storage("rune-argv-presets");
+        // The shell preset needs no binary and no account.
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AgentArgv {
+                agent: "shell".into(),
+                token: 1,
+            }),
+        );
+        let Ok(ReplyData::AgentArgv(argv)) = &reply.result else {
+            panic!("expected AgentArgv, got {:?}", reply.result);
+        };
+        assert_eq!(*argv, vec![default_shell()]);
+
+        // The other presets are never refused for their account: they
+        // fail only when their binary is missing.
+        for agent in ["opencode", "devin"] {
+            let reply = run_job(
+                &storage,
+                &Job::project(Req::AgentArgv {
+                    agent: agent.into(),
+                    token: 2,
+                }),
+            );
+            if let Err(error) = &reply.result {
+                assert!(
+                    !error.contains("unknown agent"),
+                    "{agent} must not be refused as an unknown agent: {error}"
+                );
+            }
+        }
+        let _ = dir;
+    }
+
+    /// A worker-side `AgentArgv` resolves through the stored accounts: the
+    /// active named account's folder is required to exist.
+    #[test]
+    fn agent_argv_refuses_a_missing_account_folder() {
+        let (dir, storage) = temp_storage("rune-argv-missing");
+        let acct_dir = dir.path().join("gone");
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountAdd {
+                agent: "claude".into(),
+                name: "gone".into(),
+                dir: acct_dir.display().to_string(),
+                token: 1,
+            }),
+        );
+        assert!(reply.result.is_ok());
+        std::fs::remove_dir_all(&acct_dir).unwrap();
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AgentArgv {
+                agent: "claude".into(),
+                token: 1,
+            }),
+        );
+        let Err(error) = &reply.result else {
+            panic!("a missing account folder must fail, got {:?}", reply.result);
+        };
+        assert!(error.contains("no longer exists"), "{error}");
+    }
+
+    /// `PATH`/`GOKO_HOME`/`CODEX_HOME` point at temp dirs for the launch
+    /// and usage reads — the real account folders are never touched.
+    struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let prev = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            EnvGuard(key, prev)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => unsafe { std::env::set_var(self.0, v) },
+                None => unsafe { std::env::remove_var(self.0) },
+            }
+        }
+    }
+
+    /// One combined env-mutating test: the named account's argv carries its
+    /// `CLAUDE_CONFIG_DIR`, a quoted sign-in command parses into words, and
+    /// `Usage` reads a temp home.
+    #[test]
+    fn named_account_launches_and_sign_in_and_usage_read() {
+        let home = TempDir::new("rune-acct-home");
+        let bin = TempDir::new("rune-acct-bin");
+        let goko = TempDir::new("rune-acct-goko");
+        let codex_home = TempDir::new("rune-acct-codex");
+        for name in ["claude", "codex"] {
+            let path = bin.path().join(name);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        // The fake agents come first, but the rest of the real PATH
+        // stays: a parallel test that spawns `git` must still find it.
+        let path = {
+            let mut paths = vec![bin.path().to_path_buf()];
+            if let Some(existing) = std::env::var_os("PATH") {
+                paths.extend(std::env::split_paths(&existing));
+            }
+            std::env::join_paths(paths).expect("a PATH to join")
+        };
+        let _guards = [
+            EnvGuard::set("HOME", home.path().as_os_str()),
+            EnvGuard::set("PATH", path.as_os_str()),
+            EnvGuard::set("GOKO_HOME", goko.path().as_os_str()),
+            EnvGuard::set("CODEX_HOME", codex_home.path().as_os_str()),
+        ];
+        let storage = Some(Storage::open(goko.path()));
+
+        // A named account with a space in its path: sign_in_launch shell-
+        // quotes it, `shell_words` must hand it back as ONE argv element.
+        let acct_dir = home.path().join("acc with space");
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountAdd {
+                agent: "claude".into(),
+                name: "work".into(),
+                dir: acct_dir.display().to_string(),
+                token: 1,
+            }),
+        );
+        let view = accounts_of(&reply);
+        let id = view
+            .claude
+            .items
+            .iter()
+            .find(|item| !item.is_default)
+            .unwrap()
+            .id
+            .clone();
+
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AgentArgv {
+                agent: "claude".into(),
+                token: 1,
+            }),
+        );
+        let Ok(ReplyData::AgentArgv(argv)) = &reply.result else {
+            panic!("expected AgentArgv, got {:?}", reply.result);
+        };
+        assert_eq!(argv[0], "/usr/bin/env");
+        assert!(
+            argv.iter()
+                .any(|arg| arg == &format!("CLAUDE_CONFIG_DIR={}", acct_dir.display())),
+            "named account's env folder: {argv:?}"
+        );
+
+        // The sign-in session argv: the quoted folder is one word.
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountSignIn {
+                agent: "claude".into(),
+                id: id.clone(),
+            }),
+        );
+        let Ok(ReplyData::SignIn { argv, cwd, title }) = &reply.result else {
+            panic!("expected SignIn, got {:?}", reply.result);
+        };
+        assert!(
+            argv.iter()
+                .any(|arg| arg == &format!("CLAUDE_CONFIG_DIR={}", acct_dir.display())),
+            "the quoted path must survive as one word: {argv:?}"
+        );
+        assert_eq!(cwd, &acct_dir.display().to_string());
+        assert!(!title.is_empty());
+
+        // A `Usage` read: the accounts view comes with the snapshot, and
+        // the named account's usage folder may be created under the temp
+        // GOKO_HOME — never the real one.
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::Usage {
+                previous: app_core::usage::UsageSnapshot::default(),
+            }),
+        );
+        let Ok(ReplyData::Usage { accounts, .. }) = &reply.result else {
+            panic!("expected Usage, got {:?}", reply.result);
+        };
+        assert_eq!(accounts.claude.items.len(), 2);
+    }
+
+    #[test]
+    fn sign_in_for_an_unknown_account_fails() {
+        let (dir, storage) = temp_storage("rune-signin-miss");
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AccountSignIn {
+                agent: "claude".into(),
+                id: "nonexistent".into(),
+            }),
+        );
+        assert!(reply.result.is_err());
+        let _ = dir;
+    }
+
+    /// The shutdown drain class: account mutations are writes, the rest
+    /// are reads.
+    #[test]
+    fn account_and_usage_reqs_have_their_drain_side() {
+        for req in [
+            Req::AccountAdd {
+                agent: "a".into(),
+                name: "n".into(),
+                dir: "d".into(),
+                token: 1,
+            },
+            Req::AccountRename {
+                agent: "a".into(),
+                id: "i".into(),
+                name: "n".into(),
+                token: 1,
+            },
+            Req::AccountRemove {
+                agent: "a".into(),
+                id: "i".into(),
+            },
+            Req::AccountSetActive {
+                agent: "a".into(),
+                id: "i".into(),
+            },
+        ] {
+            assert!(is_mutating(&req), "{req:?} must finish on shutdown");
+        }
+        for req in [
+            Req::Usage {
+                previous: app_core::usage::UsageSnapshot::default(),
+            },
+            Req::AccountSignIn {
+                agent: "a".into(),
+                id: "i".into(),
+            },
+        ] {
+            assert!(!is_mutating(&req), "{req:?} must be skippable on shutdown");
         }
     }
 }

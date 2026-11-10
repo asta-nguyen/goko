@@ -83,7 +83,7 @@ fn modal(s: &State) -> bool {
     e.guard.is_some()
         || e.project_picker_open
         || e.checkout_picker_open
-        || e.history.branch_picker_open
+        || e.history.branch_picker.open
         || e.commit.agent_picker_open
         || e.history.row_menu.is_some()
         || e.quick_open.open

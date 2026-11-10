@@ -21,12 +21,23 @@ use rune::AppHandle;
 
 use crate::State;
 
+#[derive(Clone)]
 struct Slot {
     dirty: Arc<AtomicBool>,
     notify: Arc<dyn Fn() + Send + Sync>,
 }
 
 static SLOT: OnceLock<Mutex<Option<Slot>>> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam: `install` registers into the calling thread's own slot, so
+    /// a headless `EditorState::new` on a parallel test thread can never
+    /// clobber another thread's native-hook fixture. The global `SLOT` still
+    /// carries fixtures the tests set directly.
+    static TEST_SLOT: std::cell::RefCell<Option<Slot>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// Register the dirty flag and the UI notification used when the OS vetoes a
 /// quit. Called once from `EditorState::new`.
@@ -35,7 +46,50 @@ pub fn install(dirty: Arc<AtomicBool>, handle: AppHandle<State>) {
         let h = handle.clone();
         h.update(|s: &mut State, _| crate::editor::navigation::on_quit_vetoed(s));
     });
-    *SLOT.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(Slot { dirty, notify });
+    write_slot(Slot { dirty, notify });
+}
+
+/// Store the slot `install` built: the calling thread's own slot under
+/// `cfg(test)` so parallel test installs stay isolated…
+#[cfg(test)]
+fn write_slot(slot: Slot) {
+    TEST_SLOT.with(|s| *s.borrow_mut() = Some(slot));
+}
+
+/// …and the process-global `SLOT` in production, where the app's single
+/// `EditorState` owns it.
+#[cfg(not(test))]
+fn write_slot(slot: Slot) {
+    *SLOT.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(slot);
+}
+
+/// What `install` leaves behind for an `EditorState::new` on the calling
+/// thread — the same write minus the `AppHandle` a test cannot build.
+#[cfg(test)]
+fn install_test_slot(dirty: Arc<AtomicBool>, notify: Arc<dyn Fn() + Send + Sync>) {
+    TEST_SLOT.with(|s| *s.borrow_mut() = Some(Slot { dirty, notify }));
+}
+
+/// The slot `should_terminate` consults under `cfg(test)`: this thread's own
+/// slot when it installed one (mirroring a real install on the dispatch
+/// thread), else the process-global `SLOT`.
+#[cfg(test)]
+fn slot() -> Option<Slot> {
+    if let Some(slot) = TEST_SLOT.with(|s| s.borrow().clone()) {
+        return Some(slot);
+    }
+    global_slot()
+}
+
+/// In production there is only the process-global `SLOT`.
+#[cfg(not(test))]
+fn slot() -> Option<Slot> {
+    global_slot()
+}
+
+/// The process-global slot the production IMP and the test fixtures share.
+fn global_slot() -> Option<Slot> {
+    SLOT.get().and_then(|m| m.lock().unwrap().clone())
 }
 
 /// `AppSpec::poll` hook: (re)attempt the macOS swizzle until it lands. The
@@ -97,13 +151,8 @@ mod macos {
         cmd: Sel,
         sender: *mut AnyObject,
     ) -> usize {
-        let slot = SLOT.get().and_then(|m| {
-            m.lock()
-                .unwrap()
-                .as_ref()
-                .map(|s| (s.dirty.clone(), s.notify.clone()))
-        });
-        if let Some((dirty, notify)) = slot
+        let slot = slot();
+        if let Some(Slot { dirty, notify }) = slot
             && dirty.load(Ordering::Acquire)
         {
             // Veto: AppKit keeps the app running; the notification raises
@@ -365,6 +414,7 @@ mod macos {
             OWN_CALLS.store(0, Ordering::SeqCst);
             NOTIFY_CALLS.store(0, Ordering::SeqCst);
             *SLOT.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
+            crate::editor::quit_guard::TEST_SLOT.with(|s| *s.borrow_mut() = None);
         }
 
         fn set_slot(dirty: bool) {
@@ -531,6 +581,34 @@ mod macos {
                 // Clean quit still forwards to the real original.
                 assert_eq!(terminate_reply(fx.child), SENTINEL_BASE);
                 assert_eq!(BASE_CALLS.load(Ordering::SeqCst), 1);
+            }
+        }
+
+        #[test]
+        fn an_install_on_another_thread_never_clobbers_the_native_slot() {
+            let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            reset_state();
+            set_slot(true);
+            // A parallel headless `EditorState::new` `install`s a clean slot
+            // on its own thread — the race that overwrote the fixture. Its
+            // thread-local slot dies with the thread, so the fixture's dirty
+            // slot must still win here.
+            std::thread::spawn(|| {
+                crate::editor::quit_guard::install_test_slot(
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(|| {}),
+                );
+            })
+            .join()
+            .unwrap();
+            let fx = fixture("Isolate");
+            let selector = sel!(applicationShouldTerminate:);
+            // SAFETY: live test classes.
+            unsafe {
+                swizzle(fx.child, selector);
+                assert_eq!(terminate_reply(fx.child), TERMINATE_CANCEL);
+                assert_eq!(NOTIFY_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(BASE_CALLS.load(Ordering::SeqCst), 0);
             }
         }
     }

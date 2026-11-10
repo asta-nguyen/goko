@@ -869,67 +869,44 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         .border_sides([0.0, 0.0, 1.0, 0.0], ink.border);
     let h = &s.editor.history;
 
-    // Branch select: "All branches" + locals, then remotes (desktop optgroups
-    // flatten; remote display names already carry their remote prefix).
-    let mut options: Vec<String> = vec!["All branches".into()];
-    let mut values: Vec<Option<String>> = vec![None];
-    for b in h.branches.iter().filter(|b| !b.remote) {
-        options.push(b.name.clone());
-        values.push(Some(b.ref_name.clone()));
+    // Branch combobox: "All branches" + locals, then remotes (desktop
+    // optgroups flatten; remote display names already carry their remote
+    // prefix). Option ids are ref names; `ALL_BRANCHES` stands for none.
+    const ALL_BRANCHES: &str = "";
+    let mut options = vec![rune_kit::ComboboxOption::new(ALL_BRANCHES, "All branches")];
+    for remote in [false, true] {
+        for b in h.branches.iter().filter(|b| b.remote == remote) {
+            options.push(rune_kit::ComboboxOption::new(&b.ref_name, &b.name));
+        }
     }
-    for b in h.branches.iter().filter(|b| b.remote) {
-        options.push(b.name.clone());
-        values.push(Some(b.ref_name.clone()));
-    }
-    let current = h
-        .branch
-        .as_deref()
-        .and_then(|r| h.branches.iter().find(|b| b.ref_name == r))
-        .map(|b| b.name.clone());
-    // Fully controlled like the workspace project/checkout pickers:
-    // `.open` mirrors `history.branch_picker_open`; the kit fires
-    // `on_toggle`/`on_close` for press, outside-click and Escape.
-    let select = rune_kit::Select::new("history-branch", &options)
-        .current(current.as_deref())
-        .placeholder("All branches")
-        .width(160.0)
-        .open(s.editor.history.branch_picker_open)
-        .on_toggle(|st: &mut State| {
-            st.editor.history.branch_picker_open = !st.editor.history.branch_picker_open;
-            if st.editor.history.branch_picker_open {
-                st.editor.project_picker_open = false;
-                st.editor.checkout_picker_open = false;
-            }
-        })
-        .on_close(|st: &mut State| {
-            st.editor.history.branch_picker_open = false;
-        })
-        .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
-            st.editor.history.branch_picker_open = false;
-            let branch = values
-                .iter()
-                .zip(options.iter())
-                .find(|(_, o)| o.as_str() == label)
-                .and_then(|(v, _)| v.clone());
-            if st.editor.history.branch == branch {
-                return;
-            }
-            st.editor.history.branch = branch.clone();
-            st.editor.history.commits.clear();
-            st.editor.history.next_skip = None;
-            st.editor.history.selected = None;
-            st.editor.history.detail = None;
-            st.editor.history.detail_loading = false;
-            st.editor.history.filter.text.clear();
-            st.editor.history.loading = true;
-            st.editor.history.error = None;
-            if let (Some(checkout), Some(key)) =
-                (st.editor.checkout.clone(), st.editor.checkout_key.clone())
-            {
-                st.editor
-                    .enqueue_read(checkout, key, Req::History { skip: 0, branch });
-            }
-        });
+    let select = rune_kit::Combobox::new("history-branch", &h.branch_picker, &options, |st: &mut State| {
+        &mut st.editor.history.branch_picker
+    })
+    .current(Some(h.branch.as_deref().unwrap_or(ALL_BRANCHES)))
+    .placeholder("All branches")
+    .search_placeholder("Search branches")
+    .width(160.0)
+    .on_choose(move |st: &mut State, id: &str, _tx: &mut Tx| {
+        let branch = (id != ALL_BRANCHES).then(|| id.to_string());
+        if st.editor.history.branch == branch {
+            return;
+        }
+        st.editor.history.branch = branch.clone();
+        st.editor.history.commits.clear();
+        st.editor.history.next_skip = None;
+        st.editor.history.selected = None;
+        st.editor.history.detail = None;
+        st.editor.history.detail_loading = false;
+        st.editor.history.filter.text.clear();
+        st.editor.history.loading = true;
+        st.editor.history.error = None;
+        if let (Some(checkout), Some(key)) =
+            (st.editor.checkout.clone(), st.editor.checkout_key.clone())
+        {
+            st.editor
+                .enqueue_read(checkout, key, Req::History { skip: 0, branch });
+        }
+    });
     bar = bar.child(select.build(k, layer));
 
     bar = bar.child(
@@ -2570,5 +2547,45 @@ mod tests {
             "large window reclaims to 160: expected y={expected_y3}, got {}",
             g3.rect[1]
         );
+    }
+
+    #[test]
+    fn branch_combobox_opens_with_every_ref() {
+        use rune::{Cx, Env, Runtime};
+
+        fn branch(name: &str, remote: bool) -> app_core::git_view::GitViewBranch {
+            app_core::git_view::GitViewBranch {
+                ref_name: format!("refs/{name}"),
+                name: name.into(),
+                remote,
+                current: false,
+            }
+        }
+        fn toolbar_view(s: &State, _cx: &mut Cx<State>) -> El {
+            let mut layer = Vec::new();
+            let bar = toolbar(s, &s.ink, &s.editor.kit, &mut layer);
+            rune_kit::root(bar, layer)
+        }
+        let mut s = State::new(crate::test_handle());
+        s.editor.history.branches = vec![branch("main", false), branch("origin/dev", true)];
+        let mut rt = Runtime::new(s, toolbar_view, (800.0, 300.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let options = |rt: &Runtime<State>| {
+            rt.elements().into_iter().filter(|e| e.role == "option").count()
+        };
+        assert_eq!(options(&rt), 0, "starts closed");
+
+        let trigger = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("history-branch-value-trigger"))
+            .expect("the combobox trigger is mounted");
+        let (x, y) = (trigger.rect[0] + 4.0, trigger.rect[1] + trigger.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert!(rt.state.editor.history.branch_picker.open);
+        assert_eq!(options(&rt), 3, "All branches + local + remote");
     }
 }
