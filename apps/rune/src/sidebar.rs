@@ -365,15 +365,15 @@ fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
 // Density: the compact scale. Heights and vertical offsets are multiples of 4 pt so rows,
 // badges and text land on whole device pixels at 1x/1.25x/1.5x/2x (boxes snap to device
 // pixels but text keeps its exact position, so fractional layouts drift text off-centre).
-const ROW_H: f32 = 24.0; // every row's pitch: project, worktree, session, "Worktrees"
-// Filled rows (active, selected) keep a 2 pt gap so neighbouring fills never merge into
+const ROW_H: f32 = 28.0; // every row's pitch: project, worktree, session, "Worktrees"
+// Filled rows (active, selected) keep a 4 pt gap so neighbouring fills never merge into
 // one blob. The fill is an inset `row_layer` (`FILL_H` tall, `ROW_GAP` in from the top
-// and bottom) rather than a margin on the row, so every row keeps its exact 24 pt pitch
+// and bottom) rather than a margin on the row, so every row keeps its exact 28 pt pitch
 // and the text/badges inside never move off the pixel grid.
-const ROW_GAP: f32 = 1.0;
-const FILL_H: f32 = ROW_H - 2.0 * ROW_GAP; // 22
-const CELL: f32 = 20.0; // chevron cell (was 28)
-const GUIDE: f32 = 13.0; // indent guide offset (was 16); ≈ under the chevron centre
+const ROW_GAP: f32 = 2.0;
+const FILL_H: f32 = ROW_H - 2.0 * ROW_GAP; // 24
+const CELL: f32 = 24.0; // chevron cell
+const GUIDE: f32 = 15.0; // indent guide offset; ≈ under the chevron centre
 const SESSION_PL: f32 = 20.0; // session icon indent inside its list (was 40)
 const NAME: TextStyle = TextStyle::new(13.0, 500.0).lh(16.0); // was T14M
 const SUB: TextStyle = T12.lh(16.0); // session title (was T12)
