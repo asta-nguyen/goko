@@ -1,0 +1,20 @@
+CHANGELOG.md
+  s_979b3d3ceb4a3e::t_441007d739bb0a 34-35
+  s_979b3d3ceb4a3e::t_4fb823f87b7ab6 8-9,18-33,36-45,48-50,52,56-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "62ec0de1934ca96b9bc7679904e52c10561cd981",
+  "prompts": {},
+  "sessions": {
+    "s_979b3d3ceb4a3e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "cumbersome-snowshoe",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
