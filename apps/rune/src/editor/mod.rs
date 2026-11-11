@@ -21,6 +21,7 @@ pub mod history_layout;
 pub mod indent;
 pub mod keyboard;
 pub mod lsp;
+pub mod media;
 pub mod navigation;
 pub mod pane_layout;
 pub mod patch;

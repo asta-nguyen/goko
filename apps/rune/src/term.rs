@@ -64,12 +64,12 @@ pub struct TermLine {
     runs: Vec<TermRun>,
     backs: Vec<Back>,
     cursor: Option<TermCursor>,
+    /// The text runs on into the next row: the terminal wrapped it there.
+    wrapped: bool,
 }
 
 impl TermLine {
-    /// The row's text, runs joined. Only the tests read it — the panes
-    /// draw the runs directly.
-    #[cfg(test)]
+    /// The row's text, runs joined.
     pub fn text(&self) -> String {
         self.runs.iter().map(|run| run.text.as_str()).collect()
     }
@@ -655,6 +655,9 @@ fn render_lines(term: &Term<VoidListener>, ink: &Ink) -> Vec<TermLine> {
                 runs,
                 backs,
                 cursor,
+                wrapped: cells
+                    .last()
+                    .is_some_and(|cell| cell.flags.contains(Flags::WRAPLINE)),
             }
         })
         .collect()
@@ -715,7 +718,8 @@ pub enum LinkKind {
 /// an unbalanced closing bracket. A file token needs an extension and either a
 /// `/` or a line suffix.
 // ponytail: a bare `README.md` is not linked (too many false hits such as
-// `node.js`), and a URL wrapped onto the next row is cut at the row end.
+// `node.js`). A URL the terminal wrapped is joined by `term_lines_el`; one a
+// program broke with its own newline is still cut at the row end.
 pub fn find_links(text: &str) -> Vec<(std::ops::Range<usize>, LinkKind)> {
     let mut out: Vec<(std::ops::Range<usize>, LinkKind)> = Vec::new();
     let mut from = 0;
@@ -830,7 +834,13 @@ fn link_id(kind: &LinkKind, text: &str, session: &str) -> String {
     }
 }
 
-fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32, session: &str) -> El {
+fn term_line_el(
+    line: &TermLine,
+    ink: &Ink,
+    cell_w: f32,
+    line_h: f32,
+    links: Vec<(std::ops::Range<usize>, String)>,
+) -> El {
     let mut content = String::new();
     let mut spans = Vec::with_capacity(line.runs.len());
     let mut at = 0usize;
@@ -904,13 +914,6 @@ fn term_line_el(line: &TermLine, ink: &Ink, cell_w: f32, line_h: f32, session: &
             }
         };
     }
-    let links: Vec<_> = find_links(&content)
-        .into_iter()
-        .map(|(range, kind)| {
-            let id = link_id(&kind, &content[range.clone()], session);
-            (range, id)
-        })
-        .collect();
     let el = if line.runs.len() == 1 {
         let r = &line.runs[0];
         let mut e = text(content)
@@ -1017,8 +1020,45 @@ pub fn term_lines_el(lines: &[TermLine], ink: &Ink, session: &str) -> Vec<El> {
     let (cell_w, line_h) = cell_metrics();
     lines
         .iter()
-        .map(|l| term_line_el(l, ink, cell_w, line_h, session))
+        .zip(row_links(lines, session))
+        .map(|(l, links)| term_line_el(l, ink, cell_w, line_h, links))
         .collect()
+}
+
+/// Each row's links as (byte range in the row, link id).
+fn row_links(lines: &[TermLine], session: &str) -> Vec<Vec<(std::ops::Range<usize>, String)>> {
+    let mut links: Vec<Vec<(std::ops::Range<usize>, String)>> = vec![Vec::new(); lines.len()];
+    // Links are found over a whole wrapped text — a URL the terminal broke
+    // across rows is one link — then handed back to each row it touches.
+    let mut first = 0;
+    while first < lines.len() {
+        let mut last = first;
+        while lines[last].wrapped && last + 1 < lines.len() {
+            last += 1;
+        }
+        let texts: Vec<String> = lines[first..=last].iter().map(TermLine::text).collect();
+        let joined = texts.concat();
+        let found: Vec<_> = find_links(&joined)
+            .into_iter()
+            .map(|(range, kind)| {
+                let id = link_id(&kind, &joined[range.clone()], session);
+                (range, id)
+            })
+            .collect();
+        let mut offset = 0;
+        for (row, text) in texts.iter().enumerate() {
+            let rows = offset..offset + text.len();
+            for (range, id) in &found {
+                let (start, end) = (range.start.max(rows.start), range.end.min(rows.end));
+                if start < end {
+                    links[first + row].push((start - offset..end - offset, id.clone()));
+                }
+            }
+            offset = rows.end;
+        }
+        first = last + 1;
+    }
+    links
 }
 
 #[cfg(test)]
@@ -1144,6 +1184,28 @@ mod tests {
         assert!(f("README.md node.js v1.2 a/b http://").is_empty());
         assert_eq!(f("x.rs:9 ~/k/n.md").len(), 2);
         assert_eq!(f("http://h/p/f.rs").len(), 1, "the URL claims its path");
+    }
+
+    #[test]
+    fn a_url_the_terminal_wrapped_is_one_link_over_every_row() {
+        let (mut term, tx) = terminal();
+        term.resize(30, 6);
+        let url = "https://example.dev/a/very/long/path/that/wraps?x=1";
+        tx.send(Output {
+            seq: 0,
+            data: format!("see {url} ok\r\nnext\r\n").into_bytes(),
+        })
+        .unwrap();
+        term.feed();
+        let ink = ink();
+        let lines = settled_lines(&mut term, &ink);
+        assert!(lines[0].wrapped && !lines[1].wrapped, "one wrapped text");
+        let ids = row_links(&lines, "s");
+        assert_eq!(ids[0].len(), 1, "the first row carries the link");
+        assert_eq!(ids[1].len(), 1, "so does the row it wraps onto");
+        assert_eq!(ids[0][0].1, ids[1][0].1);
+        assert_eq!(ids[0][0].1, format!("u\t{url}"), "the whole URL, not a cut");
+        assert!(ids[2].is_empty());
     }
 
     #[test]

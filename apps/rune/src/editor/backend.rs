@@ -1268,6 +1268,12 @@ impl EditorState {
         // Fresh document: arm the highlight debounce so the initial text is
         // coloured once the quiet period passes.
         doc.highlight_dirty_at = Some(std::time::Instant::now());
+        if doc.kind == crate::editor::draft::DocKind::Binary
+            && let (Some(host), Some(checkout)) = (&self.media_host, &self.checkout)
+        {
+            doc.media =
+                crate::editor::media::Media::open(&doc.path, &checkout.join(&doc.path), host);
+        }
         // The draft guard already resolved before this reply was applied, so
         // replacing the slot here cannot drop unsaved work. A pending reload
         // targeted the OLD doc — never let it land on the new one.
@@ -2404,6 +2410,42 @@ mod tests {
                 .as_ref()
                 .is_some_and(|n| n.text.contains("permission denied"))
         );
+    }
+
+    #[test]
+    fn a_binary_image_gets_a_preview_and_a_binary_blob_does_not() {
+        // A 1x1 PNG.
+        const PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 100, 96,
+            248, 95, 15, 0, 2, 135, 1, 128, 235, 71, 186, 146, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let dir = std::env::temp_dir().join(format!("rune-media-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dot.png"), PNG).unwrap();
+        std::fs::write(dir.join("blob.bin"), [0u8, 1, 2]).unwrap();
+        let mut e = editor();
+        select(&mut e);
+        e.checkout = Some(dir.clone());
+        let waker: rune::Waker = std::sync::Arc::new(|| {});
+        e.media_host = Some((rune::ImageCache::new(waker.clone()), waker));
+        let binary = |path: &str| {
+            let mut file = text_file("");
+            file.path = path.into();
+            file.kind = "binary";
+            file.text = None;
+            file
+        };
+        e.install_doc("dot.png".into(), binary("dot.png"), None);
+        let doc = e.doc.as_ref().unwrap();
+        let Some(crate::editor::media::Media::Image(image)) = &doc.media else {
+            panic!("a PNG gets an image preview");
+        };
+        assert_eq!(image.wait().unwrap(), [1, 1], "the preview decodes");
+        e.install_doc("blob.bin".into(), binary("blob.bin"), None);
+        assert!(e.doc.as_ref().unwrap().media.is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

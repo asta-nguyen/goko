@@ -353,6 +353,8 @@ pub struct EditorState {
     /// draft; opening another file goes through the same Save/Discard/Cancel
     /// guard as every other navigation, then replaces this slot.
     pub doc: Option<OpenDoc>,
+    /// What a media preview needs (image cache, app waker), set in `setup`.
+    pub media_host: Option<crate::editor::media::Host>,
     /// Scratch `CodeState` for the `Code` view's accessors when no document
     /// is open (the view is only mounted with a doc, so this is a fallback).
     pub scratch_code: CodeState,
@@ -520,6 +522,7 @@ impl EditorState {
                 gen_checkout: None,
             },
             doc: None,
+            media_host: None,
             scratch_code: CodeState::new("", ""),
             indent_choice: UnitChoice::Auto,
             blame_enabled: true,

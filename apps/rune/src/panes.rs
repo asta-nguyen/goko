@@ -469,6 +469,10 @@ impl State {
             .ok()
             .filter(|file| file.is_file())
             .ok_or_else(|| format!("{path}: no such file"))?;
+        if crate::editor::media::opens_externally(path) {
+            open_url(&file.to_string_lossy());
+            return Ok(());
+        }
         let project_id = view
             .meta
             .as_ref()
@@ -1021,23 +1025,19 @@ impl State {
 
     // -- Terminal attachments ------------------------------------------------
 
-    /// Attach a terminal to every pane of the active tab — and detach the
-    /// ones it replaced. Only the visible tab holds attachments: switching
-    /// tabs or views detaches, and coming back resubscribes (the daemon
-    /// replays what was missed).
+    /// Attach a terminal to every pane of every open tab, once the pane
+    /// has been measured, and detach the ones whose pane is gone. A hidden
+    /// terminal keeps parsing its output without drawing it: detaching on
+    /// a tab, view or project switch threw the grid and its scrollback
+    /// away, and the replay that rebuilt it holds only the daemon's last
+    /// megabyte — cut mid-sequence, with next to no history.
     pub fn sync_terminals(&mut self) -> bool {
-        let wanted: Vec<String> = if self.view == crate::View::Terminal {
-            self.current_tab()
-                .map(|tab| {
-                    collect_panes(&tab.layout)
-                        .iter()
-                        .map(|pane| pane.session.clone())
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let wanted: Vec<String> = self
+            .open_tabs
+            .iter()
+            .flat_map(|tab| collect_panes(&tab.layout))
+            .map(|pane| pane.session.clone())
+            .collect();
         let mut changed = false;
         let stale: Vec<String> = self
             .attachments
@@ -1099,6 +1099,18 @@ impl State {
         let mut acks: Vec<(SessionId, u64)> = Vec::new();
         let mut resizes: Vec<(SessionId, u16, u16)> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
+        let shown: Vec<String> = if self.view == crate::View::Terminal {
+            self.current_tab()
+                .map(|tab| {
+                    collect_panes(&tab.layout)
+                        .iter()
+                        .map(|pane| pane.session.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         for (key, att) in self.attachments.iter_mut() {
             // A subscribe the daemon refused means there is nothing to
             // show: drop the attachment; sync_terminals retries later.
@@ -1108,6 +1120,14 @@ impl State {
                 continue;
             }
             att.term.feed();
+            if flow && att.term.unacked() > 0 {
+                acks.push((att.term.session, att.term.next_seq));
+            }
+            // A hidden pane only keeps its grid current: it is laid out
+            // and drawn when it comes back.
+            if !shown.contains(key) {
+                continue;
+            }
             // Fit the grid to the measured pane before drawing.
             if att.term.size() != (att.cols, att.rows) {
                 att.term.resize(att.cols, att.rows);
@@ -1116,9 +1136,6 @@ impl State {
             // frame that will draw it.
             if let Some(wait) = att.term.hold() {
                 tx.wake_after(wait);
-            }
-            if flow && att.term.unacked() > 0 {
-                acks.push((att.term.session, att.term.next_seq));
             }
             if att.cols > 0 && att.rows > 0 && att.pty != (att.cols, att.rows) {
                 att.pty = (att.cols, att.rows);
@@ -1776,7 +1793,7 @@ fn badge_button(label: &str, tone: Color, ink: &Ink, f: impl Fn(&mut State) + 's
 }
 
 /// Open `url` with the platform's opener, without waiting for it.
-fn open_url(url: &str) {
+pub(crate) fn open_url(url: &str) {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
@@ -2215,27 +2232,28 @@ mod tests {
     }
 
     #[test]
-    fn terminal_attachments_follow_the_active_tab_only() {
+    fn terminal_attachments_outlive_the_tab_and_the_view() {
         let mut s = state();
-        let (a, info_a) = tabbed_session(&mut s, "first");
+        let (a, _) = tabbed_session(&mut s, "first");
         let (b, _) = tabbed_session(&mut s, "second");
         s.data.connected = true;
         s.pane_grids.insert(a.clone(), (90, 20));
         s.pane_grids.insert(b.clone(), (90, 20));
-        // B's tab was focused last: only its pane attaches, not A's.
-        assert!(s.sync_terminals());
-        assert!(!s.attachments.contains_key(&a));
-        assert!(s.attachments.contains_key(&b));
-        // Switching back to A's tab detaches B and attaches A.
-        s.activate_tab(0);
+        // Every measured pane of every tab attaches, not only the active one.
         assert!(s.sync_terminals());
         assert!(s.attachments.contains_key(&a));
-        assert!(!s.attachments.contains_key(&b));
-        // Leaving the Terminal view detaches everything.
+        assert!(s.attachments.contains_key(&b));
+        // Switching tabs or leaving the Terminal view keeps the grids (and
+        // their scrollback): nothing detaches, nothing re-attaches.
+        s.activate_tab(0);
         s.view = crate::View::Editor;
+        assert!(!s.sync_terminals());
+        assert!(s.attachments.contains_key(&a));
+        assert!(s.attachments.contains_key(&b));
+        // A pane that left every tab detaches.
+        s.remove_session_everywhere(&b);
         assert!(s.sync_terminals());
-        assert!(s.attachments.is_empty());
-        let _ = info_a;
+        assert!(!s.attachments.contains_key(&b));
     }
 
     #[test]

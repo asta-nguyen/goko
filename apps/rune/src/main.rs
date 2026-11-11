@@ -1013,7 +1013,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 /// `AppSpec::setup`: kick the initial project list, history-layout restore,
 /// the session metadata and agent reads, the sidebar width restore, and ACP
 /// agent discovery once the state exists.
-fn setup(s: &mut State, _waker: rune::Waker) {
+fn setup(s: &mut State, waker: rune::Waker) {
+    s.editor.media_host = Some((rune::ImageCache::new(waker.clone()), waker));
     s.editor.refresh_projects();
     // History pane sizes persist in the shared settings store; the read runs
     // on the worker like every storage access (no UI-thread SQLite).

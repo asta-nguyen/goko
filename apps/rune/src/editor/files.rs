@@ -270,6 +270,12 @@ fn tree_get_mut(s: &mut State) -> &mut TreeModel<FileNode<FileMark>> {
 /// Open `path` in the editor pane. Same-file requests only queue a reveal —
 /// no reload. Everything routes through the draft guard first.
 pub fn open_doc(s: &mut State, path: &str, line: Option<u64>, tx: &mut Tx) {
+    if crate::editor::media::opens_externally(path) {
+        if let Some(checkout) = &s.editor.checkout {
+            crate::panes::open_url(&checkout.join(path).to_string_lossy());
+        }
+        return;
+    }
     navigation::navigate(
         s,
         PendingNav::OpenDoc {
@@ -472,7 +478,7 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
         );
     };
     let mut pane = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
-    if !doc.editable() {
+    if !doc.editable() && doc.media.is_none() {
         // One concise reason per document — a truncated text file IS the
         // cap notice; stacking "read only — read only" over a second
         // "…— read only" banner was the duplicate-label defect.
@@ -531,7 +537,9 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
     // and preview is toggled — editable or read-only — else the editable
     // code surface, else selectable read-only text.
     let is_md = doc.kind == DocKind::Text && draft::is_markdown_path(&doc.path);
-    if is_md && doc.markdown_preview {
+    if let Some(media) = &doc.media {
+        pane.child(crate::editor::media::view(media, ink))
+    } else if is_md && doc.markdown_preview {
         pane.child(markdown_surface(s, k).grow(1.0).min_h(0.0))
     } else if doc.editable() {
         pane.child(editor_surface(s, ink).grow(1.0).min_h(0.0))

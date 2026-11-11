@@ -122,6 +122,8 @@ pub struct OpenDoc {
     /// A highlight job for this doc is on the worker lane; its reply clears
     /// the flag (matched by path, then revision).
     pub highlight_inflight: bool,
+    /// The preview of a binary file the pane can show (image, video, audio).
+    pub media: Option<crate::editor::media::Media>,
 }
 
 impl OpenDoc {
@@ -145,6 +147,7 @@ impl OpenDoc {
             markdown_preview: false,
             highlight_dirty_at: None,
             highlight_inflight: false,
+            media: None,
         }
     }
 
