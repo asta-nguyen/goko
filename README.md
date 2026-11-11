@@ -1,9 +1,10 @@
 # Goko
 
-Goko is a cross-platform desktop app (macOS, Linux and Windows) for running
-interactive command-line agents by project. The native Rune app (`apps/rune`) talks to the Rust `gokod` daemon, which
-owns the terminal processes. Project and session metadata is stored separately in
-SQLite. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
+Goko is a desktop app for macOS and Linux (Windows is not supported yet) for
+running interactive command-line agents by project. The native Rune app
+(`apps/rune`) talks to the Rust `gokod` daemon, which owns the terminal
+processes. Project and session metadata is stored separately in SQLite. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 
 ## Layout
 
@@ -14,13 +15,38 @@ SQLite. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
 
+## Install (macOS Apple Silicon, Linux)
+
+```sh
+curl -fsSL https://github.com/asta-nguyen/goko/releases/latest/download/install.sh | sh
+```
+
+This downloads the latest release for your machine, checks its sha256, and
+installs it; run it again to update.
+
+- **macOS (Apple Silicon):** `Goko.app` in `~/Applications`. The app is signed
+  ad hoc (free, no Apple Developer account), so install it with this command: a
+  copy downloaded through a browser is quarantined and macOS asks you to allow
+  it in System Settings → Privacy & Security.
+- **Linux (x86_64, aarch64):** `~/.local/share/goko` with a `goko` command in
+  `~/.local/bin` and a launcher entry. It needs a desktop session (X11 or
+  Wayland) and a working Vulkan or OpenGL driver.
+
+Intel Macs build from source (below); there is no Windows release yet.
+
+Goko → Settings → Updates shows the running version and tells you when a newer
+release is out (set `GOKO_NO_UPDATE_CHECK=1` to stop the automatic check). To
+update, run the install command again and reopen Goko.
+
 ## Prerequisites
 
 - Rust stable, installed with [rustup](https://rustup.rs/).
 - macOS: Xcode Command Line Tools (`xcode-select --install`).
-- Linux: a C toolchain, `git`, and the X11/Wayland and GPU (Vulkan or OpenGL)
-  libraries that `winit`/`wgpu` need.
-- Windows: MSVC build tools and `git`.
+- Linux: a C toolchain, `git`, `pkg-config`, and the font, X11/Wayland and GPU
+  libraries that `winit`/`wgpu` need. On Debian or Ubuntu:
+  `sudo apt-get install build-essential pkg-config libfontconfig1-dev libwayland-dev
+  libxkbcommon-dev libx11-dev libxcb1-dev libxkbcommon-x11-dev libvulkan-dev`.
+- Windows: not supported yet (see below).
 
 No Node, pnpm or other toolchain is needed.
 
@@ -92,8 +118,23 @@ cargo clippy --workspace -- -D warnings
 
 The daemon integration tests start the real `gokod` in a temporary `GOKO_HOME`.
 
-## Distribution
+## Releasing
 
-There are no installers yet. On macOS, `target/Goko.app` is an unsigned local
-bundle, fine for your own machine; sharing it needs Developer ID signing and
-notarization first. On Linux, ship `goko-rune` and `gokod` together in one directory.
+A release is a pushed tag. The app's version is the workspace `version` in
+`Cargo.toml` (it is what Settings → Updates compares), so the tag must equal it:
+
+1. Set `version` in `[workspace.package]` of `Cargo.toml` (for example `0.2.0`),
+   and rename the `Unreleased` heading in `CHANGELOG.md` to that version and the
+   date, leaving a fresh `Unreleased` above it.
+2. Merge to `main`, then `git tag v0.2.0 && git push origin v0.2.0`.
+
+`.github/workflows/release.yml` then builds macOS (Apple Silicon) and Linux
+(x86_64, aarch64), and publishes the archives, a `latest.json` manifest and
+`install.sh` as a GitHub release; the workflow refuses a tag that does not match
+`Cargo.toml`. To try the builds without publishing, run the workflow by hand
+(Actions → release → Run workflow): it keeps the archives as artifacts.
+
+macOS builds are signed ad hoc (no Apple Developer account, so no
+notarization), which is why the installer is a `curl` command; see the macOS
+note above. The packaging scripts are `apps/rune/package-macos.sh` and
+`apps/rune/package-linux.sh`; `gokod` has its own version (`gokod --version`).

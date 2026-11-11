@@ -17,6 +17,8 @@ The Rust protocol and daemon live in `crates/protocol/` and `crates/daemon/`, sh
 
 The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare binary opens **no window** — without a bundle, LaunchServices never activates the app, so its window is never ordered in. Run it through `apps/rune/run-macos.sh [release|debug]`, which builds the workspace, assembles `target/Goko.app` (the app plus `gokod` beside it, so the app can start the daemon) and launches it. The daemon client spawns `gokod` out of `GOKO_HOME` (`app_core::home::home_dir`), so a fresh home gets its own daemon.
 
+A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` builds macOS (Apple Silicon) and Linux (x86_64, aarch64) with `apps/rune/package-macos.sh` / `package-linux.sh` (a tar.gz and a `<target>.target.json` entry each), merges the entries into `latest.json` with `jq`, and publishes them with `distribution/install.sh` as a GitHub release; users install with the `curl` command in the README. `bundle-macos.sh` is the one place the macOS bundle is assembled, shared with `run-macos.sh`. There is no Windows release (`gokod` uses Unix sockets).
+
 ### Checking UI changes in the running app
 
 Unit tests and the rune test harness do not draw a window, so a UI change is only verified once it is seen in the real app. Use `agent-desktop` (installed at `/opt/homebrew/bin/agent-desktop`; read `agent-desktop skills get desktop` first) to read the accessibility tree, click and screenshot **the Goko window only**.

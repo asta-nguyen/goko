@@ -348,8 +348,8 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/d
 ### RNC-settings-page
 
 The system SHALL render the Settings view as a section rail (Editor,
-Appearance, Accounts, ACP agents) beside the active section instead of a
-placeholder: Editor exposes the native indentation preference (auto/2/4/8
+Appearance, Accounts, ACP agents, Updates) beside the active section instead
+of a placeholder: Editor exposes the native indentation preference (auto/2/4/8
 spaces/tabs, persisted under `goko.editor.indent`); Appearance offers
 System, Dark+, Light, One Dark, Catppuccin Mocha and Dracula persisted
 under `goko.theme` with `Ink::for_theme` palettes and System following the
@@ -365,7 +365,11 @@ clears the form in front of the user; ACP agents expose each preset's
 enabled flag plus command/prompt drafts saved together through `agents_set`
 on the ACP runtime, and Reset removes that agent's stored override
 (`acp::agents_reset`) so the preset is restored instead of being recreated
-by the next store read. No Vim control is rendered — it is deferred by
+by the next store read; Updates names the running version, looks for a newer
+release with a build for this machine (`latest.json` of the latest GitHub release, at startup, every six
+hours and on "Check for updates"; `GOKO_NO_UPDATE_CHECK` stops the automatic
+one) and, when one is out, says so, raises a notice toast once per version and
+offers the install command to copy. No Vim control is rendered — it is deferred by
 decision D1. Every mutation rides a worker lane (backend `Req`s or the ACP
 runtime), never the UI thread.
 
@@ -407,14 +411,20 @@ runtime), never the UI thread.
 - WHEN Reset is pressed
 - THEN the stored override is removed and the preset is effective again
 
-Evidence: `apps/rune/src/settings.rs`, `apps/rune/src/theme.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/acp.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/accounts.rs`, `crates/app-core/src/acp.rs`
+#### Scenario: a newer release
+
+- GIVEN the Updates section is open
+- WHEN the check finds a release newer than the running version
+- THEN the section shows the running version, says the newer one is available and offers "Copy install command"; a failed automatic check stays silent, one the user asked for shows its reason
+
+Evidence: `apps/rune/src/settings.rs`, `apps/rune/src/update.rs`, `apps/rune/src/theme.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/acp.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/accounts.rs`, `crates/app-core/src/acp.rs`
 
 ### RNC-settings-toggle
 
 The system SHALL toggle `State::view` between `Settings` and `Terminal` when
 the header settings button is pressed; `Settings` replaces the whole workspace
 column (tab strip, controls, content) with the native settings page —
-Editor/Appearance/Accounts/ACP agents sections — matching App.tsx's
+Editor/Appearance/Accounts/ACP agents/Updates sections — matching App.tsx's
 settingsMode. The press routes through the editor's draft guard like the view
 switch, so leaving the Editor with unsaved work raises Save/Discard/Cancel
 before the view changes. The button is a keyboard-focusable toggle named

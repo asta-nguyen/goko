@@ -16,6 +16,7 @@ mod tab_debug;
 mod term;
 mod theme;
 mod trace;
+mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -168,6 +169,8 @@ pub struct State {
     /// The open usage-chip account menu: the agent it belongs to and where
     /// the chip was pressed, so the kit menu can anchor there.
     usage_menu: Option<(String, f32, f32)>,
+    /// What the check for a newer release found (Settings → Updates).
+    update: update::Status,
     /// The settings page's own state (section, forms, drafts).
     settings: settings::SettingsState,
     /// The appearance choice restored from `goko.theme`.
@@ -208,6 +211,8 @@ impl State {
         // and the session state is driven by synthetic events.
         #[cfg(test)]
         let daemon = daemon::Daemon::spawn_disconnected();
+        #[cfg(not(test))]
+        update::spawn(handle.clone());
         State {
             ink,
             data: Data::default(),
@@ -269,6 +274,7 @@ impl State {
             pulse: rune::Live::new(1.0),
             usage_at: None,
             usage_menu: None,
+            update: update::Status::default(),
             settings: settings::SettingsState::default(),
             theme_choice: theme::Theme::Dark,
             os_dark: true,
@@ -4576,6 +4582,42 @@ mod view_tests {
             .filter(|element| element.label.as_deref() == Some("Sign in"))
             .count();
         assert_eq!(sign_ins, 1, "only the named account can sign in");
+    }
+
+    /// Settings → Updates names the running version, and offers the install
+    /// command only once a newer release is known.
+    #[test]
+    fn settings_updates_shows_the_version_and_the_install_command_when_one_is_out() {
+        let page = |status: update::Status| {
+            let mut s = State::new(test_handle());
+            s.settings.section = crate::settings::Section::Updates;
+            s.update = status;
+            let mut rt = Runtime::new(s, settings_view, (1512.0, 814.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            let infos = els(&rt);
+            let has = |wanted: &str| {
+                infos.iter().any(|e| {
+                    e.label.as_deref() == Some(wanted) || e.text.as_deref() == Some(wanted)
+                })
+            };
+            (
+                has(&format!("Goko {}", update::CURRENT)),
+                has("Check for updates"),
+                has("Copy install command"),
+                has("Goko 9.9.9 is available."),
+            )
+        };
+        let (version, check, copy, said) = page(update::Status::UpToDate);
+        assert!(
+            version && check,
+            "the version and the check button are always there"
+        );
+        assert!(!copy && !said, "nothing to install yet");
+        let (version, _, copy, said) = page(update::Status::Available("9.9.9".into()));
+        assert!(
+            version && copy && said,
+            "the new release comes with the command"
+        );
     }
 
     // -- Terminal row geometry ------------------------------------------------
