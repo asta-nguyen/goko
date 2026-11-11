@@ -15,24 +15,21 @@ processes. Project and session metadata is stored separately in SQLite. See
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
 
-## Install (macOS Apple Silicon, Linux)
+## Install (macOS Apple Silicon)
 
 ```sh
 curl -fsSL https://github.com/asta-nguyen/goko/releases/latest/download/install.sh | sh
 ```
 
-This downloads the latest release for your machine, checks its sha256, and
-installs it; run it again to update.
+This downloads the latest release, checks its sha256 and signature, and installs
+`Goko.app` in `~/Applications`; run it again to update. The app is signed ad hoc
+(free, no Apple Developer account), so install it with this command: a copy
+downloaded through a browser is quarantined and macOS asks you to allow it in
+System Settings → Privacy & Security.
 
-- **macOS (Apple Silicon):** `Goko.app` in `~/Applications`. The app is signed
-  ad hoc (free, no Apple Developer account), so install it with this command: a
-  copy downloaded through a browser is quarantined and macOS asks you to allow
-  it in System Settings → Privacy & Security.
-- **Linux (x86_64, aarch64):** `~/.local/share/goko` with a `goko` command in
-  `~/.local/bin` and a launcher entry. It needs a desktop session (X11 or
-  Wayland) and a working Vulkan or OpenGL driver.
-
-Intel Macs build from source (below); there is no Windows release yet.
+Intel Macs and Linux build from source (below): the installer and
+`apps/rune/package-linux.sh` already handle Linux, but the release workflow does
+not build it yet. There is no Windows release.
 
 Goko → Settings → Updates shows the running version and tells you when a newer
 release is out (set `GOKO_NO_UPDATE_CHECK=1` to stop the automatic check). To
@@ -128,13 +125,12 @@ A release is a pushed tag. The app's version is the workspace `version` in
    date, leaving a fresh `Unreleased` above it.
 2. Merge to `main`, then `git tag v0.2.0 && git push origin v0.2.0`.
 
-`.github/workflows/release.yml` then builds macOS (Apple Silicon) and Linux
-(x86_64, aarch64), and publishes the archives, a `latest.json` manifest and
-`install.sh` as a GitHub release; the workflow refuses a tag that does not match
+`.github/workflows/release.yml` then builds macOS (Apple Silicon) and publishes
+the archive, a `latest.json` manifest and `install.sh` as a GitHub release; the workflow refuses a tag that does not match
 `Cargo.toml`. To try the builds without publishing, run the workflow by hand
 (Actions → release → Run workflow): it keeps the archives as artifacts.
 
 macOS builds are signed ad hoc (no Apple Developer account, so no
 notarization), which is why the installer is a `curl` command; see the macOS
 note above. The packaging scripts are `apps/rune/package-macos.sh` and
-`apps/rune/package-linux.sh`; `gokod` has its own version (`gokod --version`).
+`apps/rune/package-linux.sh` (Linux is not in the workflow yet); `gokod` has its own version (`gokod --version`).

@@ -60,13 +60,13 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   release at startup, every six hours and on demand, tells you when a newer one
   with a build for your machine is out, and offers the install command to copy (`GOKO_NO_UPDATE_CHECK=1` turns
   the automatic check off).
-- Release packaging for macOS (Apple Silicon) and Linux (x86_64, aarch64):
-  pushing a tag `vX.Y.Z` builds each platform (macOS ad hoc signed, no Apple
-  Developer account), publishes the archives with a `latest.json` manifest and
-  `install.sh` as a GitHub release, and `curl -fsSL …/install.sh | sh` installs
-  or updates after checking the sha256 (and the signature on macOS). On Linux it
-  installs `~/.local/share/goko`, a `goko` command and a launcher entry
-  (`apps/rune/package-macos.sh`, `package-linux.sh`, `bundle-macos.sh`).
+- Release packaging for macOS (Apple Silicon): pushing a tag `vX.Y.Z` builds an
+  ad hoc signed `Goko.app` in CI (no Apple Developer account), publishes it with
+  a `latest.json` manifest and `install.sh` as a GitHub release, and
+  `curl -fsSL …/install.sh | sh` installs or updates it after checking its
+  sha256 and signature (`apps/rune/package-macos.sh`, `bundle-macos.sh`). The
+  installer and `package-linux.sh` also handle Linux (x86_64, aarch64), which the
+  workflow does not build yet.
 
 ### Changed
 

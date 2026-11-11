@@ -11,8 +11,9 @@ Developer account.
 CI builds the app once per release tag; users download the result.
 
 - A tag `vX.Y.Z` triggers `.github/workflows/release.yml`, which builds on
-  `macos-15`, `ubuntu-22.04` and `ubuntu-22.04-arm` (22.04 keeps the glibc
-  requirement low). Each runs its packaging script: `apps/rune/package-macos.sh`
+  `macos-15`. Linux (`ubuntu-22.04` and `ubuntu-22.04-arm`, 22.04 to keep the glibc
+  requirement low) is written but commented out of the matrix until a CI run has
+  proven its build. Each runs its packaging script: `apps/rune/package-macos.sh`
   builds the workspace in release mode, assembles `Goko.app` (`gokod` beside the
   app, as `run-macos.sh` does) and signs it ad hoc; `package-linux.sh` packs a
   `goko/` folder with `goko-rune` and `gokod`. Each writes
