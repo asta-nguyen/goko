@@ -1,0 +1,117 @@
+docs/agent-devkit/changes/ux-improvements/tasks.md
+  s_cc8c6f10af69a6::t_0581b745adb3da 104,106-115,117
+  s_cc8c6f10af69a6::t_4005de5f615d55 1-8,10-12,14-18,20-51,56-62,65-103,105,116,118-126
+  s_cc8c6f10af69a6::t_8fb320e6da5c30 9,13,19,52-55,63-64
+apps/rune/src/main.rs
+  s_c43b9f16f65171::t_4cc0b549a481b2 2186-2241,2244-2272,2278-2312,2318-2365
+  s_c43b9f16f65171::t_44dc8a4026517d 2242-2243
+  s_c43b9f16f65171::t_f9f11f9cc5b516 229-236
+  s_c43b9f16f65171::t_839e0839e793be 2313-2317
+  s_c43b9f16f65171::t_30e37ae25d60b7 913-921
+  s_c43b9f16f65171::t_c88f85c9d5e9f5 2366-2397
+  s_c43b9f16f65171::t_da7af001557339 1207
+  s_c43b9f16f65171::t_99a1d3c271c1ef 298-426
+  s_c43b9f16f65171::t_453ce8c10cca31 123-138
+  s_c43b9f16f65171::t_e808fbce08f60f 605-608,2273-2277,2444-2455,2628-2641
+  s_c43b9f16f65171::t_aa5f37658d840c 697-719
+  s_c43b9f16f65171::t_784648fc1dab5f 574-604,609-682
+crates/app-core/src/store.rs
+  s_c43b9f16f65171::t_8db685d0b5136b 411-472,479-487
+  s_c43b9f16f65171::t_a1079737cb020b 521-528
+  s_c43b9f16f65171::t_e808fbce08f60f 575-577,600-608,622-624,648-650,811,821-826,882-886,901-905,914-917
+  s_c43b9f16f65171::t_47c9e363767938 8
+  s_c43b9f16f65171::t_2adb81654c2d41 66-77
+  s_c43b9f16f65171::t_67a0e68741a748 17-20,22-23,43-57
+  s_c43b9f16f65171::t_fcdc5168a7357f 143-157,162-171,173-183,189-192,201-307
+  s_c43b9f16f65171::t_e114d0074dec01 308,687-810,812-820,827-881,887-900,906-913,918-944
+  s_c43b9f16f65171::t_c62d9297a7b789 309
+crates/app-core/src/projects.rs
+  s_c43b9f16f65171::t_e808fbce08f60f 211-214,266-267
+  s_c43b9f16f65171::t_e949849187dac2 42-49,60
+  s_c43b9f16f65171::t_af0d0978d6d913 203-210,215-220
+  s_c43b9f16f65171::t_a49b62a5e1f26a 171,175,196,199,228,265
+  s_c43b9f16f65171::t_efb9de4b546829 131
+  s_c43b9f16f65171::t_ed286bd389e9b1 200-202
+apps/rune/src/sessions.rs
+  s_c43b9f16f65171::t_e808fbce08f60f 701-703,713-715
+apps/rune/src/editor/navigation.rs
+  s_c43b9f16f65171::t_da7af001557339 1698
+docs/llm/domains/rune-chrome.md
+  s_c43b9f16f65171::t_9dd8da266315d5 91-120,266,268,270-274,276-278,280-290
+apps/rune/src/editor/workspace.rs
+  s_c43b9f16f65171::t_da7af001557339 500
+  s_c43b9f16f65171::t_e808fbce08f60f 293-296,427-430
+apps/rune/src/editor/backend.rs
+  s_c43b9f16f65171::t_73fea45db16eff 612,616-617,621-633
+  s_c43b9f16f65171::t_27855e4a8a2c79 1109-1114
+  s_c43b9f16f65171::t_d27121ef066416 46-74
+  s_c43b9f16f65171::t_1267f9e0026ef1 306-307
+  s_c43b9f16f65171::t_e808fbce08f60f 611,613-615,618-620,634-636
+  s_c43b9f16f65171::t_c8df8d6fd90b8c 516-520
+  s_c43b9f16f65171::t_da7af001557339 1769
+  s_c43b9f16f65171::t_9b103fe3d20fc6 1775-1778,2539,2545-2562
+docs/agent-devkit/changes/ux-improvements/design.md
+  s_cc8c6f10af69a6::t_8fb320e6da5c30 28,36,38,47-48,61
+  s_cc8c6f10af69a6::t_d132f8a83fc875 1-8,10-27,29-35,37,39-46,49-57,59-60,62-73
+  s_cc8c6f10af69a6::t_0581b745adb3da 9,58
+apps/rune/src/editor/backend/apply.rs
+  s_c43b9f16f65171::t_977944632a112c 76,82
+  s_c43b9f16f65171::t_da7af001557339 793
+docs/agent-devkit/INDEX.md
+  s_c43b9f16f65171::t_f694bebfa92dde 13
+docs/agent-devkit/changes/ux-improvements/delta.md
+  s_cc8c6f10af69a6::t_0581b745adb3da 228-229
+  s_cc8c6f10af69a6::t_8fb320e6da5c30 84,90,94-96,111,121
+  s_cc8c6f10af69a6::t_ed4c6bd3e3ad11 138,165
+  s_cc8c6f10af69a6::t_df01d84dda391e 1-83,85-89,91-93,97-110,112-120,122-137,139-164,166-227,230-270
+apps/rune/src/sidebar.rs
+  s_c43b9f16f65171::t_27f35be38e0da9 1869-1919,1924-1943,1948-1968,1973-2043
+  s_c43b9f16f65171::t_fcf8ee6dde7f77 723-728
+  s_c43b9f16f65171::t_60d2a5bff2d9e7 612-613,625-636,641,646-647,659,665-666,670-673,681,697-722,729-773,775-788
+  s_c43b9f16f65171::t_da7af001557339 1739
+  s_c43b9f16f65171::t_e808fbce08f60f 321-322,648-651,774,1920-1923,1944-1947,1969-1972
+  s_c43b9f16f65171::t_929c9a95e62f00 54-55,65-66,77,89-92
+  s_c43b9f16f65171::t_70f4c2b43ce171 236,255,297-320,323,332-376
+  s_c43b9f16f65171::t_8fa50f6c8f2727 397-398
+  s_c43b9f16f65171::t_4473f4d4071ef2 33-34
+  s_c43b9f16f65171::t_74c21efa9cfb25 428-433,435-451
+  s_c43b9f16f65171::t_035ebfe529c6c4 526-529
+  s_c43b9f16f65171::t_0a8069a10bb619 652-653
+  s_c43b9f16f65171::t_d404f2f27760a0 789
+docs/agent-devkit/changes/archive/multi-project-workspaces/design.md
+  s_c43b9f16f65171::t_f694bebfa92dde 1-52
+apps/rune/src/editor/acp.rs
+  s_c43b9f16f65171::t_75d4ae0c41c793 1124-1128
+crates/app-core/src/acp.rs
+  s_c43b9f16f65171::t_e808fbce08f60f 2084-2088
+apps/rune/src/editor/worktree_form.rs
+  s_c43b9f16f65171::t_e808fbce08f60f 1328-1333
+docs/agent-devkit/changes/archive/multi-project-workspaces/delta.md
+  s_c43b9f16f65171::t_420eab44370066 1-128
+docs/agent-devkit/changes/archive/multi-project-workspaces/tasks.md
+  s_c43b9f16f65171::t_5ed80940c79cb5 1-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a3035c98a8d40a5fdad35ffff52ac9aebc711b5d",
+  "prompts": {},
+  "sessions": {
+    "s_c43b9f16f65171": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "glittery-oviraptor",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_cc8c6f10af69a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a88e716-1ab3-4025-b3cb-188a4a74c1d4",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
