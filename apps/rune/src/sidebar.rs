@@ -1407,12 +1407,18 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     ));
     let sid = info.id.clone();
     let wid = workspace_id.to_string();
-    b = b.on_press(move |s: &mut State| {
+    b = b.on_press_tx(move |s: &mut State, tx: &mut Tx| {
         s.selected_session = Some(sid.clone());
         s.active_workspace = Some(wid.clone());
         // Activating a session activates its workspace tab, opening one when
         // the session isn't open yet — like TerminalWorkspace's focus path.
         s.focus_session_tab(&sid);
+        // And shows it: from the Editor or Settings the click leaves for the
+        // Terminal. The tab is chosen first so a draft guard's resume (Save /
+        // Discard) lands on this session; Cancel keeps the Editor.
+        if s.view != crate::View::Terminal {
+            navigation::navigate(s, PendingNav::SetView(crate::View::Terminal), tx);
+        }
     });
 
     let badge_bg = if selected {

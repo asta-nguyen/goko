@@ -2261,6 +2261,66 @@ mod view_tests {
         assert!(texts.contains(&"Unassigned"));
     }
 
+    /// Click the sidebar row of the session titled `title`.
+    fn click_session_row(rt: &mut Runtime<State>, title: &str) {
+        let row = els(rt)
+            .into_iter()
+            .find(|e| e.text.as_deref().is_some_and(|t| t.contains(title)) && e.rect[0] < 330.0)
+            .unwrap_or_else(|| panic!("session row {title} mounted"));
+        let (x, y) = (row.rect[0] + 10.0, row.rect[1] + row.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn a_session_row_opens_its_terminal_from_the_editor_and_from_settings() {
+        for start in [View::Terminal, View::Editor, View::Settings] {
+            let mut s = sidebar_scene();
+            let first = seed_session(&mut s, "first-agent", "/work/a/web");
+            let second = seed_session(&mut s, "second-agent", "/work/a/web");
+            s.focus_session_tab(&first);
+            s.focus_session_tab(&second);
+            s.view = start;
+            let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            click_session_row(&mut rt, "first-agent");
+            assert_eq!(rt.state.view, View::Terminal, "from {start:?}");
+            assert_eq!(rt.state.selected_session.as_deref(), Some(first.as_str()));
+            assert_eq!(
+                rt.state.focused_session_key().as_deref(),
+                Some(first.as_str()),
+                "the clicked session's pane is the active one, from {start:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_row_click_in_the_editor_respects_the_draft_guard() {
+        let mut s = sidebar_scene();
+        let key = seed_session(&mut s, "agent-one", "/work/a/web");
+        s.focus_session_tab(&key);
+        s.view = View::Editor;
+        s.editor.doc = Some(editor::draft::OpenDoc::new(
+            "a.txt",
+            &app_core::git_view::GitViewFile {
+                path: "a.txt".into(),
+                kind: "text",
+                text: Some("x".into()),
+                truncated: false,
+                size: 1,
+            },
+        ));
+        s.editor.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_session_row(&mut rt, "agent-one");
+        assert_eq!(rt.state.view, View::Editor, "an unsaved draft asks first");
+        assert!(rt.state.editor.guard.is_some(), "the guard dialog is up");
+        assert_eq!(rt.state.selected_session.as_deref(), Some(key.as_str()));
+    }
+
     #[test]
     fn sidebar_project_row_activates_real_checkout_then_editor_opens_it() {
         let s = sidebar_scene();
