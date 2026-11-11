@@ -1,0 +1,25 @@
+AGENTS.md
+  s_a3ac5e3748dcdd::t_9d215978716109 22-29
+Cargo.toml
+  s_a3ac5e3748dcdd::t_429dfbc894a3c1 6
+CHANGELOG.md
+  s_a3ac5e3748dcdd::t_7ee28b180582f3 13-61
+Cargo.lock
+  s_a3ac5e3748dcdd::t_1fe982b6593f3c 185,1181,2665
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d9e973f6d55b519d3c639e3776ba7e287b0e0f9c",
+  "prompts": {},
+  "sessions": {
+    "s_a3ac5e3748dcdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1e816-caa2-42f6-8a55-eb0be0ad54ae",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
