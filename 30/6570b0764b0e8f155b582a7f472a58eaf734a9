@@ -1,0 +1,21 @@
+.github/workflows/release.yml
+  s_94f7ddaae2abc0::t_63b3df9a12869c 21,33-34,36-37
+docs/agent-devkit/changes/macos-release/design.md
+  s_94f7ddaae2abc0::t_cb828d8c37dfac 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "306570b0764b0e8f155b582a7f472a58eaf734a9",
+  "prompts": {},
+  "sessions": {
+    "s_94f7ddaae2abc0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36d1571a-745b-468a-8c78-a2fb465a848e",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
