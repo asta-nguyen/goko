@@ -1,0 +1,41 @@
+.codex/agents/leaf-worker.toml
+  s_a95846fc2e81be::t_5761bc3b9ba88a 1-15
+AGENTS.md
+  s_981703cd80f905::t_d5a9927e6e2d76 55-59,78
+  s_cc8c6f10af69a6::t_c6f1e4de239b6c 47
+  s_a95846fc2e81be::t_7009b442a9dcd1 48-54,60-77,79-81
+.claude/agents/worker.md
+  s_a95846fc2e81be::t_edad26e63821e3 1-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "91c31e94e3393d5577fd8c419a55072395e6499d",
+  "prompts": {},
+  "sessions": {
+    "s_981703cd80f905": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1c897-9831-70d0-bff3-06233b9445db",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_a95846fc2e81be": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "living-tray",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_cc8c6f10af69a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a88e716-1ab3-4025-b3cb-188a4a74c1d4",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
