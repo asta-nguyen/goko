@@ -19,6 +19,14 @@ The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare b
 
 A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` builds macOS (Apple Silicon) with `apps/rune/package-macos.sh` (a tar.gz and a `<target>.target.json` entry; Linux has `package-linux.sh` and an installer branch but is not in the matrix yet), merges the entries into `latest.json` with `jq`, and publishes them with `distribution/install.sh` as a GitHub release; users install with the `curl` command in the README. `bundle-macos.sh` is the one place the macOS bundle is assembled, shared with `run-macos.sh`. There is no Windows release (`gokod` uses Unix sockets).
 
+### Cutting a release
+
+1. Bump `[workspace.package] version` in `Cargo.toml`; `cargo build` refreshes `Cargo.lock`. `gokod` has its own version in `crates/daemon/Cargo.toml`: bump it only when the app gates on a new daemon feature (`version_at_least` in `apps/rune/src/daemon.rs`).
+2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it.
+3. `cargo fmt --all -- --check` and `cargo test --workspace` pass.
+4. Merge to `main`, then tag that commit `vX.Y.Z` and push the tag. The push is what builds and publishes, so do it last and only on purpose.
+5. When the `release` workflow finishes, check that the GitHub release has the tar.gz, `latest.json` and `install.sh`.
+
 ### Checking UI changes in the running app
 
 Unit tests and the rune test harness do not draw a window, so a UI change is only verified once it is seen in the real app. Use `agent-desktop` (installed at `/opt/homebrew/bin/agent-desktop`; read `agent-desktop skills get desktop` first) to read the accessibility tree, click and screenshot **the Goko window only**.

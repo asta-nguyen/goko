@@ -10,6 +10,55 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-12
+
+### Added
+
+- Workspaces need no name: a new workspace is created unnamed and selected,
+  and is labelled after its first project ("New workspace", numbered, until
+  then).
+- A terminal started outside any project belongs to the workspace it was
+  started in (`sessions.workspace_id`, store migration 3) and shows in that
+  workspace's sidebar and tab bar while none of its projects is active.
+- A shell that `cd`s into a repository joins it: the repository is registered
+  in the shell's workspace and the session is renamed from its generated name.
+  Project sessions never move.
+- An Add Project icon beside the PROJECTS `+` in the sidebar.
+- Header path: the active checkout in the Editor, the active terminal's live
+  working directory otherwise, with `$HOME` shown as `~`; click to copy.
+- Settings → Scroll Speed: a multiplier for mouse-wheel scrolling in terminal
+  panes and views.
+- Native scroll bars on the file tree, editor surfaces, history, patches and
+  tables.
+
+### Changed
+
+- Every value pick is rune-kit's searchable Combobox, every command dropdown is
+  a Menu anchored to its button (right-click menus stay at the pointer), and
+  popovers are no longer capped at 320 pt. The PROJECTS `+`, a row's `+` and
+  New tab share one new-session picker.
+- Text that does not fit is cut in the middle by its rendered width, and its
+  tooltip shows the whole text.
+- The per-project tab filter applies only when the active project is in the
+  selected workspace; otherwise the selected workspace's tabs show.
+- Removing a workspace closes its projects' sessions and its own terminals.
+- The usage chip's account menu drops from the chip itself.
+- `rune-kit` is a workspace crate (`crates/rune-kit`) instead of a git
+  dependency.
+- The sidebar has no New Terminal button: the PROJECTS `+` is the one way to
+  start a session.
+
+### Fixed
+
+- Stopping a session: `gokod` sends SIGHUP, then SIGTERM, and SIGKILLs after
+  2 s (interactive shells ignore SIGTERM), and a dying process keeps its last
+  working directory. The app force-kills a polite stop that still hangs after
+  2 s, once.
+- Session metadata saves upsert instead of failing on an id that is already
+  known.
+- Clicking a terminal tab while in the Editor now switches to the Terminal; a
+  draft guard still runs first and resumes on the chosen tab.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added
