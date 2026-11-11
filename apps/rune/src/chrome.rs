@@ -651,8 +651,13 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             });
             s.subagents_at = None;
         })
-        .on_press(move |s: &mut State| {
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
             s.activate_tab(index);
+            // And shows it: from the Editor the click leaves for the Terminal.
+            // The tab is chosen first so a draft guard's resume lands on it.
+            if s.view != View::Terminal {
+                navigation::navigate(s, PendingNav::SetView(View::Terminal), tx);
+            }
         })
 }
 

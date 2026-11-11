@@ -2461,6 +2461,22 @@ mod view_tests {
     }
 
     #[test]
+    fn a_tab_pill_opens_its_terminal_from_the_editor() {
+        let mut s = sidebar_scene();
+        let first = seed_session(&mut s, "first-agent", "/work/a/web");
+        let second = seed_session(&mut s, "second-agent", "/work/a/web");
+        s.focus_session_tab(&first);
+        s.focus_session_tab(&second);
+        s.view = View::Editor;
+        let tab = s.open_tabs[0].id.clone();
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, &format!("tab:{tab}"));
+        assert_eq!(rt.state.view, View::Terminal);
+        assert_eq!(rt.state.active_tab, 0);
+    }
+
+    #[test]
     fn a_session_row_click_in_the_editor_respects_the_draft_guard() {
         let mut s = sidebar_scene();
         let key = seed_session(&mut s, "agent-one", "/work/a/web");
