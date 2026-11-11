@@ -31,5 +31,6 @@ pub mod search;
 pub mod stashes;
 pub mod state;
 pub mod syntax;
+pub mod trash;
 pub mod workspace;
 pub mod worktree_form;

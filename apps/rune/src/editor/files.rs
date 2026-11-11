@@ -27,6 +27,9 @@ use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 /// like the desktop `SplitPane`, the editor flexes to the remaining width.
 pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
     let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0);
+    if let Some(dialog) = trash_dialog(s, ink) {
+        root = root.child(dialog);
+    }
     root = root.child(toolbar(s, ink, k));
     root = root.child(
         row()
@@ -242,10 +245,11 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
         return None;
     }
     let absolute = checkout.join(&menu.id);
-    let (full, relative, reveal_path, id) = (
+    let (full, relative, reveal_path, id, trash_id) = (
         absolute.to_string_lossy().into_owned(),
         menu.id.clone(),
         absolute,
+        menu.id.clone(),
         menu.id.clone(),
     );
     let at = rune::PointerPress {
@@ -277,6 +281,14 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                 st.editor.files.menu = None;
                 ask_for_rename(st, &id);
             }))
+            .item(
+                MenuItem::new("Move to Trash…")
+                    .danger(true)
+                    .on_select(move |st: &mut State| {
+                        st.editor.files.menu = None;
+                        st.editor.files.delete_prompt = Some(trash_id.clone());
+                    }),
+            )
             .on_close(|st: &mut State| st.editor.files.menu = None)
             .build(&s.editor.kit, layer),
     )
@@ -312,6 +324,78 @@ fn ask_for_rename(s: &mut State, id: &str) {
     let name = id.rsplit('/').next().unwrap_or(id);
     s.sidebar_text = rune::edit::TextEdit::new(name);
     s.sidebar_text.focused = true;
+}
+
+/// The Move-to-Trash confirmation: names the entry, and says it can be put
+/// back from the Trash.
+fn trash_dialog(s: &State, ink: &Ink) -> Option<El> {
+    let id = s.editor.files.delete_prompt.clone()?;
+    let name = id.rsplit('/').next().unwrap_or(&id).to_string();
+    Some(
+        col()
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .items_center()
+            .justify_center()
+            .child(
+                col()
+                    .w(400.0)
+                    .gap(12.0)
+                    .padding(16.0)
+                    .radius(12.0)
+                    .fill(ink.panel)
+                    .border(1.0, ink.border)
+                    .child(theme::txt("Move to Trash?", T12M, ink.text))
+                    .child(theme::txt(
+                        &format!("Move {name} to the Trash? You can put it back from there."),
+                        T12,
+                        ink.muted,
+                    ))
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .justify_end()
+                            .w_full()
+                            .child(
+                                theme::btn_sm("Cancel", None, true, ink).on_press(
+                                    |st: &mut State| st.editor.files.delete_prompt = None,
+                                ),
+                            )
+                            .child(theme::btn_sm("Move to Trash", None, false, ink).on_press(
+                                move |st: &mut State| {
+                                    st.editor.files.delete_prompt = None;
+                                    submit_trash(st, &id);
+                                },
+                            )),
+                    ),
+            ),
+    )
+}
+
+/// Send the delete. An open draft under the entry blocks it, so nothing
+/// unsaved goes away with the file.
+fn submit_trash(s: &mut State, id: &str) {
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let blocked = s.editor.doc.as_ref().is_some_and(|doc| {
+        doc.dirty() && (doc.path == id || doc.path.starts_with(&format!("{id}/")))
+    });
+    if blocked {
+        s.notice = Some(format!(
+            "save or discard the changes in {id} before deleting it"
+        ));
+        return;
+    }
+    let req = Req::TrashPath {
+        path: id.to_string(),
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
+    }
 }
 
 /// Send the rename. A name that did not change closes the prompt; an open
@@ -1636,6 +1720,61 @@ mod tests {
             .insert("target".into(), Vec::new());
         click_tree_row(&mut rt, "target");
         assert!(jobs.try_iter().next().is_none(), "already read: no new job");
+    }
+
+    /// Move to Trash asks first; confirming sends the job, and an open draft
+    /// under the entry blocks it.
+    #[test]
+    fn move_to_trash_confirms_then_sends_and_a_draft_blocks_it() {
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        let mut s = scene();
+        s.editor.backend = backend;
+        s.editor.files.delete_prompt = Some("docs/guide.md".into());
+        let mut rt = kb_runtime(s);
+        let button = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} mounted"))
+        };
+        let cancel = button(&rt, "Cancel");
+        click(&mut rt, cancel.rect[0] + 5.0, cancel.rect[1] + 5.0);
+        assert!(rt.state.editor.files.delete_prompt.is_none());
+        assert!(jobs.try_iter().next().is_none(), "cancel sends nothing");
+
+        rt.state.editor.files.delete_prompt = Some("docs/guide.md".into());
+        rt.frame(1.0 / 60.0);
+        let confirm = button(&rt, "Move to Trash");
+        click(&mut rt, confirm.rect[0] + 5.0, confirm.rect[1] + 5.0);
+        assert!(rt.state.editor.files.delete_prompt.is_none());
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::TrashPath { path } if path == "docs/guide.md"))
+        );
+
+        let mut doc = crate::editor::draft::OpenDoc::new(
+            "docs/guide.md",
+            &app_core::git_view::GitViewFile {
+                path: "docs/guide.md".into(),
+                kind: "text",
+                text: Some("x".into()),
+                truncated: false,
+                size: 1,
+            },
+        );
+        doc.code.edit.text = "edited".into();
+        rt.state.editor.doc = Some(doc);
+        submit_trash(&mut rt.state, "docs");
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "a draft blocks the delete"
+        );
+        assert!(
+            rt.state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("save or discard"))
+        );
     }
 
     #[test]

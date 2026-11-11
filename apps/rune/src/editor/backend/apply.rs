@@ -557,6 +557,8 @@ impl EditorState {
                 self.finish_rename(path, to);
             }
             (Req::RenamePath { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
+            (Req::TrashPath { path }, Ok(ReplyData::Ok)) => self.finish_trash(path),
+            (Req::TrashPath { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::Stage { .. } | Req::Unstage { .. } | Req::Discard { .. }, Ok(ReplyData::Ok)) => {
                 self.changes.busy = None;
                 self.changes.error = None;
@@ -719,6 +721,29 @@ impl EditorState {
             },
         ) {
             self.doc_load = Some(token);
+        }
+    }
+
+    /// A file or folder went to the Trash: the tree and Changes re-read, and
+    /// a clean open document under it closes (a draft is kept, with a notice).
+    fn finish_trash(&mut self, path: &str) {
+        if let (Some(checkout), Some(key)) = (self.checkout.clone(), self.checkout_key.clone()) {
+            self.enqueue_read(checkout.clone(), key.clone(), Req::FileList);
+            self.enqueue_read(checkout, key, Req::Changes);
+        }
+        let Some(doc) = self.doc.as_ref() else {
+            return;
+        };
+        if doc.path != path && !doc.path.starts_with(&format!("{path}/")) {
+            return;
+        }
+        if doc.dirty() {
+            self.notice = Some(err_notice(&format!(
+                "{} was moved to the Trash — the open draft is all that is left of it",
+                doc.path
+            )));
+        } else {
+            self.doc = None;
         }
     }
 

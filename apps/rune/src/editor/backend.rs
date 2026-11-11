@@ -294,6 +294,10 @@ pub enum Req {
     IgnoredChildren {
         dir: String,
     },
+    /// Move a file or folder to the system Trash.
+    TrashPath {
+        path: String,
+    },
     /// Rename a file or folder in place; `new_name` is a plain name.
     RenamePath {
         path: String,
@@ -553,6 +557,7 @@ fn is_mutating(req: &Req) -> bool {
             | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
             | Req::RenamePath { .. }
+            | Req::TrashPath { .. }
             | Req::Stage { .. }
             | Req::Unstage { .. }
             | Req::Discard { .. }
@@ -1119,6 +1124,10 @@ fn run_checkout(
         Req::IgnoredChildren { dir } => git_view::ignored_children(checkout, dir)
             .map(ReplyData::IgnoredChildren)
             .map_err(|e| e.to_string()),
+        Req::TrashPath { path } => git_view::entry_path(checkout, path)
+            .map_err(|e| e.to_string())
+            .and_then(|entry| crate::editor::trash::move_to_trash(&entry))
+            .map(|_| ReplyData::Ok),
         Req::RenamePath { path, new_name } => git_view::rename_path(checkout, path, new_name)
             .map(ReplyData::Renamed)
             .map_err(|e| e.to_string()),
@@ -2563,6 +2572,34 @@ mod tests {
         // A refresh keeps what the user opened.
         e.rebuild_file_model();
         assert!(e.files.model.contains("public/assets/a.png"));
+    }
+
+    #[test]
+    fn a_trash_reply_refreshes_and_closes_a_clean_open_doc_but_keeps_a_draft() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        let req = || Req::TrashPath { path: "src".into() };
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        e.apply_reply(reply(req(), 0, Some(key.clone()), Ok(ReplyData::Ok)));
+        assert!(e.doc.is_none(), "the clean doc closed with its folder");
+        assert!(
+            jobs.try_iter().any(|j| matches!(j.req, Req::FileList)),
+            "the tree re-reads"
+        );
+        e.doc = Some(OpenDoc::new("other.txt", &text_file("x")));
+        e.apply_reply(reply(req(), 0, Some(key.clone()), Ok(ReplyData::Ok)));
+        assert!(e.doc.is_some(), "an unrelated doc stays");
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        e.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        e.apply_reply(reply(req(), 0, Some(key.clone()), Ok(ReplyData::Ok)));
+        assert!(e.doc.is_some(), "a draft is kept");
+        assert!(e.notice.as_ref().is_some_and(|n| n.text.contains("Trash")));
+        e.notice = None;
+        e.apply_reply(reply(req(), 0, Some(key), Err("denied".into())));
+        assert!(e.notice.as_ref().is_some_and(|n| n.text == "denied"));
     }
 
     #[test]

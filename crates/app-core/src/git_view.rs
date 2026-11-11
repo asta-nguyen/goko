@@ -941,6 +941,22 @@ pub fn save_file(
     })
 }
 
+/// The on-disk path of an existing file, folder or symlink named by a
+/// checkout-relative `path`, checked to sit inside the checkout (the entry
+/// itself is not followed, so a symlink resolves to the link).
+pub fn entry_path(checkout: &Path, path: &str) -> Result<PathBuf, BridgeError> {
+    let rel = relative_path(path)?;
+    let full = checkout.join(&rel);
+    std::fs::symlink_metadata(&full)
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    let parent = std::fs::canonicalize(full.parent().unwrap_or(checkout))
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    if !parent.starts_with(checkout) {
+        return Err(invalid("the path resolves outside the checkout"));
+    }
+    Ok(parent.join(rel.file_name().unwrap_or_default()))
+}
+
 /// Rename a file or folder to `new_name` inside its own directory and return
 /// the new checkout-relative path. The name is a plain name (no separators),
 /// never `.git`, and never an existing entry — a case-only change of the same
@@ -2442,5 +2458,18 @@ mod tests {
         assert!(ignored_children(&root, "public/assets/a.png").is_err());
         assert!(ignored_children(&root, "../x").is_err());
         assert!(ignored_children(&root, "missing").is_err());
+    }
+
+    #[test]
+    fn entry_path_names_an_existing_entry_inside_the_checkout_only() {
+        let dir = TempDir::new("entry-path");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/f.txt"), "x").unwrap();
+        assert_eq!(entry_path(&root, "a/f.txt").unwrap(), root.join("a/f.txt"));
+        assert_eq!(entry_path(&root, "a").unwrap(), root.join("a"));
+        for bad in ["", "../a", "/etc/hosts", ".git/HEAD", "a/missing"] {
+            assert!(entry_path(&root, bad).is_err(), "{bad:?}");
+        }
     }
 }

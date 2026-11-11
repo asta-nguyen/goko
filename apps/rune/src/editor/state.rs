@@ -96,6 +96,8 @@ pub struct FilesState {
     /// Ignored directories the user opened: the entries one level below
     /// each, keyed by the directory's path. Cleared with the checkout.
     pub ignored_open: std::collections::BTreeMap<String, Vec<String>>,
+    /// The entry awaiting a Move-to-Trash confirmation.
+    pub delete_prompt: Option<String>,
     /// The row context menu: the entry it was opened on and where.
     pub menu: Option<FileMenu>,
 }
@@ -466,6 +468,7 @@ impl EditorState {
                 error: None,
                 search: search_state::Search::default(),
                 ignored_open: Default::default(),
+                delete_prompt: None,
                 menu: None,
             },
             changes: ChangesState {
