@@ -1,0 +1,39 @@
+apps/rune/src/editor/files.rs
+  s_49b55767a52b3c::t_1609cfae9dfc67 1725-1779
+  s_49b55767a52b3c::t_01de8719fc8c1e 30-32,248,253,284-291,329-399
+  s_49b55767a52b3c::t_fdfbb250c5bd2b 400
+crates/app-core/src/git_view.rs
+  s_49b55767a52b3c::t_01de8719fc8c1e 944-959,2462-2474
+apps/rune/src/editor/trash.rs
+  s_49b55767a52b3c::t_01de8719fc8c1e 1-7,15-21
+  s_49b55767a52b3c::t_bfdf590a05a8b0 8-14
+apps/rune/src/editor/mod.rs
+  s_49b55767a52b3c::t_01de8719fc8c1e 34
+apps/rune/Cargo.toml
+  s_49b55767a52b3c::t_01de8719fc8c1e 24
+apps/rune/src/editor/backend/apply.rs
+  s_49b55767a52b3c::t_01de8719fc8c1e 560-561,727-747
+  s_49b55767a52b3c::t_64813b957ce283 748-749
+apps/rune/src/editor/state.rs
+  s_49b55767a52b3c::t_01de8719fc8c1e 99-100,471
+apps/rune/src/editor/backend.rs
+  s_49b55767a52b3c::t_1609cfae9dfc67 2578-2604
+  s_49b55767a52b3c::t_01de8719fc8c1e 297-300,560,1127-1130
+  s_49b55767a52b3c::t_1d7ae064935305 2577
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "978b1da2381069cff76bc95c5f6970829d6a13d3",
+  "prompts": {},
+  "sessions": {
+    "s_49b55767a52b3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b07a741d-25e6-4430-8e4f-d88f938e468a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
