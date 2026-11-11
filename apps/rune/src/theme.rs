@@ -319,6 +319,30 @@ stroke_icon!(
     "loader-circle",
     "<path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/>"
 );
+// The Files toolbar's icons (lucide file-plus, refresh-cw, chevrons-down-up;
+// folder-plus is above).
+stroke_icon!(
+    FILE_PLUS,
+    "file-plus",
+    "<path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z\"/>",
+    "<path d=\"M14 2v6h6\"/>",
+    "<path d=\"M12 18v-6\"/>",
+    "<path d=\"M9 15h6\"/>"
+);
+stroke_icon!(
+    REFRESH,
+    "refresh-cw",
+    "<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/>",
+    "<path d=\"M21 3v5h-5\"/>",
+    "<path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/>",
+    "<path d=\"M8 16H3v5\"/>"
+);
+stroke_icon!(
+    COLLAPSE_ALL,
+    "chevrons-down-up",
+    "<path d=\"m7 20 5-5 5 5\"/>",
+    "<path d=\"m7 4 5 5 5-5\"/>"
+);
 // A row's "more actions" button (lucide "ellipsis").
 stroke_icon!(
     MORE,

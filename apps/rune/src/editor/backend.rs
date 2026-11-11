@@ -294,6 +294,12 @@ pub enum Req {
     IgnoredChildren {
         dir: String,
     },
+    /// Create an empty file or a folder named `name` in `dir` (`""` = root).
+    CreateEntry {
+        dir: String,
+        name: String,
+        folder: bool,
+    },
     /// Move a file or folder to the system Trash.
     TrashPath {
         path: String,
@@ -383,6 +389,8 @@ pub enum ReplyData {
     Saved(GitViewFile),
     /// The entries one level below an ignored directory.
     IgnoredChildren(Vec<String>),
+    /// The checkout-relative path of a file or folder just created.
+    Created(String),
     /// The new checkout-relative path after a rename.
     Renamed(String),
     /// The config lookup's answer: `paths` aliases parsed worker-side from
@@ -558,6 +566,7 @@ fn is_mutating(req: &Req) -> bool {
             | Req::SaveFile { .. }
             | Req::RenamePath { .. }
             | Req::TrashPath { .. }
+            | Req::CreateEntry { .. }
             | Req::Stage { .. }
             | Req::Unstage { .. }
             | Req::Discard { .. }
@@ -1124,6 +1133,11 @@ fn run_checkout(
         Req::IgnoredChildren { dir } => git_view::ignored_children(checkout, dir)
             .map(ReplyData::IgnoredChildren)
             .map_err(|e| e.to_string()),
+        Req::CreateEntry { dir, name, folder } => {
+            git_view::create_entry(checkout, dir, name, *folder)
+                .map(ReplyData::Created)
+                .map_err(|e| e.to_string())
+        }
         Req::TrashPath { path } => git_view::entry_path(checkout, path)
             .map_err(|e| e.to_string())
             .and_then(|entry| crate::editor::trash::move_to_trash(&entry))
@@ -1267,11 +1281,24 @@ impl EditorState {
             });
         // A rebuild (refresh, rename, an opened ignored directory) keeps
         // the folders the user had open and the cursor.
+        // A folder just created has no file for Git to list: it stands in
+        // as an empty folder row until something lands in it.
+        let empty = self
+            .files
+            .empty_dirs
+            .iter()
+            .filter(|d| keep(d))
+            .filter(|d| {
+                let inside = format!("{d}/");
+                !self.files.paths.iter().any(|p| p.starts_with(&inside))
+                    && !ignored_entries.iter().any(|p| p.starts_with(&inside))
+            })
+            .map(|d| (d.as_str(), FileMark::EmptyDir));
         let open = expanded_ids(&self.files.model);
         let cursor = self.files.model.cursor().map(str::to_string);
         let mut model = rune_kit::FileTree::new()
             .dirs_first(true)
-            .build(tracked.chain(ignored));
+            .build(tracked.chain(ignored).chain(empty));
         for id in &open {
             if model.contains(id) {
                 model.set_expanded(id, true);
@@ -2572,6 +2599,70 @@ mod tests {
         // A refresh keeps what the user opened.
         e.rebuild_file_model();
         assert!(e.files.model.contains("public/assets/a.png"));
+    }
+
+    #[test]
+    fn a_created_folder_shows_as_an_empty_row_and_a_created_file_opens() {
+        use crate::editor::state::FileMark;
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["src/a.rs".into()];
+        e.rebuild_file_model();
+        let created = |dir: &str, name: &str, folder, path: &str| {
+            reply(
+                Req::CreateEntry {
+                    dir: dir.into(),
+                    name: name.into(),
+                    folder,
+                },
+                0,
+                Some(key.clone()),
+                Ok(ReplyData::Created(path.into())),
+            )
+        };
+        e.apply_reply(created("src", "docs", true, "src/docs"));
+        // The list re-reads, then the tree opens on the new folder.
+        e.apply_reply(reply(
+            Req::FileList,
+            e.req_gens.get("filelist").copied().unwrap_or(0),
+            Some(key.clone()),
+            Ok(ReplyData::FileList(vec!["src/a.rs".into()], Vec::new())),
+        ));
+        assert_eq!(
+            e.files.model.get("src/docs").map(|n| n.data),
+            Some(Some(FileMark::EmptyDir))
+        );
+        assert!(e.files.model.is_expanded("src"), "revealed");
+        assert_eq!(e.files.model.cursor(), Some("src/docs"));
+        // Once a file lands in it, the folder is a real one again.
+        e.files.paths = vec!["src/a.rs".into(), "src/docs/x.md".into()];
+        e.rebuild_file_model();
+        assert_eq!(e.files.model.get("src/docs").map(|n| n.dir), Some(true));
+        // A new file opens in the editor.
+        e.apply_reply(created("src", "b.rs", false, "src/b.rs"));
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::File { path, .. } if path == "src/b.rs"))
+        );
+        assert_eq!(e.files.reveal.as_deref(), Some("src/b.rs"));
+        e.apply_reply(reply(
+            Req::CreateEntry {
+                dir: "src".into(),
+                name: "b.rs".into(),
+                folder: false,
+            },
+            0,
+            Some(key),
+            Err("b.rs already exists".into()),
+        ));
+        assert!(
+            e.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("already exists"))
+        );
     }
 
     #[test]

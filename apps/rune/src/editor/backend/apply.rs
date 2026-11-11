@@ -401,12 +401,17 @@ impl EditorState {
             (Req::FileList, Ok(ReplyData::FileList(paths, ignored))) => {
                 if self.files.model_checkout != self.checkout_key {
                     self.files.ignored_open.clear();
+                    self.files.empty_dirs.clear();
                 }
                 self.files.paths = paths;
                 self.files.ignored = ignored;
                 self.files.loading = false;
                 self.files.error = None;
                 self.rebuild_file_model();
+                if let Some(path) = self.files.reveal.take() {
+                    self.files.model.expand_to(&path);
+                    self.files.model.select(&path);
+                }
                 // A same-count path swap leaves `matched_len`/checkout
                 // untouched, so `quick_open::poll` can't see it — an open
                 // palette recomputes here instead of offering removed
@@ -557,6 +562,10 @@ impl EditorState {
                 self.finish_rename(path, to);
             }
             (Req::RenamePath { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
+            (Req::CreateEntry { folder, .. }, Ok(ReplyData::Created(path))) => {
+                self.finish_create(path, *folder);
+            }
+            (Req::CreateEntry { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::TrashPath { path }, Ok(ReplyData::Ok)) => self.finish_trash(path),
             (Req::TrashPath { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::Stage { .. } | Req::Unstage { .. } | Req::Discard { .. }, Ok(ReplyData::Ok)) => {
@@ -686,6 +695,15 @@ impl EditorState {
     /// and an open document under it follows to its new path — reloaded
     /// from disk when clean, left alone (with a notice) when it holds a draft.
     fn finish_rename(&mut self, from: &str, to: String) {
+        let inside = format!("{from}/");
+        self.files.empty_dirs = std::mem::take(&mut self.files.empty_dirs)
+            .into_iter()
+            .map(|d| match d.strip_prefix(&inside) {
+                Some(rest) => format!("{to}/{rest}"),
+                None if d == from => to.clone(),
+                None => d,
+            })
+            .collect();
         let (Some(checkout), Some(key)) = (self.checkout.clone(), self.checkout_key.clone()) else {
             return;
         };
@@ -724,9 +742,43 @@ impl EditorState {
         }
     }
 
+    /// A file or folder was created: the tree and Changes re-read and the
+    /// tree opens on it; a new file opens in the editor unless a draft is
+    /// open there.
+    fn finish_create(&mut self, path: String, folder: bool) {
+        let (Some(checkout), Some(key)) = (self.checkout.clone(), self.checkout_key.clone()) else {
+            return;
+        };
+        self.enqueue_read(checkout.clone(), key.clone(), Req::FileList);
+        self.enqueue_read(checkout.clone(), key.clone(), Req::Changes);
+        self.files.reveal = Some(path.clone());
+        if folder {
+            self.files.empty_dirs.insert(path);
+        } else if self.doc.as_ref().is_none_or(|doc| !doc.dirty()) {
+            self.doc = None;
+            self.doc_seq += 1;
+            let token = self.doc_seq;
+            if self.enqueue_read(
+                checkout,
+                key,
+                Req::File {
+                    path,
+                    token,
+                    line: None,
+                },
+            ) {
+                self.doc_load = Some(token);
+            }
+        }
+    }
+
     /// A file or folder went to the Trash: the tree and Changes re-read, and
     /// a clean open document under it closes (a draft is kept, with a notice).
     fn finish_trash(&mut self, path: &str) {
+        let inside = format!("{path}/");
+        self.files
+            .empty_dirs
+            .retain(|d| d != path && !d.starts_with(&inside));
         if let (Some(checkout), Some(key)) = (self.checkout.clone(), self.checkout_key.clone()) {
             self.enqueue_read(checkout.clone(), key.clone(), Req::FileList);
             self.enqueue_read(checkout, key, Req::Changes);

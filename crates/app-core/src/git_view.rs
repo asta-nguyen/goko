@@ -941,6 +941,60 @@ pub fn save_file(
     })
 }
 
+/// A file or folder name: no separators, not `.`/`..`/`.git`.
+fn plain_name(name: &str) -> Result<&str, BridgeError> {
+    let name = name.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.eq_ignore_ascii_case(".git")
+        || name.contains(['/', '\\', '\0'])
+    {
+        return Err(invalid("enter a plain file name without slashes"));
+    }
+    Ok(name)
+}
+
+/// Create an empty file, or a folder, named `name` inside `directory`
+/// (checkout-relative, `""` for the checkout root). Never overwrites.
+/// Returns the new checkout-relative path.
+pub fn create_entry(
+    checkout: &Path,
+    directory: &str,
+    name: &str,
+    folder: bool,
+) -> Result<String, BridgeError> {
+    let name = plain_name(name)?;
+    let (parent, prefix) = if directory.is_empty() {
+        (checkout.to_path_buf(), String::new())
+    } else {
+        let rel = relative_path(directory)?;
+        let target = std::fs::canonicalize(checkout.join(&rel))
+            .map_err(|_| not_found(format!("{directory} is not available")))?;
+        if !target.starts_with(checkout) || !target.is_dir() {
+            return Err(invalid(format!(
+                "{directory} is not a folder in the checkout"
+            )));
+        }
+        (target, format!("{}/", rel_str(&rel)?))
+    };
+    let path = parent.join(name);
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(invalid(format!("{name} already exists")));
+    }
+    if folder {
+        std::fs::create_dir(&path)
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(|_| ())
+    }
+    .map_err(|e| invalid(format!("cannot create {name}: {e}")))?;
+    Ok(format!("{prefix}{name}"))
+}
+
 /// The on-disk path of an existing file, folder or symlink named by a
 /// checkout-relative `path`, checked to sit inside the checkout (the entry
 /// itself is not followed, so a symlink resolves to the link).
@@ -963,15 +1017,7 @@ pub fn entry_path(checkout: &Path, path: &str) -> Result<PathBuf, BridgeError> {
 /// entry is the one exception, as a case-insensitive disk reports it as taken.
 pub fn rename_path(checkout: &Path, path: &str, new_name: &str) -> Result<String, BridgeError> {
     let rel = relative_path(path)?;
-    let name = new_name.trim();
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.eq_ignore_ascii_case(".git")
-        || name.contains(['/', '\\', '\0'])
-    {
-        return Err(invalid("enter a plain file name without slashes"));
-    }
+    let name = plain_name(new_name)?;
     let from = checkout.join(&rel);
     std::fs::symlink_metadata(&from)
         .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
@@ -2471,5 +2517,41 @@ mod tests {
         for bad in ["", "../a", "/etc/hosts", ".git/HEAD", "a/missing"] {
             assert!(entry_path(&root, bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn create_entry_makes_files_and_folders_without_overwriting() {
+        let dir = TempDir::new("create-entry");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "keep").unwrap();
+        assert_eq!(
+            create_entry(&root, "", "top.txt", false).unwrap(),
+            "top.txt"
+        );
+        assert_eq!(
+            create_entry(&root, "src", "b.rs", false).unwrap(),
+            "src/b.rs"
+        );
+        assert_eq!(create_entry(&root, "src", "sub", true).unwrap(), "src/sub");
+        assert!(root.join("top.txt").is_file() && root.join("src/sub").is_dir());
+        assert_eq!(fs::read_to_string(root.join("src/b.rs")).unwrap(), "");
+        for (dir, name) in [
+            ("src", "a.rs"),
+            ("src", "sub"),
+            ("src", ""),
+            ("src", "x/y"),
+            ("src", ".git"),
+            ("src/a.rs", "z"),
+            ("../x", "z"),
+            ("missing", "z"),
+            (".git", "z"),
+        ] {
+            assert!(
+                create_entry(&root, dir, name, false).is_err(),
+                "{dir:?} {name:?}"
+            );
+        }
+        assert_eq!(fs::read_to_string(root.join("src/a.rs")).unwrap(), "keep");
     }
 }

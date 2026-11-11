@@ -104,7 +104,7 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit) -> El {
             // pushes Refresh/controls off a narrow window.
             .build(k)
             .shrink()
-            .min_w(110.0),
+            .min_w(80.0),
     );
     bar = bar.child(
         theme::btn_sm("Search", None, s.editor.files.search.open, ink).on_press(
@@ -126,16 +126,106 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit) -> El {
                 })
                 .build(k)
                 .shrink()
-                .min_w(120.0),
+                .min_w(90.0),
         );
     }
     bar = bar.child(rune::spacer());
-    bar = bar.child(theme::btn_sm("Refresh", None, false, ink).on_press_tx(
-        |st: &mut State, _tx: &mut Tx| {
-            refresh_files(st);
-        },
-    ));
+    bar = bar
+        .child(toolbar_icon(&theme::FILE_PLUS, "New File", ink, |st| {
+            let dir = selected_dir(st);
+            ask_for_new(st, &dir, false);
+        }))
+        .child(toolbar_icon(&theme::FOLDER_PLUS, "New Folder", ink, |st| {
+            let dir = selected_dir(st);
+            ask_for_new(st, &dir, true);
+        }))
+        .child(toolbar_icon(&theme::REFRESH, "Refresh", ink, refresh_files))
+        .child(toolbar_icon(
+            &theme::COLLAPSE_ALL,
+            "Collapse All",
+            ink,
+            |st| {
+                tree_get_mut(st).collapse_all();
+            },
+        ));
     col().w_full().child(bar)
+}
+
+/// One icon-only toolbar button, labelled and with a tooltip.
+fn toolbar_icon(
+    icon: &'static rune::Icon,
+    label: &'static str,
+    ink: &Ink,
+    on_press: fn(&mut State),
+) -> El {
+    rune::el()
+        .key(format!("files-tool:{label}"))
+        .size(28.0, 28.0)
+        .radius(8.0)
+        .center()
+        .role("button")
+        .label(label)
+        .child(theme::ic(icon, 16.0, ink.text))
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .press_scale(0.95)
+        .motion(theme::STATE_SPRING)
+        .help(label)
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .on_press(on_press)
+}
+
+/// The folder a new entry goes in: the selected folder, the folder of the
+/// selected file, or the checkout root (`""`).
+fn selected_dir(s: &State) -> String {
+    s.editor
+        .files
+        .model
+        .cursor()
+        .map(|id| entry_dir(tree_get(s), id))
+        .unwrap_or_default()
+}
+
+/// `id` itself when it is a folder, else the folder it sits in.
+fn entry_dir(model: &TreeModel<FileNode<FileMark>>, id: &str) -> String {
+    let folder = model.get(id).is_some_and(|n| {
+        n.dir || matches!(n.data, Some(FileMark::IgnoredDir | FileMark::EmptyDir))
+    });
+    match (folder, id.rsplit_once('/')) {
+        (true, _) => id.to_string(),
+        (false, Some((dir, _))) => dir.to_string(),
+        (false, None) => String::new(),
+    }
+}
+
+/// Open the prompt for a new file or folder in `dir`.
+fn ask_for_new(s: &mut State, dir: &str, folder: bool) {
+    s.ask_for_input(crate::sidebar::SidebarInput::NewEntry {
+        dir: dir.to_string(),
+        folder,
+    });
+}
+
+/// Send the create. The new entry opens in the tree once the list re-reads.
+pub fn submit_new(s: &mut State, dir: &str, folder: bool, name: &str) {
+    s.close_sidebar_input();
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let req = Req::CreateEntry {
+        dir: dir.to_string(),
+        name: name.to_string(),
+        folder,
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
+    }
 }
 
 /// Re-issue the file list for the current checkout (manual refresh).
@@ -192,6 +282,8 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
                     .icon(&rune_kit::glyphs::FOLDER)
                     .label_color(dim)
                     .icon_color(dim),
+                // A folder made here that holds nothing yet.
+                Some(FileMark::EmptyDir) => item.icon(&rune_kit::glyphs::FOLDER),
             }
         })
         // Press/double-press still route through these — `.on_key` below
@@ -245,6 +337,10 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
         return None;
     }
     let absolute = checkout.join(&menu.id);
+    let (new_dir, new_dir2) = (
+        entry_dir(tree_get(s), &menu.id),
+        entry_dir(tree_get(s), &menu.id),
+    );
     let (full, relative, reveal_path, id, trash_id) = (
         absolute.to_string_lossy().into_owned(),
         menu.id.clone(),
@@ -274,6 +370,17 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                 MenuItem::new("Reveal in Finder").on_select(move |st: &mut State| {
                     st.editor.files.menu = None;
                     reveal(&reveal_path);
+                }),
+            )
+            .separator()
+            .item(MenuItem::new("New File…").on_select(move |st: &mut State| {
+                st.editor.files.menu = None;
+                ask_for_new(st, &new_dir, false);
+            }))
+            .item(
+                MenuItem::new("New Folder…").on_select(move |st: &mut State| {
+                    st.editor.files.menu = None;
+                    ask_for_new(st, &new_dir2, true);
                 }),
             )
             .separator()
@@ -466,11 +573,9 @@ fn open_ignored_dir(s: &mut State, dir: &str) {
 /// A file row opens; a folder toggles, and an ignored directory (a leaf row)
 /// has nothing to open.
 fn is_openable(st: &State, id: &str) -> bool {
-    st.editor
-        .files
-        .model
-        .get(id)
-        .is_some_and(|n| !n.dir && n.data != Some(FileMark::IgnoredDir))
+    st.editor.files.model.get(id).is_some_and(|n| {
+        !n.dir && !matches!(n.data, Some(FileMark::IgnoredDir | FileMark::EmptyDir))
+    })
 }
 
 /// Composite tree key handler. `.on_key` replaces the tree's built-in
@@ -1775,6 +1880,64 @@ mod tests {
                 .as_deref()
                 .is_some_and(|n| n.contains("save or discard"))
         );
+    }
+
+    /// The toolbar's four actions are there; New File asks for a name in the
+    /// selected file's folder, Collapse All closes the tree, and the name
+    /// sends the create.
+    #[test]
+    fn the_toolbar_creates_in_the_selected_folder_and_collapses_all() {
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        let mut s = scene();
+        s.editor.backend = backend;
+        let mut rt = kb_runtime(s);
+        let tool = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.role == "button" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} button mounted"))
+        };
+        for label in ["New File", "New Folder", "Refresh", "Collapse All"] {
+            tool(&rt, label);
+        }
+        click_tree_row(&mut rt, "src");
+        click_tree_row(&mut rt, "a.rs");
+        let new_file = tool(&rt, "New File");
+        click(&mut rt, new_file.rect[0] + 5.0, new_file.rect[1] + 5.0);
+        assert_eq!(
+            rt.state.sidebar_input,
+            Some(crate::sidebar::SidebarInput::NewEntry {
+                dir: "src".into(),
+                folder: false
+            }),
+            "a selected file creates beside itself"
+        );
+        submit_new(&mut rt.state, "src", false, "  c.rs ");
+        assert!(rt.state.sidebar_input.is_none());
+        assert!(jobs.try_iter().any(|j| matches!(
+            &j.req,
+            Req::CreateEntry { dir, name, folder: false } if dir == "src" && name == "c.rs"
+        )));
+        submit_new(&mut rt.state, "src", true, "   ");
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "an empty name sends nothing"
+        );
+
+        assert!(rt.state.editor.files.model.is_expanded("src"));
+        let collapse = tool(&rt, "Collapse All");
+        click(&mut rt, collapse.rect[0] + 5.0, collapse.rect[1] + 5.0);
+        assert!(!rt.state.editor.files.model.is_expanded("src"));
+    }
+
+    #[test]
+    fn a_new_entry_goes_in_the_folder_of_the_row_or_the_root() {
+        let s = scene();
+        let model = tree_get(&s);
+        assert_eq!(entry_dir(model, "src"), "src", "a folder is its own target");
+        assert_eq!(entry_dir(model, "src/a.rs"), "src");
+        assert_eq!(entry_dir(model, "top.txt"), "", "a root file → the root");
+        assert_eq!(selected_dir(&s), "", "nothing selected → the root");
     }
 
     #[test]
