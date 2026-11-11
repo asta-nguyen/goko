@@ -557,26 +557,27 @@ pub(crate) fn add_project(ink: &Ink) -> El {
         .child(theme::ic(&theme::FOLDER_PLUS, 14.0, ink.text).group_color(lit(ink)))
         .child(theme::txt("Add Project", T128, ink.text).group_color(lit(ink)))
         .label("Add Project")
-        .on_press_tx(|_s: &mut State, tx: &mut Tx| {
-            tx.open_folder(
-                rune::file_dialog::FileDialogOptions {
-                    title: "Choose a project folder".into(),
-                    ..Default::default()
-                },
-                |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
-                    match result {
-                        Ok(Some(path)) => {
-                            st.editor.backend.send(Job::project(Req::AddProject {
-                                path: path.display().to_string(),
-                                workspace_id: st.workspace_id().to_string(),
-                            }));
-                        }
-                        Ok(None) => {}
-                        Err(e) => st.notice = Some(e.to_string()),
-                    }
-                },
-            );
-        })
+        .on_press_tx(choose_project)
+}
+
+/// Ask for a project folder, then register it worker-side.
+fn choose_project(_s: &mut State, tx: &mut Tx) {
+    tx.open_folder(
+        rune::file_dialog::FileDialogOptions {
+            title: "Choose a project folder".into(),
+            ..Default::default()
+        },
+        |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| match result {
+            Ok(Some(path)) => {
+                st.editor.backend.send(Job::project(Req::AddProject {
+                    path: path.display().to_string(),
+                    workspace_id: st.workspace_id().to_string(),
+                }));
+            }
+            Ok(None) => {}
+            Err(e) => st.notice = Some(e.to_string()),
+        },
+    );
 }
 
 /// Disclosure chevron. The glyph, not a box, takes the hover (muted → text), so a
@@ -780,6 +781,25 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                             .children(
                                 (!s.editor.projects.is_empty())
                                     .then(|| theme::count_badge(s.editor.projects.len(), ink)),
+                            )
+                            .child(
+                                el().key("sidebar-projects-add")
+                                    .size(20.0, 20.0)
+                                    .center()
+                                    .radius(4.0)
+                                    .hover_group()
+                                    .hover(ink.text.alpha(0.10))
+                                    .press(ink.text.alpha(0.16))
+                                    .press_scale(0.92)
+                                    .role("button")
+                                    .label("Add Project")
+                                    .help("Add project: choose a folder")
+                                    .focusable(true)
+                                    .child(
+                                        theme::ic(&theme::FOLDER_PLUS, 12.0, ink.muted)
+                                            .group_color(ink.text),
+                                    )
+                                    .on_press_tx(choose_project),
                             )
                             .child(
                                 el().key("sidebar-projects-new-session")
@@ -2812,9 +2832,9 @@ mod tests {
     }
 
     /// The empty sidebar has no New Terminal button: the PROJECTS `+` is the
-    /// one way to start something, and there is no Add Project button.
+    /// one way to start something, and the header's folder icon adds a project.
     #[test]
-    fn the_empty_sidebar_offers_only_the_plus_picker() {
+    fn the_empty_sidebar_offers_the_plus_picker_and_the_add_project_icon() {
         use rune::{Cx, Env, Runtime};
 
         fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
@@ -2828,7 +2848,8 @@ mod tests {
         let has = |key: &str| els.iter().any(|e| e.key.as_deref() == Some(key));
         assert!(!has("sidebar-empty-new-session"), "no New Terminal button");
         assert!(!has("sidebar-empty-new-session-dropdown"));
-        assert!(!has("sidebar-add-project"), "no Add Project button");
+        assert!(!has("sidebar-add-project"), "no Add Project text row");
+        assert!(has("sidebar-projects-add"), "the add-project icon is there");
         assert!(has("sidebar-projects-new-session"), "the + is there");
         assert!(
             has("sidebar-workspace-selector"),
