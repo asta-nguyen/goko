@@ -10,6 +10,8 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
 
 - `gokod` daemon crate: owns terminal PTY processes and serves `daemon.sock`
