@@ -1,0 +1,20 @@
+apps/rune/src/editor/backend.rs
+  s_49b55767a52b3c::t_ac194732a1b857 1309-1311
+  s_49b55767a52b3c::t_bccd39437cfb2e 1302-1308,1312,2567-2601
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e15d9dad8b80b40f8db97c6d2b7d54707a93e9bf",
+  "prompts": {},
+  "sessions": {
+    "s_49b55767a52b3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b07a741d-25e6-4430-8e4f-d88f938e468a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
