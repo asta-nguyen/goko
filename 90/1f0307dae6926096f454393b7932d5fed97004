@@ -1,0 +1,20 @@
+release.local.md
+  s_a3ac5e3748dcdd::t_06abfbfd1ed0c2 28-29
+  s_a3ac5e3748dcdd::t_b7d4207249e764 1-27,30-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "901f0307dae6926096f454393b7932d5fed97004",
+  "prompts": {},
+  "sessions": {
+    "s_a3ac5e3748dcdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1e816-caa2-42f6-8a55-eb0be0ad54ae",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
