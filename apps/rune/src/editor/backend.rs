@@ -43,7 +43,35 @@ pub const PENDING_CAP: usize = 128;
 pub enum Req {
     // project / checkout metadata
     Projects,
-    AddProject(String),
+    /// Register a natively picked folder in the given workspace.
+    AddProject {
+        path: String,
+        workspace_id: String,
+    },
+    /// Every named workspace, Default first.
+    Workspaces,
+    /// Create a named workspace and return it.
+    CreateWorkspace {
+        name: String,
+        /// Correlates the reply with the prompt whose drafts it may clear.
+        token: u64,
+    },
+    /// Rename a named workspace; the reply carries the refreshed list.
+    RenameWorkspace {
+        id: String,
+        name: String,
+        /// Correlates the reply with the prompt whose drafts it may clear.
+        token: u64,
+    },
+    /// Remove a named workspace, moving its projects to Default.
+    RemoveWorkspace {
+        id: String,
+    },
+    /// Move one project to another workspace.
+    MoveProject {
+        project_id: String,
+        workspace_id: String,
+    },
     Worktrees(String),
     /// Settings-store metadata (project-level, no checkout): `GetSetting`
     /// returns the stored string for startup restore; `SetSetting` persists
@@ -275,6 +303,8 @@ pub enum Req {
 pub enum ReplyData {
     Projects(Vec<ProjectView>),
     Added(ProjectView),
+    Workspaces(Vec<app_core::store::Workspace>),
+    WorkspaceCreated(app_core::store::Workspace),
     Worktrees(WorktreeList),
     Setting(Option<String>),
     /// The stored session metadata rows.
@@ -483,7 +513,11 @@ pub fn enqueue(backend: &mut Backend, job: Job) -> bool {
 fn is_mutating(req: &Req) -> bool {
     matches!(
         req,
-        Req::AddProject(_)
+        Req::AddProject { .. }
+            | Req::CreateWorkspace { .. }
+            | Req::RenameWorkspace { .. }
+            | Req::RemoveWorkspace { .. }
+            | Req::MoveProject { .. }
             | Req::SetSetting { .. }
             | Req::InsertSessionMeta(_)
             | Req::DeleteSessionMeta(_)
@@ -574,8 +608,32 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
         Req::Projects => storage_req(storage, |store| {
             projects::list_projects(store).map(ReplyData::Projects)
         }),
-        Req::AddProject(path) => storage_req(storage, |store| {
-            projects::add_project(store, path).map(ReplyData::Added)
+        Req::AddProject { path, workspace_id } => storage_req(storage, |store| {
+            projects::add_project(store, path, workspace_id).map(ReplyData::Added)
+        }),
+        Req::Workspaces => storage_req(storage, |store| {
+            store.list_workspaces().map(ReplyData::Workspaces)
+        }),
+        Req::CreateWorkspace { name, .. } => storage_req(storage, |store| {
+            store
+                .create_workspace(name)
+                .map(ReplyData::WorkspaceCreated)
+        }),
+        Req::RenameWorkspace { id, name, .. } => storage_req(storage, |store| {
+            store.rename_workspace(id, name)?;
+            store.list_workspaces().map(ReplyData::Workspaces)
+        }),
+        Req::RemoveWorkspace { id } => storage_req(storage, |store| {
+            store.remove_workspace(id)?;
+            store.list_workspaces().map(ReplyData::Workspaces)
+        }),
+        Req::MoveProject {
+            project_id,
+            workspace_id,
+        } => storage_req(storage, |store| {
+            store
+                .move_project(project_id, workspace_id)
+                .map(|_| ReplyData::Ok)
         }),
         Req::Worktrees(project_id) => storage_req(storage, |store| {
             let root = projects::project_root(store, project_id)?;
@@ -1048,7 +1106,12 @@ fn run_checkout(
             .map(ReplyData::Push)
             .map_err(|e| e.to_string()),
         Req::Projects
-        | Req::AddProject(_)
+        | Req::AddProject { .. }
+        | Req::Workspaces
+        | Req::CreateWorkspace { .. }
+        | Req::RenameWorkspace { .. }
+        | Req::RemoveWorkspace { .. }
+        | Req::MoveProject { .. }
         | Req::Worktrees(_)
         | Req::GetSetting { .. }
         | Req::SetSetting { .. }
@@ -1703,12 +1766,16 @@ mod tests {
                 id: "p2".into(),
                 name: "P2".into(),
                 root: "/tmp/p2".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
                 created_at: 0,
             },
             missing: false,
         };
         e.apply_reply(reply(
-            Req::AddProject("/tmp/p2".into()),
+            Req::AddProject {
+                path: "/tmp/p2".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+            },
             0,
             None,
             Ok(ReplyData::Added(added)),
@@ -2469,12 +2536,30 @@ mod tests {
                 line: None,
             },
             Req::Projects,
+            Req::Workspaces,
             Req::GetSetting { key: "k".into() },
         ] {
             assert!(!is_mutating(&req), "{req:?} must be skippable on shutdown");
         }
         for req in [
-            Req::AddProject("/tmp/x".into()),
+            Req::AddProject {
+                path: "/tmp/x".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+            },
+            Req::CreateWorkspace {
+                name: "Work".into(),
+                token: 1,
+            },
+            Req::RenameWorkspace {
+                id: "w".into(),
+                name: "Work".into(),
+                token: 1,
+            },
+            Req::RemoveWorkspace { id: "w".into() },
+            Req::MoveProject {
+                project_id: "p".into(),
+                workspace_id: "w".into(),
+            },
             Req::SetSetting {
                 key: "k".into(),
                 value: "v".into(),

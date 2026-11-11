@@ -698,7 +698,9 @@ impl State {
         let project_id = match target {
             crate::sidebar::RowTarget::Project { project_id }
             | crate::sidebar::RowTarget::Worktree { project_id, .. } => Some(project_id.clone()),
-            crate::sidebar::RowTarget::Session { .. } => None,
+            crate::sidebar::RowTarget::Session { .. } | crate::sidebar::RowTarget::Workspace => {
+                None
+            }
         };
         let path = match target {
             crate::sidebar::RowTarget::Project { project_id } => self
@@ -708,7 +710,9 @@ impl State {
                 .find(|project| project.project.id == *project_id)
                 .map(|project| project.project.root.clone()),
             crate::sidebar::RowTarget::Worktree { path, .. } => Some(path.clone()),
-            crate::sidebar::RowTarget::Session { .. } => None,
+            crate::sidebar::RowTarget::Session { .. } | crate::sidebar::RowTarget::Workspace => {
+                None
+            }
         };
         let cwd = path.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
         (cwd, project_id)

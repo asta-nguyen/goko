@@ -5,6 +5,7 @@
 //! the app's own bookkeeping.
 
 use crate::error::{BridgeError, Code};
+use protocol::message::ErrorCode;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::fs::{DirBuilder, OpenOptions};
@@ -13,8 +14,13 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The permanent Default workspace id. Every database has this row; it cannot
+/// be renamed or removed, and it receives the projects of a removed workspace.
+pub const DEFAULT_WORKSPACE_ID: &str = "default";
+
 /// Schema versions applied in order; its length is the current `user_version`.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -34,7 +40,21 @@ const MIGRATIONS: &[&str] = &["
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
-"];
+",
+    "
+    CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE project_workspaces (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id)
+    );
+    INSERT INTO workspaces (id, name, created_at) VALUES ('default', 'Default', 0);
+    INSERT INTO project_workspaces (project_id, workspace_id) SELECT id, 'default' FROM projects;
+",
+];
 
 /// A registered project row. Whether `root` still exists is computed at list time by the
 /// caller; the store keeps the record only.
@@ -43,6 +63,18 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub root: String,
+    /// The workspace this project belongs to (Default when no membership row
+    /// exists, which migration and every write prevent).
+    pub workspace_id: String,
+    /// Unix epoch milliseconds.
+    pub created_at: i64,
+}
+
+/// A named group of registered projects. The Default workspace always exists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
     /// Unix epoch milliseconds.
     pub created_at: i64,
 }
@@ -108,32 +140,171 @@ impl Store {
         })
     }
 
-    /// Insert a project, or return the row already registered for `root`.
-    pub fn add_project(&self, name: &str, root: &str) -> Result<Project, BridgeError> {
-        let conn = self.lock()?;
-        conn.execute(
+    /// Insert a project into `workspace_id`, or return the row already
+    /// registered for `root` with its membership unchanged. The project and
+    /// its membership are written together or not at all.
+    pub fn add_project(
+        &self,
+        name: &str,
+        root: &str,
+        workspace_id: &str,
+    ) -> Result<Project, BridgeError> {
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| storage("cannot add the project", error))?;
+        require_workspace(&tx, workspace_id)?;
+        tx.execute(
             "INSERT OR IGNORE INTO projects (id, name, root, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![uuid::Uuid::new_v4().to_string(), name, root, now_ms()],
         )
         .map_err(|error| storage("cannot add the project", error))?;
-        conn.query_row(
-            "SELECT id, name, root, created_at FROM projects WHERE root = ?1",
-            params![root],
-            project,
+        let id: String = tx
+            .query_row(
+                "SELECT id FROM projects WHERE root = ?1",
+                params![root],
+                |row| row.get(0),
+            )
+            .map_err(|error| storage("cannot read the project", error))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO project_workspaces (project_id, workspace_id) VALUES (?1, ?2)",
+            params![id, workspace_id],
         )
-        .map_err(|error| storage("cannot read the project", error))
+        .map_err(|error| storage("cannot add the project", error))?;
+        let project = tx
+            .query_row(
+                &format!("{} WHERE p.root = ?1", project_select()),
+                params![root],
+                project,
+            )
+            .map_err(|error| storage("cannot read the project", error))?;
+        tx.commit()
+            .map_err(|error| storage("cannot add the project", error))?;
+        Ok(project)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>, BridgeError> {
         let conn = self.lock()?;
         let mut stmt = conn
-            .prepare("SELECT id, name, root, created_at FROM projects ORDER BY created_at, rowid")
+            .prepare(&format!(
+                "{} ORDER BY p.created_at, p.rowid",
+                project_select()
+            ))
             .map_err(|error| storage("cannot list the projects", error))?;
         let rows = stmt
             .query_map([], project)
             .map_err(|error| storage("cannot list the projects", error))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| storage("cannot list the projects", error))
+    }
+
+    /// Every workspace, Default first, then creation order.
+    pub fn list_workspaces(&self) -> Result<Vec<Workspace>, BridgeError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id, name, created_at FROM workspaces \
+                 ORDER BY (id = '{DEFAULT_WORKSPACE_ID}') DESC, created_at, rowid"
+            ))
+            .map_err(|error| storage("cannot list the workspaces", error))?;
+        let rows = stmt
+            .query_map([], workspace)
+            .map_err(|error| storage("cannot list the workspaces", error))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| storage("cannot list the workspaces", error))
+    }
+
+    /// Create a named workspace. Names are trimmed, nonempty, and unique
+    /// ignoring ASCII case.
+    pub fn create_workspace(&self, name: &str) -> Result<Workspace, BridgeError> {
+        let conn = self.lock()?;
+        let name = checked_workspace_name(&conn, name, None)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO workspaces (id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![id, name, now_ms()],
+        )
+        .map_err(|error| storage("cannot create the workspace", error))?;
+        read_workspace(&conn, &id)
+    }
+
+    /// Rename a named workspace. The Default workspace cannot be renamed.
+    pub fn rename_workspace(&self, id: &str, name: &str) -> Result<Workspace, BridgeError> {
+        let conn = self.lock()?;
+        let existing = read_workspace(&conn, id)?;
+        if existing.id == DEFAULT_WORKSPACE_ID {
+            return Err(invalid("the Default workspace cannot be renamed"));
+        }
+        let name = checked_workspace_name(&conn, name, Some(id))?;
+        conn.execute(
+            "UPDATE workspaces SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )
+        .map_err(|error| storage("cannot rename the workspace", error))?;
+        read_workspace(&conn, id)
+    }
+
+    /// Remove a named workspace, moving every member project to Default in
+    /// the same transaction. No project or session row is deleted.
+    pub fn remove_workspace(&self, id: &str) -> Result<(), BridgeError> {
+        let mut conn = self.lock()?;
+        if id == DEFAULT_WORKSPACE_ID {
+            return Err(invalid("the Default workspace cannot be removed"));
+        }
+        let tx = conn
+            .transaction()
+            .map_err(|error| storage("cannot remove the workspace", error))?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| storage("cannot remove the workspace", error))?;
+        if !exists {
+            return Err(not_found(format!("no workspace '{id}' exists")));
+        }
+        tx.execute(
+            "UPDATE project_workspaces SET workspace_id = ?1 WHERE workspace_id = ?2",
+            params![DEFAULT_WORKSPACE_ID, id],
+        )
+        .map_err(|error| storage("cannot remove the workspace", error))?;
+        tx.execute("DELETE FROM workspaces WHERE id = ?1", params![id])
+            .map_err(|error| storage("cannot remove the workspace", error))?;
+        tx.commit()
+            .map_err(|error| storage("cannot remove the workspace", error))?;
+        Ok(())
+    }
+
+    /// Move one project's membership. A missing project or workspace id is an
+    /// error and changes nothing else.
+    pub fn move_project(&self, project_id: &str, workspace_id: &str) -> Result<(), BridgeError> {
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| storage("cannot move the project", error))?;
+        let project_exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| storage("cannot move the project", error))?;
+        if !project_exists {
+            return Err(not_found(format!(
+                "no project '{project_id}' is registered"
+            )));
+        }
+        require_workspace(&tx, workspace_id)?;
+        tx.execute(
+            "INSERT INTO project_workspaces (project_id, workspace_id) VALUES (?1, ?2) \
+             ON CONFLICT (project_id) DO UPDATE SET workspace_id = excluded.workspace_id",
+            params![project_id, workspace_id],
+        )
+        .map_err(|error| storage("cannot move the project", error))?;
+        tx.commit()
+            .map_err(|error| storage("cannot move the project", error))?;
+        Ok(())
     }
 
     /// True when a row was deleted. `sessions.project_id` is nulled by the foreign key.
@@ -237,12 +408,83 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// The project row plus its workspace membership, one row per project.
+fn project_select() -> String {
+    format!(
+        "SELECT p.id, p.name, p.root, p.created_at, COALESCE(pw.workspace_id, '{DEFAULT_WORKSPACE_ID}') \
+         FROM projects p LEFT JOIN project_workspaces pw ON pw.project_id = p.id"
+    )
+}
+
+/// One workspace row by id; `not_found` when no row has it.
+fn read_workspace(conn: &Connection, id: &str) -> Result<Workspace, BridgeError> {
+    conn.query_row(
+        "SELECT id, name, created_at FROM workspaces WHERE id = ?1",
+        params![id],
+        workspace,
+    )
+    .optional()
+    .map_err(|error| storage("cannot read the workspace", error))?
+    .ok_or_else(|| not_found(format!("no workspace '{id}' exists")))
+}
+
+/// Trim and validate a workspace name, rejecting blanks and names already
+/// taken ignoring ASCII case. `exclude` skips the row being renamed.
+fn checked_workspace_name(
+    conn: &Connection,
+    name: &str,
+    exclude: Option<&str>,
+) -> Result<String, BridgeError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(invalid("the workspace name is empty"));
+    }
+    let taken: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE name = ?1 COLLATE NOCASE AND id IS NOT ?2)",
+            params![name, exclude],
+            |row| row.get(0),
+        )
+        .map_err(|error| storage("cannot validate the workspace name", error))?;
+    if taken {
+        return Err(invalid(format!(
+            "a workspace named '{name}' already exists"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+/// `not_found` when `workspace_id` names no workspace.
+fn require_workspace(conn: &Connection, workspace_id: &str) -> Result<(), BridgeError> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| storage("cannot read the workspace", error))?;
+    if exists {
+        Ok(())
+    } else {
+        Err(not_found(format!("no workspace '{workspace_id}' exists")))
+    }
+}
+
 fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: row.get(0)?,
         name: row.get(1)?,
         root: row.get(2)?,
         created_at: row.get(3)?,
+        workspace_id: row.get(4)?,
+    })
+}
+
+fn workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
+    Ok(Workspace {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        created_at: row.get(2)?,
     })
 }
 
@@ -274,6 +516,14 @@ fn now_ms() -> i64 {
 
 fn storage(what: &str, error: impl std::fmt::Display) -> BridgeError {
     BridgeError::new(Code::Storage, format!("{what}: {error}"))
+}
+
+fn invalid(message: impl Into<String>) -> BridgeError {
+    BridgeError::new(Code::Daemon(ErrorCode::InvalidArgument), message)
+}
+
+fn not_found(message: impl Into<String>) -> BridgeError {
+    BridgeError::new(Code::Daemon(ErrorCode::NotFound), message)
 }
 
 #[cfg(test)]
@@ -322,7 +572,9 @@ mod tests {
         );
         // Reopening applies no migration and keeps the data.
         let again = open(&dir);
-        again.add_project("p", "/tmp").unwrap();
+        again
+            .add_project("p", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
         assert_eq!(again.list_projects().unwrap().len(), 1);
         assert_eq!(again.list_projects().unwrap()[0].name, "p");
     }
@@ -345,9 +597,15 @@ mod tests {
         let dir = TempDir::new("store-add");
         let store = open(&dir);
 
-        let first = store.add_project("one", "/tmp").unwrap();
-        let second = store.add_project("two", "/var").unwrap();
-        let dupe = store.add_project("one again", "/tmp").unwrap();
+        let first = store
+            .add_project("one", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        let second = store
+            .add_project("two", "/var", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        let dupe = store
+            .add_project("one again", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
 
         assert_eq!(dupe.id, first.id);
         assert_eq!(dupe.name, "one", "the existing row wins, name unchanged");
@@ -361,7 +619,9 @@ mod tests {
     fn removing_a_project_nulls_session_project_id() {
         let dir = TempDir::new("store-rm");
         let store = open(&dir);
-        let project = store.add_project("p", "/tmp").unwrap();
+        let project = store
+            .add_project("p", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
         store
             .insert_session_meta(&meta("s1", Some(&project.id)))
             .unwrap();
@@ -385,7 +645,9 @@ mod tests {
         store.set_setting("k", "v2").unwrap();
         assert_eq!(store.get_setting("k").unwrap().as_deref(), Some("v2"));
 
-        let project = store.add_project("p", "/tmp").unwrap();
+        let project = store
+            .add_project("p", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
         let meta = meta("s1", Some(&project.id));
         store.insert_session_meta(&meta).unwrap();
         assert_eq!(store.list_session_meta().unwrap(), vec![meta]);
@@ -421,5 +683,263 @@ mod tests {
         store.delete_session_meta("s1").unwrap();
         store.delete_session_meta("s1").unwrap();
         assert!(store.list_session_meta().unwrap().is_empty());
+    }
+
+    #[test]
+    fn migrating_an_existing_database_assigns_every_project_to_default() {
+        let dir = TempDir::new("store-migrate-workspaces");
+        let path = dir.path().join("goko.db");
+        // A version-1 database: the first migration only, with real rows.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, name, root, created_at) VALUES ('p1', 'old', '/tmp/old', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, agent, argv, cwd, title, created_at) \
+             VALUES ('s1', 'p1', 'shell', '[\"/bin/zsh\"]', '/tmp/old', '', 2)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = Store::open(dir.path()).unwrap();
+
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, "p1");
+        assert_eq!(projects[0].workspace_id, DEFAULT_WORKSPACE_ID);
+        let workspaces = store.list_workspaces().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].id, DEFAULT_WORKSPACE_ID);
+        assert_eq!(workspaces[0].name, "Default");
+        // Session associations survive the migration untouched.
+        assert_eq!(
+            store.list_session_meta().unwrap()[0].project_id.as_deref(),
+            Some("p1")
+        );
+    }
+
+    #[test]
+    fn a_fresh_database_has_only_the_default_workspace() {
+        let dir = TempDir::new("store-fresh-workspaces");
+        let store = open(&dir);
+
+        assert_eq!(
+            store.list_workspaces().unwrap(),
+            vec![Workspace {
+                id: DEFAULT_WORKSPACE_ID.into(),
+                name: "Default".into(),
+                created_at: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn workspaces_create_rename_and_reject_blank_or_duplicate_names() {
+        let dir = TempDir::new("store-workspace-names");
+        let store = open(&dir);
+
+        let work = store.create_workspace("  Work  ").unwrap();
+        assert_eq!(work.name, "Work", "the name is trimmed");
+        let other = store.create_workspace("Play").unwrap();
+
+        assert_eq!(
+            store.create_workspace("   ").unwrap_err().code,
+            Code::Daemon(ErrorCode::InvalidArgument)
+        );
+        assert_eq!(
+            store.create_workspace("work").unwrap_err().code,
+            Code::Daemon(ErrorCode::InvalidArgument),
+            "names are unique ignoring case"
+        );
+        assert_eq!(
+            store.create_workspace("Default").unwrap_err().code,
+            Code::Daemon(ErrorCode::InvalidArgument),
+            "the Default name is taken"
+        );
+
+        let renamed = store.rename_workspace(&work.id, "Work two").unwrap();
+        assert_eq!(renamed.name, "Work two");
+        assert_eq!(
+            store.rename_workspace(&work.id, "PLAY").unwrap_err().code,
+            Code::Daemon(ErrorCode::InvalidArgument),
+            "renaming into another workspace's name is refused"
+        );
+        assert_eq!(
+            store
+                .rename_workspace(DEFAULT_WORKSPACE_ID, "Home")
+                .unwrap_err()
+                .code,
+            Code::Daemon(ErrorCode::InvalidArgument)
+        );
+        assert_eq!(
+            store.rename_workspace("missing", "Home").unwrap_err().code,
+            Code::Daemon(ErrorCode::NotFound)
+        );
+
+        let names: Vec<String> = store
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.name)
+            .collect();
+        assert_eq!(names, vec!["Default", "Work two", "Play"]);
+        assert_ne!(other.id, work.id);
+    }
+
+    #[test]
+    fn adding_a_duplicate_root_keeps_its_original_workspace() {
+        let dir = TempDir::new("store-dupe-workspace");
+        let store = open(&dir);
+        let work = store.create_workspace("Work").unwrap();
+
+        let first = store.add_project("p", "/tmp", &work.id).unwrap();
+        assert_eq!(first.workspace_id, work.id);
+        let again = store
+            .add_project("p again", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(
+            again.workspace_id, work.id,
+            "re-adding never moves the project"
+        );
+        assert_eq!(
+            store.add_project("q", "/var", "missing").unwrap_err().code,
+            Code::Daemon(ErrorCode::NotFound)
+        );
+    }
+
+    #[test]
+    fn moving_a_project_changes_only_its_membership() {
+        let dir = TempDir::new("store-move-project");
+        let store = open(&dir);
+        let work = store.create_workspace("Work").unwrap();
+        let one = store
+            .add_project("one", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        let two = store
+            .add_project("two", "/var", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+
+        store.move_project(&one.id, &work.id).unwrap();
+
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects[0].id, one.id);
+        assert_eq!(projects[0].workspace_id, work.id);
+        assert_eq!(projects[1].id, two.id);
+        assert_eq!(projects[1].workspace_id, DEFAULT_WORKSPACE_ID);
+        assert_eq!(projects[0].root, one.root);
+        assert_eq!(projects[0].created_at, one.created_at);
+
+        assert_eq!(
+            store.move_project("missing", &work.id).unwrap_err().code,
+            Code::Daemon(ErrorCode::NotFound)
+        );
+        assert_eq!(
+            store.move_project(&one.id, "missing").unwrap_err().code,
+            Code::Daemon(ErrorCode::NotFound)
+        );
+        assert_eq!(
+            store.list_projects().unwrap()[0].workspace_id,
+            work.id,
+            "failed moves change nothing"
+        );
+    }
+
+    #[test]
+    fn removing_a_workspace_moves_its_projects_to_default_atomically() {
+        let dir = TempDir::new("store-remove-workspace");
+        let store = open(&dir);
+        let work = store.create_workspace("Work").unwrap();
+        let project = store.add_project("p", "/tmp", &work.id).unwrap();
+        store
+            .insert_session_meta(&meta("s1", Some(&project.id)))
+            .unwrap();
+
+        // A forced failure keeps the transfer and the delete together.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER deny_workspace_delete BEFORE DELETE ON workspaces \
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+        assert_eq!(
+            store.remove_workspace(&work.id).unwrap_err().code,
+            Code::Storage
+        );
+        assert_eq!(
+            store.list_projects().unwrap()[0].workspace_id,
+            work.id,
+            "the transfer rolled back with the delete"
+        );
+        assert!(store
+            .list_workspaces()
+            .unwrap()
+            .iter()
+            .any(|w| w.id == work.id));
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER deny_workspace_delete")
+            .unwrap();
+
+        store.remove_workspace(&work.id).unwrap();
+
+        assert_eq!(
+            store.list_projects().unwrap()[0].workspace_id,
+            DEFAULT_WORKSPACE_ID
+        );
+        assert!(
+            !store
+                .list_workspaces()
+                .unwrap()
+                .iter()
+                .any(|w| w.id == work.id),
+            "the workspace is gone"
+        );
+        assert_eq!(
+            store.list_session_meta().unwrap()[0].project_id.as_deref(),
+            Some(project.id.as_str()),
+            "no session row was touched"
+        );
+        assert_eq!(
+            store
+                .remove_workspace(DEFAULT_WORKSPACE_ID)
+                .unwrap_err()
+                .code,
+            Code::Daemon(ErrorCode::InvalidArgument)
+        );
+        assert_eq!(
+            store.remove_workspace("missing").unwrap_err().code,
+            Code::Daemon(ErrorCode::NotFound)
+        );
+    }
+
+    #[test]
+    fn removing_a_project_cascades_its_membership() {
+        let dir = TempDir::new("store-cascade-membership");
+        let store = open(&dir);
+        let work = store.create_workspace("Work").unwrap();
+        let project = store.add_project("p", "/tmp", &work.id).unwrap();
+
+        assert!(store.remove_project(&project.id).unwrap());
+
+        let memberships: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM project_workspaces", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(memberships, 0);
     }
 }

@@ -290,9 +290,10 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
                         if let Ok(Some(path)) = result {
                             st.editor
                                 .backend
-                                .send(backend::Job::project(Req::AddProject(
-                                    path.display().to_string(),
-                                )));
+                                .send(backend::Job::project(Req::AddProject {
+                                    path: path.display().to_string(),
+                                    workspace_id: st.workspace_id().to_string(),
+                                }));
                         }
                     },
                 );
@@ -423,9 +424,10 @@ fn empty_state(s: &State, ink: &Ink) -> El {
                             if let Ok(Some(path)) = result {
                                 st.editor
                                     .backend
-                                    .send(backend::Job::project(Req::AddProject(
-                                        path.display().to_string(),
-                                    )));
+                                    .send(backend::Job::project(Req::AddProject {
+                                        path: path.display().to_string(),
+                                        workspace_id: st.workspace_id().to_string(),
+                                    }));
                             }
                         },
                     );
@@ -495,6 +497,7 @@ mod tests {
                 id: id.into(),
                 name: name.into(),
                 root: root.into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
                 created_at: 0,
             },
             missing: false,

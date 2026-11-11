@@ -1695,6 +1695,7 @@ mod tests {
                 id: id.into(),
                 name: name.into(),
                 root: root.into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
                 created_at: 0,
             },
             missing: false,

@@ -1325,7 +1325,12 @@ mod tests {
     fn storage_and_project(dir: &TempDir, root: &Path) -> (Option<Storage>, String) {
         let storage = Storage::open(dir.path());
         let store = storage.get().unwrap();
-        let pv = add_project(store, root.to_str().unwrap()).unwrap();
+        let pv = add_project(
+            store,
+            root.to_str().unwrap(),
+            app_core::store::DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
         (Some(storage), pv.project.id)
     }
 

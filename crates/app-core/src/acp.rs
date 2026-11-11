@@ -2081,7 +2081,11 @@ mod tests {
         storage
             .get()
             .unwrap()
-            .add_project("p", &root.display().to_string())
+            .add_project(
+                "p",
+                &root.display().to_string(),
+                crate::store::DEFAULT_WORKSPACE_ID,
+            )
             .unwrap()
             .id
     }

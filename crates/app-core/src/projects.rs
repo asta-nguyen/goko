@@ -39,9 +39,14 @@ pub fn list_projects(store: &Store) -> Result<Vec<ProjectView>, BridgeError> {
         .collect())
 }
 
-/// Canonicalize `path` and register it; a file or a missing path is `invalid_argument`.
-/// Registering the same root again returns the existing row.
-pub fn add_project(store: &Store, path: &str) -> Result<ProjectView, BridgeError> {
+/// Canonicalize `path` and register it in `workspace_id`; a file or a missing
+/// path is `invalid_argument`. Registering the same root again returns the
+/// existing row with its membership unchanged.
+pub fn add_project(
+    store: &Store,
+    path: &str,
+    workspace_id: &str,
+) -> Result<ProjectView, BridgeError> {
     let root = std::fs::canonicalize(path)
         .map_err(|error| invalid(format!("cannot use '{path}': {error}")))?;
     if !root.is_dir() {
@@ -52,7 +57,7 @@ pub fn add_project(store: &Store, path: &str) -> Result<ProjectView, BridgeError
         |name| name.to_string_lossy().into_owned(),
     );
     store
-        .add_project(&name, &root.display().to_string())
+        .add_project(&name, &root.display().to_string(), workspace_id)
         .map(ProjectView::of)
 }
 
@@ -123,6 +128,7 @@ fn not_found(message: impl Into<String>) -> BridgeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::DEFAULT_WORKSPACE_ID;
     use crate::test_support::TempDir;
     use std::process::Command;
 
@@ -162,11 +168,11 @@ mod tests {
         let store = store(&dir);
         let (repo_dir, root) = repo("projects-repo");
 
-        let added = add_project(&store, root.to_str().unwrap()).unwrap();
+        let added = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
         assert!(!added.missing);
         assert_eq!(added.project.root, root.display().to_string());
         // Registering the same root again returns the existing row.
-        let again = add_project(&store, root.to_str().unwrap()).unwrap();
+        let again = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
         assert_eq!(again.project.id, added.project.id);
 
         let listed = list_projects(&store).unwrap();
@@ -187,10 +193,31 @@ mod tests {
         let dir = TempDir::new("projects-add-bad");
         let store = store(&dir);
 
-        assert!(add_project(&store, "/no/such/dir").is_err());
+        assert!(add_project(&store, "/no/such/dir", DEFAULT_WORKSPACE_ID).is_err());
         let file = dir.path().join("file.txt");
         std::fs::write(&file, "x").unwrap();
-        assert!(add_project(&store, file.to_str().unwrap()).is_err());
+        assert!(add_project(&store, file.to_str().unwrap(), DEFAULT_WORKSPACE_ID).is_err());
+    }
+
+    #[test]
+    fn add_project_registers_into_the_named_workspace_and_listings_carry_it() {
+        let dir = TempDir::new("projects-workspace");
+        let store = store(&dir);
+        let (repo_dir, root) = repo("projects-workspace-repo");
+        let work = store.create_workspace("Work").unwrap();
+
+        let added = add_project(&store, root.to_str().unwrap(), &work.id).unwrap();
+        assert_eq!(added.project.workspace_id, work.id);
+        assert_eq!(
+            list_projects(&store).unwrap()[0].project.workspace_id,
+            work.id
+        );
+
+        // Re-adding under Default keeps the original membership.
+        let again = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
+        assert_eq!(again.project.id, added.project.id);
+        assert_eq!(again.project.workspace_id, work.id);
+        drop(repo_dir);
     }
 
     #[test]
@@ -198,7 +225,7 @@ mod tests {
         let dir = TempDir::new("projects-root");
         let store = store(&dir);
         let (repo_dir, root) = repo("projects-root-repo");
-        let project = add_project(&store, root.to_str().unwrap()).unwrap();
+        let project = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
 
         assert_eq!(
             project_root(&store, &project.project.id).unwrap(),
@@ -235,8 +262,9 @@ mod tests {
         let store = store(&dir);
         let (_repo_dir, root) = repo("projects-git-repo");
         let plain = TempDir::new("projects-plain");
-        let project = add_project(&store, root.to_str().unwrap()).unwrap();
-        let plain_project = add_project(&store, plain.path().to_str().unwrap()).unwrap();
+        let project = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
+        let plain_project =
+            add_project(&store, plain.path().to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
 
         let checkout = git_checkout(&store, &project.project.id, root.to_str().unwrap()).unwrap();
         assert_eq!(checkout, root);

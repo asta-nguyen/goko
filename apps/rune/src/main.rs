@@ -120,6 +120,22 @@ pub struct State {
     sidebar_input: Option<sidebar::SidebarInput>,
     /// The text the user typed into the sidebar's prompt.
     sidebar_text: rune::edit::TextEdit,
+    /// The named workspaces, Default first — the sidebar's selector.
+    workspaces: Vec<app_core::store::Workspace>,
+    workspaces_loading: bool,
+    workspaces_error: Option<String>,
+    /// The workspace whose projects the sidebar shows — distinct from the
+    /// checkout `active_workspace` highlight.
+    selected_workspace: Option<String>,
+    /// The saved selection read from startup is still pending; a user choice
+    /// or its reply clears it.
+    workspace_restore_pending: bool,
+    /// The workspace removal awaiting confirmation.
+    workspace_remove_confirm: Option<String>,
+    /// Monotonic token correlating a workspace-name prompt with its reply.
+    workspace_token: u64,
+    /// The workspace-name submission in flight, by token.
+    workspace_pending: Option<u64>,
     /// The launches waiting for their agent's argv, each with its own
     /// token so concurrent requests never steal each other's answer.
     pending_argv: Vec<sessions::PendingArgv>,
@@ -210,6 +226,14 @@ impl State {
             menu_anchor: None,
             sidebar_input: None,
             sidebar_text: rune::edit::TextEdit::new(""),
+            workspaces: Vec::new(),
+            workspaces_loading: false,
+            workspaces_error: None,
+            selected_workspace: None,
+            workspace_restore_pending: true,
+            workspace_remove_confirm: None,
+            workspace_token: 0,
+            workspace_pending: None,
             pending_argv: Vec::new(),
             argv_token: 0,
             stopping_since: HashMap::new(),
@@ -269,6 +293,135 @@ impl State {
                 value: format!("{width}"),
             }),
         );
+    }
+
+    /// The selected workspace id, Default until a workspace list or a user
+    /// choice names another.
+    pub fn workspace_id(&self) -> &str {
+        self.selected_workspace
+            .as_deref()
+            .unwrap_or(app_core::store::DEFAULT_WORKSPACE_ID)
+    }
+
+    /// The selected workspace's name, for the selector and prompts.
+    pub fn workspace_name(&self) -> &str {
+        let id = self.workspace_id();
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .map_or("Default", |workspace| workspace.name.as_str())
+    }
+
+    /// Read every workspace on the worker lane.
+    pub fn request_workspaces(&mut self) {
+        if backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::Workspaces),
+        ) {
+            self.workspaces_loading = true;
+            self.workspaces_error = None;
+        } else {
+            self.workspaces_loading = false;
+            self.workspaces_error =
+                Some("the editor queue is full; workspaces were not requested".into());
+        }
+    }
+
+    /// Select a workspace and persist the choice. Switching never touches the
+    /// editor checkout, open tabs, or running sessions.
+    pub fn select_workspace(&mut self, id: &str) {
+        self.workspace_restore_pending = false;
+        self.workspace_remove_confirm = None;
+        if self.selected_workspace.as_deref() == Some(id) {
+            return;
+        }
+        self.selected_workspace = Some(id.to_string());
+        let _ = backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::SetSetting {
+                key: sidebar::SELECTED_WORKSPACE_KEY.to_string(),
+                value: id.to_string(),
+            }),
+        );
+    }
+
+    /// Ask the worker for a new workspace; the reply selects it.
+    pub fn submit_workspace_create(&mut self, name: &str) {
+        self.workspace_token = self.workspace_token.wrapping_add(1);
+        let token = self.workspace_token;
+        if backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::CreateWorkspace {
+                name: name.trim().to_string(),
+                token,
+            }),
+        ) {
+            self.workspace_pending = Some(token);
+        } else {
+            self.notice = Some("the editor queue is full; the workspace was not created".into());
+        }
+    }
+
+    /// Rename a named workspace; the reply refreshes the list.
+    pub fn submit_workspace_rename(&mut self, id: &str, name: &str) {
+        self.workspace_token = self.workspace_token.wrapping_add(1);
+        let token = self.workspace_token;
+        if backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::RenameWorkspace {
+                id: id.to_string(),
+                name: name.trim().to_string(),
+                token,
+            }),
+        ) {
+            self.workspace_pending = Some(token);
+        } else {
+            self.notice = Some("the editor queue is full; the workspace was not renamed".into());
+        }
+    }
+
+    /// Remove a workspace after its confirmation: its projects move to
+    /// Default in one storage transaction.
+    pub fn remove_workspace(&mut self, id: &str) {
+        self.workspace_remove_confirm = None;
+        let _ = backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::RemoveWorkspace { id: id.to_string() }),
+        );
+    }
+
+    /// Move one project to another workspace; the refreshed project list
+    /// places its row after the write succeeds.
+    pub fn move_project(&mut self, project_id: &str, workspace_id: &str) {
+        let _ = backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::MoveProject {
+                project_id: project_id.to_string(),
+                workspace_id: workspace_id.to_string(),
+            }),
+        );
+    }
+
+    /// Open the rename prompt with the workspace's current name filled in.
+    pub fn ask_for_workspace_rename(&mut self, id: &str, current: &str) {
+        self.ask_for_input(sidebar::SidebarInput::WorkspaceRename { id: id.to_string() });
+        self.sidebar_text = rune::edit::TextEdit::new(current);
+        self.sidebar_text.focused = true;
+    }
+
+    /// Close the sidebar's text prompt and drop its draft.
+    pub fn close_sidebar_input(&mut self) {
+        self.sidebar_input = None;
+        self.sidebar_text = rune::edit::TextEdit::new("");
+    }
+
+    /// Whether the open prompt edits a workspace name.
+    pub fn workspace_input_open(&self) -> bool {
+        matches!(
+            self.sidebar_input,
+            Some(sidebar::SidebarInput::WorkspaceName)
+                | Some(sidebar::SidebarInput::WorkspaceRename { .. })
+        )
     }
 
     /// Apply one backend reply: the app-level kinds land here, the editor's
@@ -418,6 +571,115 @@ impl State {
                 }
                 return;
             }
+            backend::Req::Workspaces => {
+                match &reply.result {
+                    Ok(backend::ReplyData::Workspaces(list)) => {
+                        self.workspaces = list.clone();
+                        self.workspaces_loading = false;
+                        self.workspaces_error = None;
+                        // A selection that vanished (or never existed) falls
+                        // back to the permanent Default workspace.
+                        if self
+                            .selected_workspace
+                            .as_ref()
+                            .is_none_or(|id| !list.iter().any(|workspace| &workspace.id == id))
+                        {
+                            self.selected_workspace =
+                                Some(app_core::store::DEFAULT_WORKSPACE_ID.to_string());
+                        }
+                    }
+                    Err(error) => {
+                        self.workspaces_loading = false;
+                        self.workspaces_error = Some(error.clone());
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::GetSetting { key } if key == sidebar::SELECTED_WORKSPACE_KEY => {
+                // Restore the saved workspace only while nothing newer has
+                // been chosen; a deleted or superseded id falls back to Default.
+                if self.workspace_restore_pending {
+                    self.workspace_restore_pending = false;
+                    if let Ok(backend::ReplyData::Setting(Some(saved))) = &reply.result
+                        && self
+                            .workspaces
+                            .iter()
+                            .any(|workspace| &workspace.id == saved)
+                    {
+                        self.selected_workspace = Some(saved.clone());
+                    }
+                }
+                return;
+            }
+            backend::Req::CreateWorkspace { token, .. } => {
+                match &reply.result {
+                    Ok(backend::ReplyData::WorkspaceCreated(workspace)) => {
+                        if !self.workspaces.iter().any(|w| w.id == workspace.id) {
+                            self.workspaces.push(workspace.clone());
+                        }
+                        if self.workspace_pending == Some(*token) {
+                            self.workspace_pending = None;
+                            if self.workspace_input_open() {
+                                self.close_sidebar_input();
+                                self.select_workspace(&workspace.id);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if self.workspace_pending == Some(*token) {
+                            self.workspace_pending = None;
+                        }
+                        // The prompt and its text stay for correction.
+                        self.notice = Some(error.clone());
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::RenameWorkspace { token, .. } => {
+                match &reply.result {
+                    Ok(backend::ReplyData::Workspaces(list)) => {
+                        self.workspaces = list.clone();
+                        if self.workspace_pending == Some(*token) {
+                            self.workspace_pending = None;
+                            if self.workspace_input_open() {
+                                self.close_sidebar_input();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if self.workspace_pending == Some(*token) {
+                            self.workspace_pending = None;
+                        }
+                        self.notice = Some(error.clone());
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::RemoveWorkspace { id } => {
+                match &reply.result {
+                    Ok(backend::ReplyData::Workspaces(list)) => {
+                        self.workspaces = list.clone();
+                        if self.selected_workspace.as_deref() == Some(id.as_str()) {
+                            self.select_workspace(app_core::store::DEFAULT_WORKSPACE_ID);
+                        }
+                        // The transferred projects moved to Default.
+                        self.editor.refresh_projects();
+                    }
+                    Err(error) => self.notice = Some(error.clone()),
+                    _ => {}
+                }
+                return;
+            }
+            backend::Req::MoveProject { .. } => {
+                match &reply.result {
+                    Ok(_) => self.editor.refresh_projects(),
+                    Err(error) => self.notice = Some(error.clone()),
+                }
+                return;
+            }
             backend::Req::CreateWorktree { project_id, .. } => {
                 // The new checkout joins the project's list.
                 if reply.result.is_ok() {
@@ -430,6 +692,29 @@ impl State {
                 if reply.result.is_ok() {
                     self.editor.request_worktrees(project_id);
                 }
+                return;
+            }
+            backend::Req::AddProject { .. } => {
+                // Re-adding a registered folder keeps its membership: say
+                // which workspace already holds it instead of moving it.
+                if let Ok(backend::ReplyData::Added(project)) = &reply.result
+                    && self
+                        .editor
+                        .projects
+                        .iter()
+                        .any(|p| p.project.id == project.project.id)
+                {
+                    let name = self
+                        .workspaces
+                        .iter()
+                        .find(|w| w.id == project.project.workspace_id)
+                        .map_or("Default", |w| w.name.as_str());
+                    self.notice = Some(format!(
+                        "{} is already registered in {name}",
+                        project.project.name
+                    ));
+                }
+                self.editor.apply_reply(reply);
                 return;
             }
             backend::Req::RemoveProject { id } => {
@@ -623,6 +908,15 @@ fn setup(s: &mut State, _waker: rune::Waker) {
         &mut s.editor.backend,
         backend::Job::project(backend::Req::GetSetting {
             key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
+        }),
+    );
+    // The workspace list and the last selected workspace restore on the same
+    // lane; the list is requested first so the saved id validates against it.
+    s.request_workspaces();
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: sidebar::SELECTED_WORKSPACE_KEY.to_string(),
         }),
     );
     // Indent-unit override restores on the same settings lane.
@@ -910,6 +1204,7 @@ mod view_tests {
                 id: id.into(),
                 name: name.into(),
                 root: root.into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
                 created_at: 0,
             },
             missing: false,
@@ -1888,6 +2183,218 @@ mod view_tests {
         );
     }
 
+    fn workspace(id: &str, name: &str) -> app_core::store::Workspace {
+        app_core::store::Workspace {
+            id: id.into(),
+            name: name.into(),
+            created_at: 0,
+        }
+    }
+
+    /// Two workspaces with p1 in "Work" and p2 in Default, "Work" selected.
+    fn two_workspace_scene() -> State {
+        let mut s = sidebar_scene();
+        s.workspaces = vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w1", "Work"),
+        ];
+        s.editor.projects[0].project.workspace_id = "w1".into();
+        s.selected_workspace = Some("w1".into());
+        s
+    }
+
+    #[test]
+    fn the_sidebar_shows_only_the_selected_workspaces_projects() {
+        let mut s = two_workspace_scene();
+        seed_session(&mut s, "fix-auth-flow", "/work/a/web");
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let e = els(&rt);
+        assert!(
+            e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-project:p1"))
+        );
+        assert!(
+            !e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-project:p2")),
+            "the other workspace's project is hidden"
+        );
+        assert!(
+            !e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-unassigned")),
+            "Unassigned is Default-only"
+        );
+        let texts: Vec<String> = e.iter().filter_map(|el| el.text.clone()).collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("fix-auth-flow")),
+            "an unassigned session stays out of a named workspace"
+        );
+
+        rt.update(|s, _| s.select_workspace(app_core::store::DEFAULT_WORKSPACE_ID));
+        rt.frame(1.0 / 60.0);
+        let e = els(&rt);
+        assert!(
+            e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-project:p2"))
+        );
+        assert!(
+            !e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-project:p1") && !el.exiting),
+            "the Work group's project is gone from the live tree"
+        );
+        assert!(
+            e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-unassigned"))
+        );
+        let texts: Vec<String> = e.iter().filter_map(|el| el.text.clone()).collect();
+        assert!(texts.iter().any(|t| t.contains("fix-auth-flow")));
+    }
+
+    #[test]
+    fn switching_workspaces_keeps_the_editor_checkout_and_running_sessions() {
+        let mut s = two_workspace_scene();
+        // The editor is committed to p1's checkout inside the Work group.
+        s.view = View::Editor;
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(crate::editor::state::checkout_key(
+            "p1",
+            &PathBuf::from("/work/a/web"),
+        ));
+        s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+        let key = seed_session(&mut s, "web", "/work/a/web");
+        s.selected_session = Some(key.clone());
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        rt.update(|s, _| s.select_workspace(app_core::store::DEFAULT_WORKSPACE_ID));
+        rt.frame(1.0 / 60.0);
+
+        assert_eq!(
+            rt.state.view,
+            View::Editor,
+            "switching never changes the view"
+        );
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from("/work/a/web")),
+            "the editor checkout stays committed"
+        );
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::checkout_key("p1", "/work/a/web").as_str())
+        );
+        assert_eq!(
+            rt.state.selected_session.as_deref(),
+            Some(key.as_str()),
+            "the running session stays selected"
+        );
+        assert!(
+            rt.state.data.sessions.iter().any(|v| v.info.title == "web"),
+            "the session keeps running"
+        );
+    }
+
+    #[test]
+    fn the_workspace_selector_and_remove_confirmation_are_accessible() {
+        let mut s = two_workspace_scene();
+        s.workspace_remove_confirm = Some("w1".into());
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let e = els(&rt);
+        let selector = e
+            .iter()
+            .find(|el| el.key.as_deref() == Some("sidebar-workspace-selector"))
+            .expect("the workspace selector mounts");
+        assert_eq!(selector.role, "button");
+        assert_eq!(selector.label.as_deref(), Some("Workspace: Work"));
+        assert!(selector.focusable, "the selector takes keyboard focus");
+        assert!(
+            selector.rect[3] <= 32.0,
+            "the selector keeps one row's height: {:?}",
+            selector.rect
+        );
+        for key in [
+            "sidebar-workspace-remove-confirm",
+            "sidebar-workspace-remove-cancel",
+        ] {
+            let button = e
+                .iter()
+                .find(|el| el.key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("{key} mounts"));
+            assert_eq!(button.role, "button");
+            assert!(button.focusable);
+        }
+        let texts: Vec<String> = e.iter().filter_map(|el| el.text.clone()).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Remove Work? Its projects move to Default.")),
+            "{texts:?}"
+        );
+
+        click_key(&mut rt, "sidebar-workspace-remove-cancel");
+        assert!(rt.state.workspace_remove_confirm.is_none());
+        assert!(rt.state.workspaces.iter().any(|w| w.id == "w1"));
+    }
+
+    #[test]
+    fn an_empty_named_workspace_shows_its_own_hint() {
+        let mut s = sidebar_scene();
+        s.workspaces = vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w2", "Empty"),
+        ];
+        s.selected_workspace = Some("w2".into());
+        seed_session(&mut s, "fix-auth-flow", "/work/a/web");
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let e = els(&rt);
+        let texts: Vec<String> = e.iter().filter_map(|el| el.text.clone()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("No projects in Empty")),
+            "{texts:?}"
+        );
+        assert!(
+            !e.iter()
+                .any(|el| el.key.as_deref() == Some("sidebar-unassigned")),
+            "Unassigned never renders outside Default"
+        );
+    }
+
+    #[test]
+    fn re_adding_a_registered_project_reports_its_workspace() {
+        let mut s = two_workspace_scene();
+        s.selected_workspace = Some(app_core::store::DEFAULT_WORKSPACE_ID.into());
+        let duplicate = app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: "p1".into(),
+                name: "web".into(),
+                root: "/work/a/web".into(),
+                workspace_id: "w1".into(),
+                created_at: 0,
+            },
+            missing: false,
+        };
+        s.apply_reply(backend::Reply {
+            req: backend::Req::AddProject {
+                path: "/work/a/web".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Ok(backend::ReplyData::Added(duplicate)),
+        });
+
+        let notice = s.notice.as_deref().unwrap_or_default();
+        assert!(notice.contains("already registered in Work"), "{notice}");
+        assert_eq!(
+            s.editor.projects[0].project.workspace_id, "w1",
+            "re-adding never moves the project"
+        );
+    }
+
     /// The real end-to-end fixture: two registered projects in a temp
     /// `Store`, real `git worktree` checkouts, real `worktrees::list`
     /// payloads — driven through the same sidebar → navigation → editor
@@ -1934,8 +2441,18 @@ mod view_tests {
         // Register through the real store — the same rows Req::Projects
         // and Req::Worktrees return in production.
         let store = app_core::store::Store::open(home.path()).unwrap();
-        let pv_a = app_core::projects::add_project(&store, root_a.to_str().unwrap()).unwrap();
-        let pv_b = app_core::projects::add_project(&store, root_b.to_str().unwrap()).unwrap();
+        let pv_a = app_core::projects::add_project(
+            &store,
+            root_a.to_str().unwrap(),
+            app_core::store::DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        let pv_b = app_core::projects::add_project(
+            &store,
+            root_b.to_str().unwrap(),
+            app_core::store::DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
         let list_a = app_core::worktrees::list(&root_a).unwrap();
         let list_b = app_core::worktrees::list(&root_b).unwrap();
         assert_eq!(list_a.worktrees.len(), 3, "root + two linked on web");
@@ -2108,8 +2625,20 @@ mod view_tests {
         // is how the QA database ended up with /var/… roots.
         let storage = app_core::store::Storage::open(home.path());
         let store = storage.get().unwrap();
-        let pa = store.add_project("repo", root_a.to_str().unwrap()).unwrap();
-        let pb = store.add_project("repo", root_b.to_str().unwrap()).unwrap();
+        let pa = store
+            .add_project(
+                "repo",
+                root_a.to_str().unwrap(),
+                app_core::store::DEFAULT_WORKSPACE_ID,
+            )
+            .unwrap();
+        let pb = store
+            .add_project(
+                "repo",
+                root_b.to_str().unwrap(),
+                app_core::store::DEFAULT_WORKSPACE_ID,
+            )
+            .unwrap();
         assert_ne!(pa.id, pb.id);
         let storage = Some(storage);
 

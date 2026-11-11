@@ -73,13 +73,13 @@ impl EditorState {
                 self.projects_loading = false;
                 self.projects_error = Some(e);
             }
-            (Req::AddProject(_), Ok(ReplyData::Added(p))) => {
+            (Req::AddProject { .. }, Ok(ReplyData::Added(p))) => {
                 if !self.projects.iter().any(|x| x.project.id == p.project.id) {
                     self.projects.push(p);
                 }
                 self.refresh_projects();
             }
-            (Req::AddProject(_), Err(e)) => self.notice = Some(err_notice(&e)),
+            (Req::AddProject { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::Worktrees(pid), Ok(ReplyData::Worktrees(list))) => {
                 // Replies are keyed by the request's project id: only the
                 // selected project's list feeds the checkout picker.
@@ -790,6 +790,7 @@ mod tests {
                 id: id.into(),
                 name: name.into(),
                 root: root.into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
                 created_at: 0,
             },
             missing: false,

@@ -10,6 +10,7 @@
 
 ## Archived changes
 
+- [Multi-project workspaces](changes/archive/multi-project-workspaces/design.md) ([tasks](changes/archive/multi-project-workspaces/tasks.md), [delta](changes/archive/multi-project-workspaces/delta.md))
 - [Rune inline blame: per-line author and age beside the code](changes/archive/rune-inline-blame/delta.md)
 - [Rune editor indent: guides, Tab indent, auto-indent, unit config](changes/archive/rune-editor-indent/delta.md)
 - [Rune live sessions: daemon client, sidebar parity, terminal attach](changes/archive/rune-live-sessions/design.md) ([tasks](changes/archive/rune-live-sessions/tasks.md), [delta](changes/archive/rune-live-sessions/delta.md))

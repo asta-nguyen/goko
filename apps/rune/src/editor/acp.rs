@@ -1121,7 +1121,11 @@ mod tests {
         let project_id = storage
             .get()
             .unwrap()
-            .add_project("p", repo_dir.path().to_str().unwrap())
+            .add_project(
+                "p",
+                repo_dir.path().to_str().unwrap(),
+                app_core::store::DEFAULT_WORKSPACE_ID,
+            )
             .unwrap()
             .id;
 

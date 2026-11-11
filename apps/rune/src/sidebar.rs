@@ -30,6 +30,8 @@ pub const MIN_SIDEBAR_W: f32 = 220.0;
 pub const MAX_SIDEBAR_W: f32 = 480.0;
 /// The settings key the width is stored under.
 pub const SIDEBAR_WIDTH_KEY: &str = "rune.sidebar_width";
+/// The settings key the selected workspace id is stored under.
+pub const SELECTED_WORKSPACE_KEY: &str = "rune.selected_workspace";
 
 /// Clamp a sidebar width to the draggable range.
 pub fn clamp_width(width: f32) -> f32 {
@@ -49,6 +51,8 @@ pub enum RowTarget {
     Worktree { project_id: String, path: String },
     /// A daemon session.
     Session { session_id: String },
+    /// The sidebar's workspace selector (no row identity of its own).
+    Workspace,
 }
 
 /// What a row's action button opens.
@@ -58,6 +62,8 @@ pub enum MenuKind {
     NewSession,
     /// The row's other commands.
     More,
+    /// The workspace selector: switch, create, rename, or remove.
+    Workspace,
 }
 
 impl RowTarget {
@@ -68,6 +74,7 @@ impl RowTarget {
             RowTarget::Project { project_id } => project_id.clone(),
             RowTarget::Worktree { path, .. } => path.clone(),
             RowTarget::Session { session_id } => session_id.clone(),
+            RowTarget::Workspace => "workspace".to_string(),
         }
     }
 }
@@ -79,6 +86,10 @@ pub enum SidebarInput {
     CustomCommand { target: RowTarget },
     /// The name of a new worktree.
     NewWorktree { project_id: String },
+    /// The name of a new workspace.
+    WorkspaceName,
+    /// A named workspace's new name.
+    WorkspaceRename { id: String },
 }
 
 /// The width of the action cell: the buttons are always there, so the row's
@@ -222,7 +233,7 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         RowTarget::Worktree { project_id, path } => {
                             (project_id.clone(), Some(PathBuf::from(path)))
                         }
-                        RowTarget::Session { .. } => (String::new(), None),
+                        RowTarget::Session { .. } | RowTarget::Workspace => (String::new(), None),
                     };
                     let Some(checkout) = checkout else {
                         return;
@@ -241,7 +252,7 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                 RowTarget::Project { project_id } | RowTarget::Worktree { project_id, .. } => {
                     project_id.clone()
                 }
-                RowTarget::Session { .. } => String::new(),
+                RowTarget::Session { .. } | RowTarget::Workspace => String::new(),
             };
             if !project_id.is_empty() {
                 let pid = project_id.clone();
@@ -283,6 +294,33 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                     ));
                 }
                 RowTarget::Project { project_id } => {
+                    // Move to workspace: only the other workspaces, so the
+                    // row's current group is never a destination.
+                    let current = s
+                        .editor
+                        .projects
+                        .iter()
+                        .find(|p| p.project.id == *project_id)
+                        .map(|p| p.project.workspace_id.clone());
+                    let destinations: Vec<rune_kit::MenuEntry> = s
+                        .workspaces
+                        .iter()
+                        .filter(|workspace| Some(&workspace.id) != current.as_ref())
+                        .map(|workspace| {
+                            let pid = project_id.clone();
+                            let wid = workspace.id.clone();
+                            rune_kit::MenuEntry::item(MenuItem::new(&workspace.name).on_select_tx(
+                                move |st: &mut State, _tx: &mut Tx| {
+                                    st.sidebar_menu = None;
+                                    st.move_project(&pid, &wid);
+                                },
+                            ))
+                        })
+                        .collect();
+                    if !destinations.is_empty() {
+                        menu = menu
+                            .item(MenuItem::new("Move to workspace").submenu(destinations, false));
+                    }
                     let pid = project_id.clone();
                     menu = menu.item(MenuItem::new("Remove project").danger(true).on_select_tx(
                         move |st: &mut State, _tx: &mut Tx| {
@@ -291,7 +329,51 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         },
                     ));
                 }
-                RowTarget::Session { .. } => {}
+                RowTarget::Session { .. } | RowTarget::Workspace => {}
+            }
+        }
+        MenuKind::Workspace => {
+            let selected = s.workspace_id().to_string();
+            for workspace in &s.workspaces {
+                let id = workspace.id.clone();
+                let current = workspace.id == selected;
+                menu = menu.item(
+                    MenuItem::new(&workspace.name)
+                        .checked(current)
+                        .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
+                            st.sidebar_menu = None;
+                            st.select_workspace(&id);
+                        }),
+                );
+            }
+            menu = menu.item(MenuItem::new("New workspace…").on_select_tx(
+                |st: &mut State, _tx: &mut Tx| {
+                    st.sidebar_menu = None;
+                    st.ask_for_input(SidebarInput::WorkspaceName);
+                },
+            ));
+            let is_default = selected == app_core::store::DEFAULT_WORKSPACE_ID;
+            if let Some(current) = s.workspaces.iter().find(|w| w.id == selected) {
+                let id = current.id.clone();
+                let name = current.name.clone();
+                menu = menu.item(
+                    MenuItem::new("Rename workspace…")
+                        .disabled(is_default)
+                        .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
+                            st.sidebar_menu = None;
+                            st.ask_for_workspace_rename(&id, &name);
+                        }),
+                );
+                let id = current.id.clone();
+                menu = menu.item(
+                    MenuItem::new("Remove workspace…")
+                        .danger(true)
+                        .disabled(is_default)
+                        .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
+                            st.sidebar_menu = None;
+                            st.workspace_remove_confirm = Some(id.clone());
+                        }),
+                );
             }
         }
     }
@@ -312,6 +394,8 @@ pub fn input_layer(s: &State, ink: &Ink, layer: &mut Vec<El>) -> Option<El> {
         // `worktree_form::open` so `on_key` returns early) — no prompt
         // mounts for it; the name-only route is retired.
         SidebarInput::NewWorktree { .. } => return None,
+        SidebarInput::WorkspaceName => ("Workspace name…", "New workspace"),
+        SidebarInput::WorkspaceRename { .. } => ("Workspace name…", "Rename workspace"),
     };
     let field = rune_kit::TextInput::new(&s.sidebar_text)
         .placeholder(placeholder)
@@ -341,18 +425,32 @@ fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
     match ev.key {
         rune::Key::Enter => {
             let text = s.sidebar_text.text.trim().to_string();
-            let input = s.sidebar_input.take();
-            s.sidebar_text = rune::edit::TextEdit::new("");
-            match input {
-                Some(SidebarInput::CustomCommand { target }) => {
-                    s.launch_custom_session(target, &text);
+            match s.sidebar_input.clone() {
+                // A workspace name stays in its prompt until the worker's
+                // reply: a failed write keeps the text for correction.
+                Some(SidebarInput::WorkspaceName) => {
+                    s.submit_workspace_create(&text);
+                    true
                 }
-                Some(SidebarInput::NewWorktree { project_id }) => {
-                    s.create_worktree(&project_id, &text);
+                Some(SidebarInput::WorkspaceRename { id }) => {
+                    s.submit_workspace_rename(&id, &text);
+                    true
                 }
-                None => {}
+                _ => {
+                    let input = s.sidebar_input.take();
+                    s.sidebar_text = rune::edit::TextEdit::new("");
+                    match input {
+                        Some(SidebarInput::CustomCommand { target }) => {
+                            s.launch_custom_session(target, &text);
+                        }
+                        Some(SidebarInput::NewWorktree { project_id }) => {
+                            s.create_worktree(&project_id, &text);
+                        }
+                        _ => {}
+                    }
+                    true
+                }
             }
-            true
         }
         rune::Key::Escape => {
             s.sidebar_input = None;
@@ -425,9 +523,10 @@ fn add_project(ink: &Ink) -> El {
                 |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
                     match result {
                         Ok(Some(path)) => {
-                            st.editor
-                                .backend
-                                .send(Job::project(Req::AddProject(path.display().to_string())));
+                            st.editor.backend.send(Job::project(Req::AddProject {
+                                path: path.display().to_string(),
+                                workspace_id: st.workspace_id().to_string(),
+                            }));
                         }
                         Ok(None) => {}
                         Err(e) => st.notice = Some(e.to_string()),
@@ -510,6 +609,8 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         .map(|p| p.project.id.as_str())
         .collect();
     let (by_project, unassigned) = data::partition(&s.data, &known);
+    let selected = s.workspace_id();
+    let in_default = selected == app_core::store::DEFAULT_WORKSPACE_ID;
 
     let empty: &[&SessionView] = &[];
     let mut list = col()
@@ -521,16 +622,33 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         });
-    if s.editor.projects.is_empty() {
-        // Loading / error / empty are distinct honest states — the list
-        // never fabricates a project row.
+    if let Some(err) = &s.workspaces_error {
+        list = list.child(status_row(err, ink.danger));
+    }
+    let visible: Vec<&ProjectView> = s
+        .editor
+        .projects
+        .iter()
+        .filter(|project| project.project.workspace_id == selected)
+        .collect();
+    if visible.is_empty() {
+        // Loading / error / empty-group are distinct honest states — the
+        // list never fabricates a project row.
         let (text, tone) = if s.editor.projects_loading {
             ("Loading projects…".to_string(), ink.muted)
         } else if let Some(err) = &s.editor.projects_error {
             (err.clone(), ink.danger)
-        } else {
+        } else if s.editor.projects.is_empty() {
             (
                 "No projects registered. Add a project folder to start.".to_string(),
+                ink.muted,
+            )
+        } else {
+            (
+                format!(
+                    "No projects in {}. Add a project folder to start.",
+                    s.workspace_name()
+                ),
                 ink.muted,
             )
         };
@@ -538,16 +656,21 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
     } else if let Some(err) = &s.editor.projects_error {
         list = list.child(status_row(err, ink.danger));
     }
-    for project in &s.editor.projects {
+    for project in visible {
         let sessions = by_project
             .get(project.project.id.as_str())
             .map_or(empty, Vec::as_slice);
         list = list.child(project_node(s, ink, project, sessions));
     }
-    if !unassigned.is_empty() {
+    // Unassigned sessions belong to no project, so only Default shows them.
+    if in_default && !unassigned.is_empty() {
         list = list.child(unassigned_node(s, ink, &unassigned));
     }
 
+    let mut header = col().w_full().gap(4.0).child(workspace_header(s, ink));
+    if let Some(id) = &s.workspace_remove_confirm {
+        header = header.child(workspace_remove_confirm_row(s, ink, id));
+    }
     col().w(s.sidebar_width).h_full().fill(ink.panel).child(
         col()
             .w_full()
@@ -555,6 +678,7 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
             .min_h(0.0)
             .gap(4.0)
             .padding(8.0)
+            .child(header)
             // header row `px-1`: h2 + ghost-sm "Add Project"
             .child(
                 row()
@@ -568,6 +692,99 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
             )
             .child(list),
     )
+}
+
+/// The workspace selector: the selected group's name and a caret, opening
+/// the switch/manage menu where the pointer last was.
+fn workspace_header(s: &State, ink: &Ink) -> El {
+    let name = s.workspace_name().to_string();
+    row()
+        .key("sidebar-workspace-selector")
+        .w_full()
+        .h(ROW_H)
+        .px(4.0)
+        .gap(6.0)
+        .items_center()
+        .radius(6.0)
+        .role("button")
+        .label(format!("Workspace: {name}"))
+        .help("Switch workspace")
+        .focusable(true)
+        .hover_group()
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
+            s.menu_anchor = Some((p.x, p.y));
+        })
+        .on_press(|s: &mut State| {
+            s.open_menu(RowTarget::Workspace, MenuKind::Workspace);
+        })
+        .child(theme::ic(&theme::FOLDER_TREE, 14.0, ink.muted).group_color(ink.text))
+        .child(
+            theme::txt(&name, T12M, ink.text)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        )
+        .child(theme::ic(&theme::CHEVRON_DOWN, 12.0, ink.muted).group_color(ink.text))
+}
+
+/// The removal confirmation: what happens to the projects, and the two
+/// buttons. Nothing is removed until Remove is pressed.
+fn workspace_remove_confirm_row(s: &State, ink: &Ink, id: &str) -> El {
+    let name = s
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == id)
+        .map_or("this workspace", |workspace| workspace.name.as_str())
+        .to_string();
+    let remove_id = id.to_string();
+    col()
+        .w_full()
+        .gap(4.0)
+        .padding(6.0)
+        .radius(6.0)
+        .border(1.0, ink.border)
+        .child(theme::txt(
+            &format!("Remove {name}? Its projects move to Default."),
+            T11M,
+            ink.muted,
+        ))
+        .child(
+            row()
+                .w_full()
+                .gap(6.0)
+                .items_center()
+                .child(
+                    small_button("Remove", ink.danger, ink, move |s: &mut State| {
+                        s.remove_workspace(&remove_id);
+                    })
+                    .key("sidebar-workspace-remove-confirm"),
+                )
+                .child(
+                    small_button("Cancel", ink.text, ink, |s: &mut State| {
+                        s.workspace_remove_confirm = None;
+                    })
+                    .key("sidebar-workspace-remove-cancel"),
+                ),
+        )
+}
+
+/// A compact inline text button for the header's confirmation.
+fn small_button(label: &str, tone: Color, ink: &Ink, action: impl Fn(&mut State) + 'static) -> El {
+    row()
+        .h(22.0)
+        .px(8.0)
+        .items_center()
+        .radius(4.0)
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .hover_group()
+        .hover(ink.text.alpha(0.10))
+        .press(ink.text.alpha(0.16))
+        .child(theme::txt(label, T11M, tone).group_color(ink.white))
+        .on_press(action)
 }
 
 /// ResizableSplit separator: an 8 px zone with a 1 px border line centred,
@@ -1519,6 +1736,7 @@ mod tests {
                 id: "p1".into(),
                 name: "web".into(),
                 root: "/work/a/web".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
                 created_at: 0,
             },
             missing: false,
@@ -1647,5 +1865,180 @@ mod tests {
             more_right > row_right - 8.0 && more_right <= row_right - 3.0,
             "actions end at {more_right}, row's trailing edge {row_right} - px(4)",
         );
+    }
+
+    // -- workspace selection -------------------------------------------------
+
+    use crate::editor::backend::{Reply, ReplyData, Req};
+
+    fn workspace(id: &str, name: &str) -> app_core::store::Workspace {
+        app_core::store::Workspace {
+            id: id.into(),
+            name: name.into(),
+            created_at: 0,
+        }
+    }
+
+    fn reply(req: Req, result: Result<ReplyData, String>) -> Reply {
+        Reply {
+            req,
+            generation: 0,
+            checkout_key: None,
+            result,
+        }
+    }
+
+    fn list_reply(list: Vec<app_core::store::Workspace>) -> Reply {
+        reply(Req::Workspaces, Ok(ReplyData::Workspaces(list)))
+    }
+
+    fn saved_reply(id: &str) -> Reply {
+        reply(
+            Req::GetSetting {
+                key: SELECTED_WORKSPACE_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(Some(id.to_string()))),
+        )
+    }
+
+    #[test]
+    fn a_workspaces_reply_selects_default_then_a_saved_id_restores() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w1", "Work"),
+        ]));
+        assert_eq!(s.workspace_id(), app_core::store::DEFAULT_WORKSPACE_ID);
+
+        s.apply_reply(saved_reply("w1"));
+        assert_eq!(s.workspace_id(), "w1", "the saved workspace restores");
+    }
+
+    #[test]
+    fn a_missing_saved_workspace_falls_back_to_default() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![workspace(
+            app_core::store::DEFAULT_WORKSPACE_ID,
+            "Default",
+        )]));
+        s.apply_reply(saved_reply("gone"));
+        assert_eq!(s.workspace_id(), app_core::store::DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn a_stale_restore_never_overrides_a_newer_selection() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w1", "Work"),
+        ]));
+        s.select_workspace("w1");
+        // The startup read lands late: it must not pull the user back.
+        s.apply_reply(saved_reply(app_core::store::DEFAULT_WORKSPACE_ID));
+        assert_eq!(s.workspace_id(), "w1");
+    }
+
+    #[test]
+    fn a_create_reply_selects_the_new_workspace_and_closes_the_prompt() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![workspace(
+            app_core::store::DEFAULT_WORKSPACE_ID,
+            "Default",
+        )]));
+        s.ask_for_input(SidebarInput::WorkspaceName);
+        s.sidebar_text = rune::edit::TextEdit::new("Work");
+        s.submit_workspace_create("Work");
+        let token = s.workspace_pending.expect("submission in flight");
+
+        s.apply_reply(reply(
+            Req::CreateWorkspace {
+                name: "Work".into(),
+                token,
+            },
+            Ok(ReplyData::WorkspaceCreated(workspace("w1", "Work"))),
+        ));
+
+        assert_eq!(s.workspace_id(), "w1");
+        assert!(s.sidebar_input.is_none(), "the prompt closes on success");
+        assert!(s.workspaces.iter().any(|w| w.id == "w1"));
+    }
+
+    #[test]
+    fn a_failed_workspace_create_keeps_the_prompt_and_selection() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![workspace(
+            app_core::store::DEFAULT_WORKSPACE_ID,
+            "Default",
+        )]));
+        s.ask_for_input(SidebarInput::WorkspaceName);
+        s.sidebar_text = rune::edit::TextEdit::new("Work");
+        s.submit_workspace_create("Work");
+        let token = s.workspace_pending.expect("submission in flight");
+
+        s.apply_reply(reply(
+            Req::CreateWorkspace {
+                name: "Work".into(),
+                token,
+            },
+            Err("a workspace named 'Work' already exists".into()),
+        ));
+
+        assert_eq!(s.workspace_id(), app_core::store::DEFAULT_WORKSPACE_ID);
+        assert!(
+            matches!(s.sidebar_input, Some(SidebarInput::WorkspaceName)),
+            "the name entry stays for correction"
+        );
+        assert_eq!(s.sidebar_text.text, "Work");
+        assert!(s.notice.is_some(), "the reason is shown");
+    }
+
+    #[test]
+    fn removing_the_selected_workspace_selects_default() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w1", "Work"),
+        ]));
+        s.select_workspace("w1");
+
+        s.apply_reply(reply(
+            Req::RemoveWorkspace { id: "w1".into() },
+            Ok(ReplyData::Workspaces(vec![workspace(
+                app_core::store::DEFAULT_WORKSPACE_ID,
+                "Default",
+            )])),
+        ));
+
+        assert_eq!(s.workspace_id(), app_core::store::DEFAULT_WORKSPACE_ID);
+        assert!(!s.workspaces.iter().any(|w| w.id == "w1"));
+    }
+
+    #[test]
+    fn a_failed_rename_keeps_the_selection_and_the_prompt() {
+        let mut s = State::new(test_handle());
+        s.apply_reply(list_reply(vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w1", "Work"),
+        ]));
+        s.select_workspace("w1");
+        s.ask_for_workspace_rename("w1", "Work");
+        s.submit_workspace_rename("w1", "Default");
+        let token = s.workspace_pending.expect("submission in flight");
+
+        s.apply_reply(reply(
+            Req::RenameWorkspace {
+                id: "w1".into(),
+                name: "Default".into(),
+                token,
+            },
+            Err("a workspace named 'Default' already exists".into()),
+        ));
+
+        assert_eq!(s.workspace_id(), "w1");
+        assert!(matches!(
+            s.sidebar_input,
+            Some(SidebarInput::WorkspaceRename { .. })
+        ));
+        assert_eq!(s.sidebar_text.text, "Work");
     }
 }
