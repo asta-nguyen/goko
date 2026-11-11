@@ -17,6 +17,15 @@ The Rust protocol and daemon live in `crates/protocol/` and `crates/daemon/`, sh
 
 The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare binary opens **no window** — without a bundle, LaunchServices never activates the app, so its window is never ordered in. Run it through `apps/rune/run-macos.sh [release|debug]`, which builds the workspace, assembles `target/Goko.app` (the app plus `gokod` beside it, so the app can start the daemon) and launches it. The daemon client spawns `gokod` out of `GOKO_HOME` (`app_core::home::home_dir`), so a fresh home gets its own daemon.
 
+### Checking UI changes in the running app
+
+Unit tests and the rune test harness do not draw a window, so a UI change is only verified once it is seen in the real app. Use `agent-desktop` (installed at `/opt/homebrew/bin/agent-desktop`; read `agent-desktop skills get desktop` first) to read the accessibility tree, click and screenshot **the Goko window only**.
+
+- **Know which build is running.** `/Applications/Goko.app` is a separate, installed copy that `run-macos.sh` never updates; it goes stale. Confirm the binary under test is the fresh `target/Goko.app` (compare `ps -o command -p <pid>` and the binary's mtime with `git log -1`) before judging a fix.
+- **Name the target.** `--app Goko` fails with `AMBIGUOUS_TARGET` when more than one instance matches (the installed app, its `gokod`). Launch a copy of `target/Goko.app` with a unique bundle id and name (`open -n`) and pass that name to `--app`.
+- **Never take a full-screen screenshot** (`screencapture`): the display shows the user's unrelated apps. Use `agent-desktop screenshot --app <name>` or the accessibility tree.
+- **Default to headless, read-only interaction** (snapshot, find, get, semantic click). Use `--headed` (physical input, takes the foreground) only when the user has allowed it, and do not click anything that writes or deletes real data.
+
 ## Skills
 
 - `brainstorm-feature`: `.agents/skills/brainstorm-feature/SKILL.md`
