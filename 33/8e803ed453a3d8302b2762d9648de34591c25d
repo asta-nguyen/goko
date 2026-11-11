@@ -1,0 +1,24 @@
+apps/rune/src/sidebar.rs
+  s_a3ac5e3748dcdd::t_ee11ed03415ce9 786-802
+  s_a3ac5e3748dcdd::t_f14b2f288431fc 2851-2852
+  s_a3ac5e3748dcdd::t_8ab5ce476d8aa4 2835,2837
+  s_a3ac5e3748dcdd::t_ae7757148657f5 560-580
+  s_a3ac5e3748dcdd::t_780b430af581be 785
+  s_a3ac5e3748dcdd::t_f6f9026da9188b 803
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "338e803ed453a3d8302b2762d9648de34591c25d",
+  "prompts": {},
+  "sessions": {
+    "s_a3ac5e3748dcdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1e816-caa2-42f6-8a55-eb0be0ad54ae",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
