@@ -377,6 +377,11 @@ fn notice_bar(notice: &crate::editor::state::Notice, ink: &Ink) -> El {
         .fill(tone.alpha(0.08))
         .border_sides([0.0, 0.0, 1.0, 0.0], tone.alpha(0.25))
         .child(theme::txt(&notice.text, theme::T12, tone))
+        .child(
+            theme::btn_sm("Dismiss notice", None, true, ink).on_press(|st: &mut State| {
+                st.editor.notice = None;
+            }),
+        )
 }
 
 /// Dispatch to the active section's `view(&State)` entry — sibling workers
@@ -394,6 +399,47 @@ fn section_body(s: &State, ink: &Ink, k: &Kit) -> El {
     }
 }
 
+/// One pressable project in the empty Editor: its name and root path. The
+/// press is the sidebar project row's own draft-guarded root selection.
+fn project_row(project: &ProjectView, ink: &Ink) -> El {
+    let pid = project.project.id.clone();
+    let root = project.project.root.clone();
+    let checkout = PathBuf::from(&project.project.root);
+    col()
+        .w_full()
+        .px(10.0)
+        .py(6.0)
+        .radius(8.0)
+        .border(1.0, ink.border)
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .role("button")
+        .label(format!("Open {}", project.project.name))
+        .help(root.clone())
+        .focusable(true)
+        .key(format!("editor-empty-project:{}", project.project.id))
+        .child(
+            theme::txt(&project.project.name, theme::T12M, ink.text)
+                .min_w(0.0)
+                .truncate(),
+        )
+        .child(
+            theme::txt(&root, theme::T11, ink.muted)
+                .min_w(0.0)
+                .truncate(),
+        )
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            navigation::navigate(
+                s,
+                PendingNav::SelectCheckout {
+                    project_id: pid.clone(),
+                    checkout: checkout.clone(),
+                },
+                tx,
+            );
+        })
+}
+
 fn empty_state(s: &State, ink: &Ink) -> El {
     let body = if s.editor.projects.is_empty() && !s.editor.projects_loading {
         "No projects registered. Add a project folder to start editing."
@@ -402,38 +448,44 @@ fn empty_state(s: &State, ink: &Ink) -> El {
     } else {
         "Select a project and checkout to open the editor."
     };
-    col()
+    let mut column = col()
         .grow(1.0)
         .w_full()
         .items_center()
         .justify_center()
         .gap(8.0)
         .child(theme::txt("Editor", theme::T14M, ink.text))
-        .child(theme::txt(body, theme::T12, ink.muted))
-        .child(
-            theme::btn_sm("Add project", Some((&theme::FOLDER_PLUS, 14.0)), true, ink).on_press_tx(
-                |_st: &mut State, tx: &mut Tx| {
-                    tx.open_folder(
-                        rune::file_dialog::FileDialogOptions {
-                            title: "Choose a project folder".into(),
-                            ..Default::default()
-                        },
-                        |st: &mut State,
-                         result: rune::file_dialog::FileDialogResult,
-                         _tx: &mut Tx| {
-                            if let Ok(Some(path)) = result {
-                                st.editor
-                                    .backend
-                                    .send(backend::Job::project(Req::AddProject {
-                                        path: path.display().to_string(),
-                                        workspace_id: st.workspace_id().to_string(),
-                                    }));
-                            }
-                        },
-                    );
-                },
-            ),
-        )
+        .child(theme::txt(body, theme::T12, ink.muted));
+    // Up to five registered projects, each opening its root checkout.
+    if !s.editor.projects.is_empty() {
+        let mut list = col().w_full().max_w(320.0).gap(6.0);
+        for project in s.editor.projects.iter().take(5) {
+            list = list.child(project_row(project, ink));
+        }
+        column = column.child(list);
+    }
+    column.child(
+        theme::btn_sm("Add project", Some((&theme::FOLDER_PLUS, 14.0)), true, ink).on_press_tx(
+            |_st: &mut State, tx: &mut Tx| {
+                tx.open_folder(
+                    rune::file_dialog::FileDialogOptions {
+                        title: "Choose a project folder".into(),
+                        ..Default::default()
+                    },
+                    |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
+                        if let Ok(Some(path)) = result {
+                            st.editor
+                                .backend
+                                .send(backend::Job::project(Req::AddProject {
+                                    path: path.display().to_string(),
+                                    workspace_id: st.workspace_id().to_string(),
+                                }));
+                        }
+                    },
+                );
+            },
+        ),
+    )
 }
 
 /// The dirty-draft guard as a rune-kit `Dialog`: `role="dialog"`, a trapped
@@ -631,5 +683,153 @@ mod tests {
         let opts = checkout_options(Some("/repo"), &wts);
         assert_eq!(opts.len(), 2);
         assert!(opts.iter().all(|(l, _)| l != "gone"));
+    }
+
+    #[test]
+    fn the_notice_bar_dismiss_button_clears_the_notice() {
+        use rune::{Env, Runtime};
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Editor;
+        s.editor.project_id = Some("p1".into());
+        let co = std::path::PathBuf::from("/tmp/goko-notice-qa");
+        s.editor.checkout_key = Some(crate::editor::state::checkout_key("p1", &co));
+        s.editor.checkout = Some(co);
+        s.editor.notice = Some(crate::editor::state::Notice {
+            text: "stale data".into(),
+            stale: true,
+        });
+        let mut rt = Runtime::new(s, crate::view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let dismiss = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "button" && e.label.as_deref() == Some("Dismiss notice"))
+            .expect("the notice bar has a dismiss button");
+        let (x, y) = (
+            dismiss.rect[0] + dismiss.rect[2] / 2.0,
+            dismiss.rect[1] + dismiss.rect[3] / 2.0,
+        );
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        rt.update(|s, _| assert!(s.editor.notice.is_none(), "the bar is dismissed"));
+    }
+
+    // -- Task 9: the empty Editor lists projects -----------------------------
+
+    fn empty_editor(projects: Vec<ProjectView>) -> State {
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Editor;
+        s.editor.projects = projects;
+        s
+    }
+
+    fn project_rows(rt: &rune::Runtime<State>) -> Vec<rune::ElementInfo> {
+        rt.elements()
+            .into_iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("editor-empty-project:"))
+            })
+            .collect()
+    }
+
+    fn has_add_project(rt: &rune::Runtime<State>) -> bool {
+        rt.elements()
+            .iter()
+            .any(|e| e.role == "button" && e.label.as_deref() == Some("Add project"))
+    }
+
+    #[test]
+    fn three_projects_list_three_rows_beside_add_project() {
+        let s = empty_editor(vec![
+            project("p1", "web", "/work/a/web"),
+            project("p2", "api", "/work/b/api"),
+            project("p3", "docs", "/work/c/docs"),
+        ]);
+        let mut rt = rune::Runtime::new(s, crate::view, (1100.0, 700.0), rune::Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let rows = project_rows(&rt);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|e| e.role == "button"));
+        assert_eq!(rows[0].label.as_deref(), Some("Open web"));
+        assert!(has_add_project(&rt));
+    }
+
+    #[test]
+    fn seven_projects_list_five_rows() {
+        let projects = (1..=7)
+            .map(|i| project(&format!("p{i}"), &format!("repo{i}"), &format!("/work/{i}")))
+            .collect();
+        let mut rt = rune::Runtime::new(
+            empty_editor(projects),
+            crate::view,
+            (1100.0, 700.0),
+            rune::Env::new(true, 2.0),
+        );
+        rt.frame(0.0);
+
+        assert_eq!(project_rows(&rt).len(), 5);
+        assert!(has_add_project(&rt));
+    }
+
+    #[test]
+    fn pressing_a_row_selects_that_projects_root_checkout() {
+        let s = empty_editor(vec![
+            project("p1", "web", "/work/a/web"),
+            project("p2", "api", "/work/b/api"),
+        ]);
+        let mut rt = rune::Runtime::new(s, crate::view, (1100.0, 700.0), rune::Env::new(true, 2.0));
+        rt.frame(0.0);
+        let row = project_rows(&rt)
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("editor-empty-project:p2"))
+            .expect("the api row");
+        let (x, y) = (
+            row.rect[0] + row.rect[2] / 2.0,
+            row.rect[1] + row.rect[3] / 2.0,
+        );
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from("/work/b/api")));
+    }
+
+    #[test]
+    fn zero_projects_keep_today_text_and_add_project() {
+        let mut rt = rune::Runtime::new(
+            empty_editor(Vec::new()),
+            crate::view,
+            (1100.0, 700.0),
+            rune::Env::new(true, 2.0),
+        );
+        rt.frame(0.0);
+
+        assert!(project_rows(&rt).is_empty());
+        assert!(has_add_project(&rt));
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == "No projects registered. Add a project folder to start editing.")
+        );
+    }
+
+    #[test]
+    fn loading_projects_says_so() {
+        let mut s = empty_editor(Vec::new());
+        s.editor.projects_loading = true;
+        let mut rt = rune::Runtime::new(s, crate::view, (1100.0, 700.0), rune::Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(texts.iter().any(|t| t == "Loading projects…"));
+        assert!(project_rows(&rt).is_empty());
     }
 }

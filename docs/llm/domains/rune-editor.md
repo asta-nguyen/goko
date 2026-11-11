@@ -225,6 +225,18 @@ The system SHALL resolve the indent unit per document — manual override (`auto
 
 Evidence: `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/indent.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/store.rs`
 
+### RNE-empty-state-projects
+
+The system SHALL list up to five registered projects (name and root) in the Editor when no checkout is selected, selecting a project's root checkout through the draft-guarded navigation when one is pressed, alongside the Add project button.
+
+#### Scenario: pick a project
+
+- GIVEN no checkout is selected and three registered projects
+- WHEN the Editor renders and the second row is pressed
+- THEN that project's root checkout is selected through the draft guard
+
+Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`
+
 ### RNE-external-open
 
 The system SHALL accept an external open-file/line request only through the backend worker, which validates the project, checkout, and relative path shape before opening the document once at the requested line — and the current source has a consumer but no producer for this request.
@@ -406,6 +418,18 @@ The system SHALL run one stdio language-server connection per `(checkout, server
 - THEN the empty or partial result surfaces honestly (empty card suppressed, heuristic fallback for definition) rather than fabricated content
 
 Evidence: `apps/rune/src/editor/lsp.rs`, `apps/rune/src/editor/lsp/pos.rs`, `apps/rune/src/editor/lsp/sync.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/lsp.rs`
+
+### RNE-notice-dismiss
+
+The system SHALL show a dismiss button on the Editor's notice bar that clears the notice at once.
+
+#### Scenario: dismiss a stale notice
+
+- GIVEN the notice bar shows a stale-data notice
+- WHEN its dismiss button is pressed
+- THEN the bar disappears
+
+Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`
 
 ### RNE-pane-resize
 

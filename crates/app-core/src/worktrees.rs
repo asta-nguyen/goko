@@ -608,6 +608,13 @@ pub fn remove(root: &Path, path: &str, force: bool) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// Drop Git's records of linked worktrees whose folder is gone:
+/// `git worktree prune`. It never touches a folder.
+pub fn prune(root: &Path) -> Result<(), BridgeError> {
+    git(root, &["worktree", "prune"])?;
+    Ok(())
+}
+
 pub fn lexical_absolute(root: &Path, path: &Path) -> PathBuf {
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -1046,6 +1053,52 @@ mod tests {
         assert!(missing.missing);
         assert_eq!(missing.dirty, None);
         assert_eq!(missing.changed, None);
+    }
+
+    #[test]
+    fn prune_drops_the_record_of_a_deleted_worktree_and_keeps_a_live_one() {
+        let (_dir, root) = repository("wt-prune");
+        let gone = root.parent().unwrap().join("gone");
+        let live = root.parent().unwrap().join("live");
+        git_ok(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/gone",
+                gone.to_str().unwrap(),
+            ],
+        );
+        git_ok(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/live",
+                live.to_str().unwrap(),
+            ],
+        );
+        fs::remove_dir_all(&gone).unwrap();
+
+        prune(&root).unwrap();
+
+        let listed = list(&root).unwrap();
+        assert!(listed.worktrees.iter().all(|item| item.name != "gone"));
+        let kept = listed
+            .worktrees
+            .iter()
+            .find(|item| item.name == "live")
+            .unwrap();
+        assert!(!kept.missing);
+        assert!(live.is_dir());
+    }
+
+    #[test]
+    fn prune_outside_a_repository_is_an_error() {
+        let dir = TempDir::new("wt-prune-nonrepo");
+        assert!(prune(dir.path()).is_err());
     }
 
     #[test]

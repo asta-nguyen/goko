@@ -92,6 +92,22 @@ pub enum SidebarInput {
     WorkspaceRename { id: String },
 }
 
+/// A removal awaiting confirmation. The row's facts are captured when the
+/// menu item is chosen; Confirm re-checks that the target still exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SidebarConfirm {
+    /// A linked worktree: its folder name, dirty state and attached sessions.
+    RemoveWorktree {
+        project_id: String,
+        path: String,
+        name: String,
+        dirty: Option<bool>,
+        sessions: usize,
+    },
+    /// A registered project: only its registration goes.
+    RemoveProject { project_id: String, name: String },
+}
+
 /// The width of the action cell: the buttons are always there, so the row's
 /// text never shifts when they appear.
 const ACTIONS_W: f32 = 44.0;
@@ -128,9 +144,20 @@ fn action_button(
         .on_press(action)
 }
 
+/// The suffix that makes a repeated name distinct in its accessible label:
+/// none for the first of a name, " (2)" for the second, " (3)" and so on.
+/// Visible text keeps the bare name.
+fn ordinal_suffix(earlier: usize) -> String {
+    if earlier == 0 {
+        String::new()
+    } else {
+        format!(" ({})", earlier + 1)
+    }
+}
+
 /// The actions a project or worktree row offers: a session to start and
 /// the row's other commands.
-fn checkout_actions(ink: &Ink, target: RowTarget) -> El {
+fn checkout_actions(ink: &Ink, target: RowTarget, name: &str) -> El {
     let new_session = target.clone();
     let more = target;
     let identity = new_session.identity();
@@ -142,7 +169,7 @@ fn checkout_actions(ink: &Ink, target: RowTarget) -> El {
         .child(action_button(
             ink,
             &theme::PLUS,
-            "New session",
+            &format!("New session in {name}"),
             format!("sidebar-action:new-session:{identity}"),
             move |s: &mut State| {
                 s.open_menu(new_session.clone(), MenuKind::NewSession);
@@ -151,7 +178,7 @@ fn checkout_actions(ink: &Ink, target: RowTarget) -> El {
         .child(action_button(
             ink,
             &theme::MORE,
-            "More actions",
+            &format!("More actions for {name}"),
             format!("sidebar-action:more:{identity}"),
             move |s: &mut State| {
                 s.open_menu(more.clone(), MenuKind::More);
@@ -160,7 +187,7 @@ fn checkout_actions(ink: &Ink, target: RowTarget) -> El {
 }
 
 /// The actions a session row offers: stop it and close its pane.
-fn session_actions(ink: &Ink, session_id: String) -> El {
+fn session_actions(ink: &Ink, session_id: String, title: &str) -> El {
     let stop = session_id.clone();
     let close = session_id.clone();
     row()
@@ -171,7 +198,7 @@ fn session_actions(ink: &Ink, session_id: String) -> El {
         .child(action_button(
             ink,
             &theme::SQUARE,
-            "Stop session",
+            &format!("Stop session {title}"),
             format!("sidebar-action:stop:{session_id}"),
             move |s: &mut State| {
                 s.stop_session(&stop, false);
@@ -180,12 +207,37 @@ fn session_actions(ink: &Ink, session_id: String) -> El {
         .child(action_button(
             ink,
             &theme::X,
-            "Close pane",
+            &format!("Close pane {title}"),
             format!("sidebar-action:close:{session_id}"),
             move |s: &mut State| {
                 s.close_session(&close);
             },
         ))
+}
+
+/// The agent entries of a start menu, shared by the sidebar's New session
+/// menu and the New tab menu: each starts its agent in `target`. An agent
+/// whose binary is missing stays disabled and names the reason.
+pub fn agent_entries(agents: &[data::AgentInfo], target: RowTarget) -> Vec<MenuItem> {
+    agents
+        .iter()
+        .map(|agent| {
+            let label = match (agent.available, &agent.binary) {
+                (false, Some(binary)) => {
+                    format!("{} — {binary} not found on PATH", agent.label)
+                }
+                _ => agent.label.clone(),
+            };
+            let agent_id = agent.id.clone();
+            let target = target.clone();
+            MenuItem::new(label)
+                .disabled(!agent.available)
+                .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
+                    st.sidebar_menu = None;
+                    st.request_session_argv(target.clone(), agent_id.clone());
+                })
+        })
+        .collect()
 }
 
 /// The open menu, as a kit layer. `None` when no menu is open.
@@ -195,17 +247,8 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
     let mut menu = rune_kit::Menu::new("sidebar-menu").at(x, y).open(true);
     match kind {
         MenuKind::NewSession => {
-            for agent in &s.data.agents {
-                let agent_id = agent.id.clone();
-                let label = agent.label.clone();
-                let available = agent.available;
-                let target = target.clone();
-                menu = menu.item(MenuItem::new(label).disabled(!available).on_select_tx(
-                    move |st: &mut State, _tx: &mut Tx| {
-                        st.sidebar_menu = None;
-                        st.request_session_argv(target.clone(), agent_id.clone());
-                    },
-                ));
+            for entry in agent_entries(&s.data.agents, target.clone()) {
+                menu = menu.item(entry);
             }
             menu = menu.item(MenuItem::new("Custom command…").on_select_tx(
                 move |st: &mut State, _tx: &mut Tx| {
@@ -262,6 +305,22 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         st.editor.request_worktrees(&pid);
                     },
                 ));
+                // Offered only while Git still records a folder that is gone.
+                let any_missing = s
+                    .editor
+                    .sidebar_worktrees
+                    .get(project_id.as_str())
+                    .and_then(|e| e.list.as_ref())
+                    .is_some_and(|l| l.worktrees.iter().any(|w| w.missing));
+                if any_missing {
+                    let pid = project_id.clone();
+                    menu = menu.item(MenuItem::new("Prune missing worktrees").on_select_tx(
+                        move |st: &mut State, _tx: &mut Tx| {
+                            st.sidebar_menu = None;
+                            st.prune_worktrees(&pid);
+                        },
+                    ));
+                }
                 let pid = project_id.clone();
                 // The row's checkout seeds the form's base ref: a worktree
                 // row uses its path, a project row its registered root.
@@ -284,12 +343,34 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
             }
             match &target {
                 RowTarget::Worktree { project_id, path } => {
-                    let pid = project_id.clone();
-                    let path = path.clone();
+                    // The row's facts are captured now, so the confirmation
+                    // shows what the user saw on the row.
+                    let worktrees: &[WorktreeInfo] = s
+                        .editor
+                        .sidebar_worktrees
+                        .get(project_id.as_str())
+                        .and_then(|e| e.list.as_ref())
+                        .map_or(&[], |l| l.worktrees.as_slice());
+                    let wt = worktrees.iter().find(|w| w.path == *path);
+                    // Sessions that have ended no longer run in the checkout.
+                    let all: Vec<&SessionView> =
+                        s.data.sessions.iter().filter(|sv| !sv.ended()).collect();
+                    let confirm = SidebarConfirm::RemoveWorktree {
+                        project_id: project_id.clone(),
+                        path: path.clone(),
+                        name: wt.map_or_else(|| path.clone(), |w| w.name.clone()),
+                        dirty: wt.and_then(|w| w.dirty),
+                        sessions: data::sessions_for_checkout(worktrees, &all, path).len(),
+                    };
+                    // The list refreshes too: the confirmation reads the live
+                    // dirty state while it is open.
+                    let refresh = project_id.clone();
                     menu = menu.item(MenuItem::new("Remove worktree").danger(true).on_select_tx(
                         move |st: &mut State, _tx: &mut Tx| {
                             st.sidebar_menu = None;
-                            st.remove_worktree(&pid, &path);
+                            st.sidebar_confirm = Some(confirm.clone());
+                            st.workspace_remove_confirm = None;
+                            st.editor.request_worktrees(&refresh);
                         },
                     ));
                 }
@@ -321,11 +402,20 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         menu = menu
                             .item(MenuItem::new("Move to workspace").submenu(destinations, false));
                     }
-                    let pid = project_id.clone();
+                    let confirm = SidebarConfirm::RemoveProject {
+                        project_id: project_id.clone(),
+                        name: s
+                            .editor
+                            .projects
+                            .iter()
+                            .find(|p| p.project.id == *project_id)
+                            .map_or_else(|| project_id.clone(), |p| p.project.name.clone()),
+                    };
                     menu = menu.item(MenuItem::new("Remove project").danger(true).on_select_tx(
                         move |st: &mut State, _tx: &mut Tx| {
                             st.sidebar_menu = None;
-                            st.remove_project(&pid);
+                            st.sidebar_confirm = Some(confirm.clone());
+                            st.workspace_remove_confirm = None;
                         },
                     ));
                 }
@@ -334,17 +424,23 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
         }
         MenuKind::Workspace => {
             let selected = s.workspace_id().to_string();
+            let counts = s.workspace_waiting_counts();
             for workspace in &s.workspaces {
                 let id = workspace.id.clone();
                 let current = workspace.id == selected;
-                menu = menu.item(
-                    MenuItem::new(&workspace.name)
-                        .checked(current)
-                        .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
-                            st.sidebar_menu = None;
-                            st.select_workspace(&id);
-                        }),
-                );
+                // Another workspace's waiting sessions, named in its entry.
+                let label = match counts.get(&workspace.id) {
+                    Some(n) if !current && *n > 0 => {
+                        format!("{} · {n} need you", workspace.name)
+                    }
+                    _ => workspace.name.clone(),
+                };
+                menu = menu.item(MenuItem::new(label).checked(current).on_select_tx(
+                    move |st: &mut State, _tx: &mut Tx| {
+                        st.sidebar_menu = None;
+                        st.select_workspace(&id);
+                    },
+                ));
             }
             menu = menu.item(MenuItem::new("New workspace…").on_select_tx(
                 |st: &mut State, _tx: &mut Tx| {
@@ -371,6 +467,7 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         .disabled(is_default)
                         .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
                             st.sidebar_menu = None;
+                            st.sidebar_confirm = None;
                             st.workspace_remove_confirm = Some(id.clone());
                         }),
                 );
@@ -501,7 +598,7 @@ fn press_wash(ink: &Ink) -> Color {
 /// Sends the real `Req::AddProject` through the editor backend — the folder
 /// dialog result is a path, registration stays worker-side like the
 /// editor's own picker.
-fn add_project(ink: &Ink) -> El {
+pub(crate) fn add_project(ink: &Ink) -> El {
     row()
         .key("sidebar-add-project")
         .h(ROW_H)
@@ -514,6 +611,7 @@ fn add_project(ink: &Ink) -> El {
         .press(ink.text.alpha(0.12))
         .child(theme::ic(&theme::FOLDER_PLUS, 14.0, ink.text).group_color(lit(ink)))
         .child(theme::txt("Add Project", T128, ink.text).group_color(lit(ink)))
+        .label("Add Project")
         .on_press_tx(|_s: &mut State, tx: &mut Tx| {
             tx.open_folder(
                 rune::file_dialog::FileDialogOptions {
@@ -540,11 +638,17 @@ fn add_project(ink: &Ink) -> El {
 /// hovered row never carries a second hover surface inside it; the 20 px cell stays
 /// the hit target and shrinks a touch while pressed. Toggling stays instant: this is
 /// used many times a day, so motion would only slow it down.
-fn chevron(open: bool, ink: &Ink) -> El {
+fn chevron(open: bool, name: &str, ink: &Ink) -> El {
     el().size(CELL, CELL)
         .center()
         .hover_group()
         .press_scale(0.9)
+        .role("button")
+        .label(if open {
+            format!("Collapse {name}")
+        } else {
+            format!("Expand {name}")
+        })
         .child(
             theme::ic(
                 if open {
@@ -656,11 +760,18 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
     } else if let Some(err) = &s.editor.projects_error {
         list = list.child(status_row(err, ink.danger));
     }
-    for project in visible {
+    for project in &visible {
         let sessions = by_project
             .get(project.project.id.as_str())
             .map_or(empty, Vec::as_slice);
-        list = list.child(project_node(s, ink, project, sessions));
+        // Projects sharing a name in this list number their labels apart.
+        let earlier = visible
+            .iter()
+            .take_while(|p| p.project.id != project.project.id)
+            .filter(|p| p.project.name == project.project.name)
+            .count();
+        let suffix = ordinal_suffix(earlier);
+        list = list.child(project_node(s, ink, project, sessions, &suffix));
     }
     // Unassigned sessions belong to no project, so only Default shows them.
     if in_default && !unassigned.is_empty() {
@@ -670,6 +781,9 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
     let mut header = col().w_full().gap(4.0).child(workspace_header(s, ink));
     if let Some(id) = &s.workspace_remove_confirm {
         header = header.child(workspace_remove_confirm_row(s, ink, id));
+    }
+    if let Some(confirm) = &s.sidebar_confirm {
+        header = header.child(sidebar_confirm_row(s, ink, confirm));
     }
     col().w(s.sidebar_width).h_full().fill(ink.panel).child(
         col()
@@ -698,6 +812,17 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
 /// the switch/manage menu where the pointer last was.
 fn workspace_header(s: &State, ink: &Ink) -> El {
     let name = s.workspace_name().to_string();
+    // A waiting session in a hidden workspace is flagged here: the selector
+    // keeps its dot and label suffix until that session stops waiting.
+    let counts = s.workspace_waiting_counts();
+    let hidden_waiting = counts
+        .iter()
+        .any(|(id, n)| id != s.workspace_id() && *n > 0);
+    let label = if hidden_waiting {
+        format!("Workspace: {name}, another workspace needs you")
+    } else {
+        format!("Workspace: {name}")
+    };
     row()
         .key("sidebar-workspace-selector")
         .w_full()
@@ -707,7 +832,7 @@ fn workspace_header(s: &State, ink: &Ink) -> El {
         .items_center()
         .radius(6.0)
         .role("button")
-        .label(format!("Workspace: {name}"))
+        .label(label)
         .help("Switch workspace")
         .focusable(true)
         .hover_group()
@@ -726,6 +851,12 @@ fn workspace_header(s: &State, ink: &Ink) -> El {
                 .min_w(0.0)
                 .truncate(),
         )
+        .children(hidden_waiting.then(|| {
+            el().size(6.0, 6.0)
+                .radius(3.0)
+                .fill(ink.warning)
+                .help("Another workspace needs you")
+        }))
         .child(theme::ic(&theme::CHEVRON_DOWN, 12.0, ink.muted).group_color(ink.text))
 }
 
@@ -766,6 +897,78 @@ fn workspace_remove_confirm_row(s: &State, ink: &Ink, id: &str) -> El {
                         s.workspace_remove_confirm = None;
                     })
                     .key("sidebar-workspace-remove-cancel"),
+                ),
+        )
+}
+
+/// The worktree or project removal confirmation: what goes, and the two
+/// buttons. Nothing is removed until Remove is pressed.
+fn sidebar_confirm_row(s: &State, ink: &Ink, confirm: &SidebarConfirm) -> El {
+    let mut body = col().w_full().gap(2.0);
+    match confirm {
+        SidebarConfirm::RemoveWorktree {
+            project_id,
+            path,
+            name,
+            dirty,
+            sessions,
+        } => {
+            // The live entry wins over the state captured when the menu was
+            // chosen, so a refreshed list replaces a stale dirty flag.
+            let live = s
+                .editor
+                .sidebar_worktrees
+                .get(project_id.as_str())
+                .and_then(|e| e.list.as_ref())
+                .and_then(|l| l.worktrees.iter().find(|w| w.path == *path));
+            let dirty = live.map_or(*dirty, |w| w.dirty);
+            let status = match dirty {
+                Some(true) => "It has uncommitted changes.",
+                Some(false) => "It has no uncommitted changes.",
+                None => "Git status unknown.",
+            };
+            let attached = match sessions {
+                0 => "No sessions run in it.".to_string(),
+                1 => "1 session runs in it.".to_string(),
+                n => format!("{n} sessions run in it."),
+            };
+            body = body
+                .child(theme::txt(&format!("Remove {name}?"), T11M, ink.text))
+                .child(theme::txt(&format!("{status} {attached}"), T11M, ink.muted));
+        }
+        SidebarConfirm::RemoveProject { name, .. } => {
+            body = body.child(theme::txt(
+                &format!(
+                    "Remove {name}? Only its registration is removed; its sessions become Unassigned and its files stay."
+                ),
+                T11M,
+                ink.muted,
+            ));
+        }
+    }
+    col()
+        .w_full()
+        .gap(4.0)
+        .padding(6.0)
+        .radius(6.0)
+        .border(1.0, ink.border)
+        .child(body)
+        .child(
+            row()
+                .w_full()
+                .gap(6.0)
+                .items_center()
+                .child(
+                    small_button("Remove", ink.danger, ink, |s: &mut State| {
+                        s.confirm_sidebar_removal();
+                    })
+                    .key("sidebar-confirm-remove"),
+                )
+                .child(
+                    small_button("Cancel", ink.text, ink, |s: &mut State| {
+                        s.sidebar_confirm = None;
+                    })
+                    .key("sidebar-confirm-cancel"),
                 ),
         )
 }
@@ -833,8 +1036,16 @@ fn status_row(text: &str, tone: Color) -> El {
         .child(theme::txt(text, T12, tone).min_w(0.0).truncate())
 }
 
-fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&SessionView]) -> El {
+fn project_node(
+    s: &State,
+    ink: &Ink,
+    project: &ProjectView,
+    sessions: &[&SessionView],
+    name_suffix: &str,
+) -> El {
     let pid = project.project.id.as_str();
+    // The accessible name: the project's name plus its repeat ordinal.
+    let accessible = format!("{}{name_suffix}", project.project.name);
     let expanded = s.expanded.get(pid).copied().unwrap_or(true);
     // The sidebar's own per-project worktree state — loaded by the Projects
     // reply's ensure pass and `request_worktrees`, never by position, so a
@@ -890,10 +1101,12 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
 
     // Chevron button 20×20; expanded chevron-down, collapsed chevron-right.
     let pid_toggle = pid.to_string();
-    row_el = row_el.child(chevron(expanded, ink).on_press(move |s: &mut State| {
-        let cur = s.expanded.get(pid_toggle.as_str()).copied().unwrap_or(true);
-        s.expanded.insert(pid_toggle.clone(), !cur);
-    }));
+    row_el = row_el.child(
+        chevron(expanded, &accessible, ink).on_press(move |s: &mut State| {
+            let cur = s.expanded.get(pid_toggle.as_str()).copied().unwrap_or(true);
+            s.expanded.insert(pid_toggle.clone(), !cur);
+        }),
+    );
 
     // Label cell: name (+ checkout status) over the branch in small muted
     // text — the TSX's `active` → bg-secondary/70 was panel-on-panel and
@@ -910,7 +1123,8 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
                 theme::txt(&project.project.name, NAME, ink.text)
                     .group_color(lit(ink))
                     .min_w(40.0)
-                    .truncate(),
+                    .truncate()
+                    .help_when_truncated(project.project.name.clone()),
             )
             .children(checkout_status(project.missing, root, ink)),
     );
@@ -947,8 +1161,10 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
     // workspace highlight along with everything else.
     let pid_select = pid.to_string();
     let root_checkout = PathBuf::from(&project.project.root);
-    row_el = row_el.key(format!("sidebar-project:{pid}")).on_press_tx(
-        move |s: &mut State, tx: &mut Tx| {
+    row_el = row_el
+        .label(accessible.clone())
+        .key(format!("sidebar-project:{pid}"))
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
             navigation::navigate(
                 s,
                 PendingNav::SelectCheckout {
@@ -957,8 +1173,7 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
                 },
                 tx,
             );
-        },
-    );
+        });
     // The REVEAL hover-only action menus are opacity-0 by default — omitted,
     // matching the real app's resting render.
     row_el = row_el.child(checkout_actions(
@@ -966,6 +1181,7 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
         RowTarget::Project {
             project_id: pid.to_string(),
         },
+        &accessible,
     ));
 
     let mut node = col().child(row_el);
@@ -985,7 +1201,7 @@ fn project_node(s: &State, ink: &Ink, project: &ProjectView, sessions: &[&Sessio
         if !root_sessions.is_empty() {
             node = node.child(session_items(s, ink, &root_sessions, &workspace_id, true));
         }
-        if let Some(group) = worktree_group(s, ink, pid, worktrees, sessions) {
+        if let Some(group) = worktree_group(s, ink, pid, worktrees, sessions, name_suffix) {
             node = node.child(group);
         }
         if !other_sessions.is_empty() {
@@ -1010,8 +1226,18 @@ fn checkout_status_of(checkout: &WorktreeInfo, ink: &Ink) -> Option<El> {
         return Some(theme::missing_badge(ink));
     }
     match checkout.dirty {
-        Some(true) => Some(el().size(6.0, 6.0).radius(3.0).fill(ink.warning)),
-        None => Some(el().size(6.0, 6.0).radius(3.0).fill(ink.muted)),
+        Some(true) => Some(
+            el().size(6.0, 6.0)
+                .radius(3.0)
+                .fill(ink.warning)
+                .help("Uncommitted changes"),
+        ),
+        None => Some(
+            el().size(6.0, 6.0)
+                .radius(3.0)
+                .fill(ink.muted)
+                .help("Git status unknown"),
+        ),
         Some(false) => None,
     }
 }
@@ -1063,6 +1289,16 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     let selected = s.selected_session.as_deref() == Some(info.id.as_str());
     let ended = sv.ended();
     let title = sv.title();
+    // Sessions titled alike number their accessible names apart, across the
+    // whole sidebar: a title repeats in another project's list too.
+    let earlier = s
+        .data
+        .sessions
+        .iter()
+        .take_while(|o| o.info.id != info.id)
+        .filter(|o| o.title() == title)
+        .count();
+    let accessible = format!("{title}{}", ordinal_suffix(earlier));
     // showLabel: a label exists and differs from the title (case-insensitive).
     let label = sv
         .agent_label(&s.data.agents)
@@ -1110,7 +1346,8 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
         .h(ROW_H)
         .radius(6.0)
         .hover_group()
-        .press(press);
+        .press(press)
+        .label(accessible.clone());
     b = if indent {
         b.pl(SESSION_PL).pr(8.0)
     } else {
@@ -1159,13 +1396,15 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
                 theme::txt(&l, NAME, rest)
                     .group_color(hovered)
                     .min_w(0.0)
-                    .truncate(),
+                    .truncate()
+                    .help_when_truncated(l.clone()),
             )
             .child(
                 theme::txt(&title, SUB, ink.muted)
                     .group_color(ink.text)
                     .min_w(0.0)
-                    .truncate(),
+                    .truncate()
+                    .help_when_truncated(title.clone()),
             );
     } else {
         // single title font-medium, same colour rule.
@@ -1173,7 +1412,8 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
             theme::txt(&title, NAME, rest)
                 .group_color(hovered)
                 .min_w(0.0)
-                .truncate(),
+                .truncate()
+                .help_when_truncated(title.clone()),
         );
     }
     // The agent CLIs running under the session: `↳ devin`, `↳ codex, devin ×2`.
@@ -1193,7 +1433,7 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     // The row's own actions: stop the session and close its pane. They sit
     // in a fixed cell at the trailing edge, so the row never shifts when
     // they appear.
-    b = b.child(session_actions(ink, info.id.clone()));
+    b = b.child(session_actions(ink, info.id.clone(), &accessible));
     col().child(b)
 }
 
@@ -1241,6 +1481,7 @@ fn worktree_group(
     project_id: &str,
     worktrees: &[WorktreeInfo],
     sessions: &[&SessionView],
+    project_suffix: &str,
 ) -> Option<El> {
     let linked: Vec<&WorktreeInfo> = worktrees.iter().filter(|w| !w.is_root).collect();
     if linked.is_empty() {
@@ -1264,6 +1505,16 @@ fn worktree_group(
             .radius(6.0)
             .hover_group()
             .press(press_wash(ink))
+            .label(format!(
+                "{} worktrees of {}{}",
+                if group_open { "Collapse" } else { "Expand" },
+                s.editor
+                    .projects
+                    .iter()
+                    .find(|p| p.project.id == project_id)
+                    .map_or(project_id, |p| p.project.name.as_str()),
+                project_suffix,
+            ))
             .child(
                 el().size(CELL, CELL).center().child(
                     theme::ic(
@@ -1337,6 +1588,14 @@ fn worktree_node(
     index: usize,
 ) -> El {
     let checkout_sessions = data::sessions_for_checkout(worktrees, sessions, &wt.path);
+    // Linked checkouts of this project that share the name number theirs apart.
+    let earlier = worktrees
+        .iter()
+        .filter(|w| !w.is_root)
+        .take_while(|w| w.path != wt.path)
+        .filter(|w| w.name == wt.name)
+        .count();
+    let accessible = format!("{}{}", wt.name, ordinal_suffix(earlier));
     let workspace_id = data::checkout_key(project_id, &wt.path);
     let active = s.active_workspace.as_deref() == Some(workspace_id.as_str());
     let branch_label = wt
@@ -1348,7 +1607,8 @@ fn worktree_node(
         theme::txt(&wt.name, NAME, ink.text)
             .group_color(lit(ink))
             .min_w(40.0)
-            .truncate(),
+            .truncate()
+            .help_when_truncated(wt.name.clone()),
     );
     if let Some(st) = checkout_status_of(wt, ink) {
         text_row = text_row.child(st);
@@ -1386,15 +1646,18 @@ fn worktree_node(
         .radius(6.0)
         .hover_group()
         .press(press_wash(ink))
+        .label(accessible.clone())
         .child(row_layer(row_fill(ink, active), ROW_H).child(active_edge(ink, active)))
-        .child(chevron(wt_open, ink).on_press(move |s: &mut State| {
-            let cur = s
-                .worktrees_open
-                .get(wt_path.as_str())
-                .copied()
-                .unwrap_or(true);
-            s.worktrees_open.insert(wt_path.clone(), !cur);
-        }))
+        .child(
+            chevron(wt_open, &accessible, ink).on_press(move |s: &mut State| {
+                let cur = s
+                    .worktrees_open
+                    .get(wt_path.as_str())
+                    .copied()
+                    .unwrap_or(true);
+                s.worktrees_open.insert(wt_path.clone(), !cur);
+            }),
+        )
         .child(
             activate
                 .child(theme::ic(&theme::GIT_BRANCH, 16.0, ink.accent))
@@ -1409,6 +1672,7 @@ fn worktree_node(
             project_id: project_id.to_string(),
             path: wt.path.clone(),
         },
+        &accessible,
     ));
     // A worktree row selects its EXACT registered checkout path — the press
     // routes through the same draft-guarded `SelectCheckout` as the project
@@ -1475,6 +1739,7 @@ fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
         .radius(6.0)
         .hover_group()
         .press(press_wash(ink))
+        .label("Unassigned")
         .child(row_layer(row_fill(ink, unassigned_active), ROW_H))
         .child(
             theme::txt(
@@ -1593,6 +1858,7 @@ mod tests {
             label: "Claude Code".into(),
             available: true,
             path: Some("claude".into()),
+            binary: Some("claude".into()),
         });
         s.data.accounts = Some(app_core::accounts::AccountsView {
             claude: app_core::accounts::AgentView {
@@ -1865,6 +2131,293 @@ mod tests {
             more_right > row_right - 8.0 && more_right <= row_right - 3.0,
             "actions end at {more_right}, row's trailing edge {row_right} - px(4)",
         );
+    }
+
+    /// Two projects, one with a worktree group and a session: every sidebar
+    /// button is named after its target, and no two action buttons share a
+    /// name.
+    #[test]
+    fn every_sidebar_button_names_its_target() {
+        use protocol::session::{SessionId, SessionInfo, SessionState};
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink)
+        }
+
+        let project = |id: &str, name: &str, root: &str| ProjectView {
+            project: app_core::store::Project {
+                id: id.into(),
+                name: name.into(),
+                root: root.into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+        };
+        let checkout = |name: &str, path: &str, is_root: bool| WorktreeInfo {
+            name: name.into(),
+            path: path.into(),
+            branch: Some(name.into()),
+            head: "0123456789abcdef0123456789abcdef01234567".into(),
+            is_root,
+            missing: false,
+            dirty: Some(false),
+            changed: Some(0),
+        };
+
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![
+            project("p1", "goko", "/work/a/goko"),
+            project("p2", "tools", "/work/a/tools"),
+        ];
+        s.editor.sidebar_worktrees.insert(
+            "p1".to_string(),
+            crate::editor::state::SidebarWorktrees {
+                list: Some(data::WorktreeList {
+                    repo: true,
+                    worktrees: vec![
+                        checkout("goko", "/work/a/goko", true),
+                        checkout("goko-feat", "/work/a/goko-feat", false),
+                    ],
+                }),
+                loading: false,
+                error: None,
+            },
+        );
+        s.upsert_session(SessionInfo {
+            id: SessionId::new(),
+            title: "Work".into(),
+            argv: vec!["sh".into()],
+            cwd: "/work/a/goko".into(),
+            state: SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        });
+
+        let mut rt = Runtime::new(s, sidebar_view, (260.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+
+        let buttons: Vec<_> = els.iter().filter(|e| e.role == "button").collect();
+        for button in &buttons {
+            assert!(
+                button
+                    .label
+                    .as_deref()
+                    .is_some_and(|l| !l.trim().is_empty()),
+                "sidebar button {:?} has no name",
+                button.key.as_deref().unwrap_or(button.path.as_str()),
+            );
+        }
+        let mut action_names: Vec<&str> = buttons
+            .iter()
+            .filter(|b| {
+                b.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("sidebar-action:"))
+            })
+            .filter_map(|b| b.label.as_deref())
+            .collect();
+        let total = action_names.len();
+        action_names.sort_unstable();
+        action_names.dedup();
+        assert_eq!(
+            action_names.len(),
+            total,
+            "two action buttons share a name: {action_names:?}"
+        );
+        for expected in [
+            "Collapse goko",
+            "Collapse tools",
+            "Collapse worktrees of goko",
+            "Collapse goko-feat",
+            "New session in goko",
+            "More actions for goko",
+            "New session in goko-feat",
+            "More actions for goko-feat",
+            "New session in tools",
+            "More actions for tools",
+            "Stop session Work",
+            "Close pane Work",
+        ] {
+            assert!(
+                buttons.iter().any(|b| b.label.as_deref() == Some(expected)),
+                "no sidebar button named {expected:?}",
+            );
+        }
+    }
+
+    /// Two projects both named `web`, each with two sessions titled `zsh`:
+    /// no two buttons share an accessible name. The first of each name keeps
+    /// the plain name; repeats count up from 2.
+    #[test]
+    fn repeated_names_get_numbered_accessible_labels() {
+        use protocol::session::{SessionId, SessionInfo, SessionState};
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink)
+        }
+
+        let project = |id: &str, root: &str| ProjectView {
+            project: app_core::store::Project {
+                id: id.into(),
+                name: "web".into(),
+                root: root.into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+        };
+
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![project("p1", "/work/a/web"), project("p2", "/work/b/web")];
+        for root in ["/work/a/web", "/work/b/web"] {
+            for _ in 0..2 {
+                s.upsert_session(SessionInfo {
+                    id: SessionId::new(),
+                    title: "zsh".into(),
+                    argv: vec!["sh".into()],
+                    cwd: root.into(),
+                    state: SessionState::Running,
+                    pid: None,
+                    exit_code: None,
+                    error: None,
+                    started_at: 0,
+                    ended_at: None,
+                });
+            }
+        }
+
+        let mut rt = Runtime::new(s, sidebar_view, (260.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let names: Vec<String> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.role == "button")
+            .filter_map(|e| e.label.clone())
+            .collect();
+
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "two buttons share a name: {names:?}"
+        );
+        for expected in [
+            "Collapse web",
+            "Collapse web (2)",
+            "New session in web",
+            "New session in web (2)",
+            "More actions for web",
+            "More actions for web (2)",
+            "Stop session zsh",
+            "Stop session zsh (2)",
+            "Stop session zsh (3)",
+            "Stop session zsh (4)",
+            "Close pane zsh (4)",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "no sidebar button named {expected:?}: {names:?}",
+            );
+        }
+    }
+
+    /// The status marks explain themselves on hover, and a label cut short
+    /// by its cell offers its full text.
+    #[test]
+    fn status_marks_and_truncated_labels_explain_themselves() {
+        use protocol::session::{SessionId, SessionInfo, SessionState};
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink)
+        }
+
+        let long_project = "a-project-name-far-too-long-for-the-narrow-sidebar";
+        let long_worktree = "a-worktree-name-that-is-also-far-too-long";
+        let long_title = "a session title that cannot fit the narrow row";
+        let mut s = State::new(test_handle());
+        s.sidebar_width = MIN_SIDEBAR_W;
+        s.editor.projects = vec![ProjectView {
+            project: app_core::store::Project {
+                id: "p1".into(),
+                name: long_project.into(),
+                root: "/work/a/long".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+        }];
+        let checkout = |name: &str, path: &str, is_root, missing, dirty| WorktreeInfo {
+            name: name.into(),
+            path: path.into(),
+            branch: Some("main".into()),
+            head: "0123456789abcdef0123456789abcdef01234567".into(),
+            is_root,
+            missing,
+            dirty,
+            changed: Some(0),
+        };
+        s.editor.sidebar_worktrees.insert(
+            "p1".to_string(),
+            crate::editor::state::SidebarWorktrees {
+                list: Some(data::WorktreeList {
+                    repo: true,
+                    worktrees: vec![
+                        // Dirty root: the project row's warning dot.
+                        checkout(long_project, "/work/a/long", true, false, Some(true)),
+                        // Unknown status: the muted dot.
+                        checkout(long_worktree, "/work/a/wt", false, false, None),
+                        // A linked worktree whose folder is gone: the badge.
+                        checkout("gone", "/work/a/gone", false, true, Some(false)),
+                    ],
+                }),
+                loading: false,
+                error: None,
+            },
+        );
+        s.upsert_session(SessionInfo {
+            id: SessionId::new(),
+            title: long_title.into(),
+            argv: vec!["sh".into()],
+            cwd: "/work/a/long".into(),
+            state: SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        });
+
+        let mut rt = Runtime::new(s, sidebar_view, (260.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+        let help_of = |text: &str| {
+            els.iter()
+                .find(|e| e.text.as_deref() == Some(text))
+                .unwrap_or_else(|| panic!("{text:?} not mounted"))
+                .help
+                .clone()
+        };
+        let has_help = |text: &str| els.iter().any(|e| e.help.as_deref() == Some(text));
+
+        assert!(has_help("Uncommitted changes"), "dirty checkout's dot");
+        assert!(has_help("Git status unknown"), "unknown status' dot");
+        assert!(
+            has_help("This folder no longer exists on disk"),
+            "missing badge",
+        );
+        assert_eq!(help_of(long_project).as_deref(), Some(long_project));
+        assert_eq!(help_of(long_worktree).as_deref(), Some(long_worktree));
+        assert_eq!(help_of(long_title).as_deref(), Some(long_title));
     }
 
     // -- workspace selection -------------------------------------------------

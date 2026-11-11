@@ -10,6 +10,7 @@
 
 ## Archived changes
 
+- [Rune UX improvements: first sessions, safety, shortcuts, accessibility](changes/archive/ux-improvements/design.md) ([tasks](changes/archive/ux-improvements/tasks.md), [delta](changes/archive/ux-improvements/delta.md))
 - [Multi-project workspaces](changes/archive/multi-project-workspaces/design.md) ([tasks](changes/archive/multi-project-workspaces/tasks.md), [delta](changes/archive/multi-project-workspaces/delta.md))
 - [Rune inline blame: per-line author and age beside the code](changes/archive/rune-inline-blame/delta.md)
 - [Rune editor indent: guides, Tab indent, auto-indent, unit config](changes/archive/rune-editor-indent/delta.md)

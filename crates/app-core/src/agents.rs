@@ -43,6 +43,8 @@ pub struct AgentInfo {
     pub label: String,
     pub available: bool,
     pub path: Option<String>,
+    /// The binary looked up on `PATH`; `None` for the default shell.
+    pub binary: Option<String>,
 }
 
 struct Adapter {
@@ -99,6 +101,7 @@ pub fn discover(path_var: Option<&OsStr>, default_shell: &str) -> Vec<AgentInfo>
                 label: adapter.label.to_owned(),
                 available: path.is_some(),
                 path,
+                binary: adapter.bin.map(str::to_owned),
             }
         })
         .collect()

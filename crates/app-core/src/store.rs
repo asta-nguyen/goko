@@ -6,7 +6,7 @@
 
 use crate::error::{BridgeError, Code};
 use protocol::message::ErrorCode;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::fs::{DirBuilder, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -389,16 +389,33 @@ impl Store {
 }
 
 /// Apply every migration past `user_version`, each in its own transaction.
+///
+/// The store is opened from several threads at startup, so each step takes the
+/// write lock first and re-reads `user_version` under it: a second opener waits,
+/// then finds the step already applied instead of running it twice.
 fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
-    let version: usize = conn
+    // A current database needs no write lock: reading the version first keeps
+    // every ordinary open from queuing behind another connection's writer.
+    let current: usize = conn
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| storage("cannot read the goko.db schema version", error))?
         .try_into()
         .unwrap_or_default();
-    for (index, migration) in MIGRATIONS.iter().enumerate().skip(version) {
+    if current >= MIGRATIONS.len() {
+        return Ok(());
+    }
+    for (index, migration) in MIGRATIONS.iter().enumerate() {
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage("cannot migrate goko.db", error))?;
+        let version: usize = tx
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .map_err(|error| storage("cannot read the goko.db schema version", error))?
+            .try_into()
+            .unwrap_or_default();
+        if version > index {
+            continue;
+        }
         tx.execute_batch(migration)
             .and_then(|()| tx.execute_batch(&format!("PRAGMA user_version = {}", index + 1)))
             .map_err(|error| storage("cannot migrate goko.db", error))?;
@@ -534,6 +551,64 @@ mod tests {
 
     fn open(dir: &TempDir) -> Store {
         Store::open(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn concurrent_first_opens_all_succeed() {
+        // The app opens the store from several threads at startup; on a fresh
+        // home every one of them must see a migrated database.
+        for _ in 0..20 {
+            let dir = TempDir::new("concurrent-open");
+            let path = dir.path().to_path_buf();
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    let path = path.clone();
+                    std::thread::spawn(move || Store::open(&path).map(|_| ()))
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn an_up_to_date_store_opens_while_another_connection_holds_the_write_lock() {
+        // Opening a current database reads the schema version only; it must
+        // not queue behind a writer.
+        let dir = TempDir::new("store-write-locked");
+        drop(open(&dir));
+        let writer = Connection::open(dir.path().join("goko.db")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let opened = Store::open(dir.path());
+        writer.execute_batch("ROLLBACK").unwrap();
+        assert!(opened.is_ok(), "{:?}", opened.err().map(|e| e.message));
+    }
+
+    #[test]
+    fn a_failing_migration_rolls_back_and_keeps_the_version() {
+        // A database at version 0 whose `projects` table conflicts with the
+        // first migration: the step fails and nothing it did is kept.
+        let dir = TempDir::new("store-rollback");
+        Connection::open(dir.path().join("goko.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE projects (unrelated TEXT)")
+            .unwrap();
+
+        let error = match Store::open(dir.path()) {
+            Ok(_) => panic!("the conflicting table must fail the migration"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message.starts_with("cannot migrate goko.db"),
+            "{}",
+            error.message
+        );
+        let conn = Connection::open(dir.path().join("goko.db")).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 0);
     }
 
     fn meta(session_id: &str, project_id: Option<&str>) -> SessionMeta {

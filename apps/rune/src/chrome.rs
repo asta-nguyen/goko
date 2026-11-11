@@ -11,6 +11,7 @@ use crate::data;
 use crate::editor::backend;
 use crate::editor::navigation::{self, PendingNav};
 use crate::panes::{self, Tab};
+use crate::sidebar;
 use crate::theme::{self, Ink, STATE_SPRING, T11M_LH, T12, T12M, T12TN, T14, T14M, T14S};
 use crate::{State, View};
 
@@ -53,7 +54,7 @@ fn settings_button(open: bool, ink: &Ink) -> El {
         .role("toggle")
         .label("Settings")
         .checked(open)
-        .help("Settings")
+        .help("Settings (⌘,)")
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
         .child(
@@ -141,7 +142,9 @@ fn usage_chip_for(
         })
         .unwrap_or_default();
     let help = {
-        let mut lines = resets;
+        let mut lines =
+            vec!["Each percentage is the share of that window already used".to_string()];
+        lines.extend(resets);
         lines.push(format!("Updated {}", data::usage_age(updated_at, s.now_ms)));
         lines.join("\n")
     };
@@ -327,6 +330,12 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
     // with a short fade and a small scale-up (never from nothing) and leaves
     // faster than it came, on Rune's default enter/exit springs.
     if !s.data.connected {
+        // Its help names the last disconnect reason, so the pill says why.
+        let help = s
+            .daemon_reason
+            .clone()
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| "Waiting for the Goko daemon".into());
         right = right.child(
             row()
                 .key("disconnected")
@@ -338,8 +347,9 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
                 .border(1.0, ink.danger.alpha(0.3))
                 .fill(ink.danger.alpha(0.1))
                 .transition(Transition::opacity().combined(Transition::scale(0.92)))
+                .help(help)
                 .child(el().size(6.0, 6.0).radius(3.0).fill(ink.danger))
-                .child(theme::txt("Disconnected", T11M_LH, ink.danger)),
+                .child(theme::txt("Reconnecting…", T11M_LH, ink.danger)),
         );
     }
     right = right.child(settings_button(s.view == View::Settings, ink));
@@ -415,29 +425,11 @@ pub fn tab_bar(s: &State, ink: &Ink) -> El {
         .px(8.0)
         .child(tabs)
         .child(
-            theme::btn_sm("New tab", Some((&theme::PLUS, 14.0)), false, ink).on_press(
-                |s: &mut State| {
-                    // A real shell session in the active checkout: the
-                    // daemon owns the session, the app records why it
-                    // exists.
-                    let cwd = s
-                        .editor
-                        .checkout
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .or_else(|| std::env::var("HOME").ok())
-                        .unwrap_or_else(|| "/".to_string());
-                    let project_id = s.editor.project_id.clone();
-                    s.launch_session(crate::sessions::SessionLaunch {
-                        argv: vec![backend::default_shell()],
-                        cwd,
-                        project_id,
-                        agent: "shell".to_string(),
-                        title: String::new(),
-                    });
-                },
-            ),
+            theme::btn_sm("New tab", Some((&theme::PLUS, 14.0)), false, ink)
+                .help("New tab (⌘T)")
+                .on_press(|s: &mut State| s.new_shell_tab()),
         )
+        .child(new_tab_menu(ink))
         .child(split_button(
             &theme::COLUMNS_2,
             "Split side by side",
@@ -453,6 +445,37 @@ pub fn tab_bar(s: &State, ink: &Ink) -> El {
             ink,
         ))
         .child(view_switch(s, ink))
+}
+
+/// The chevron beside New tab: the sidebar's New session menu for the active
+/// checkout, so every agent and Custom command… start from here too. New tab
+/// itself still starts a shell.
+fn new_tab_menu(ink: &Ink) -> El {
+    el().key("new-tab-menu")
+        .size(28.0, 28.0)
+        .radius(8.0)
+        .center()
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .press_scale(0.95)
+        .motion(STATE_SPRING)
+        .role("button")
+        .label("New tab menu")
+        .help("Start an agent or a custom command")
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .child(theme::ic(&theme::CHEVRON_DOWN, 14.0, ink.text))
+        // Like the sidebar's row buttons, the menu opens where the pointer is.
+        .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
+            s.menu_anchor = Some((p.x, p.y));
+        })
+        .on_press(|s: &mut State| {
+            // No checkout: the entries start in $HOME, as New tab's shell does.
+            let target = s
+                .active_checkout_target()
+                .unwrap_or(sidebar::RowTarget::Workspace);
+            s.open_menu(target, sidebar::MenuKind::NewSession);
+        })
 }
 
 /// A split-pane button: another shell session lands beside the focused
@@ -819,6 +842,7 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
 mod tests {
     use super::*;
     use app_core::usage::{AccountUsage, Limit};
+    use rune::{Cx, Env, Runtime};
 
     fn limit(used_pct: f64, resets_at: i64) -> Limit {
         Limit {
@@ -844,6 +868,81 @@ mod tests {
             "5h reset",
             "the account menu must not show a spent window's percentage"
         );
+    }
+
+    /// A chip with a limit says what its percentage measures.
+    #[test]
+    fn a_usage_chip_says_its_percentage_is_the_used_share() {
+        let now_ms = 1_700_000_000_000;
+        let mut s = State::new(crate::test_handle());
+        s.now_ms = now_ms;
+        s.data.usage = Some(app_core::usage::UsageSnapshot {
+            claude: app_core::usage::ClaudeUsage {
+                five_hour: Some(limit(42.0, now_ms / 1000 + 3600)),
+                updated_at: Some(now_ms),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let els = header_elements(s);
+        let chip = els
+            .iter()
+            .find(|e| e.help.as_deref().is_some_and(|h| h.contains("Updated")))
+            .expect("the Claude chip carries its help");
+        let help = chip.help.as_deref().unwrap();
+        assert!(
+            help.contains("share of that window already used"),
+            "chip help {help:?} does not say what the percentage measures",
+        );
+    }
+
+    fn header_only(s: &State, _cx: &mut Cx<State>) -> El {
+        header(s, &Ink::new(), 0.0)
+    }
+
+    /// The header's elements for `s`, laid out once.
+    fn header_elements(s: State) -> Vec<rune::ElementInfo> {
+        let mut rt = Runtime::new(s, header_only, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.elements()
+    }
+
+    fn pill(els: &[rune::ElementInfo]) -> Option<&rune::ElementInfo> {
+        els.iter()
+            .find(|e| e.key.as_deref() == Some("disconnected"))
+    }
+
+    #[test]
+    fn connected_header_shows_no_pill() {
+        let mut s = State::new(crate::test_handle());
+        s.data.connected = true;
+        let els = header_elements(s);
+        assert!(pill(&els).is_none(), "no pill while connected");
+    }
+
+    #[test]
+    fn disconnected_pill_gives_the_last_reason_as_help() {
+        let mut s = State::new(crate::test_handle());
+        s.data.connected = false;
+        s.daemon_reason = Some("connection refused".into());
+        let els = header_elements(s);
+        let pill = pill(&els).expect("pill shown while disconnected");
+        assert_eq!(pill.help.as_deref(), Some("connection refused"));
+        assert!(
+            els.iter()
+                .any(|e| e.text.as_deref() == Some("Reconnecting…")),
+            "the pill reads Reconnecting…"
+        );
+    }
+
+    #[test]
+    fn disconnected_pill_without_a_reason_uses_the_fallback_help() {
+        let mut s = State::new(crate::test_handle());
+        s.data.connected = false;
+        s.daemon_reason = None;
+        let els = header_elements(s);
+        let pill = pill(&els).expect("pill shown while disconnected");
+        assert_eq!(pill.help.as_deref(), Some("Waiting for the Goko daemon"));
     }
 
     /// A window that is still running shows its percentage.

@@ -187,6 +187,11 @@ pub enum Req {
         project_id: String,
         path: String,
     },
+    /// Drop Git's records of worktrees whose folder is gone
+    /// (`git worktree prune`; no folder is touched).
+    PruneWorktrees {
+        project_id: String,
+    },
     /// Remove a registered project.
     RemoveProject {
         id: String,
@@ -529,6 +534,7 @@ fn is_mutating(req: &Req) -> bool {
             | Req::WorktreeCreate { .. }
             | Req::EnvCopy { .. }
             | Req::RemoveWorktree { .. }
+            | Req::PruneWorktrees { .. }
             | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
             | Req::Stage { .. }
@@ -786,6 +792,10 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
             // A dirty checkout would refuse the removal; the user asked for
             // it explicitly, so the force flag is the caller's choice.
             worktrees::remove(std::path::Path::new(&root), path, true).map(|_| ReplyData::Ok)
+        }),
+        Req::PruneWorktrees { project_id } => storage_req(storage, |store| {
+            let root = projects::project_root(store, project_id)?;
+            worktrees::prune(std::path::Path::new(&root)).map(|_| ReplyData::Ok)
         }),
         Req::RemoveProject { id } => storage_req(storage, |store| {
             projects::remove_project(store, id).map(|_| ReplyData::Ok)
@@ -1132,6 +1142,7 @@ fn run_checkout(
         | Req::WorktreeCreate { .. }
         | Req::EnvCopy { .. }
         | Req::RemoveWorktree { .. }
+        | Req::PruneWorktrees { .. }
         | Req::RemoveProject { .. }
         | Req::Activity { .. }
         | Req::Subagents { .. }

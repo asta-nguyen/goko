@@ -19,6 +19,7 @@ use crate::State;
 use crate::data::SessionState;
 use crate::editor::backend::{self, Job, Req};
 use crate::sessions::{self, Pending, SessionLaunch};
+use crate::sidebar::{self, RowTarget};
 use crate::term;
 use crate::theme::{self, Ink};
 
@@ -1259,21 +1260,124 @@ impl State {
 /// keyboard-resizable separator with the desktop's minimum pane size.
 pub fn terminal_workspace(s: &State, ink: &Ink) -> El {
     let Some(tab) = s.open_tabs.get(s.active_tab) else {
-        return col()
-            .grow(1.0)
-            .min_w(0.0)
-            .h_full()
-            .min_h(0.0)
-            .fill(ink.bg)
-            .items_center()
-            .justify_center()
-            .child(theme::txt(
-                "No terminal sessions — start one from the sidebar or New tab",
-                theme::T12,
-                ink.muted,
-            ));
+        return start_view(s, ink);
     };
     layout_el(s, ink, &tab.layout, tab)
+}
+
+/// The Terminal view with no open tab: the line, then start buttons for
+/// the target. A selected workspace with no project offers Add Project.
+fn start_view(s: &State, ink: &Ink) -> El {
+    let mut empty = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .min_h(0.0)
+        .fill(ink.bg)
+        .items_center()
+        .justify_center()
+        .gap(12.0)
+        .child(theme::txt(
+            "No terminal sessions — start one from the sidebar or New tab",
+            theme::T12,
+            ink.muted,
+        ));
+    let Some(target) = start_target(s) else {
+        // The sidebar's own button, keyed apart so the two never share one.
+        return empty.child(sidebar::add_project(ink).key("terminal-add-project"));
+    };
+    let connected = s.data.connected;
+    let mut buttons = row().gap(8.0).items_center();
+    // Shell gets its own button below, so the agent list leaves it out.
+    for agent in s
+        .data
+        .agents
+        .iter()
+        .filter(|agent| agent.available && agent.id != "shell")
+    {
+        let agent_id = agent.id.clone();
+        let target = target.clone();
+        buttons = buttons.child(start_button(
+            &agent.label,
+            connected,
+            ink,
+            move |s: &mut State| s.request_session_argv(target.clone(), agent_id.clone()),
+        ));
+    }
+    let shell = target;
+    buttons = buttons.child(start_button(
+        "Shell",
+        connected,
+        ink,
+        move |s: &mut State| {
+            let (cwd, project_id) = s.checkout_of(&shell);
+            s.launch_session(SessionLaunch {
+                argv: vec![backend::default_shell()],
+                cwd,
+                project_id,
+                agent: "shell".to_string(),
+                title: String::new(),
+            });
+        },
+    ));
+    empty = empty.child(buttons);
+    if !connected {
+        empty = empty.child(theme::txt(
+            "Waiting for the Goko daemon",
+            theme::T11,
+            ink.muted,
+        ));
+    }
+    empty
+}
+
+/// Where the start buttons launch: the active checkout, else the selected
+/// workspace's first project. `None` when that workspace has no project.
+fn start_target(s: &State) -> Option<RowTarget> {
+    let first = s
+        .editor
+        .projects
+        .iter()
+        .find(|project| project.project.workspace_id == s.workspace_id())?;
+    Some(s.active_checkout_target().unwrap_or(RowTarget::Project {
+        project_id: first.project.id.clone(),
+    }))
+}
+
+/// A primary start button. Disabled (dimmed, no press handler) while the
+/// daemon is away, since a session cannot start without it.
+fn start_button(
+    label: &str,
+    enabled: bool,
+    ink: &Ink,
+    action: impl Fn(&mut State) + 'static,
+) -> El {
+    let mut b = row()
+        .key(format!("start:{label}"))
+        .h(28.0)
+        .px(10.0)
+        .items_center()
+        .radius(8.0)
+        .fill(ink.accent)
+        .role("button")
+        .label(label)
+        .child(theme::txt(label, theme::T128, ink.white));
+    if enabled {
+        b = b
+            .hover(ink.white.alpha(0.12))
+            .press(ink.white.alpha(0.2))
+            .press_scale(0.97)
+            .motion(theme::STATE_SPRING)
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press(action);
+    } else {
+        b = b
+            .opacity(0.4)
+            .disabled(true)
+            .help("Waiting for the Goko daemon");
+    }
+    b
 }
 
 /// One node of the pane tree, filling its parent's box.

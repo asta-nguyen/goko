@@ -17,6 +17,24 @@ real project, Git, file, and ACP work through `app-core`.
 
 ## Requirements
 
+### RNC-app-shortcuts
+
+The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth tab in the Terminal view, and `⌘,` to the Settings toggle through the draft guard, ignoring them while the sidebar prompt, a removal confirmation, a sidebar or editor menu or picker, the draft guard, quick-open, or a terminal input-method composition owns input and for any chord that adds Shift or Option, leaving `⌘W` as window close.
+
+#### Scenario: switch tab by number
+
+- GIVEN two open tabs in the Terminal view
+- WHEN `⌘2` is pressed
+- THEN the second tab is active, and `⌘9` does nothing
+
+#### Scenario: shortcut blocked by a confirmation
+
+- GIVEN a removal confirmation is open
+- WHEN `⌘T` is pressed
+- THEN no session starts
+
+Evidence: `apps/rune/src/main.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/chrome.rs`
+
 ### RNC-controls-bar
 
 The system SHALL render the controls strip only in the Terminal view while a
@@ -42,6 +60,24 @@ disconnected.
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/main.rs`
 
+### RNC-empty-terminal-actions
+
+The system SHALL show, in the Terminal view with no open tab, one start button per available agent plus Shell for the active editor checkout (else the first project visible in the selected workspace), or an Add Project button when the selected workspace has no project, with the buttons disabled and a reason shown while the daemon is disconnected.
+
+#### Scenario: first launch with projects
+
+- GIVEN no open tab, two available agents, and a registered project
+- WHEN the Terminal view renders
+- THEN it shows a button for each agent and Shell
+
+#### Scenario: no projects
+
+- GIVEN no open tab and an empty selected workspace
+- WHEN the Terminal view renders
+- THEN it shows only Add Project
+
+Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/sessions.rs`
+
 ### RNC-header-status
 
 The system SHALL render the header with the goko mark and wordmark, a persistent
@@ -49,20 +85,22 @@ The system SHALL render the header with the goko mark and wordmark, a persistent
 connected, danger otherwise) whose wordmark group carries an accessible name
 and hover tooltip ("Connected to the Goko daemon" / "Disconnected from the
 Goko daemon"), one usage chip per `Data::usage` entry, and a settings button;
-a "Disconnected" pill appears on the right only while disconnected, entering
-with a short fade and small scale-up.
+a "Reconnecting…" pill appears on the right only while disconnected, entering
+with a short fade and small scale-up, whose help text is the daemon's last
+disconnect reason or "Waiting for the Goko daemon" when there is none, with no
+manual retry control.
 
 #### Scenario: daemon connected
 
 - GIVEN the daemon client completed the hello handshake
 - WHEN the view renders
-- THEN the connection dot is success-coloured and no Disconnected pill is shown
+- THEN the connection dot is success-coloured and no Reconnecting… pill is shown
 
 #### Scenario: daemon unreachable
 
 - GIVEN the daemon client failed to connect or lost the socket
 - WHEN the view renders
-- THEN the connection dot is danger-coloured and the Disconnected pill renders beside the settings button
+- THEN the connection dot is danger-coloured and the Reconnecting… pill renders beside the settings button with the last reason as its help text
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`
 
@@ -87,6 +125,36 @@ failed spawn surfaces an error and opens no phantom tab.
 - THEN an error notice shows and no tab or session row appears
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`, `crates/app-core/src/store.rs`, `crates/app-core/src/agents.rs`
+
+### RNC-new-tab-menu
+
+The system SHALL offer, beside New tab, a menu listing every agent preset and Custom command… that starts that session in the active checkout and shows each unavailable agent as disabled with the reason "<binary> not found on PATH" in this menu and in the sidebar's New session menu.
+
+#### Scenario: start an agent from the tab bar
+
+- GIVEN an available agent and an active checkout
+- WHEN the agent is chosen from the New tab menu
+- THEN `session.create` runs for that agent in the active checkout
+
+#### Scenario: agent not installed
+
+- GIVEN an agent whose binary is not on PATH
+- WHEN either menu opens
+- THEN its entry is disabled and states "<binary> not found on PATH"
+
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `crates/app-core/src/agents.rs`
+
+### RNC-notice-expiry
+
+The system SHALL close the global notice toast 8 seconds after it was last set, restart that timer when a notice with different text replaces it, and keep the toast's close button.
+
+#### Scenario: expiry and replacement
+
+- GIVEN a notice shown at time 0
+- WHEN a second notice with different text replaces it at 7 seconds
+- THEN the first does not close at 8 seconds and the second closes at 15 seconds
+
+Evidence: `apps/rune/src/main.rs`
 
 ### RNC-project-workspaces
 
@@ -117,6 +185,42 @@ The system SHALL persist named workspaces with exactly one membership per regist
 - THEN an error is shown and the existing workspace selection and membership remain intact
 
 Evidence: `crates/app-core/src/store.rs`, `crates/app-core/src/projects.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`
+
+### RNC-prune-worktrees
+
+The system SHALL offer Prune missing worktrees in a git project's More menu only while at least one of its worktrees is `missing`, run `git worktree prune` in the project root when chosen, refresh that project's worktree list, and touch no folder or session.
+
+#### Scenario: prune
+
+- GIVEN a project with a worktree whose folder was deleted
+- WHEN Prune missing worktrees is chosen
+- THEN Git's record of that worktree is removed, the list refreshes, and a live linked worktree remains
+
+#### Scenario: nothing to prune
+
+- GIVEN a project with no missing worktree
+- WHEN its More menu opens
+- THEN the entry is absent
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/worktrees.rs`
+
+### RNC-remove-confirm
+
+The system SHALL ask for confirmation in an inline sidebar row before Remove worktree and Remove project run: the worktree row names the folder, says whether it has uncommitted changes (refreshed when the row opens), and states how many sessions that have not ended run in it, while the project row states that only the registration is removed, its sessions become Unassigned, and its files stay; Cancel changes nothing, and running sessions are never stopped.
+
+#### Scenario: confirm a dirty worktree removal
+
+- GIVEN a worktree row whose `dirty` value is true with two running sessions attached
+- WHEN Remove worktree is chosen
+- THEN an inline row names the folder, shows the uncommitted-changes line and "2 sessions", and nothing is removed until Confirm is pressed
+
+#### Scenario: cancel
+
+- GIVEN a removal confirmation row is open
+- WHEN Cancel is pressed
+- THEN no request is enqueued and the row closes
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/main.rs`
 
 ### RNC-session-account-label
 
@@ -261,6 +365,18 @@ spring, instant under Reduce Motion), and gives hover wash, press wash and a
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/navigation.rs`
 
+### RNC-sidebar-accessible-names
+
+The system SHALL give every sidebar button an accessible name that includes its target: disclosure buttons read "Collapse <name>" or "Expand <name>", and row actions read "New session in <row name>", "More actions for <row name>", "Stop session <title>", and "Close pane <title>", with " (2)", " (3)" appended to repeated names so none is shared.
+
+#### Scenario: no unnamed or duplicate names
+
+- GIVEN a sidebar with several projects, a worktree group, and a session
+- WHEN the accessibility tree is read
+- THEN no sidebar button has an empty name and no two action buttons share a name
+
+Evidence: `apps/rune/src/sidebar.rs`
+
 ### RNC-sidebar-projects
 
 The system SHALL render the selected workspace's registered projects and per-project worktree lists from the editor backend — never mock rows — with one expandable project row (chevron, folder icon, name, missing badge, checkout status, branch label), a collapsible Worktrees group for linked checkouts, real daemon sessions nested under matching checkouts, an Other sessions group for project sessions matching no checkout, honest loading/error/empty-group states, and Add Project through the native folder picker; Unassigned sessions appear only in Default, while switching workspaces leaves existing tabs, sessions, and editor checkout intact.
@@ -399,6 +515,24 @@ highlight, and draft.
   Discard or a landed Save commits the pending selection instead
 
 Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/data.rs`, `apps/rune/src/main.rs`
+
+### RNC-sidebar-status-help
+
+The system SHALL explain each sidebar status mark on hover: a warning dot reads "Uncommitted changes", a muted dot "Git status unknown", the `missing` badge "This folder no longer exists on disk", a truncated label shows its full text, and a usage chip states that its percentage is the share of that window already used.
+
+#### Scenario: hover a dirty checkout
+
+- GIVEN a checkout whose `dirty` value is true
+- WHEN the pointer rests on its dot
+- THEN the help text reads "Uncommitted changes"
+
+#### Scenario: truncated worktree name
+
+- GIVEN a worktree label wider than its cell
+- WHEN the pointer rests on it
+- THEN the help text is the complete label
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/theme.rs`, `apps/rune/src/chrome.rs`
 
 ### RNC-tab-activate
 
@@ -566,6 +700,24 @@ The system SHALL switch between Terminal and the native Editor workspace through
 - THEN `view` becomes `Terminal` and the attached session's terminal renders
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`
+
+### RNC-workspace-attention
+
+The system SHALL show a warning dot on the sidebar's workspace selector while any session in a workspace other than the selected one is waiting for the user, and append "· N need you" to that workspace's entry in the selector menu, using the same activity value as the session row's dot.
+
+#### Scenario: a hidden session needs the user
+
+- GIVEN two workspaces and a session waiting for the user in the one that is not selected
+- WHEN the sidebar renders
+- THEN the selector shows the warning dot and the other workspace's menu entry reads "· 1 need you"
+
+#### Scenario: the session stops waiting
+
+- GIVEN that session finishes its turn
+- WHEN the sidebar renders
+- THEN the dot and the suffix are gone
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/sessions.rs`
 
 ### RNC-worktree-create-form
 

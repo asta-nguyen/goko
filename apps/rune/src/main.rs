@@ -30,6 +30,9 @@ use crate::theme::Ink;
 /// is asked for.
 static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
 
+/// How long a notice toast stays open after its text was last set, seconds.
+const NOTICE_LIFETIME: f64 = 8.0;
+
 /// The workspace column's content mode: the terminal stub, the editor
 /// workspace, or the app-level settings page that replaces the whole column
 /// — TerminalWorkspace's view switch plus App.tsx's `settingsMode`.
@@ -109,6 +112,10 @@ pub struct State {
     clock: f64,
     /// A notice from the last failed daemon call.
     notice: Option<String>,
+    /// When the notice's text last changed, on the app's clock.
+    notice_set_at: Option<f64>,
+    /// The notice text that `notice_set_at` timed.
+    notice_seen: Option<String>,
     /// The sidebar's width in pixels.
     sidebar_width: f32,
     /// The open sidebar menu: the row it belongs to and what it offers.
@@ -132,6 +139,8 @@ pub struct State {
     workspace_restore_pending: bool,
     /// The workspace removal awaiting confirmation.
     workspace_remove_confirm: Option<String>,
+    /// The worktree or project removal awaiting confirmation.
+    sidebar_confirm: Option<sidebar::SidebarConfirm>,
     /// Monotonic token correlating a workspace-name prompt with its reply.
     workspace_token: u64,
     /// The workspace-name submission in flight, by token.
@@ -221,6 +230,8 @@ impl State {
             now_ms: data::now_ms(),
             clock: 0.0,
             notice: None,
+            notice_set_at: None,
+            notice_seen: None,
             sidebar_width: sidebar::DEFAULT_SIDEBAR_W,
             sidebar_menu: None,
             menu_anchor: None,
@@ -232,6 +243,7 @@ impl State {
             selected_workspace: None,
             workspace_restore_pending: true,
             workspace_remove_confirm: None,
+            sidebar_confirm: None,
             workspace_token: 0,
             workspace_pending: None,
             pending_argv: Vec::new(),
@@ -295,6 +307,39 @@ impl State {
         );
     }
 
+    /// Seconds until the notice toast closes; `None` with no toast. The poll
+    /// asks for a wake at this time, so an idle app closes it on schedule.
+    pub fn notice_remaining(&self, now: f64) -> Option<f64> {
+        self.notice.as_ref()?;
+        let at = self.notice_set_at?;
+        Some(NOTICE_LIFETIME - (now - at))
+    }
+
+    /// Close the notice toast 8 s after its text last changed, so a newer
+    /// notice restarts the timer. Returns `true` when it closed the toast.
+    // ponytail: a repeat of the same text keeps the first timer; stamp the time in each setter if that shows.
+    pub fn expire_notice(&mut self, now: f64) -> bool {
+        if self.notice.is_none() {
+            self.notice_set_at = None;
+            self.notice_seen = None;
+            return false;
+        }
+        if self.notice != self.notice_seen {
+            self.notice_seen = self.notice.clone();
+            self.notice_set_at = Some(now);
+        }
+        if self
+            .notice_set_at
+            .is_some_and(|at| now - at >= NOTICE_LIFETIME)
+        {
+            self.notice = None;
+            self.notice_set_at = None;
+            self.notice_seen = None;
+            return true;
+        }
+        false
+    }
+
     /// The selected workspace id, Default until a workspace list or a user
     /// choice names another.
     pub fn workspace_id(&self) -> &str {
@@ -310,6 +355,40 @@ impl State {
             .iter()
             .find(|workspace| workspace.id == id)
             .map_or("Default", |workspace| workspace.name.as_str())
+    }
+
+    /// Sessions waiting for the user, per workspace id. A session counts for
+    /// its project's workspace; Unassigned sessions count for Default. Uses
+    /// the dot's own activity so the flag and the row never disagree.
+    pub fn workspace_waiting_counts(&self) -> HashMap<String, usize> {
+        let known: HashSet<&str> = self
+            .editor
+            .projects
+            .iter()
+            .map(|p| p.project.id.as_str())
+            .collect();
+        let (by_project, unassigned) = data::partition(&self.data, &known);
+        let waiting = |sv: &data::SessionView| {
+            self.session_shown_activity(&sv.info.id) == Some(app_core::activity::Activity::Waiting)
+        };
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for project in &self.editor.projects {
+            let n = by_project
+                .get(project.project.id.as_str())
+                .map_or(0, |list| list.iter().filter(|sv| waiting(sv)).count());
+            if n > 0 {
+                *counts
+                    .entry(project.project.workspace_id.clone())
+                    .or_default() += n;
+            }
+        }
+        let n = unassigned.iter().filter(|sv| waiting(sv)).count();
+        if n > 0 {
+            *counts
+                .entry(app_core::store::DEFAULT_WORKSPACE_ID.to_string())
+                .or_default() += n;
+        }
+        counts
     }
 
     /// Read every workspace on the worker lane.
@@ -330,23 +409,37 @@ impl State {
     /// Select a workspace and persist the choice. Switching never touches the
     /// editor checkout, open tabs, or running sessions.
     pub fn select_workspace(&mut self, id: &str) {
-        self.workspace_restore_pending = false;
-        self.workspace_remove_confirm = None;
         if self.selected_workspace.as_deref() == Some(id) {
+            self.workspace_restore_pending = false;
+            self.workspace_remove_confirm = None;
+            self.sidebar_confirm = None;
             return;
         }
-        self.selected_workspace = Some(id.to_string());
-        let _ = backend::enqueue(
+        // The selection always applies (a reply handler relies on it after a
+        // workspace is removed); a refused write only means the choice is not
+        // remembered next launch, which the notice says.
+        if !backend::enqueue(
             &mut self.editor.backend,
             backend::Job::project(backend::Req::SetSetting {
                 key: sidebar::SELECTED_WORKSPACE_KEY.to_string(),
                 value: id.to_string(),
             }),
-        );
+        ) {
+            self.notice =
+                Some("the editor queue is full; the workspace choice was not saved".into());
+        }
+        self.workspace_restore_pending = false;
+        self.workspace_remove_confirm = None;
+        self.sidebar_confirm = None;
+        self.selected_workspace = Some(id.to_string());
     }
 
     /// Ask the worker for a new workspace; the reply selects it.
     pub fn submit_workspace_create(&mut self, name: &str) {
+        // One workspace write at a time: a double Enter sends one request.
+        if self.workspace_pending.is_some() {
+            return;
+        }
         self.workspace_token = self.workspace_token.wrapping_add(1);
         let token = self.workspace_token;
         if backend::enqueue(
@@ -364,6 +457,10 @@ impl State {
 
     /// Rename a named workspace; the reply refreshes the list.
     pub fn submit_workspace_rename(&mut self, id: &str, name: &str) {
+        // One workspace write at a time: a double Enter sends one request.
+        if self.workspace_pending.is_some() {
+            return;
+        }
         self.workspace_token = self.workspace_token.wrapping_add(1);
         let token = self.workspace_token;
         if backend::enqueue(
@@ -383,23 +480,28 @@ impl State {
     /// Remove a workspace after its confirmation: its projects move to
     /// Default in one storage transaction.
     pub fn remove_workspace(&mut self, id: &str) {
-        self.workspace_remove_confirm = None;
-        let _ = backend::enqueue(
+        if !backend::enqueue(
             &mut self.editor.backend,
             backend::Job::project(backend::Req::RemoveWorkspace { id: id.to_string() }),
-        );
+        ) {
+            self.notice = Some("the editor queue is full; try again".into());
+            return;
+        }
+        self.workspace_remove_confirm = None;
     }
 
     /// Move one project to another workspace; the refreshed project list
     /// places its row after the write succeeds.
     pub fn move_project(&mut self, project_id: &str, workspace_id: &str) {
-        let _ = backend::enqueue(
+        if !backend::enqueue(
             &mut self.editor.backend,
             backend::Job::project(backend::Req::MoveProject {
                 project_id: project_id.to_string(),
                 workspace_id: workspace_id.to_string(),
             }),
-        );
+        ) {
+            self.notice = Some("the editor queue is full; try again".into());
+        }
     }
 
     /// Open the rename prompt with the workspace's current name filled in.
@@ -688,9 +790,23 @@ impl State {
                 return;
             }
             backend::Req::RemoveWorktree { project_id, .. } => {
-                // The list is stale without the removed checkout.
-                if reply.result.is_ok() {
-                    self.editor.request_worktrees(project_id);
+                // The list is stale without the removed checkout; a failed
+                // removal leaves it as it was and says why.
+                match &reply.result {
+                    Ok(_) => {
+                        self.editor.request_worktrees(project_id);
+                    }
+                    Err(error) => self.notice = Some(error.clone()),
+                }
+                return;
+            }
+            backend::Req::PruneWorktrees { project_id } => {
+                // A failed prune leaves the list as it was and says why.
+                match &reply.result {
+                    Ok(_) => {
+                        self.editor.request_worktrees(project_id);
+                    }
+                    Err(error) => self.notice = Some(error.clone()),
                 }
                 return;
             }
@@ -718,6 +834,9 @@ impl State {
                 return;
             }
             backend::Req::RemoveProject { id } => {
+                if let Err(error) = &reply.result {
+                    self.notice = Some(error.clone());
+                }
                 if reply.result.is_ok() {
                     self.editor.refresh_projects();
                     // The sessions of a removed project lose their project:
@@ -855,9 +974,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(form) = editor::worktree_form::layer(s, &mut layer) {
         root = root.child(form);
     }
-    // A failed call's notice: a toast the user closes. Without it the
-    // message was recorded and never shown.
-    // ponytail: closed by hand only; auto-expire when notices get noisy.
+    // A failed call's notice: a toast the user closes, or that expires after
+    // 8 s. Without it the message was recorded and never shown.
     if let Some(text) = &s.notice {
         layer.push(
             rune_kit::ToastRegion::new()
@@ -985,6 +1103,13 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // that no longer exist.
     let live_splits = s.split_ids();
     s.split_sizes.retain(|id, _| live_splits.contains(id));
+    // The notice toast closes itself 8 s after it was last set.
+    changed |= s.expire_notice(now);
+    // The toast still showing wakes the window at its deadline: an idle app
+    // would otherwise close it at the next idle tick, late.
+    if let Some(remaining) = s.notice_remaining(now) {
+        tx.wake_after(std::time::Duration::from_secs_f64(remaining.max(0.05)));
+    }
     editor::quit_guard::poll_install();
     editor::navigation::reopen_if_cancelled(s);
     changed |= editor::search::poll(s);
@@ -1076,6 +1201,10 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if s.sidebar_input.is_some() {
         return false;
     }
+    // App shortcuts come before the Terminal forwards keys to the shell.
+    if ev.mods.cmd && !ev.mods.ctrl && app_shortcut(s, ev, tx) {
+        return true;
+    }
     if s.view == View::Terminal {
         return terminal_key(s, ev);
     }
@@ -1109,6 +1238,65 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         rune::Key::Escape => s.editor.lsp_dismiss_hover(),
+        _ => false,
+    }
+}
+
+/// The ⌘ shortcuts: `⌘T` a new shell tab, `⌘1`–`⌘9` the Nth tab, `⌘,` the
+/// Settings toggle. `⌘W` stays window close. Only plain ⌘ chords count: ⇧ and
+/// ⌥ chords belong to other commands. Returns `true` when one ran;
+/// none runs while a surface owns the keyboard.
+fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    // The worktree form also holds `sidebar_input`, which `on_key` checked.
+    let owned = s.sidebar_confirm.is_some()
+        || s.workspace_remove_confirm.is_some()
+        || s.sidebar_menu.is_some()
+        || s.editor.guard.is_some()
+        || s.editor.quick_open.open
+        || s.editor.project_picker_open
+        || s.editor.checkout_picker_open
+        || s.editor.history.branch_picker.open
+        || s.editor.commit.agent_picker_open
+        || s.editor.history.row_menu.is_some()
+        // A composition only owns the keys in the Terminal, where the IME types.
+        || (s.view == View::Terminal && !s.preedit.is_empty());
+    let rune::Key::Command(c) = ev.key else {
+        return false;
+    };
+    if owned || ev.mods.shift || ev.mods.alt {
+        return false;
+    }
+    match c {
+        't' if s.view != View::Settings => {
+            s.new_shell_tab();
+            true
+        }
+        ',' => {
+            let target = if s.view == View::Settings {
+                View::Terminal
+            } else {
+                View::Settings
+            };
+            editor::navigation::navigate(s, editor::navigation::PendingNav::SetView(target), tx);
+            true
+        }
+        '1'..='9' => {
+            let index = c as usize - '1' as usize;
+            if index >= s.open_tabs.len() || s.view == View::Settings {
+                return false;
+            }
+            // Activate before leaving the Editor, so a draft guard's resume
+            // lands on the chosen tab.
+            s.activate_tab(index);
+            if s.view == View::Editor {
+                editor::navigation::navigate(
+                    s,
+                    editor::navigation::PendingNav::SetView(View::Terminal),
+                    tx,
+                );
+            }
+            true
+        }
         _ => false,
     }
 }
@@ -1540,6 +1728,44 @@ mod view_tests {
                 .any(|e| e.text.as_deref() == Some("boom happened"))
         };
         assert!(shown(&rt), "the notice is on screen");
+    }
+
+    #[test]
+    fn the_notice_reports_the_time_left_before_it_closes() {
+        let mut s = State::new(test_handle());
+        assert_eq!(
+            s.notice_remaining(0.0),
+            None,
+            "no toast, nothing to wait for"
+        );
+        s.notice = Some("boom".into());
+        s.expire_notice(10.0);
+        assert!((s.notice_remaining(10.0).unwrap() - 8.0).abs() < 1e-9);
+        assert!((s.notice_remaining(15.0).unwrap() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_notice_closes_eight_seconds_after_it_was_set() {
+        let mut s = State::new(test_handle());
+        s.notice = Some("first".into());
+        s.expire_notice(0.0);
+        s.expire_notice(7.0);
+        assert!(s.notice.is_some(), "still shown at 7 s");
+        s.expire_notice(8.1);
+        assert!(s.notice.is_none(), "closed past 8 s");
+    }
+
+    #[test]
+    fn a_newer_notice_restarts_the_eight_second_timer() {
+        let mut s = State::new(test_handle());
+        s.notice = Some("first".into());
+        s.expire_notice(0.0);
+        s.notice = Some("second".into());
+        s.expire_notice(7.0);
+        s.expire_notice(14.9);
+        assert_eq!(s.notice.as_deref(), Some("second"), "alive until 15 s");
+        s.expire_notice(15.0);
+        assert!(s.notice.is_none(), "closed 8 s after the second notice");
     }
 
     #[test]
@@ -2250,6 +2476,157 @@ mod view_tests {
         assert!(texts.iter().any(|t| t.contains("fix-auth-flow")));
     }
 
+    /// A daemon session attached to `project_id` (None: Unassigned), with
+    /// its stored metadata row, so the sidebar partitions it.
+    fn seed_session_in(s: &mut State, cwd: &str, project_id: Option<&str>) -> String {
+        let info = protocol::session::SessionInfo {
+            id: protocol::session::SessionId::new(),
+            title: "waiting-agent".into(),
+            argv: vec!["claude".into()],
+            cwd: cwd.into(),
+            state: protocol::session::SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        };
+        let key = crate::data::SessionInfo::key(info.id);
+        s.session_metas.insert(
+            key.clone(),
+            app_core::store::SessionMeta {
+                session_id: key.clone(),
+                project_id: project_id.map(Into::into),
+                agent: "claude".into(),
+                argv: info.argv.clone(),
+                cwd: info.cwd.clone(),
+                title: info.title.clone(),
+                created_at: 0,
+            },
+        );
+        s.upsert_session(info);
+        key
+    }
+
+    fn attention_dot_shown(rt: &Runtime<State>) -> bool {
+        els(rt)
+            .iter()
+            .any(|e| e.help.as_deref() == Some("Another workspace needs you"))
+    }
+
+    fn entry_shown(rt: &Runtime<State>, text: &str) -> bool {
+        els(rt)
+            .iter()
+            .any(|e| e.text.as_deref() == Some(text) || e.label.as_deref() == Some(text))
+    }
+
+    #[test]
+    fn the_selector_flags_a_waiting_session_in_another_workspace() {
+        let mut s = two_workspace_scene();
+        // p2 is in Default, so the session is hidden while Work is selected.
+        let key = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        assert!(attention_dot_shown(&rt), "the hidden waiting session flags");
+        let selector = els(&rt)
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("sidebar-workspace-selector"))
+            .expect("the workspace selector mounts");
+        assert_eq!(
+            selector.label.as_deref(),
+            Some("Workspace: Work, another workspace needs you")
+        );
+
+        click_key(&mut rt, "sidebar-workspace-selector");
+        assert!(entry_shown(&rt, "Default · 1 need you"), "menu suffix");
+        assert!(
+            !entry_shown(&rt, "Work · 1 need you"),
+            "selected: no suffix"
+        );
+    }
+
+    #[test]
+    fn the_flag_clears_when_the_hidden_session_is_done() {
+        let mut s = two_workspace_scene();
+        let key = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(attention_dot_shown(&rt));
+
+        rt.update(|s, _| {
+            s.activity
+                .insert(key.clone(), app_core::activity::Activity::Done);
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(!attention_dot_shown(&rt), "no dot once Done");
+        click_key(&mut rt, "sidebar-workspace-selector");
+        assert!(
+            !entry_shown(&rt, "Default · 1 need you"),
+            "no suffix once Done"
+        );
+    }
+
+    #[test]
+    fn a_waiting_session_in_the_selected_workspace_adds_no_flag() {
+        let mut s = two_workspace_scene();
+        let key = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        assert!(
+            !attention_dot_shown(&rt),
+            "the selected workspace shows its own"
+        );
+        click_key(&mut rt, "sidebar-workspace-selector");
+        assert!(!entry_shown(&rt, "Default · 1 need you"));
+        assert!(!entry_shown(&rt, "Work · 1 need you"));
+    }
+
+    #[test]
+    fn a_moved_project_moves_its_waiting_count() {
+        let mut s = two_workspace_scene();
+        s.workspaces.push(workspace("w2", "Home"));
+        let key = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(!attention_dot_shown(&rt), "p1 is in the selected Work");
+
+        rt.update(|s, _| s.editor.projects[0].project.workspace_id = "w2".into());
+        rt.frame(1.0 / 60.0);
+        assert!(attention_dot_shown(&rt), "the count follows the project");
+        click_key(&mut rt, "sidebar-workspace-selector");
+        assert!(entry_shown(&rt, "Home · 1 need you"));
+    }
+
+    #[test]
+    fn an_unassigned_waiting_session_counts_for_default_only() {
+        let mut s = two_workspace_scene();
+        let key = seed_session_in(&mut s, "/tmp", None);
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Waiting);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(
+            attention_dot_shown(&rt),
+            "Default is hidden while Work is selected"
+        );
+        click_key(&mut rt, "sidebar-workspace-selector");
+        assert!(entry_shown(&rt, "Default · 1 need you"));
+
+        rt.update(|s, _| s.select_workspace(app_core::store::DEFAULT_WORKSPACE_ID));
+        rt.frame(1.0 / 60.0);
+        assert!(!attention_dot_shown(&rt), "Default is selected: no flag");
+    }
+
     #[test]
     fn switching_workspaces_keeps_the_editor_checkout_and_running_sessions() {
         let mut s = two_workspace_scene();
@@ -2775,6 +3152,995 @@ mod view_tests {
             checkout_key: None,
             result,
         }
+    }
+
+    // -- Task 4: removal confirmations ---------------------------------------
+
+    /// Press the menu item (or any element) carrying this label.
+    fn click_label(rt: &mut Runtime<State>, label: &str) {
+        let e = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some(label))
+            .unwrap_or_else(|| panic!("{label} is on screen"));
+        let (x, y) = (e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    fn texts_on(rt: &Runtime<State>) -> Vec<String> {
+        els(rt).into_iter().filter_map(|e| e.text).collect()
+    }
+
+    #[test]
+    fn opening_a_worktree_removal_requests_its_projects_worktrees() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        let reqs = workspace_jobs(&rx);
+        assert!(
+            reqs.iter()
+                .any(|req| matches!(req, Req::Worktrees(pid) if pid == "p1")),
+            "{reqs:?}"
+        );
+    }
+
+    #[test]
+    fn the_confirmation_shows_the_live_dirty_state_not_the_captured_one() {
+        let mut s = sidebar_scene();
+        s.editor
+            .sidebar_worktrees
+            .get_mut("p1")
+            .unwrap()
+            .list
+            .as_mut()
+            .unwrap()
+            .worktrees
+            .iter_mut()
+            .find(|w| w.path == "/work/a/feat-a")
+            .unwrap()
+            .dirty = Some(true);
+        s.sidebar_confirm = Some(sidebar::SidebarConfirm::RemoveWorktree {
+            project_id: "p1".into(),
+            path: "/work/a/feat-a".into(),
+            name: "feat-a".into(),
+            dirty: Some(false),
+            sessions: 0,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        assert!(
+            texts_on(&rt)
+                .iter()
+                .any(|t| t.starts_with("It has uncommitted changes.")),
+            "{:?}",
+            texts_on(&rt)
+        );
+    }
+
+    #[test]
+    fn an_ended_session_is_not_counted_in_the_removal_confirmation() {
+        use protocol::session::{SessionId, SessionInfo, SessionState};
+
+        let mut s = sidebar_scene();
+        for state in [SessionState::Exited, SessionState::Running] {
+            s.upsert_session(SessionInfo {
+                id: SessionId::new(),
+                title: "zsh".into(),
+                argv: vec!["sh".into()],
+                cwd: "/work/a/feat-a".into(),
+                state,
+                pid: None,
+                exit_code: None,
+                error: None,
+                started_at: 0,
+                ended_at: None,
+            });
+        }
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+
+        assert!(
+            texts_on(&rt)
+                .iter()
+                .any(|t| t.contains("1 session runs in it.")),
+            "{:?}",
+            texts_on(&rt)
+        );
+    }
+
+    #[test]
+    fn remove_worktree_waits_for_confirm_then_enqueues_once() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        assert!(
+            !workspace_jobs(&rx)
+                .iter()
+                .any(|req| matches!(req, Req::RemoveWorktree { .. })),
+            "nothing is removed before Confirm"
+        );
+        assert!(matches!(
+            &rt.state.sidebar_confirm,
+            Some(sidebar::SidebarConfirm::RemoveWorktree { path, .. }) if path == "/work/a/feat-a"
+        ));
+
+        click_key(&mut rt, "sidebar-confirm-remove");
+        let reqs: Vec<Req> = workspace_jobs(&rx)
+            .into_iter()
+            .filter(|req| matches!(req, Req::RemoveWorktree { .. }))
+            .collect();
+        assert_eq!(reqs.len(), 1, "Confirm enqueues the removal once");
+        assert!(matches!(
+            &reqs[0],
+            Req::RemoveWorktree { project_id, path }
+                if project_id == "p1" && path == "/work/a/feat-a"
+        ));
+        assert!(rt.state.sidebar_confirm.is_none());
+    }
+
+    #[test]
+    fn cancel_on_a_worktree_removal_enqueues_nothing() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        click_key(&mut rt, "sidebar-confirm-cancel");
+        assert!(rt.state.sidebar_confirm.is_none());
+        assert!(
+            !workspace_jobs(&rx)
+                .iter()
+                .any(|req| matches!(req, Req::RemoveWorktree { .. })),
+            "cancel removes nothing"
+        );
+    }
+
+    #[test]
+    fn a_dirty_worktree_says_it_has_uncommitted_changes() {
+        let mut s = sidebar_scene();
+        let list = s.editor.sidebar_worktrees.get_mut("p1").unwrap();
+        list.list.as_mut().unwrap().worktrees[1].dirty = Some(true);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        let texts = texts_on(&rt);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("It has uncommitted changes. No sessions run in it.")),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "Remove feat-a?"), "{texts:?}");
+    }
+
+    #[test]
+    fn a_clean_or_unknown_worktree_says_so() {
+        let mut s = sidebar_scene();
+        let list = s.editor.sidebar_worktrees.get_mut("p1").unwrap();
+        list.list.as_mut().unwrap().worktrees[1].dirty = Some(false);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        assert!(
+            texts_on(&rt)
+                .iter()
+                .any(|t| t.contains("It has no uncommitted changes.")),
+        );
+
+        rt.state.sidebar_confirm = None;
+        rt.state
+            .editor
+            .sidebar_worktrees
+            .get_mut("p1")
+            .unwrap()
+            .list
+            .as_mut()
+            .unwrap()
+            .worktrees[1]
+            .dirty = None;
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        assert!(
+            texts_on(&rt)
+                .iter()
+                .any(|t| t.contains("Git status unknown.")),
+        );
+    }
+
+    #[test]
+    fn two_attached_sessions_are_counted_in_the_worktree_row() {
+        let mut s = sidebar_scene();
+        seed_session(&mut s, "one", "/work/a/feat-a");
+        seed_session(&mut s, "two", "/work/a/feat-a");
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        assert!(
+            texts_on(&rt)
+                .iter()
+                .any(|t| t.contains("Git status unknown. 2 sessions run in it.")),
+            "{:?}",
+            texts_on(&rt)
+        );
+    }
+
+    #[test]
+    fn a_vanished_worktree_shows_the_notice_and_enqueues_nothing() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+
+        rt.state
+            .editor
+            .sidebar_worktrees
+            .get_mut("p1")
+            .unwrap()
+            .list
+            .as_mut()
+            .unwrap()
+            .worktrees
+            .retain(|w| w.path != "/work/a/feat-a");
+        rt.frame(1.0 / 60.0);
+        click_key(&mut rt, "sidebar-confirm-remove");
+
+        assert_eq!(
+            rt.state.notice.as_deref(),
+            Some("That item no longer exists")
+        );
+        assert!(rt.state.sidebar_confirm.is_none());
+        assert!(
+            !workspace_jobs(&rx)
+                .iter()
+                .any(|req| matches!(req, Req::RemoveWorktree { .. })),
+            "nothing is removed"
+        );
+    }
+
+    #[test]
+    fn opening_a_removal_closes_the_workspace_confirmation_and_back() {
+        let mut s = two_workspace_scene();
+        s.workspace_remove_confirm = Some("w1".into());
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-a");
+        click_label(&mut rt, "Remove worktree");
+        assert!(rt.state.workspace_remove_confirm.is_none());
+        assert!(rt.state.sidebar_confirm.is_some());
+
+        click_key(&mut rt, "sidebar-workspace-selector");
+        click_label(&mut rt, "Remove workspace…");
+        assert_eq!(rt.state.workspace_remove_confirm.as_deref(), Some("w1"));
+        assert!(rt.state.sidebar_confirm.is_none());
+    }
+
+    #[test]
+    fn remove_project_waits_for_confirm_then_enqueues_once() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:p1");
+        click_label(&mut rt, "Remove project");
+        assert!(
+            workspace_jobs(&rx).is_empty(),
+            "nothing runs before Confirm"
+        );
+        assert!(
+            texts_on(&rt).iter().any(|t| t
+                == "Remove web? Only its registration is removed; its sessions become Unassigned and its files stay."),
+            "{:?}",
+            texts_on(&rt)
+        );
+
+        click_key(&mut rt, "sidebar-confirm-remove");
+        let reqs = workspace_jobs(&rx);
+        assert_eq!(reqs.len(), 1, "Confirm enqueues once");
+        assert!(matches!(&reqs[0], Req::RemoveProject { id } if id == "p1"));
+        assert!(rt.state.sidebar_confirm.is_none());
+    }
+
+    #[test]
+    fn cancel_on_a_project_removal_enqueues_nothing() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        click_key(&mut rt, "sidebar-action:more:p1");
+        click_label(&mut rt, "Remove project");
+        click_key(&mut rt, "sidebar-confirm-cancel");
+        assert!(rt.state.sidebar_confirm.is_none());
+        assert!(workspace_jobs(&rx).is_empty());
+    }
+
+    #[test]
+    fn a_vanished_project_shows_the_notice_and_enqueues_nothing() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:p1");
+        click_label(&mut rt, "Remove project");
+
+        rt.state.editor.projects.retain(|p| p.project.id != "p1");
+        rt.frame(1.0 / 60.0);
+        click_key(&mut rt, "sidebar-confirm-remove");
+
+        assert_eq!(
+            rt.state.notice.as_deref(),
+            Some("That item no longer exists")
+        );
+        assert!(rt.state.sidebar_confirm.is_none());
+        assert!(workspace_jobs(&rx).is_empty());
+    }
+
+    #[test]
+    fn a_failed_worktree_removal_sets_the_notice_and_keeps_the_list() {
+        let mut s = sidebar_scene();
+        let before = s.editor.sidebar_worktrees.get("p1").unwrap().list.clone();
+        s.apply_reply(reply(
+            Req::RemoveWorktree {
+                project_id: "p1".into(),
+                path: "/work/a/feat-a".into(),
+            },
+            Err("worktree has local changes".into()),
+        ));
+
+        assert_eq!(s.notice.as_deref(), Some("worktree has local changes"));
+        assert_eq!(s.editor.sidebar_worktrees.get("p1").unwrap().list, before);
+    }
+
+    #[test]
+    fn a_failed_project_removal_sets_the_notice_and_keeps_the_projects() {
+        let mut s = sidebar_scene();
+        let before = s.editor.projects.len();
+        s.apply_reply(reply(
+            Req::RemoveProject { id: "p1".into() },
+            Err("project is locked".into()),
+        ));
+
+        assert_eq!(s.notice.as_deref(), Some("project is locked"));
+        assert_eq!(s.editor.projects.len(), before);
+        assert!(s.editor.projects.iter().any(|p| p.project.id == "p1"));
+    }
+
+    #[test]
+    fn a_refused_worktree_removal_sets_the_notice() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        drop(rx);
+        s.editor.backend = backend;
+        s.remove_worktree("p1", "/work/a/feat-a");
+
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("the editor queue is full; try again")
+        );
+    }
+
+    #[test]
+    fn a_refused_project_removal_sets_the_notice() {
+        let mut s = sidebar_scene();
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        drop(rx);
+        s.editor.backend = backend;
+        s.remove_project("p1");
+
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("the editor queue is full; try again")
+        );
+    }
+
+    // -- Task 8: prune missing worktrees -------------------------------------
+
+    fn with_missing_feat_a(mut s: State) -> State {
+        let list = s.editor.sidebar_worktrees.get_mut("p1").unwrap();
+        let worktrees = &mut list.list.as_mut().unwrap().worktrees;
+        worktrees
+            .iter_mut()
+            .find(|w| w.path == "/work/a/feat-a")
+            .unwrap()
+            .missing = true;
+        s
+    }
+
+    #[test]
+    fn prune_is_absent_from_the_more_menu_without_a_missing_worktree() {
+        let mut rt = Runtime::new(sidebar_scene(), view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:p1");
+        assert!(!texts_on(&rt).iter().any(|t| t == "Prune missing worktrees"));
+    }
+
+    #[test]
+    fn prune_is_offered_on_a_project_and_a_worktree_row_with_a_missing_worktree() {
+        let s = with_missing_feat_a(sidebar_scene());
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:p1");
+        assert!(texts_on(&rt).iter().any(|t| t == "Prune missing worktrees"));
+        rt.state.sidebar_menu = None;
+        rt.frame(1.0 / 60.0);
+
+        click_key(&mut rt, "sidebar-action:more:/work/a/feat-b");
+        assert!(texts_on(&rt).iter().any(|t| t == "Prune missing worktrees"));
+    }
+
+    #[test]
+    fn choosing_prune_enqueues_once_and_closes_the_menu() {
+        let mut s = with_missing_feat_a(sidebar_scene());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:more:p1");
+        click_label(&mut rt, "Prune missing worktrees");
+
+        let reqs = workspace_jobs(&rx);
+        assert_eq!(reqs.len(), 1, "one prune request");
+        assert!(matches!(&reqs[0], Req::PruneWorktrees { project_id } if project_id == "p1"));
+        assert!(rt.state.sidebar_menu.is_none());
+    }
+
+    #[test]
+    fn a_failed_prune_sets_the_notice_and_keeps_the_list() {
+        let mut s = with_missing_feat_a(sidebar_scene());
+        let before = s.editor.sidebar_worktrees.get("p1").unwrap().list.clone();
+        s.apply_reply(reply(
+            Req::PruneWorktrees {
+                project_id: "p1".into(),
+            },
+            Err("not a git repository".into()),
+        ));
+
+        assert_eq!(s.notice.as_deref(), Some("not a git repository"));
+        assert_eq!(s.editor.sidebar_worktrees.get("p1").unwrap().list, before);
+    }
+
+    #[test]
+    fn a_successful_prune_requests_the_worktree_list_again() {
+        let mut s = with_missing_feat_a(sidebar_scene());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.apply_reply(reply(
+            Req::PruneWorktrees {
+                project_id: "p1".into(),
+            },
+            Ok(backend::ReplyData::Ok),
+        ));
+
+        assert!(s.notice.is_none());
+        let reqs = workspace_jobs(&rx);
+        assert!(
+            reqs.iter()
+                .any(|req| matches!(req, Req::Worktrees(pid) if pid == "p1")),
+            "{reqs:?}"
+        );
+    }
+
+    // -- Task 12: workspace mutations ----------------------------------------
+
+    fn workspace_jobs(rx: &std::sync::mpsc::Receiver<backend::Job>) -> Vec<Req> {
+        rx.try_iter().map(|job| job.req).collect()
+    }
+
+    // -- Task 5: start buttons, New tab menu, unavailable agents ------------
+
+    fn agent(
+        id: &str,
+        label: &str,
+        binary: Option<&str>,
+        available: bool,
+    ) -> crate::data::AgentInfo {
+        crate::data::AgentInfo {
+            id: id.into(),
+            label: label.into(),
+            available,
+            path: available.then(|| format!("/usr/local/bin/{id}")),
+            binary: binary.map(str::to_string),
+        }
+    }
+
+    /// No tab open, two registered projects in Default, Claude and OpenCode
+    /// available, Codex missing from PATH.
+    fn start_scene() -> State {
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![
+            project("p1", "web", "/work/a/web"),
+            project("p2", "api", "/work/b/api"),
+        ];
+        s.data.connected = true;
+        s.data.agents = vec![
+            agent("shell", "Shell", None, true),
+            agent("claude", "Claude Code", Some("claude"), true),
+            agent("codex", "Codex", Some("codex"), false),
+            agent("opencode", "OpenCode", Some("opencode"), true),
+        ];
+        s
+    }
+
+    fn element_with(rt: &Runtime<State>, role: &str, label: &str) -> Option<rune::ElementInfo> {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.role == role && e.label.as_deref() == Some(label))
+    }
+
+    /// Press the element with this role and label (a menu item or a button
+    /// whose label another element shares).
+    fn click_role(rt: &mut Runtime<State>, role: &str, label: &str) {
+        let e = element_with(rt, role, label).unwrap_or_else(|| panic!("{label} is on screen"));
+        let (x, y) = (e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn an_empty_terminal_offers_each_available_agent_and_shell() {
+        let mut rt = Runtime::new(start_scene(), view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        for label in ["Claude Code", "OpenCode", "Shell"] {
+            assert!(
+                element_with(&rt, "button", label).is_some(),
+                "{label} button"
+            );
+        }
+        assert!(
+            element_with(&rt, "button", "Codex").is_none(),
+            "an unavailable agent gets no start button"
+        );
+    }
+
+    #[test]
+    fn a_workspace_without_projects_offers_only_add_project() {
+        let mut s = start_scene();
+        for project in &mut s.editor.projects {
+            project.project.workspace_id = "elsewhere".into();
+        }
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(
+            els(&rt)
+                .iter()
+                .any(|e| e.key.as_deref() == Some("terminal-add-project")),
+            "Add Project is offered"
+        );
+        assert!(element_with(&rt, "button", "Claude Code").is_none());
+        assert!(element_with(&rt, "button", "Shell").is_none());
+    }
+
+    #[test]
+    fn disconnected_start_buttons_are_disabled_with_the_reason() {
+        let mut s = start_scene();
+        s.data.connected = false;
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(
+            texts_on(&rt)
+                .iter()
+                .any(|t| t == "Waiting for the Goko daemon"),
+            "the start row says why it is disabled"
+        );
+        click_role(&mut rt, "button", "Claude Code");
+        click_role(&mut rt, "button", "Shell");
+        assert!(workspace_jobs(&rx).is_empty());
+        assert!(rt.state.pending_argv.is_empty());
+        assert!(rt.state.pending.is_empty());
+    }
+
+    #[test]
+    fn an_unavailable_agent_says_why_in_both_menus() {
+        let reason = "Codex — codex not found on PATH";
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        let mut s = start_scene();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "new-tab-menu");
+        assert!(texts_on(&rt).iter().any(|t| t == reason), "New tab menu");
+        click_role(&mut rt, "menuitem", reason);
+        assert!(
+            workspace_jobs(&rx).is_empty(),
+            "a disabled entry starts nothing"
+        );
+
+        let mut s = start_scene();
+        s.editor.projects.truncate(1);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-action:new-session:p1");
+        assert!(
+            texts_on(&rt).iter().any(|t| t == reason),
+            "sidebar New session menu"
+        );
+    }
+
+    #[test]
+    fn new_tab_still_starts_one_shell() {
+        let mut rt = Runtime::new(start_scene(), view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_label(&mut rt, "New tab");
+        assert_eq!(rt.state.pending.len(), 1, "one session.create");
+        assert!(matches!(
+            &rt.state.pending[0],
+            crate::sessions::Pending::Create { launch, .. } if launch.agent == "shell"
+        ));
+        assert!(rt.state.pending_argv.is_empty());
+    }
+
+    // -- Task 6: app shortcuts ----------------------------------------------
+
+    fn cmd_key(c: char) -> KeyEvent {
+        KeyEvent {
+            key: Key::Command(c),
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        }
+    }
+
+    /// The window's runtime, with the app's key handler attached.
+    fn key_runtime(s: State) -> Runtime<State> {
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        rt
+    }
+
+    fn press_cmd(rt: &mut Runtime<State>, c: char) {
+        rt.key(cmd_key(c));
+        rt.frame(1.0 / 60.0);
+    }
+
+    /// Two open tabs (one session each) in the Terminal view; the second is active.
+    fn two_tab_scene() -> State {
+        let mut s = State::new(test_handle());
+        s.view = View::Terminal;
+        let first = seed_session(&mut s, "one", "/tmp");
+        let second = seed_session(&mut s, "two", "/tmp");
+        s.focus_session_tab(&first);
+        s.focus_session_tab(&second);
+        s
+    }
+
+    #[test]
+    fn cmd_t_starts_exactly_one_shell() {
+        let mut rt = key_runtime(start_scene());
+        press_cmd(&mut rt, 't');
+        assert_eq!(rt.state.pending.len(), 1, "one session.create");
+        assert!(matches!(
+            &rt.state.pending[0],
+            crate::sessions::Pending::Create { launch, .. } if launch.agent == "shell"
+        ));
+    }
+
+    #[test]
+    fn cmd_digits_activate_the_nth_tab_and_a_missing_tab_does_nothing() {
+        let mut rt = key_runtime(two_tab_scene());
+        press_cmd(&mut rt, '1');
+        assert_eq!(rt.state.active_tab, 0);
+        press_cmd(&mut rt, '2');
+        assert_eq!(rt.state.active_tab, 1);
+        press_cmd(&mut rt, '9');
+        assert_eq!(rt.state.active_tab, 1, "no ninth tab");
+        assert_eq!(rt.state.view, View::Terminal);
+    }
+
+    #[test]
+    fn cmd_digit_in_the_editor_view_switches_only_when_the_tab_exists() {
+        let mut rt = key_runtime(two_tab_scene());
+        rt.update(|s, _| s.view = View::Editor);
+        press_cmd(&mut rt, '9');
+        assert_eq!(rt.state.view, View::Editor, "no ninth tab");
+        press_cmd(&mut rt, '2');
+        assert_eq!(rt.state.view, View::Terminal);
+        assert_eq!(rt.state.active_tab, 1);
+    }
+
+    #[test]
+    fn cmd_comma_opens_then_closes_settings() {
+        let mut rt = key_runtime(editor_scene());
+        press_cmd(&mut rt, ',');
+        assert_eq!(rt.state.view, View::Settings);
+        press_cmd(&mut rt, ',');
+        assert_eq!(rt.state.view, View::Terminal);
+    }
+
+    #[test]
+    fn cmd_comma_with_a_dirty_draft_raises_the_guard_instead() {
+        let mut rt = key_runtime(dirty_scene());
+        press_cmd(&mut rt, ',');
+        assert!(rt.state.editor.guard.is_some(), "the draft guard is up");
+        assert_eq!(rt.state.view, View::Editor, "the view did not switch");
+    }
+
+    #[test]
+    fn shortcuts_do_not_fire_under_a_confirmation_or_a_composition() {
+        let mut s = two_tab_scene();
+        s.sidebar_confirm = Some(crate::sidebar::SidebarConfirm::RemoveWorktree {
+            project_id: "p1".into(),
+            path: "/work/a/web".into(),
+            name: "web".into(),
+            dirty: Some(false),
+            sessions: 0,
+        });
+        let mut rt = key_runtime(s);
+        press_cmd(&mut rt, 't');
+        press_cmd(&mut rt, '1');
+        press_cmd(&mut rt, ',');
+        assert!(rt.state.pending.is_empty(), "no session starts");
+        assert_eq!(rt.state.active_tab, 1, "no tab switch");
+        assert_eq!(rt.state.view, View::Terminal, "no settings toggle");
+
+        rt.update(|s, _| {
+            s.sidebar_confirm = None;
+            s.preedit = "vie".into();
+        });
+        press_cmd(&mut rt, 't');
+        press_cmd(&mut rt, '1');
+        press_cmd(&mut rt, ',');
+        assert!(
+            rt.state.pending.is_empty(),
+            "no session starts while composing"
+        );
+        assert_eq!(rt.state.active_tab, 1);
+        assert_eq!(rt.state.view, View::Terminal);
+    }
+
+    #[test]
+    fn cmd_t_is_consumed_by_the_app_before_the_terminal_sees_it() {
+        let mut rt = key_runtime(two_tab_scene());
+        rt.update(|s, tx| {
+            assert!(on_key(s, &cmd_key('t'), tx), "the app takes ⌘T");
+            assert!(
+                !terminal_key(s, &cmd_key('t')),
+                "the terminal never types a ⌘ chord"
+            );
+        });
+    }
+
+    #[test]
+    fn shortcuts_wait_behind_the_pickers_and_the_sidebar_menu() {
+        type Block = fn(&mut State);
+        let blocks: [(&str, Block); 3] = [
+            ("the checkout picker", |s| {
+                s.editor.checkout_picker_open = true
+            }),
+            ("the project picker", |s| {
+                s.editor.project_picker_open = true
+            }),
+            ("the sidebar menu", |s| {
+                s.open_menu(
+                    crate::sidebar::RowTarget::Project {
+                        project_id: "p1".into(),
+                    },
+                    crate::sidebar::MenuKind::More,
+                );
+            }),
+        ];
+        for (what, block) in blocks {
+            let mut s = two_tab_scene();
+            block(&mut s);
+            let mut rt = key_runtime(s);
+            press_cmd(&mut rt, 't');
+            press_cmd(&mut rt, '1');
+            press_cmd(&mut rt, ',');
+            assert!(
+                rt.state.pending.is_empty(),
+                "no session starts under {what}"
+            );
+            assert_eq!(rt.state.active_tab, 1, "no tab switch under {what}");
+            assert_eq!(rt.state.view, View::Terminal, "no Settings under {what}");
+        }
+    }
+
+    #[test]
+    fn shifted_and_option_chords_are_not_app_shortcuts() {
+        let mut rt = key_runtime(start_scene());
+        let view_before = rt.state.view;
+        for mods in [
+            Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+            Mods {
+                cmd: true,
+                alt: true,
+                ..Mods::default()
+            },
+        ] {
+            rt.key(KeyEvent {
+                key: Key::Command('t'),
+                mods,
+            });
+            rt.frame(1.0 / 60.0);
+        }
+        rt.key(KeyEvent {
+            key: Key::Command(','),
+            mods: Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(1.0 / 60.0);
+
+        assert!(rt.state.pending.is_empty(), "⇧⌘T and ⌥⌘T start no shell");
+        assert_eq!(rt.state.view, view_before, "⇧⌘, does not toggle Settings");
+    }
+
+    #[test]
+    fn a_stale_preedit_does_not_block_shortcuts_outside_the_terminal() {
+        let mut s = start_scene();
+        s.view = View::Editor;
+        s.preedit = "vie".into();
+        let mut rt = key_runtime(s);
+        press_cmd(&mut rt, 't');
+        assert_eq!(
+            rt.state.pending.len(),
+            1,
+            "⌘T still starts a shell in the Editor"
+        );
+    }
+
+    #[test]
+    fn choosing_an_agent_in_the_new_tab_menu_requests_it_for_the_active_checkout() {
+        let mut s = start_scene();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "new-tab-menu");
+        click_role(&mut rt, "menuitem", "Claude Code");
+        assert!(matches!(
+            workspace_jobs(&rx).as_slice(),
+            [Req::AgentArgv { agent, .. }] if agent == "claude"
+        ));
+        assert_eq!(rt.state.pending_argv.len(), 1);
+        let pending = &rt.state.pending_argv[0];
+        assert_eq!(pending.agent, "claude");
+        assert_eq!(
+            pending.target,
+            crate::sidebar::RowTarget::Worktree {
+                project_id: "p1".into(),
+                path: "/work/a/web".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_second_create_while_one_is_pending_enqueues_once() {
+        let mut s = State::new(test_handle());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.submit_workspace_create("Work");
+        s.submit_workspace_create("Work");
+        let creates = workspace_jobs(&rx)
+            .into_iter()
+            .filter(|req| matches!(req, Req::CreateWorkspace { .. }))
+            .count();
+        assert_eq!(creates, 1, "a double Enter sends one request");
+    }
+
+    #[test]
+    fn a_second_rename_while_one_is_pending_enqueues_once() {
+        let mut s = State::new(test_handle());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.submit_workspace_rename("w1", "Work");
+        s.submit_workspace_rename("w1", "Work");
+        let renames = workspace_jobs(&rx)
+            .into_iter()
+            .filter(|req| matches!(req, Req::RenameWorkspace { .. }))
+            .count();
+        assert_eq!(renames, 1, "a double Enter sends one request");
+    }
+
+    #[test]
+    fn the_next_submission_is_accepted_after_the_first_reply() {
+        let mut s = State::new(test_handle());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.submit_workspace_create("Work");
+        let token = s.workspace_pending.expect("first submission in flight");
+        s.apply_reply(reply(
+            Req::CreateWorkspace {
+                name: "Work".into(),
+                token,
+            },
+            Err("a workspace named 'Work' already exists".into()),
+        ));
+        s.submit_workspace_create("Other");
+        let creates = workspace_jobs(&rx)
+            .into_iter()
+            .filter(|req| matches!(req, Req::CreateWorkspace { .. }))
+            .count();
+        assert_eq!(creates, 2, "the second name is sent once the first settled");
+    }
+
+    #[test]
+    fn a_refused_selection_still_applies_and_says_it_was_not_saved() {
+        let mut s = State::new(test_handle());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        drop(rx);
+        s.editor.backend = backend;
+        s.select_workspace("w1");
+        assert_eq!(s.workspace_id(), "w1", "the choice applies for this run");
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("the editor queue is full; the workspace choice was not saved")
+        );
+    }
+
+    #[test]
+    fn a_refused_remove_keeps_the_selection_and_the_confirmation() {
+        let mut s = State::new(test_handle());
+        s.select_workspace("w1");
+        s.workspace_remove_confirm = Some("w1".into());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        drop(rx);
+        s.editor.backend = backend;
+        s.remove_workspace("w1");
+        assert_eq!(s.workspace_id(), "w1");
+        assert_eq!(s.workspace_remove_confirm.as_deref(), Some("w1"));
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("the editor queue is full; try again")
+        );
+    }
+
+    #[test]
+    fn a_refused_move_sets_the_notice() {
+        let mut s = State::new(test_handle());
+        let (backend, rx) = crate::editor::backend::channel_backend();
+        drop(rx);
+        s.editor.backend = backend;
+        s.move_project("p1", "w1");
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("the editor queue is full; try again")
+        );
     }
 
     #[test]

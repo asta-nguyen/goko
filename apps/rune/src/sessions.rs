@@ -105,6 +105,27 @@ impl State {
         self.launch_session_placed(launch, Placement::Tab);
     }
 
+    /// A shell in the active checkout, else `$HOME`: New tab and ⌘T.
+    pub fn new_shell_tab(&mut self) {
+        // A real shell session in the active checkout: the daemon owns the
+        // session, the app records why it exists.
+        let cwd = self
+            .editor
+            .checkout
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .or_else(|| std::env::var("HOME").ok())
+            .unwrap_or_else(|| "/".to_string());
+        let project_id = self.editor.project_id.clone();
+        self.launch_session(SessionLaunch {
+            argv: vec![backend::default_shell()],
+            cwd,
+            project_id,
+            agent: "shell".to_string(),
+            title: String::new(),
+        });
+    }
+
     /// `launch_session` with a chosen landing spot for the new session —
     /// a fresh tab or a pane splitting an existing one. Returns whether the
     /// request went out.
@@ -653,23 +674,80 @@ impl State {
 
     /// Remove a linked worktree through the worker lane.
     pub fn remove_worktree(&mut self, project_id: &str, path: &str) {
-        let _ = crate::editor::backend::enqueue(
+        if !crate::editor::backend::enqueue(
             &mut self.editor.backend,
             crate::editor::backend::Job::project(crate::editor::backend::Req::RemoveWorktree {
                 project_id: project_id.to_string(),
                 path: path.to_string(),
             }),
-        );
+        ) {
+            self.notice = Some("the editor queue is full; try again".into());
+        }
+    }
+
+    /// Drop Git's records of missing worktrees through the worker lane.
+    pub fn prune_worktrees(&mut self, project_id: &str) {
+        if !crate::editor::backend::enqueue(
+            &mut self.editor.backend,
+            crate::editor::backend::Job::project(crate::editor::backend::Req::PruneWorktrees {
+                project_id: project_id.to_string(),
+            }),
+        ) {
+            self.notice = Some("the editor queue is full; try again".into());
+        }
     }
 
     /// Remove a registered project through the worker lane.
     pub fn remove_project(&mut self, project_id: &str) {
-        let _ = crate::editor::backend::enqueue(
+        if !crate::editor::backend::enqueue(
             &mut self.editor.backend,
             crate::editor::backend::Job::project(crate::editor::backend::Req::RemoveProject {
                 id: project_id.to_string(),
             }),
-        );
+        ) {
+            self.notice = Some("the editor queue is full; try again".into());
+        }
+    }
+
+    /// Confirm the open worktree or project removal. The target must still be
+    /// listed; otherwise nothing runs. Running sessions are never stopped.
+    pub fn confirm_sidebar_removal(&mut self) {
+        use crate::sidebar::SidebarConfirm;
+        let Some(confirm) = self.sidebar_confirm.take() else {
+            return;
+        };
+        match confirm {
+            SidebarConfirm::RemoveWorktree {
+                project_id, path, ..
+            } => {
+                let listed = self
+                    .editor
+                    .sidebar_worktrees
+                    .get(&project_id)
+                    .is_some_and(|e| {
+                        e.list
+                            .as_ref()
+                            .is_some_and(|l| l.worktrees.iter().any(|w| w.path == path))
+                    });
+                if !listed {
+                    self.notice = Some("That item no longer exists".into());
+                    return;
+                }
+                self.remove_worktree(&project_id, &path);
+            }
+            SidebarConfirm::RemoveProject { project_id, .. } => {
+                if !self
+                    .editor
+                    .projects
+                    .iter()
+                    .any(|p| p.project.id == project_id)
+                {
+                    self.notice = Some("That item no longer exists".into());
+                    return;
+                }
+                self.remove_project(&project_id);
+            }
+        }
     }
 
     /// Start a session with a custom command in the row's checkout. The
@@ -691,6 +769,13 @@ impl State {
             agent: "custom".to_string(),
             title: String::new(),
         });
+    }
+
+    /// The editor's active checkout as a launch target, when one is selected.
+    pub fn active_checkout_target(&self) -> Option<crate::sidebar::RowTarget> {
+        let project_id = self.editor.project_id.clone()?;
+        let path = self.editor.checkout.as_ref()?.display().to_string();
+        Some(crate::sidebar::RowTarget::Worktree { project_id, path })
     }
 
     /// The checkout a row's session runs in, and the project it belongs to.

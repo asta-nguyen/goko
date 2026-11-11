@@ -1,5 +1,7 @@
 # Delta
 
+Merged into docs/llm/: 2026-11-11
+
 ## ADDED Requirements
 
 ### RNC-sidebar-accessible-names
@@ -12,7 +14,7 @@ Requirement:
 ````md
 ### RNC-sidebar-accessible-names
 
-The system SHALL give every sidebar button an accessible name that includes its target: disclosure buttons read "Collapse <name>" or "Expand <name>", and row actions read "New session in <row name>", "More actions for <row name>", "Stop session <title>", and "Close pane <title>".
+The system SHALL give every sidebar button an accessible name that includes its target: disclosure buttons read "Collapse <name>" or "Expand <name>", and row actions read "New session in <row name>", "More actions for <row name>", "Stop session <title>", and "Close pane <title>", with " (2)", " (3)" appended to repeated names so none is shared.
 
 #### Scenario: no unnamed or duplicate names
 
@@ -60,12 +62,12 @@ Requirement:
 ````md
 ### RNC-notice-expiry
 
-The system SHALL close the global notice toast 8 seconds after it was last set, restart that timer when a newer notice replaces it, and keep the toast's close button.
+The system SHALL close the global notice toast 8 seconds after it was last set, restart that timer when a notice with different text replaces it, and keep the toast's close button.
 
 #### Scenario: expiry and replacement
 
 - GIVEN a notice shown at time 0
-- WHEN a second notice replaces it at 7 seconds
+- WHEN a second notice with different text replaces it at 7 seconds
 - THEN the first does not close at 8 seconds and the second closes at 15 seconds
 
 Evidence: `apps/rune/src/main.rs`
@@ -81,19 +83,19 @@ Requirement:
 ````md
 ### RNC-remove-confirm
 
-The system SHALL ask for confirmation before Remove worktree and Remove project run: the worktree dialog names the folder, says whether it has uncommitted changes, and states how many sessions run in it, while the project dialog states that only the registration is removed, its sessions become Unassigned, and its files stay; Cancel and Escape change nothing, and running sessions are never stopped.
+The system SHALL ask for confirmation in an inline sidebar row before Remove worktree and Remove project run: the worktree row names the folder, says whether it has uncommitted changes (refreshed when the row opens), and states how many sessions that have not ended run in it, while the project row states that only the registration is removed, its sessions become Unassigned, and its files stay; Cancel changes nothing, and running sessions are never stopped.
 
 #### Scenario: confirm a dirty worktree removal
 
-- GIVEN a worktree row whose `dirty` value is true with two sessions attached
+- GIVEN a worktree row whose `dirty` value is true with two running sessions attached
 - WHEN Remove worktree is chosen
-- THEN a dialog names the folder, shows the uncommitted-changes line and "2 sessions", and nothing is removed until Confirm is pressed
+- THEN an inline row names the folder, shows the uncommitted-changes line and "2 sessions", and nothing is removed until Confirm is pressed
 
 #### Scenario: cancel
 
-- GIVEN a removal dialog is open
-- WHEN Cancel or Escape is pressed
-- THEN no request is enqueued and the dialog closes
+- GIVEN a removal confirmation row is open
+- WHEN Cancel is pressed
+- THEN no request is enqueued and the row closes
 
 Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/main.rs`
 ````
@@ -108,7 +110,7 @@ Requirement:
 ````md
 ### RNC-empty-terminal-actions
 
-The system SHALL show, in the Terminal view with no open tab, one start button per available agent plus Shell for the active editor checkout (else the first sidebar project's root), or an Add Project button when no project is registered, with the buttons disabled and a reason shown while the daemon is disconnected.
+The system SHALL show, in the Terminal view with no open tab, one start button per available agent plus Shell for the active editor checkout (else the first project visible in the selected workspace), or an Add Project button when the selected workspace has no project, with the buttons disabled and a reason shown while the daemon is disconnected.
 
 #### Scenario: first launch with projects
 
@@ -118,7 +120,7 @@ The system SHALL show, in the Terminal view with no open tab, one start button p
 
 #### Scenario: no projects
 
-- GIVEN no open tab and no registered project
+- GIVEN no open tab and an empty selected workspace
 - WHEN the Terminal view renders
 - THEN it shows only Add Project
 
@@ -162,7 +164,7 @@ Requirement:
 ````md
 ### RNC-app-shortcuts
 
-The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth tab in the Terminal view, and `⌘,` to the Settings toggle through the draft guard, ignoring them while the sidebar prompt, a removal confirmation, the draft guard, quick-open, or an input-method composition owns input, leaving `⌘W` as window close.
+The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth tab in the Terminal view, and `⌘,` to the Settings toggle through the draft guard, ignoring them while the sidebar prompt, a removal confirmation, a sidebar or editor menu or picker, the draft guard, quick-open, or a terminal input-method composition owns input and for any chord that adds Shift or Option, leaving `⌘W` as window close.
 
 #### Scenario: switch tab by number
 
@@ -170,34 +172,13 @@ The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth tab 
 - WHEN `⌘2` is pressed
 - THEN the second tab is active, and `⌘9` does nothing
 
-#### Scenario: shortcut blocked by a modal
+#### Scenario: shortcut blocked by a confirmation
 
 - GIVEN a removal confirmation is open
 - WHEN `⌘T` is pressed
 - THEN no session starts
 
 Evidence: `apps/rune/src/main.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/chrome.rs`
-````
-
-### RNC-daemon-reconnecting
-
-Page: `docs/llm/domains/rune-chrome.md`
-Search: checked every page with prefix RNC; `RNC-header-status` defines the "Disconnected" pill and stays unchanged for the connected state; no requirement covers the pill's wording or reason.
-
-Requirement:
-
-````md
-### RNC-daemon-reconnecting
-
-The system SHALL label the header pill "Reconnecting…" while the daemon is disconnected and give it help text equal to the daemon's last disconnect reason, or "Waiting for the Goko daemon" when there is none, without adding a manual retry control.
-
-#### Scenario: disconnected with a reason
-
-- GIVEN the daemon socket dropped with reason "connection refused"
-- WHEN the header renders
-- THEN the pill reads "Reconnecting…" and its help text is "connection refused"
-
-Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/daemon.rs`
 ````
 
 ### RNC-prune-worktrees
@@ -225,6 +206,33 @@ The system SHALL offer Prune missing worktrees in a git project's More menu only
 - THEN the entry is absent
 
 Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/worktrees.rs`
+````
+
+### RNC-workspace-attention
+
+Page: `docs/llm/domains/rune-chrome.md`
+Search: checked every page with prefix RNC (including `RNC-project-workspaces`); no requirement surfaces sessions hidden by the workspace filter.
+
+Requirement:
+
+````md
+### RNC-workspace-attention
+
+The system SHALL show a warning dot on the sidebar's workspace selector while any session in a workspace other than the selected one is waiting for the user, and append "· N need you" to that workspace's entry in the selector menu, using the same activity value as the session row's dot.
+
+#### Scenario: a hidden session needs the user
+
+- GIVEN two workspaces and a session waiting for the user in the one that is not selected
+- WHEN the sidebar renders
+- THEN the selector shows the warning dot and the other workspace's menu entry reads "· 1 need you"
+
+#### Scenario: the session stops waiting
+
+- GIVEN that session finishes its turn
+- WHEN the sidebar renders
+- THEN the dot and the suffix are gone
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/sessions.rs`
 ````
 
 ### RNE-empty-state-projects
@@ -267,4 +275,68 @@ The system SHALL show a dismiss button on the Editor's notice bar that clears th
 - THEN the bar disappears
 
 Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`
+````
+
+## MODIFIED Requirements
+
+### RNC-header-status
+
+Previously: the pill read "Disconnected" and carried no explanation.
+
+Baseline:
+
+````md
+### RNC-header-status
+
+The system SHALL render the header with the goko mark and wordmark, a persistent
+6 px connection dot in a 12 px halo (success while the daemon client is
+connected, danger otherwise) whose wordmark group carries an accessible name
+and hover tooltip ("Connected to the Goko daemon" / "Disconnected from the
+Goko daemon"), one usage chip per `Data::usage` entry, and a settings button;
+a "Disconnected" pill appears on the right only while disconnected, entering
+with a short fade and small scale-up.
+
+#### Scenario: daemon connected
+
+- GIVEN the daemon client completed the hello handshake
+- WHEN the view renders
+- THEN the connection dot is success-coloured and no Disconnected pill is shown
+
+#### Scenario: daemon unreachable
+
+- GIVEN the daemon client failed to connect or lost the socket
+- WHEN the view renders
+- THEN the connection dot is danger-coloured and the Disconnected pill renders beside the settings button
+
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`
+````
+
+Replacement:
+
+````md
+### RNC-header-status
+
+The system SHALL render the header with the goko mark and wordmark, a persistent
+6 px connection dot in a 12 px halo (success while the daemon client is
+connected, danger otherwise) whose wordmark group carries an accessible name
+and hover tooltip ("Connected to the Goko daemon" / "Disconnected from the
+Goko daemon"), one usage chip per `Data::usage` entry, and a settings button;
+a "Reconnecting…" pill appears on the right only while disconnected, entering
+with a short fade and small scale-up, whose help text is the daemon's last
+disconnect reason or "Waiting for the Goko daemon" when there is none, with no
+manual retry control.
+
+#### Scenario: daemon connected
+
+- GIVEN the daemon client completed the hello handshake
+- WHEN the view renders
+- THEN the connection dot is success-coloured and no Reconnecting… pill is shown
+
+#### Scenario: daemon unreachable
+
+- GIVEN the daemon client failed to connect or lost the socket
+- WHEN the view renders
+- THEN the connection dot is danger-coloured and the Reconnecting… pill renders beside the settings button with the last reason as its help text
+
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`
 ````

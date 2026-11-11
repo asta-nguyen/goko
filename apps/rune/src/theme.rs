@@ -509,6 +509,7 @@ pub fn missing_badge(ink: &Ink) -> El {
         .fill(ink.warning.alpha(0.1))
         .child(ic(&TRIANGLE_ALERT, 12.0, ink.warning))
         .child(txt("missing", T11M, ink.warning))
+        .help("This folder no longer exists on disk")
 }
 
 /// Button size="sm": h-7, gap-1, text-[0.8rem] font-medium, radius 8.
