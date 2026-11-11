@@ -629,6 +629,31 @@ pub fn ignored_list(checkout: &Path) -> Result<Vec<String>, BridgeError> {
     Ok(paths)
 }
 
+/// One level of an ignored directory, which `ignored_list` leaves collapsed:
+/// files as `dir/name`, subdirectories as `dir/name/`. Sorted.
+pub fn ignored_children(checkout: &Path, directory: &str) -> Result<Vec<String>, BridgeError> {
+    let rel = relative_path(directory)?;
+    let target = std::fs::canonicalize(checkout.join(&rel))
+        .map_err(|_| invalid(format!("the directory {directory} is not accessible")))?;
+    if !target.starts_with(checkout) || !target.is_dir() {
+        return Err(invalid(format!(
+            "{directory} is not a directory in the checkout"
+        )));
+    }
+    let prefix = rel_str(&rel)?;
+    let mut out: Vec<String> = std::fs::read_dir(&target)
+        .map_err(|e| invalid(format!("cannot read {directory}: {e}")))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let dir = entry.file_type().ok()?.is_dir();
+            Some(format!("{prefix}/{name}{}", if dir { "/" } else { "" }))
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 /// Search tracked and non-ignored untracked text files without changing the checkout.
 pub fn search(checkout: &Path, query: &str) -> Result<GitViewSearch, BridgeError> {
     let query = query.trim();
@@ -914,6 +939,105 @@ pub fn save_file(
         truncated: false,
         size: text.len() as u64,
     })
+}
+
+/// A file or folder name: no separators, not `.`/`..`/`.git`.
+fn plain_name(name: &str) -> Result<&str, BridgeError> {
+    let name = name.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.eq_ignore_ascii_case(".git")
+        || name.contains(['/', '\\', '\0'])
+    {
+        return Err(invalid("enter a plain file name without slashes"));
+    }
+    Ok(name)
+}
+
+/// Create an empty file, or a folder, named `name` inside `directory`
+/// (checkout-relative, `""` for the checkout root). Never overwrites.
+/// Returns the new checkout-relative path.
+pub fn create_entry(
+    checkout: &Path,
+    directory: &str,
+    name: &str,
+    folder: bool,
+) -> Result<String, BridgeError> {
+    let name = plain_name(name)?;
+    let (parent, prefix) = if directory.is_empty() {
+        (checkout.to_path_buf(), String::new())
+    } else {
+        let rel = relative_path(directory)?;
+        let target = std::fs::canonicalize(checkout.join(&rel))
+            .map_err(|_| not_found(format!("{directory} is not available")))?;
+        if !target.starts_with(checkout) || !target.is_dir() {
+            return Err(invalid(format!(
+                "{directory} is not a folder in the checkout"
+            )));
+        }
+        (target, format!("{}/", rel_str(&rel)?))
+    };
+    let path = parent.join(name);
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(invalid(format!("{name} already exists")));
+    }
+    if folder {
+        std::fs::create_dir(&path)
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(|_| ())
+    }
+    .map_err(|e| invalid(format!("cannot create {name}: {e}")))?;
+    Ok(format!("{prefix}{name}"))
+}
+
+/// The on-disk path of an existing file, folder or symlink named by a
+/// checkout-relative `path`, checked to sit inside the checkout (the entry
+/// itself is not followed, so a symlink resolves to the link).
+pub fn entry_path(checkout: &Path, path: &str) -> Result<PathBuf, BridgeError> {
+    let rel = relative_path(path)?;
+    let full = checkout.join(&rel);
+    std::fs::symlink_metadata(&full)
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    let parent = std::fs::canonicalize(full.parent().unwrap_or(checkout))
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    if !parent.starts_with(checkout) {
+        return Err(invalid("the path resolves outside the checkout"));
+    }
+    Ok(parent.join(rel.file_name().unwrap_or_default()))
+}
+
+/// Rename a file or folder to `new_name` inside its own directory and return
+/// the new checkout-relative path. The name is a plain name (no separators),
+/// never `.git`, and never an existing entry — a case-only change of the same
+/// entry is the one exception, as a case-insensitive disk reports it as taken.
+pub fn rename_path(checkout: &Path, path: &str, new_name: &str) -> Result<String, BridgeError> {
+    let rel = relative_path(path)?;
+    let name = plain_name(new_name)?;
+    let from = checkout.join(&rel);
+    std::fs::symlink_metadata(&from)
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    let parent = from.parent().unwrap_or(checkout);
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    if !parent.starts_with(checkout) {
+        return Err(invalid("the path resolves outside the checkout"));
+    }
+    let to_rel = rel.with_file_name(name);
+    let to = parent.join(name);
+    let case_only = rel
+        .file_name()
+        .is_some_and(|old| old != name && old.to_string_lossy().eq_ignore_ascii_case(name));
+    if !case_only && std::fs::symlink_metadata(&to).is_ok() {
+        return Err(invalid(format!("{name} already exists")));
+    }
+    std::fs::rename(parent.join(rel.file_name().unwrap_or_default()), &to)
+        .map_err(|e| invalid(format!("cannot rename: {e}")))?;
+    Ok(rel_str(&to_rel)?.to_owned())
 }
 
 fn current_text(path: &Path) -> Result<Vec<u8>, BridgeError> {
@@ -2339,5 +2463,95 @@ mod tests {
         let unborn = dir.path().canonicalize().unwrap();
         git_ok(&unborn, &["init", "-b", "main"]);
         assert_eq!(changes(&unborn).unwrap().ahead, None);
+    }
+
+    #[test]
+    fn rename_path_renames_in_place_and_refuses_the_rest() {
+        let dir = TempDir::new("rename-path");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.txt"), "a").unwrap();
+        fs::write(root.join("src/b.txt"), "b").unwrap();
+        let rename = |path: &str, name: &str| rename_path(&root, path, name);
+        assert_eq!(rename("src/a.txt", "c.txt").unwrap(), "src/c.txt");
+        assert!(root.join("src/c.txt").is_file() && !root.join("src/a.txt").exists());
+        assert_eq!(rename("src", "lib").unwrap(), "lib", "a folder renames too");
+        assert!(root.join("lib/c.txt").is_file());
+        assert_eq!(
+            rename("lib/c.txt", "C.txt").unwrap(),
+            "lib/C.txt",
+            "case only"
+        );
+        for bad in ["", "  ", ".", "..", ".git", "x/y", "a\\b", "b.txt"] {
+            assert!(rename("lib/C.txt", bad).is_err(), "{bad:?}");
+        }
+        assert!(rename("../x", "y").is_err());
+        assert!(rename("lib/missing", "y").is_err());
+        assert!(rename(".git/HEAD", "y").is_err());
+    }
+
+    #[test]
+    fn ignored_children_lists_one_level_and_stays_in_the_checkout() {
+        let dir = TempDir::new("ignored-children");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("public/assets/deep")).unwrap();
+        fs::write(root.join("public/assets/a.png"), "x").unwrap();
+        fs::write(root.join("public/assets/deep/b.png"), "x").unwrap();
+        assert_eq!(
+            ignored_children(&root, "public/assets").unwrap(),
+            vec!["public/assets/a.png", "public/assets/deep/"]
+        );
+        assert!(ignored_children(&root, "public/assets/a.png").is_err());
+        assert!(ignored_children(&root, "../x").is_err());
+        assert!(ignored_children(&root, "missing").is_err());
+    }
+
+    #[test]
+    fn entry_path_names_an_existing_entry_inside_the_checkout_only() {
+        let dir = TempDir::new("entry-path");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/f.txt"), "x").unwrap();
+        assert_eq!(entry_path(&root, "a/f.txt").unwrap(), root.join("a/f.txt"));
+        assert_eq!(entry_path(&root, "a").unwrap(), root.join("a"));
+        for bad in ["", "../a", "/etc/hosts", ".git/HEAD", "a/missing"] {
+            assert!(entry_path(&root, bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn create_entry_makes_files_and_folders_without_overwriting() {
+        let dir = TempDir::new("create-entry");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "keep").unwrap();
+        assert_eq!(
+            create_entry(&root, "", "top.txt", false).unwrap(),
+            "top.txt"
+        );
+        assert_eq!(
+            create_entry(&root, "src", "b.rs", false).unwrap(),
+            "src/b.rs"
+        );
+        assert_eq!(create_entry(&root, "src", "sub", true).unwrap(), "src/sub");
+        assert!(root.join("top.txt").is_file() && root.join("src/sub").is_dir());
+        assert_eq!(fs::read_to_string(root.join("src/b.rs")).unwrap(), "");
+        for (dir, name) in [
+            ("src", "a.rs"),
+            ("src", "sub"),
+            ("src", ""),
+            ("src", "x/y"),
+            ("src", ".git"),
+            ("src/a.rs", "z"),
+            ("../x", "z"),
+            ("missing", "z"),
+            (".git", "z"),
+        ] {
+            assert!(
+                create_entry(&root, dir, name, false).is_err(),
+                "{dir:?} {name:?}"
+            );
+        }
+        assert_eq!(fs::read_to_string(root.join("src/a.rs")).unwrap(), "keep");
     }
 }

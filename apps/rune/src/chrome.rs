@@ -579,6 +579,7 @@ fn split_button(
 /// has several sessions, so "the tab's session" does not exist.
 fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
     let title = tab.title.clone();
+    let tab_id = tab.id.clone();
     // The close X sits in a 20 pt box with 6 pt right padding: the 12 pt glyph then
     // has 10 pt to the pill's edge, matching the title's 10 pt on the left. It owns
     // its hover (`hover_alone`), so the pill doesn't wash under the pointer too.
@@ -641,9 +642,18 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             .opacity(0.6)
             .child(theme::txt("closing", theme::T11, ink.muted));
     }
-    pill.child(close).on_press(move |s: &mut State| {
-        s.activate_tab(index);
-    })
+    pill.child(close)
+        .on_secondary_press(move |s: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
+            s.tab_menu = Some(crate::tab_debug::MenuTarget {
+                tab: tab_id.clone(),
+                x: p.x,
+                y: p.y,
+            });
+            s.subagents_at = None;
+        })
+        .on_press(move |s: &mut State| {
+            s.activate_tab(index);
+        })
 }
 
 /// View-switch geometry. The track's border is drawn inside its box and the content

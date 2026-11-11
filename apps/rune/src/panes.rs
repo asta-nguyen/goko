@@ -1075,6 +1075,7 @@ impl State {
             }
         }
         let flow = self.daemon.supports_flow_control();
+        let paint = self.daemon.supports_paint();
         for key in wanted {
             if self.attachments.contains_key(&key) {
                 continue;
@@ -1082,7 +1083,7 @@ impl State {
             let Some(session) = self.session_id(&key) else {
                 continue;
             };
-            let Some((chunks, ready)) = self.daemon.attach_output(session, flow) else {
+            let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
                 continue;
             };
             // Wait for the pane's first layout: the replay has to be parsed
@@ -1121,6 +1122,7 @@ impl State {
         let flow = self.daemon.supports_flow_control();
         let mut acks: Vec<(SessionId, u64)> = Vec::new();
         let mut resizes: Vec<(SessionId, u16, u16)> = Vec::new();
+        let mut replies: Vec<(SessionId, Vec<u8>)> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         let shown: Vec<String> = if self.view == crate::View::Terminal {
             self.current_tab()
@@ -1143,6 +1145,12 @@ impl State {
                 continue;
             }
             att.term.feed();
+            // The program's queries (where is the cursor, what are you) are
+            // answered by the terminal, hidden panes included.
+            let answered = att.term.take_replies();
+            if !answered.is_empty() {
+                replies.push((att.term.session, answered));
+            }
             if flow && att.term.unacked() > 0 {
                 acks.push((att.term.session, att.term.next_seq));
             }
@@ -1191,6 +1199,9 @@ impl State {
         for (session, cols, rows) in resizes {
             self.resize_terminal(session, cols, rows);
         }
+        for (session, bytes) in replies {
+            self.write_terminal(session, &bytes);
+        }
         changed
     }
 
@@ -1227,7 +1238,8 @@ impl State {
         };
         self.daemon.detach_output(session);
         let flow = self.daemon.supports_flow_control();
-        let Some((chunks, ready)) = self.daemon.attach_output(session, flow) else {
+        let paint = self.daemon.supports_paint();
+        let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
             return false;
         };
         if let Some(att) = self.attachments.get_mut(&key) {
@@ -1680,8 +1692,23 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
             let Some(att) = s.attachments.get_mut(&wheel_key) else {
                 return false;
             };
-            att.term.scroll(e.dy * speed, line_h);
+            // The cell under the pointer, for a program that asked for mouse
+            // reports; the event is in the pane's own points.
+            let column = ((e.x - PANE_PAD) / cell_w).max(0.0) as usize;
+            let row = ((e.y - PANE_PAD) / line_h).max(0.0) as usize;
+            let cell = (
+                row.min(att.rows.saturating_sub(1)),
+                column.min(att.cols.saturating_sub(1)),
+            );
+            let mods = if e.mods.alt { 8 } else { 0 } + if e.mods.ctrl { 16 } else { 0 };
+            let bytes = att
+                .term
+                .wheel(e.dy * speed, line_h, cell, e.mods.shift, mods);
             att.lines = att.term.lines(&ink).to_vec();
+            let session = att.term.session;
+            if let Some(bytes) = bytes {
+                s.write_terminal(session, &bytes);
+            }
             true
         })
         .on_layout_tx(move |s: &mut State, rect: [f32; 4], tx: &mut Tx| {

@@ -85,6 +85,10 @@ pub enum SidebarInput {
     NewWorktree { project_id: String },
     /// A named workspace's new name.
     WorkspaceRename { id: String },
+    /// The new name of a file or folder in the Files tree.
+    RenameFile { id: String },
+    /// The name of a new file or folder in `dir` (`""` = the checkout root).
+    NewEntry { dir: String, folder: bool },
 }
 
 /// A removal awaiting confirmation. The row's facts are captured when the
@@ -427,6 +431,9 @@ pub fn input_layer(s: &State, ink: &Ink, layer: &mut Vec<El>) -> Option<El> {
         // mounts for it; the name-only route is retired.
         SidebarInput::NewWorktree { .. } => return None,
         SidebarInput::WorkspaceRename { .. } => ("Workspace name…", "Rename workspace"),
+        SidebarInput::RenameFile { .. } => ("New name…", "Rename"),
+        SidebarInput::NewEntry { folder: false, .. } => ("File name…", "New file"),
+        SidebarInput::NewEntry { folder: true, .. } => ("Folder name…", "New folder"),
     };
     let field = rune_kit::TextInput::new(&s.sidebar_text)
         .placeholder(placeholder)
@@ -461,6 +468,14 @@ fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
                 // reply: a failed write keeps the text for correction.
                 Some(SidebarInput::WorkspaceRename { id }) => {
                     s.submit_workspace_rename(&id, &text);
+                    true
+                }
+                Some(SidebarInput::NewEntry { dir, folder }) => {
+                    crate::editor::files::submit_new(s, &dir, folder, &text);
+                    true
+                }
+                Some(SidebarInput::RenameFile { id }) => {
+                    crate::editor::files::submit_rename(s, &id, &text);
                     true
                 }
                 _ => {
@@ -1535,12 +1550,18 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     ));
     let sid = info.id.clone();
     let wid = workspace_id.to_string();
-    b = b.on_press(move |s: &mut State| {
+    b = b.on_press_tx(move |s: &mut State, tx: &mut Tx| {
         s.selected_session = Some(sid.clone());
         s.active_workspace = Some(wid.clone());
         // Activating a session activates its workspace tab, opening one when
         // the session isn't open yet — like TerminalWorkspace's focus path.
         s.focus_session_tab(&sid);
+        // And shows it: from the Editor or Settings the click leaves for the
+        // Terminal. The tab is chosen first so a draft guard's resume (Save /
+        // Discard) lands on this session; Cancel keeps the Editor.
+        if s.view != crate::View::Terminal {
+            navigation::navigate(s, PendingNav::SetView(crate::View::Terminal), tx);
+        }
     });
 
     let badge_bg = if selected {

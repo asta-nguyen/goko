@@ -70,6 +70,10 @@ pub enum Request {
         session_id: SessionId,
         #[serde(default, skip_serializing_if = "is_false")]
         flow: bool,
+        /// Start the stream with a first paint of the daemon's terminal
+        /// instead of the retained raw output.
+        #[serde(default, skip_serializing_if = "is_false")]
+        paint: bool,
     },
     #[serde(rename = "terminal.unsubscribe")]
     TerminalUnsubscribe { id: u64, session_id: SessionId },
@@ -260,6 +264,7 @@ mod tests {
                 id: 11,
                 session_id,
                 flow: false,
+                paint: false,
             },
             Request::TerminalUnsubscribe { id: 12, session_id },
             Request::TerminalAck {
@@ -303,6 +308,7 @@ mod tests {
                 id: 1,
                 session_id,
                 flow: false,
+                paint: false,
             }
         );
     }
@@ -314,18 +320,22 @@ mod tests {
             id: 3,
             session_id,
             flow: false,
+            paint: false,
         };
         let value = serde_json::to_value(&request).unwrap();
         assert!(!value.as_object().unwrap().contains_key("flow"));
+        assert!(!value.as_object().unwrap().contains_key("paint"));
         assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
 
         let request = Request::TerminalSubscribe {
             id: 3,
             session_id,
             flow: true,
+            paint: true,
         };
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["flow"], true);
+        assert_eq!(value["paint"], true);
         assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
     }
 

@@ -348,8 +348,8 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/d
 ### RNC-settings-page
 
 The system SHALL render the Settings view as a section rail (Editor,
-Appearance, Accounts, ACP agents) beside the active section instead of a
-placeholder: Editor exposes the native indentation preference (auto/2/4/8
+Appearance, Accounts, ACP agents, Updates) beside the active section instead
+of a placeholder: Editor exposes the native indentation preference (auto/2/4/8
 spaces/tabs, persisted under `goko.editor.indent`); Appearance offers
 System, Dark+, Light, One Dark, Catppuccin Mocha and Dracula persisted
 under `goko.theme` with `Ink::for_theme` palettes and System following the
@@ -365,7 +365,11 @@ clears the form in front of the user; ACP agents expose each preset's
 enabled flag plus command/prompt drafts saved together through `agents_set`
 on the ACP runtime, and Reset removes that agent's stored override
 (`acp::agents_reset`) so the preset is restored instead of being recreated
-by the next store read. No Vim control is rendered — it is deferred by
+by the next store read; Updates names the running version, looks for a newer
+release with a build for this machine (`latest.json` of the latest GitHub release, at startup, every six
+hours and on "Check for updates"; `GOKO_NO_UPDATE_CHECK` stops the automatic
+one) and, when one is out, says so, raises a notice toast once per version and
+offers the install command to copy. No Vim control is rendered — it is deferred by
 decision D1. Every mutation rides a worker lane (backend `Req`s or the ACP
 runtime), never the UI thread.
 
@@ -407,14 +411,20 @@ runtime), never the UI thread.
 - WHEN Reset is pressed
 - THEN the stored override is removed and the preset is effective again
 
-Evidence: `apps/rune/src/settings.rs`, `apps/rune/src/theme.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/acp.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/accounts.rs`, `crates/app-core/src/acp.rs`
+#### Scenario: a newer release
+
+- GIVEN the Updates section is open
+- WHEN the check finds a release newer than the running version
+- THEN the section shows the running version, says the newer one is available and offers "Copy install command"; a failed automatic check stays silent, one the user asked for shows its reason
+
+Evidence: `apps/rune/src/settings.rs`, `apps/rune/src/update.rs`, `apps/rune/src/theme.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/acp.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/accounts.rs`, `crates/app-core/src/acp.rs`
 
 ### RNC-settings-toggle
 
 The system SHALL toggle `State::view` between `Settings` and `Terminal` when
 the header settings button is pressed; `Settings` replaces the whole workspace
 column (tab strip, controls, content) with the native settings page —
-Editor/Appearance/Accounts/ACP agents sections — matching App.tsx's
+Editor/Appearance/Accounts/ACP agents/Updates sections — matching App.tsx's
 settingsMode. The press routes through the editor's draft guard like the view
 switch, so leaving the Editor with unsaved work raises Save/Discard/Cancel
 before the view changes. The button is a keyboard-focusable toggle named
@@ -648,11 +658,39 @@ stop it only through the explicit Close pane action, never implicitly.
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`
 
+### RNC-tab-debug
+
+The system SHALL offer a secondary-press tab menu with Copy Tab ID, Copy Goko Session ID, Copy Agent Session ID, and Copy Debug Info, resolving session actions against the target tab's focused pane, exposing agent IDs only when attributable to that session, and reporting approximate local process-tree RAM for the whole tab without blocking the UI.
+
+#### Scenario: target tab and focused pane
+
+- GIVEN a tab with multiple terminal panes
+- WHEN its tab menu is opened
+- THEN Tab ID identifies that tab, session copy actions identify its focused pane, and Debug Info includes every pane's Goko session ID and PID
+
+#### Scenario: agent identity unavailable
+
+- GIVEN a Claude, Codex, OpenCode, Devin, Antigravity, or Shell session
+- WHEN the tab menu opens
+- THEN an attributable agent conversation ID can be copied, otherwise the agent copy item is disabled with a reason; Shell has no agent conversation ID
+
+#### Scenario: memory estimate
+
+- GIVEN live sessions in a tab
+- WHEN a worker sample is available
+- THEN RAM sums unique local process RSS across its session trees, labels the value approximate, and excludes shared Goko UI/daemon and cloud memory; a missing sample is reported as unavailable rather than zero
+
+Evidence: `apps/rune/src/tab_debug.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/session_debug.rs`
+
 ### RNC-terminal-attach
 
-The system SHALL attach the Terminal view to the selected daemon session:
-`terminal.subscribe` replays retained output then streams live kind-1 frames
-into the alacritty `Term` grid rendered as styled runs; keyboard input
+The system SHALL keep each session's terminal state in the daemon and attach
+the Terminal view to the selected session: when the daemon supports it,
+`terminal.subscribe {paint: true}` starts the stream with a first paint (an ANSI
+rebuild of the retained scrollback, the screen, cursor and terminal modes,
+sent as kind-1 frames marked `PAINT_SEQ`) followed by live kind-1 frames, all
+parsed into the alacritty `Term` grid rendered as styled runs; a daemon without
+that support is attached through the retained raw replay. Keyboard input
 encodes to `terminal.write`, viewport changes send `terminal.resize`,
 `terminal.lagged` or a session switch resubscribes, `terminal.unsubscribe`
 runs on detach, and an exited session keeps its final grid with input
@@ -665,21 +703,74 @@ suppressed.
 - THEN the grid renders them; typing sends bytes the session receives (echo
   returns through the same path)
 
+#### Scenario: GUI restart with retained history
+
+- GIVEN a daemon kept a session while its output exceeded the raw replay buffer
+- WHEN the GUI attaches again
+- THEN the grid shows the current screen and the retained scrollback, and live
+  output continues from the paint without a gap or duplicate
+
+#### Scenario: no viewers
+
+- GIVEN a session has no subscribers
+- WHEN it writes output
+- THEN the daemon's emulator keeps consuming it, so a later attach paints the
+  current state
+
 #### Scenario: lagged subscriber recovers
 
 - GIVEN the terminal subscriber fell behind
 - WHEN the daemon sends `terminal.lagged`
-- THEN the client unsubscribes and resubscribes, replaying from the retained
-  buffer
+- THEN the client unsubscribes and resubscribes, and the new stream starts from
+  a fresh paint (or the retained raw buffer on a daemon without paint)
+
+#### Scenario: compatible legacy daemon
+
+- GIVEN the daemon predates first paint
+- WHEN Rune opens a session
+- THEN it attaches with the raw replay and sends no unsupported request
 
 #### Scenario: switch sessions
 
 - GIVEN session A attached
 - WHEN session B is selected
-- THEN A is unsubscribed, B subscribes, and B's retained+live output renders
+- THEN A is unsubscribed, B subscribes, and B's paint or retained output and
+  live output render
 
-Evidence: `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/main.rs`, `crates/protocol/src/frame.rs`, `crates/protocol/src/message.rs`
+Evidence: `crates/daemon/src/terminal.rs`, `crates/daemon/src/pty.rs`, `crates/daemon/src/server.rs`, `crates/daemon/tests/paint.rs`, `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/panes.rs`, `crates/protocol/src/frame.rs`, `crates/protocol/src/message.rs`
 
+### RNC-terminal-wheel
+
+The system SHALL route terminal wheel input according to the program's mouse and
+alternate-screen modes, sending PTY wheel reports or alternate-scroll keys when
+requested and otherwise scrolling terminal history, with Shift selecting history
+instead of application reporting.
+
+#### Scenario: primary history
+
+- GIVEN primary-screen output has retained history and no mouse capture applies
+- WHEN the user wheels upward
+- THEN the view reveals older retained rows
+
+#### Scenario: mouse reporting
+
+- GIVEN the application requested terminal mouse reports
+- WHEN the user wheels without Shift
+- THEN the PTY receives reports with the correct direction, modifiers, coordinate encoding and bounds
+
+#### Scenario: alternate scrolling
+
+- GIVEN alternate screen and alternate-scroll are enabled without mouse capture
+- WHEN the user wheels without Shift
+- THEN the PTY receives correctly encoded Up/Down input rather than fabricated alternate-screen history
+
+#### Scenario: explicit history override
+
+- GIVEN a terminal application captures mouse or alternate scrolling
+- WHEN the user wheels with Shift
+- THEN the operation targets emulator history and emits no application wheel report; alternate-screen history may be empty
+
+Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`
 
 ### RNC-terminal-splits
 
@@ -866,6 +957,19 @@ visible while filtering their session lists. A pending create for another
 project retains its new tab without changing the visible project’s selection.
 With no active project, the existing unfiltered view remains available.
 
+Secondary-pressing a tab stores its stable ID and pointer position without
+activating it. `tab_debug::menu_layer` resolves its focused pane for session
+copy actions; Copy Debug Info includes all its panes. Selection writes through
+`Tx::copy` and shows a copy notice. Escape or an outside press dismisses the
+menu; a vanished or hidden target also clears it.
+
+The existing two-second subagent worker scan reads process RSS alongside PID,
+parent PID and command. `session_debug::sample` collects each live session's
+tree plus attributed tools below shared Codex servers. The tab totals the union
+of PIDs across panes. While its menu is open, that worker also inspects agent
+processes' open session files with `lsof`; no process command or database read
+runs on the UI thread.
+
 ## State changes
 
 In-memory only for the chrome itself: `open_tabs`, `active_tab`,
@@ -886,6 +990,10 @@ Project Map's open flag, query and keyboard cursor are in memory. Only the
 existing selected-workspace setting is persisted; no recent-project history is
 written. Cancel or failed Save never commits the destination workspace setting.
 
+The tab menu target, process snapshot, agent identity results, and sample clock
+are ephemeral. They do not alter the daemon protocol, agent launch commands,
+agent configuration, or persisted session metadata.
+
 ## Side effects
 
 None from the chrome's session/tab controls — they render daemon session data and
@@ -900,6 +1008,13 @@ Project Map delegates selected-workspace persistence to the existing worker
 sends no session create/stop/delete request and changes no workspace membership
 or project file; the draft guard's explicit Save retains its existing write.
 
+Tab diagnostics read process metadata and, for a PID-owned Devin lock, validate
+its basename with a read-only lookup of `sessions.id` in that agent's adjacent
+database. Antigravity presence locks require a matching conversation database.
+Claude transcript and Codex rollout filenames can identify their owning
+process's conversation. The diagnostics read no conversation bodies and write
+only the clipboard when the user selects a copy action.
+
 ## Authorization & constraints
 
 None for the chrome — a local prototype shell with no access checks or
@@ -910,6 +1025,22 @@ Project Map only selects registered IDs from the current caches and rechecks
 project ownership after a guard delay. Existing app-core checkout validation
 still applies. It owns keyboard, paste and IME fallback while open, is suppressed
 by other modal owners/terminal composition, and is unavailable in Settings.
+
+All adapters share the same menu: Claude, Codex, OpenCode, Devin, Antigravity,
+and Shell. A PID-linked session file takes precedence over an explicit agent
+launch/resume ID. Launch IDs carry a warning that switching conversations
+inside the CLI can change them. Multiple candidate IDs disable agent copying.
+Shared session databases, directory matches and creation times alone are not
+used to guess an ID. In particular, a fresh OpenCode or Codex CLI using only a
+shared store/server may expose no attributable ID; a known explicit resume ID
+is still available. Shell has no conversation ID of its own.
+
+RAM is approximate local RSS, displayed in decimal MB. Each PID is summed once
+per tab, but pages shared between different processes may still be counted
+more than once. Goko UI/daemon, shared agent servers and cloud memory are
+excluded. Values older than six seconds and missing process samples are
+unavailable rather than zero. Keyboard, paste and terminal IME fallback do not
+reach the terminal while the menu owns input.
 
 ## Error paths
 
@@ -932,6 +1063,11 @@ workspace groups and no search results. Initial/unready data cannot activate a
 row; Retry reuses project/workspace refresh requests. A vanished target or owner
 shows a notice without changing checkout/workspace. Workspace persistence failure
 keeps the in-memory selection and reports the existing queue/write error.
+
+An unavailable process command, `lsof`, session file, or busy/unreadable Devin
+database leaves the corresponding diagnostic unavailable; other copy actions
+remain usable. A stale tab/session at selection time shows a notice instead of
+copying a different target. Exited sessions cannot supply a current agent ID.
 
 ## Tests
 
@@ -959,6 +1095,15 @@ updates, data readiness, stale targets, guarded Save/Discard/Cancel and failed
 writes, shortcut/input/paste/IME isolation, focus return and dismissal, distant
 sidebar reveal and narrow-window bounds in light/dark themes.
 
+`tab_debug.rs` tests copy payloads for the clicked tab and a split's focused
+pane, every pane's debug data, unique RSS totals, stale samples and deleted
+targets. Its Rune runtime test secondary-clicks an inactive tab, checks menu
+entries, reads the copied ID from an in-memory clipboard and dismisses with
+Escape. `session_debug.rs` tests process parsing, unique/missing memory,
+launch IDs for all five agents, PID-separated open files, read-only Devin ID
+validation, Antigravity presence metadata, ambiguous/exited identities and
+attributed tools without charging the shared server.
+
 ## Related
 
 - [Architecture overview](../architecture/overview.md)
@@ -982,12 +1127,14 @@ sidebar reveal and narrow-window bounds in light/dark themes.
 - `apps/rune/src/sessions.rs`
 - `apps/rune/src/settings.rs`
 - `apps/rune/src/sidebar.rs`
+- `apps/rune/src/tab_debug.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/theme.rs`
 - `crates/app-core/src/accounts.rs`
 - `crates/app-core/src/acp.rs`
 - `crates/app-core/src/agents.rs`
 - `crates/app-core/src/projects.rs`
+- `crates/app-core/src/session_debug.rs`
 - `crates/app-core/src/store.rs`
 - `crates/app-core/src/usage.rs`
 - `crates/app-core/src/worktrees.rs`

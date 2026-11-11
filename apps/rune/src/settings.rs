@@ -26,14 +26,16 @@ pub enum Section {
     Appearance,
     Accounts,
     AcpAgents,
+    Updates,
 }
 
 impl Section {
-    const ALL: [Section; 4] = [
+    const ALL: [Section; 5] = [
         Section::Editor,
         Section::Appearance,
         Section::Accounts,
         Section::AcpAgents,
+        Section::Updates,
     ];
 
     fn label(self) -> &'static str {
@@ -42,6 +44,7 @@ impl Section {
             Section::Appearance => "Appearance",
             Section::Accounts => "Accounts",
             Section::AcpAgents => "ACP agents",
+            Section::Updates => "Updates",
         }
     }
 }
@@ -455,6 +458,7 @@ fn section_body(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
         Section::Appearance => appearance_section(s, ink, layer),
         Section::Accounts => accounts_section(s, ink),
         Section::AcpAgents => acp_section(s, ink),
+        Section::Updates => updates_section(s, ink),
     }
 }
 
@@ -645,6 +649,59 @@ fn appearance_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
         .build(&s.editor.kit, layer),
         ink,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Updates — the running version and whether a newer release is out.
+// ---------------------------------------------------------------------------
+
+fn updates_section(s: &State, ink: &Ink) -> El {
+    use crate::update::{self, Status};
+
+    let (line, color) = match &s.update {
+        Status::Unknown => (
+            "Goko looks for a newer release when it starts.".to_string(),
+            ink.muted,
+        ),
+        Status::Checking => ("Checking…".to_string(), ink.muted),
+        Status::UpToDate => ("You are on the latest version.".to_string(), ink.muted),
+        Status::Available(version) => (format!("Goko {version} is available."), ink.accent),
+        Status::Failed(error) => (format!("Could not check: {error}"), ink.danger),
+    };
+    let mut actions = row().gap(8.0).items_center().child(
+        ghost("Check for updates", ink)
+            .key("update-check")
+            .on_press(|s: &mut State| s.check_for_update()),
+    );
+    if matches!(s.update, Status::Available(_)) {
+        actions = actions.child(
+            ghost("Copy install command", ink)
+                .key("update-copy")
+                .on_press_tx(|s: &mut State, tx: &mut Tx| {
+                    tx.copy(update::INSTALL_COMMAND.to_string());
+                    s.notice = Some("Install command copied — paste it in a terminal".into());
+                }),
+        );
+    }
+    col()
+        .w_full()
+        .gap(20.0)
+        .child(field(
+            "Version",
+            "The version of Goko that is running.",
+            theme::txt(&format!("Goko {}", update::CURRENT), T14M, ink.text),
+            ink,
+        ))
+        .child(field(
+            "Updates",
+            "To update, run the install command in a terminal, then reopen Goko. \
+             Set GOKO_NO_UPDATE_CHECK=1 to stop the automatic check.",
+            col()
+                .gap(8.0)
+                .child(theme::txt(&line, T12, color))
+                .child(actions),
+            ink,
+        ))
 }
 
 // ---------------------------------------------------------------------------

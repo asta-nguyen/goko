@@ -76,6 +76,8 @@ pub enum FileMark {
     Ignored,
     /// A wholly ignored directory, shown as a dimmed leaf folder.
     IgnoredDir,
+    /// A folder created in the app that holds nothing yet.
+    EmptyDir,
 }
 
 pub struct FilesState {
@@ -94,6 +96,25 @@ pub struct FilesState {
     pub error: Option<String>,
     /// Content-search state (debounced query → worker).
     pub search: search_state::Search,
+    /// Ignored directories the user opened: the entries one level below
+    /// each, keyed by the directory's path. Cleared with the checkout.
+    pub ignored_open: std::collections::BTreeMap<String, Vec<String>>,
+    /// Folders created here that hold nothing yet (Git lists no empty
+    /// folders). Cleared with the checkout.
+    pub empty_dirs: std::collections::BTreeSet<String>,
+    /// An entry to open the tree on once the next file list lands.
+    pub reveal: Option<String>,
+    /// The entry awaiting a Move-to-Trash confirmation.
+    pub delete_prompt: Option<String>,
+    /// The row context menu: the entry it was opened on and where.
+    pub menu: Option<FileMenu>,
+}
+
+/// A tree row's context menu, opened by a secondary press at (`x`, `y`).
+pub struct FileMenu {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// Search bookkeeping kept beside the files section: the debounced query and
@@ -460,6 +481,11 @@ impl EditorState {
                 loading: false,
                 error: None,
                 search: search_state::Search::default(),
+                ignored_open: Default::default(),
+                delete_prompt: None,
+                empty_dirs: Default::default(),
+                reveal: None,
+                menu: None,
             },
             changes: ChangesState {
                 data: None,

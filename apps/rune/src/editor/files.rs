@@ -8,7 +8,9 @@
 //! this surface behind the same `OpenDoc` state.
 
 use rune::{El, KeyEvent, Tx, col, row};
-use rune_kit::{FileNode, Kit, ScrollBar, Tree, TreeItem, TreeKey, TreeModel, TreeStyle};
+use rune_kit::{
+    FileNode, Kit, MenuItem, ScrollBar, Tree, TreeItem, TreeKey, TreeModel, TreeStyle, context_menu,
+};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -17,7 +19,7 @@ use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
 use crate::editor::navigation::{self, PendingNav};
 use crate::editor::pane_layout;
-use crate::editor::state::FileMark;
+use crate::editor::state::{FileMark, FileMenu};
 use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 
 /// Files section root: toolbar (filter + search toggle + refresh), then
@@ -25,6 +27,9 @@ use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 /// like the desktop `SplitPane`, the editor flexes to the remaining width.
 pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
     let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0);
+    if let Some(dialog) = trash_dialog(s, ink) {
+        root = root.child(dialog);
+    }
     root = root.child(toolbar(s, ink, k));
     root = root.child(
         row()
@@ -99,7 +104,7 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit) -> El {
             // pushes Refresh/controls off a narrow window.
             .build(k)
             .shrink()
-            .min_w(110.0),
+            .min_w(80.0),
     );
     bar = bar.child(
         theme::btn_sm("Search", None, s.editor.files.search.open, ink).on_press(
@@ -121,16 +126,106 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit) -> El {
                 })
                 .build(k)
                 .shrink()
-                .min_w(120.0),
+                .min_w(90.0),
         );
     }
     bar = bar.child(rune::spacer());
-    bar = bar.child(theme::btn_sm("Refresh", None, false, ink).on_press_tx(
-        |st: &mut State, _tx: &mut Tx| {
-            refresh_files(st);
-        },
-    ));
+    bar = bar
+        .child(toolbar_icon(&theme::FILE_PLUS, "New File", ink, |st| {
+            let dir = selected_dir(st);
+            ask_for_new(st, &dir, false);
+        }))
+        .child(toolbar_icon(&theme::FOLDER_PLUS, "New Folder", ink, |st| {
+            let dir = selected_dir(st);
+            ask_for_new(st, &dir, true);
+        }))
+        .child(toolbar_icon(&theme::REFRESH, "Refresh", ink, refresh_files))
+        .child(toolbar_icon(
+            &theme::COLLAPSE_ALL,
+            "Collapse All",
+            ink,
+            |st| {
+                tree_get_mut(st).collapse_all();
+            },
+        ));
     col().w_full().child(bar)
+}
+
+/// One icon-only toolbar button, labelled and with a tooltip.
+fn toolbar_icon(
+    icon: &'static rune::Icon,
+    label: &'static str,
+    ink: &Ink,
+    on_press: fn(&mut State),
+) -> El {
+    rune::el()
+        .key(format!("files-tool:{label}"))
+        .size(28.0, 28.0)
+        .radius(8.0)
+        .center()
+        .role("button")
+        .label(label)
+        .child(theme::ic(icon, 16.0, ink.text))
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .press_scale(0.95)
+        .motion(theme::STATE_SPRING)
+        .help(label)
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .on_press(on_press)
+}
+
+/// The folder a new entry goes in: the selected folder, the folder of the
+/// selected file, or the checkout root (`""`).
+fn selected_dir(s: &State) -> String {
+    s.editor
+        .files
+        .model
+        .cursor()
+        .map(|id| entry_dir(tree_get(s), id))
+        .unwrap_or_default()
+}
+
+/// `id` itself when it is a folder, else the folder it sits in.
+fn entry_dir(model: &TreeModel<FileNode<FileMark>>, id: &str) -> String {
+    let folder = model.get(id).is_some_and(|n| {
+        n.dir || matches!(n.data, Some(FileMark::IgnoredDir | FileMark::EmptyDir))
+    });
+    match (folder, id.rsplit_once('/')) {
+        (true, _) => id.to_string(),
+        (false, Some((dir, _))) => dir.to_string(),
+        (false, None) => String::new(),
+    }
+}
+
+/// Open the prompt for a new file or folder in `dir`.
+fn ask_for_new(s: &mut State, dir: &str, folder: bool) {
+    s.ask_for_input(crate::sidebar::SidebarInput::NewEntry {
+        dir: dir.to_string(),
+        folder,
+    });
+}
+
+/// Send the create. The new entry opens in the tree once the list re-reads.
+pub fn submit_new(s: &mut State, dir: &str, folder: bool, name: &str) {
+    s.close_sidebar_input();
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let req = Req::CreateEntry {
+        dir: dir.to_string(),
+        name: name.to_string(),
+        folder,
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
+    }
 }
 
 /// Re-issue the file list for the current checkout (manual refresh).
@@ -187,6 +282,8 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
                     .icon(&rune_kit::glyphs::FOLDER)
                     .label_color(dim)
                     .icon_color(dim),
+                // A folder made here that holds nothing yet.
+                Some(FileMark::EmptyDir) => item.icon(&rune_kit::glyphs::FOLDER),
             }
         })
         // Press/double-press still route through these — `.on_key` below
@@ -195,20 +292,247 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
             // Desktop parity: activating a file row opens it — a plain click
             // moves the cursor (this callback) and Enter/double-click routes
             // through `on_open`. Both land in the draft guard via `open_doc`.
-            if is_openable(st, id) {
-                open_doc(st, id, None, tx);
-            }
+            tree_activate(st, id, tx);
         })
         .on_open(|st: &mut State, id: &str, tx: &mut Tx| {
             // Re-activating the already-selected file (Enter/Space or a
             // double-click) still opens — same-file requests only reveal.
-            if is_openable(st, id) {
-                open_doc(st, id, None, tx);
-            }
+            tree_activate(st, id, tx);
         })
         .style(TreeStyle::from_kit(k))
         .build(s, k)
         .on_key(tree_key)
+        // A row has no handler of its own for this press, so it lands here:
+        // the element under the pointer names the row.
+        .on_secondary_press(|_: &mut State, p: rune::PointerPress, tx: &mut Tx| {
+            tx.element_at(p.x, p.y, move |st: &mut State, picked, _tx: &mut Tx| {
+                let Some(id) = picked.and_then(|e| row_id(tree_get(st), e.path())) else {
+                    return;
+                };
+                tree_get_mut(st).select(&id);
+                st.editor.files.menu = Some(FileMenu { id, x: p.x, y: p.y });
+            });
+        })
+}
+
+/// The tree row an element path belongs to: `…/rows/<row id>/<part>`. A row id
+/// holds slashes of its own, so it is the longest prefix that names a node.
+fn row_id(model: &TreeModel<FileNode<FileMark>>, path: &str) -> Option<String> {
+    let rest = path.split_once("/rows/")?.1;
+    std::iter::once(rest.len())
+        .chain(rest.match_indices('/').map(|(i, _)| i).rev())
+        .map(|end| &rest[..end])
+        .find(|id| model.contains(id))
+        .map(str::to_string)
+}
+
+/// The row context menu: copy the path, show it in Finder, rename it.
+pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    if s.view != crate::View::Editor {
+        return None;
+    }
+    let menu = s.editor.files.menu.as_ref()?;
+    let checkout = s.editor.checkout.as_ref()?;
+    if !tree_get(s).contains(&menu.id) {
+        return None;
+    }
+    let absolute = checkout.join(&menu.id);
+    let (new_dir, new_dir2) = (
+        entry_dir(tree_get(s), &menu.id),
+        entry_dir(tree_get(s), &menu.id),
+    );
+    let (full, relative, reveal_path, id, trash_id) = (
+        absolute.to_string_lossy().into_owned(),
+        menu.id.clone(),
+        absolute,
+        menu.id.clone(),
+        menu.id.clone(),
+    );
+    let at = rune::PointerPress {
+        x: menu.x,
+        y: menu.y,
+    };
+    Some(
+        context_menu("files-row", rune::el(), Some(at))
+            .item(
+                MenuItem::new("Copy Path").on_select_tx(move |st: &mut State, tx: &mut Tx| {
+                    st.editor.files.menu = None;
+                    tx.copy(full.clone());
+                }),
+            )
+            .item(MenuItem::new("Copy Relative Path").on_select_tx(
+                move |st: &mut State, tx: &mut Tx| {
+                    st.editor.files.menu = None;
+                    tx.copy(relative.clone());
+                },
+            ))
+            .item(
+                MenuItem::new("Reveal in Finder").on_select(move |st: &mut State| {
+                    st.editor.files.menu = None;
+                    reveal(&reveal_path);
+                }),
+            )
+            .separator()
+            .item(MenuItem::new("New File…").on_select(move |st: &mut State| {
+                st.editor.files.menu = None;
+                ask_for_new(st, &new_dir, false);
+            }))
+            .item(
+                MenuItem::new("New Folder…").on_select(move |st: &mut State| {
+                    st.editor.files.menu = None;
+                    ask_for_new(st, &new_dir2, true);
+                }),
+            )
+            .separator()
+            .item(MenuItem::new("Rename…").on_select(move |st: &mut State| {
+                st.editor.files.menu = None;
+                ask_for_rename(st, &id);
+            }))
+            .item(
+                MenuItem::new("Move to Trash…")
+                    .danger(true)
+                    .on_select(move |st: &mut State| {
+                        st.editor.files.menu = None;
+                        st.editor.files.delete_prompt = Some(trash_id.clone());
+                    }),
+            )
+            .on_close(|st: &mut State| st.editor.files.menu = None)
+            .build(&s.editor.kit, layer),
+    )
+}
+
+/// Show `path` selected in the system file manager.
+// ponytail: macOS `open -R`; elsewhere the folder opens, with no selection.
+fn reveal(path: &std::path::Path) {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg("-R").arg(path);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path.parent().unwrap_or(path));
+        c
+    };
+    if let Ok(mut child) = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
+/// Open the rename prompt with the entry's current name filled in.
+fn ask_for_rename(s: &mut State, id: &str) {
+    s.ask_for_input(crate::sidebar::SidebarInput::RenameFile { id: id.to_string() });
+    let name = id.rsplit('/').next().unwrap_or(id);
+    s.sidebar_text = rune::edit::TextEdit::new(name);
+    s.sidebar_text.focused = true;
+}
+
+/// The Move-to-Trash confirmation: names the entry, and says it can be put
+/// back from the Trash.
+fn trash_dialog(s: &State, ink: &Ink) -> Option<El> {
+    let id = s.editor.files.delete_prompt.clone()?;
+    let name = id.rsplit('/').next().unwrap_or(&id).to_string();
+    Some(
+        col()
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .items_center()
+            .justify_center()
+            .child(
+                col()
+                    .w(400.0)
+                    .gap(12.0)
+                    .padding(16.0)
+                    .radius(12.0)
+                    .fill(ink.panel)
+                    .border(1.0, ink.border)
+                    .child(theme::txt("Move to Trash?", T12M, ink.text))
+                    .child(theme::txt(
+                        &format!("Move {name} to the Trash? You can put it back from there."),
+                        T12,
+                        ink.muted,
+                    ))
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .justify_end()
+                            .w_full()
+                            .child(
+                                theme::btn_sm("Cancel", None, true, ink).on_press(
+                                    |st: &mut State| st.editor.files.delete_prompt = None,
+                                ),
+                            )
+                            .child(theme::btn_sm("Move to Trash", None, false, ink).on_press(
+                                move |st: &mut State| {
+                                    st.editor.files.delete_prompt = None;
+                                    submit_trash(st, &id);
+                                },
+                            )),
+                    ),
+            ),
+    )
+}
+
+/// Send the delete. An open draft under the entry blocks it, so nothing
+/// unsaved goes away with the file.
+fn submit_trash(s: &mut State, id: &str) {
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let blocked = s.editor.doc.as_ref().is_some_and(|doc| {
+        doc.dirty() && (doc.path == id || doc.path.starts_with(&format!("{id}/")))
+    });
+    if blocked {
+        s.notice = Some(format!(
+            "save or discard the changes in {id} before deleting it"
+        ));
+        return;
+    }
+    let req = Req::TrashPath {
+        path: id.to_string(),
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
+    }
+}
+
+/// Send the rename. A name that did not change closes the prompt; an open
+/// draft under the entry blocks it, so the rename never strands unsaved text.
+pub fn submit_rename(s: &mut State, id: &str, name: &str) {
+    s.close_sidebar_input();
+    let name = name.trim();
+    if name.is_empty() || id.rsplit('/').next() == Some(name) {
+        return;
+    }
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let blocked = s.editor.doc.as_ref().is_some_and(|doc| {
+        doc.dirty() && (doc.path == id || doc.path.starts_with(&format!("{id}/")))
+    });
+    if blocked {
+        s.notice = Some(format!(
+            "save or discard the changes in {id} before renaming it"
+        ));
+        return;
+    }
+    let req = Req::RenamePath {
+        path: id.to_string(),
+        new_name: name.to_string(),
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
+    }
 }
 
 /// What a tree activation means: directories only toggle via the tree's own
@@ -217,17 +541,41 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 fn tree_activate(st: &mut State, id: &str, tx: &mut Tx) {
     if is_openable(st, id) {
         open_doc(st, id, None, tx);
+    } else if st
+        .editor
+        .files
+        .model
+        .get(id)
+        .is_some_and(|n| n.data == Some(FileMark::IgnoredDir))
+    {
+        open_ignored_dir(st, id);
+    }
+}
+
+/// An ignored directory is a leaf until opened: ask for its entries, which
+/// replace it in the tree. One whose entries were read stays as it is.
+fn open_ignored_dir(s: &mut State, dir: &str) {
+    if s.editor.files.ignored_open.contains_key(dir) {
+        return;
+    }
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let req = Req::IgnoredChildren {
+        dir: dir.to_string(),
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
     }
 }
 
 /// A file row opens; a folder toggles, and an ignored directory (a leaf row)
 /// has nothing to open.
 fn is_openable(st: &State, id: &str) -> bool {
-    st.editor
-        .files
-        .model
-        .get(id)
-        .is_some_and(|n| !n.dir && n.data != Some(FileMark::IgnoredDir))
+    st.editor.files.model.get(id).is_some_and(|n| {
+        !n.dir && !matches!(n.data, Some(FileMark::IgnoredDir | FileMark::EmptyDir))
+    })
 }
 
 /// Composite tree key handler. `.on_key` replaces the tree's built-in
@@ -1428,6 +1776,187 @@ mod tests {
             rt.elements().iter().any(|e| e.focused && e.role == "tree"),
             "tree holds focus after row click"
         );
+    }
+
+    /// A right-click anywhere on a nested row names that row — the menu
+    /// opens on it with the pointer's position, not on the cursor row.
+    #[test]
+    fn secondary_press_on_a_row_opens_its_menu() {
+        let mut rt = kb_runtime(scene());
+        click_tree_row(&mut rt, "docs");
+        click_tree_row(&mut rt, "README.md");
+        let row = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "treeitem" && e.label.as_deref() == Some("guide.md"))
+            .expect("the folder opened");
+        let (x, y) = (row.rect[0] + 60.0, row.rect[1] + row.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+        let menu = rt.state.editor.files.menu.as_ref().expect("menu opened");
+        assert_eq!(menu.id, "docs/guide.md");
+        assert_eq!((menu.x, menu.y), (x, y));
+        assert_eq!(
+            rt.state.editor.files.model.cursor(),
+            Some("docs/guide.md"),
+            "the row is selected"
+        );
+    }
+
+    /// Clicking an ignored directory asks for its entries instead of doing
+    /// nothing, and a second click on one already read sends no second job.
+    #[test]
+    fn clicking_an_ignored_directory_reads_its_entries() {
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        let mut s = scene();
+        s.editor.backend = backend;
+        s.editor.files.ignored = vec!["target/".into()];
+        s.editor.rebuild_file_model();
+        let mut rt = kb_runtime(s);
+        click_tree_row(&mut rt, "target");
+        let sent: Vec<_> = jobs.try_iter().collect();
+        assert!(
+            sent.iter()
+                .any(|j| matches!(&j.req, Req::IgnoredChildren { dir } if dir == "target")),
+            "the directory was requested"
+        );
+        rt.state
+            .editor
+            .files
+            .ignored_open
+            .insert("target".into(), Vec::new());
+        click_tree_row(&mut rt, "target");
+        assert!(jobs.try_iter().next().is_none(), "already read: no new job");
+    }
+
+    /// Move to Trash asks first; confirming sends the job, and an open draft
+    /// under the entry blocks it.
+    #[test]
+    fn move_to_trash_confirms_then_sends_and_a_draft_blocks_it() {
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        let mut s = scene();
+        s.editor.backend = backend;
+        s.editor.files.delete_prompt = Some("docs/guide.md".into());
+        let mut rt = kb_runtime(s);
+        let button = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} mounted"))
+        };
+        let cancel = button(&rt, "Cancel");
+        click(&mut rt, cancel.rect[0] + 5.0, cancel.rect[1] + 5.0);
+        assert!(rt.state.editor.files.delete_prompt.is_none());
+        assert!(jobs.try_iter().next().is_none(), "cancel sends nothing");
+
+        rt.state.editor.files.delete_prompt = Some("docs/guide.md".into());
+        rt.frame(1.0 / 60.0);
+        let confirm = button(&rt, "Move to Trash");
+        click(&mut rt, confirm.rect[0] + 5.0, confirm.rect[1] + 5.0);
+        assert!(rt.state.editor.files.delete_prompt.is_none());
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::TrashPath { path } if path == "docs/guide.md"))
+        );
+
+        let mut doc = crate::editor::draft::OpenDoc::new(
+            "docs/guide.md",
+            &app_core::git_view::GitViewFile {
+                path: "docs/guide.md".into(),
+                kind: "text",
+                text: Some("x".into()),
+                truncated: false,
+                size: 1,
+            },
+        );
+        doc.code.edit.text = "edited".into();
+        rt.state.editor.doc = Some(doc);
+        submit_trash(&mut rt.state, "docs");
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "a draft blocks the delete"
+        );
+        assert!(
+            rt.state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("save or discard"))
+        );
+    }
+
+    /// The toolbar's four actions are there; New File asks for a name in the
+    /// selected file's folder, Collapse All closes the tree, and the name
+    /// sends the create.
+    #[test]
+    fn the_toolbar_creates_in_the_selected_folder_and_collapses_all() {
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        let mut s = scene();
+        s.editor.backend = backend;
+        let mut rt = kb_runtime(s);
+        let tool = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.role == "button" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} button mounted"))
+        };
+        for label in ["New File", "New Folder", "Refresh", "Collapse All"] {
+            tool(&rt, label);
+        }
+        click_tree_row(&mut rt, "src");
+        click_tree_row(&mut rt, "a.rs");
+        let new_file = tool(&rt, "New File");
+        click(&mut rt, new_file.rect[0] + 5.0, new_file.rect[1] + 5.0);
+        assert_eq!(
+            rt.state.sidebar_input,
+            Some(crate::sidebar::SidebarInput::NewEntry {
+                dir: "src".into(),
+                folder: false
+            }),
+            "a selected file creates beside itself"
+        );
+        submit_new(&mut rt.state, "src", false, "  c.rs ");
+        assert!(rt.state.sidebar_input.is_none());
+        assert!(jobs.try_iter().any(|j| matches!(
+            &j.req,
+            Req::CreateEntry { dir, name, folder: false } if dir == "src" && name == "c.rs"
+        )));
+        submit_new(&mut rt.state, "src", true, "   ");
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "an empty name sends nothing"
+        );
+
+        assert!(rt.state.editor.files.model.is_expanded("src"));
+        let collapse = tool(&rt, "Collapse All");
+        click(&mut rt, collapse.rect[0] + 5.0, collapse.rect[1] + 5.0);
+        assert!(!rt.state.editor.files.model.is_expanded("src"));
+    }
+
+    #[test]
+    fn a_new_entry_goes_in_the_folder_of_the_row_or_the_root() {
+        let s = scene();
+        let model = tree_get(&s);
+        assert_eq!(entry_dir(model, "src"), "src", "a folder is its own target");
+        assert_eq!(entry_dir(model, "src/a.rs"), "src");
+        assert_eq!(entry_dir(model, "top.txt"), "", "a root file → the root");
+        assert_eq!(selected_dir(&s), "", "nothing selected → the root");
+    }
+
+    #[test]
+    fn a_row_id_is_the_longest_node_prefix_of_the_element_path() {
+        let s = scene();
+        let model = tree_get(&s);
+        let id = |path: &str| row_id(model, path);
+        assert_eq!(
+            id("#0/files/viewport/rows/src/a.rs/label"),
+            Some("src/a.rs".into())
+        );
+        assert_eq!(id("#0/files/viewport/rows/src/icon"), Some("src".into()));
+        assert_eq!(id("#0/files/viewport/rows/top.txt"), Some("top.txt".into()));
+        assert_eq!(id("#0/files/viewport/rows/nope/label"), None);
+        assert_eq!(id("#0/files/toolbar"), None);
     }
 
     /// `j`/`k` must reach global nav instead of the tree's typeahead: the

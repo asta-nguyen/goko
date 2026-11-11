@@ -1,4 +1,5 @@
 use crate::buffer::RingBuffer;
+use crate::terminal::TerminalModel;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use std::error::Error;
 use std::ffi::CString;
@@ -96,6 +97,9 @@ struct Subscriber {
 /// registration are atomic with respect to the reader's append and fan-out.
 struct Shared {
     buffer: RingBuffer,
+    /// The session's terminal, parsed from the same bytes under the same lock,
+    /// so a first paint always matches the raw offset it is taken at.
+    model: TerminalModel,
     subscribers: Vec<Subscriber>,
     closed: bool,
     /// Highest output offset the session's consumer has acknowledged. It is
@@ -108,6 +112,7 @@ struct Shared {
 impl Shared {
     fn publish(&mut self, bytes: &[u8]) {
         let seq = self.buffer.append(bytes);
+        self.model.advance(bytes);
         if self.subscribers.is_empty() {
             return;
         }
@@ -161,6 +166,17 @@ impl Shared {
             }
             !subscriber.flow
         });
+    }
+
+    /// Add a subscriber; after the output ended it gets `Closed` straight away.
+    fn register(&mut self, flow: bool) -> mpsc::Receiver<StreamItem> {
+        let (sender, receiver) = mpsc::channel(SUBSCRIBER_QUEUE + 1);
+        if self.closed {
+            let _ = sender.try_send(StreamItem::Closed);
+        } else {
+            self.subscribers.push(Subscriber { sender, flow });
+        }
+        receiver
     }
 
     fn close(&mut self) {
@@ -247,6 +263,7 @@ impl PtyProcess {
 
         let shared = Arc::new(Mutex::new(Shared {
             buffer: RingBuffer::new(),
+            model: TerminalModel::new(spec.cols, spec.rows),
             subscribers: Vec::new(),
             closed: false,
             acknowledged: 0,
@@ -299,6 +316,9 @@ impl PtyProcess {
             return Err(PtyError::Io("cannot resize an exited process".to_owned()));
         }
 
+        // Shared first, then master: no path takes Shared while holding master. The
+        // reader cannot publish between the PTY and the model changing size.
+        let mut shared = lock_unpoisoned(&self.shared);
         lock_unpoisoned(&self.master)
             .resize(PtySize {
                 rows,
@@ -306,7 +326,9 @@ impl PtyProcess {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| PtyError::Io(format!("could not resize PTY: {error:#}")))
+            .map_err(|error| PtyError::Io(format!("could not resize PTY: {error:#}")))?;
+        shared.model.resize(cols, rows);
+        Ok(())
     }
 
     /// Send SIGTERM to the child process group.
@@ -348,15 +370,7 @@ impl PtyProcess {
     pub fn subscribe(&self) -> (Snapshot, mpsc::Receiver<StreamItem>) {
         let mut shared = lock_unpoisoned(&self.shared);
         let (replay_from, bytes, next_seq) = shared.buffer.snapshot();
-        let (sender, receiver) = mpsc::channel(SUBSCRIBER_QUEUE + 1);
-        if shared.closed {
-            let _ = sender.try_send(StreamItem::Closed);
-        } else {
-            shared.subscribers.push(Subscriber {
-                sender,
-                flow: false,
-            });
-        }
+        let receiver = shared.register(false);
         let snapshot = Snapshot {
             replay_from,
             bytes,
@@ -376,12 +390,7 @@ impl PtyProcess {
         let mut shared = lock_unpoisoned(&self.shared);
         let (replay_from, bytes, next_seq) = shared.buffer.snapshot();
         let raised = shared.raise_acknowledged(replay_from);
-        let (sender, receiver) = mpsc::channel(SUBSCRIBER_QUEUE + 1);
-        if shared.closed {
-            let _ = sender.try_send(StreamItem::Closed);
-        } else {
-            shared.subscribers.push(Subscriber { sender, flow: true });
-        }
+        let receiver = shared.register(true);
         drop(shared);
         if raised {
             self.gate.notify_all();
@@ -394,6 +403,30 @@ impl PtyProcess {
             },
             receiver,
         )
+    }
+
+    /// Attach a subscriber that starts from a first paint of the session's
+    /// terminal instead of the raw replay: the returned snapshot is empty and
+    /// begins at the live offset, the paint (ANSI bytes) rebuilds what the
+    /// screen shows at that offset, and live chunks continue from
+    /// `snapshot.next_seq`. A flow subscriber's acknowledged offset starts at
+    /// that offset too, since nothing is replayed.
+    pub fn subscribe_paint(&self, flow: bool) -> (Snapshot, Vec<u8>, mpsc::Receiver<StreamItem>) {
+        let mut shared = lock_unpoisoned(&self.shared);
+        let next_seq = shared.buffer.next_seq();
+        let paint = shared.model.paint();
+        let raised = flow && shared.raise_acknowledged(next_seq);
+        let receiver = shared.register(flow);
+        drop(shared);
+        if raised {
+            self.gate.notify_all();
+        }
+        let snapshot = Snapshot {
+            replay_from: next_seq,
+            bytes: Vec::new(),
+            next_seq,
+        };
+        (snapshot, paint, receiver)
     }
 
     /// Record that the consumer finished parsing output through `upto_seq`, an

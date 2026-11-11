@@ -207,6 +207,7 @@ pub enum Req {
     /// The agent CLIs running under the sessions' process trees.
     Subagents {
         sessions: Vec<protocol::session::SessionInfo>,
+        inspect: Vec<String>,
     },
     // reads (all take the job's checkout)
     Changes,
@@ -288,6 +289,27 @@ pub enum Req {
         expected: String,
         text: String,
     },
+    /// One level of an ignored directory, read from disk (the file list
+    /// leaves it collapsed). Sent on the write lane: its reply must apply
+    /// whatever else was clicked since, so it is never generation-gated.
+    IgnoredChildren {
+        dir: String,
+    },
+    /// Create an empty file or a folder named `name` in `dir` (`""` = root).
+    CreateEntry {
+        dir: String,
+        name: String,
+        folder: bool,
+    },
+    /// Move a file or folder to the system Trash.
+    TrashPath {
+        path: String,
+    },
+    /// Rename a file or folder in place; `new_name` is a plain name.
+    RenamePath {
+        path: String,
+        new_name: String,
+    },
     Stage {
         paths: Option<Vec<String>>,
     },
@@ -346,7 +368,10 @@ pub enum ReplyData {
     /// The child process's activity, keyed by session id.
     Activity(HashMap<String, Activity>),
     /// The agent CLIs under each session, keyed by session id.
-    Subagents(app_core::subagents::SubagentMap),
+    Subagents {
+        agents: app_core::subagents::SubagentMap,
+        debug: app_core::session_debug::Snapshot,
+    },
     Changes(GitViewChanges),
     Diff(GitViewDiff),
     History(GitViewHistory),
@@ -366,6 +391,12 @@ pub enum ReplyData {
         line: Option<u64>,
     },
     Saved(GitViewFile),
+    /// The entries one level below an ignored directory.
+    IgnoredChildren(Vec<String>),
+    /// The checkout-relative path of a file or folder just created.
+    Created(String),
+    /// The new checkout-relative path after a rename.
+    Renamed(String),
     /// The config lookup's answer: `paths` aliases parsed worker-side from
     /// the nearest `tsconfig`/`jsconfig` candidate that defined any
     /// (empty when none did).
@@ -537,6 +568,9 @@ fn is_mutating(req: &Req) -> bool {
             | Req::PruneWorktrees { .. }
             | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
+            | Req::RenamePath { .. }
+            | Req::TrashPath { .. }
+            | Req::CreateEntry { .. }
             | Req::Stage { .. }
             | Req::Unstage { .. }
             | Req::Discard { .. }
@@ -800,15 +834,16 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
         Req::RemoveProject { id } => storage_req(storage, |store| {
             projects::remove_project(store, id).map(|_| ReplyData::Ok)
         }),
-        Req::Subagents { sessions } => {
+        Req::Subagents { sessions, inspect } => {
             // The process table is read on the worker: `ps` is a command,
             // not a file the UI thread should run.
-            let rows = process_table();
+            let (rows, rss) = process_table();
             let mut map = app_core::subagents::compute_subagents(sessions, &rows);
             // Codex 0.167 runs its agents under a shared `codex app-server`
             // daemon: those are attributed through the thread id.
             add_codex_daemon_agents(&mut map, sessions, &rows);
-            Ok(ReplyData::Subagents(map))
+            let debug = app_core::session_debug::sample(sessions, &rows, rss, &map, inspect);
+            Ok(ReplyData::Subagents { agents: map, debug })
         }
         Req::Activity { sessions, previous } => {
             // The files live in GOKO_HOME and the codex home; reading them
@@ -931,17 +966,17 @@ fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
 }
 
 /// The process table: `pid`, `ppid` and the command of every process.
-fn process_table() -> Vec<app_core::subagents::ProcessRow> {
+fn process_table() -> (Vec<app_core::subagents::ProcessRow>, HashMap<u32, u64>) {
     let Ok(output) = std::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,ppid=,command="])
+        .args(["-axww", "-o", "pid=,ppid=,rss=,command="])
         .output()
     else {
-        return Vec::new();
+        return Default::default();
     };
     if !output.status.success() {
-        return Vec::new();
+        return Default::default();
     }
-    app_core::subagents::parse_ps(&String::from_utf8_lossy(&output.stdout))
+    app_core::session_debug::parse_processes(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The shell a `shell` session runs: `$SHELL`, else `/bin/zsh` — the same
@@ -1100,6 +1135,21 @@ fn run_checkout(
         } => git_view::save_file(checkout, path, expected, text)
             .map(ReplyData::Saved)
             .map_err(|e| e.to_string()),
+        Req::IgnoredChildren { dir } => git_view::ignored_children(checkout, dir)
+            .map(ReplyData::IgnoredChildren)
+            .map_err(|e| e.to_string()),
+        Req::CreateEntry { dir, name, folder } => {
+            git_view::create_entry(checkout, dir, name, *folder)
+                .map(ReplyData::Created)
+                .map_err(|e| e.to_string())
+        }
+        Req::TrashPath { path } => git_view::entry_path(checkout, path)
+            .map_err(|e| e.to_string())
+            .and_then(|entry| crate::editor::trash::move_to_trash(&entry))
+            .map(|_| ReplyData::Ok),
+        Req::RenamePath { path, new_name } => git_view::rename_path(checkout, path, new_name)
+            .map(ReplyData::Renamed)
+            .map_err(|e| e.to_string()),
         Req::Stage { paths } => git_write::stage(checkout, paths.as_deref())
             .map(|_| ReplyData::Ok)
             .map_err(|e| e.to_string()),
@@ -1223,20 +1273,69 @@ impl EditorState {
             .map(String::as_str)
             .filter(|p| keep(p))
             .map(|p| (p, FileMark::Tracked));
-        // Ignored entries sit beside the tracked ones, dimmed; an ignored
-        // directory is a leaf row (not expandable).
-        let ignored = self
-            .files
-            .ignored
+        // Ignored entries sit beside the tracked ones, dimmed. An ignored
+        // directory is a leaf row until the user opens it; then its entries
+        // stand in for it.
+        let ignored_entries = expand_ignored(&self.files.ignored, &self.files.ignored_open);
+        let ignored = ignored_entries
             .iter()
             .filter(|p| keep(p.trim_end_matches('/')))
             .map(|p| match p.strip_suffix('/') {
                 Some(dir) => (dir, FileMark::IgnoredDir),
                 None => (p.as_str(), FileMark::Ignored),
             });
-        self.files.model = rune_kit::FileTree::new()
+        // A rebuild (refresh, rename, an opened ignored directory) keeps
+        // the folders the user had open and the cursor.
+        // A folder just created has no file for Git to list: it stands in
+        // as an empty folder row until something lands in it.
+        let empty = self
+            .files
+            .empty_dirs
+            .iter()
+            .filter(|d| keep(d))
+            .filter(|d| {
+                let inside = format!("{d}/");
+                !self.files.paths.iter().any(|p| p.starts_with(&inside))
+                    && !ignored_entries.iter().any(|p| p.starts_with(&inside))
+            })
+            .map(|d| (d.as_str(), FileMark::EmptyDir));
+        let open = expanded_ids(&self.files.model);
+        let cursor = self.files.model.cursor().map(str::to_string);
+        let mut model = rune_kit::FileTree::new()
             .dirs_first(true)
-            .build(tracked.chain(ignored));
+            .build(tracked.chain(ignored).chain(empty));
+        // Folders first — including an ignored or empty folder, which is a
+        // leaf row the kit would sort among the files, only to jump up
+        // among the folders once opened.
+        let folder = |n: &rune_kit::FileNode<FileMark>| {
+            n.dir || matches!(n.data, Some(FileMark::IgnoredDir | FileMark::EmptyDir))
+        };
+        model.sort_by(|a, b| {
+            folder(b)
+                .cmp(&folder(a))
+                .then_with(|| rune_kit::natural_cmp(&a.name, &b.name))
+        });
+        // The kit merges a folder whose only child is a folder into one row
+        // (`public` + `assets` → `public/assets`), so a row's id can change
+        // between rebuilds: a folder stays open when its own path, or a
+        // folder it merged, was open.
+        let open_paths: std::collections::HashSet<&str> = open
+            .iter()
+            .flat_map(|id| {
+                id.match_indices('/')
+                    .map(|(i, _)| &id[..i])
+                    .chain([id.as_str()])
+            })
+            .collect();
+        for id in folder_ids(&model) {
+            if open_paths.contains(id.as_str()) {
+                model.set_expanded(&id, true);
+            }
+        }
+        if let Some(id) = cursor.filter(|id| model.contains(id)) {
+            model.select(&id);
+        }
+        self.files.model = model;
         self.files.model_checkout = self.checkout_key.clone();
     }
 
@@ -1551,6 +1650,47 @@ impl EditorState {
 
 /// Request-kind key for generation tracking; writes and project calls map
 /// to kinds that never carry a generation.
+/// The ignored entries with every opened directory replaced by its entries
+/// (an opened directory with nothing in it stays a leaf).
+fn expand_ignored(
+    ignored: &[String],
+    open: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(ignored.len());
+    let mut stack: Vec<&String> = ignored.iter().rev().collect();
+    while let Some(entry) = stack.pop() {
+        match entry
+            .strip_suffix('/')
+            .and_then(|dir| open.get(dir))
+            .filter(|children| !children.is_empty())
+        {
+            Some(children) => stack.extend(children.iter().rev()),
+            None => out.push(entry.clone()),
+        }
+    }
+    out
+}
+
+/// Every folder row of `model`.
+fn folder_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack: Vec<String> = model.children(None).map(str::to_string).collect();
+    while let Some(id) = stack.pop() {
+        if model.has_children(&id) {
+            stack.extend(model.children(Some(&id)).map(str::to_string));
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// The folders of `model` that are open.
+fn expanded_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Vec<String> {
+    let mut ids = folder_ids(model);
+    ids.retain(|id| model.is_expanded(id));
+    ids
+}
+
 fn kind_key(req: &Req) -> &'static str {
     match req {
         Req::Changes => "changes",
@@ -2446,6 +2586,381 @@ mod tests {
         e.install_doc("blob.bin".into(), binary("blob.bin"), None);
         assert!(e.doc.as_ref().unwrap().media.is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An ignored or empty folder sorts with the folders, before and after
+    /// it is opened — it must not jump when clicked.
+    #[test]
+    fn ignored_and_empty_folders_sort_with_the_folders_and_stay_put_when_opened() {
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["README.md".into(), "src/a.rs".into(), "top.txt".into()];
+        e.files.ignored = vec!["public/".into(), "target/".into(), "zed.log".into()];
+        e.files.empty_dirs.insert("new".into());
+        e.rebuild_file_model();
+        let roots = |e: &EditorState| -> Vec<String> {
+            e.files.model.children(None).map(str::to_string).collect()
+        };
+        let want = [
+            "new",
+            "public",
+            "src",
+            "target",
+            "README.md",
+            "top.txt",
+            "zed.log",
+        ];
+        assert_eq!(roots(&e), want, "folders first, files after");
+        e.apply_reply(reply(
+            Req::IgnoredChildren {
+                dir: "public".into(),
+            },
+            0,
+            Some(key),
+            Ok(ReplyData::IgnoredChildren(vec!["public/a.png".into()])),
+        ));
+        assert_eq!(roots(&e), want, "opening a folder does not move it");
+    }
+
+    /// The whole way to a media file in an ignored folder, on a real Git
+    /// repository and the real worker jobs: open the folders one by one,
+    /// then the file.
+    #[test]
+    fn a_media_file_in_an_ignored_folder_opens_with_a_preview() {
+        use crate::editor::media::Media;
+        let (dir, storage) = temp_storage("rune-ignored-media");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("public/assets/clip")).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "a@b.c"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(&args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repo.join(".gitignore"), "public/assets\n").unwrap();
+        std::fs::write(repo.join("README.md"), "hi\n").unwrap();
+        std::fs::write(
+            repo.join("public/assets/clip/lumen-with.mp4"),
+            [0u8, 0, 0, 0x18, b'f', b't', b'y', b'p'],
+        )
+        .unwrap();
+        std::fs::write(repo.join("public/assets/pic.png"), [0u8, 1, 2, 3]).unwrap();
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AddProject {
+                path: repo.display().to_string(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+            }),
+        );
+        let Ok(ReplyData::Added(project)) = reply.result else {
+            panic!("project added: {:?}", reply.result);
+        };
+        let checkout = std::fs::canonicalize(&repo).unwrap();
+        let key = checkout_key(&project.project.id, &checkout);
+        let mut e = editor();
+        e.project_id = Some(project.project.id.clone());
+        e.checkout = Some(checkout.clone());
+        e.checkout_key = Some(key.clone());
+        let waker: rune::Waker = std::sync::Arc::new(|| {});
+        e.media_host = Some((rune::ImageCache::new(waker.clone()), waker));
+        let mut run = |e: &mut EditorState, job: Job| {
+            let reply = run_job(&storage, &job);
+            assert!(reply.result.is_ok(), "{:?} -> {:?}", job.req, reply.result);
+            e.apply_reply(reply);
+        };
+        let mut read = |e: &mut EditorState, req: Req| {
+            assert!(e.enqueue_read(checkout.clone(), key.clone(), req.clone()));
+        };
+        let _ = &mut read;
+        let (pid, co) = (project.project.id.clone(), checkout.clone());
+        // The file list, with the ignored folder collapsed.
+        let mut list = Job::read(&pid, co.clone(), key.clone(), Req::FileList);
+        list.generation = {
+            let g = e.req_gens.entry("filelist").or_insert(0);
+            *g += 1;
+            *g
+        };
+        run(&mut e, list);
+        assert_eq!(
+            e.files.model.get("public/assets").map(|n| n.data),
+            Some(Some(crate::editor::state::FileMark::IgnoredDir))
+        );
+        for dir in ["public/assets", "public/assets/clip"] {
+            run(
+                &mut e,
+                Job::write(
+                    &pid,
+                    co.clone(),
+                    key.clone(),
+                    Req::IgnoredChildren { dir: dir.into() },
+                ),
+            );
+        }
+        let file = "public/assets/clip/lumen-with.mp4";
+        assert!(
+            e.files.model.get(file).is_some(),
+            "the media file is in the tree: {:?}",
+            e.files
+                .model
+                .children(Some("public/assets/clip"))
+                .collect::<Vec<_>>()
+        );
+        // Open it like the tree does.
+        e.doc_seq += 1;
+        let token = e.doc_seq;
+        e.doc_load = Some(token);
+        let mut open = Job::read(
+            &pid,
+            co.clone(),
+            key.clone(),
+            Req::File {
+                path: file.into(),
+                token,
+                line: None,
+            },
+        );
+        open.generation = {
+            let g = e.req_gens.entry("file").or_insert(0);
+            *g += 1;
+            *g
+        };
+        run(&mut e, open);
+        let doc = e.doc.as_ref().expect("the file opened");
+        assert_eq!(doc.path, file);
+        assert!(
+            matches!(doc.media, Some(Media::Player(_, true))),
+            "a video preview"
+        );
+    }
+
+    /// Opening the only ignored child of an open folder merges the two rows
+    /// (`public` + `assets` → `public/assets`): the merged row opens, and a
+    /// later rebuild keeps it open instead of dropping the stale id.
+    #[test]
+    fn a_folder_merged_by_opening_its_only_child_stays_open_across_rebuilds() {
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["README.md".into()];
+        e.files.ignored = vec!["public/assets/".into()];
+        e.rebuild_file_model();
+        e.files.model.set_expanded("public", true);
+        e.apply_reply(reply(
+            Req::IgnoredChildren {
+                dir: "public/assets".into(),
+            },
+            0,
+            Some(key),
+            Ok(ReplyData::IgnoredChildren(vec![
+                "public/assets/clip/".into(),
+            ])),
+        ));
+        let m = &e.files.model;
+        assert!(
+            m.contains("public/assets") && !m.contains("public"),
+            "merged row"
+        );
+        assert!(m.is_expanded("public/assets"));
+        assert_eq!(
+            m.children(Some("public/assets")).collect::<Vec<_>>(),
+            ["public/assets/clip"]
+        );
+        e.rebuild_file_model();
+        assert!(
+            e.files.model.is_expanded("public/assets"),
+            "a rebuild keeps it"
+        );
+    }
+
+    #[test]
+    fn an_opened_ignored_directory_shows_its_entries_and_keeps_the_open_folders() {
+        use crate::editor::state::FileMark;
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["README.md".into(), "src/a.rs".into()];
+        e.files.ignored = vec!["public/assets/".into(), "target/".into()];
+        e.rebuild_file_model();
+        e.files.model.set_expanded("src", true);
+        let data = |e: &EditorState, id: &str| e.files.model.get(id).map(|n| n.data);
+        assert_eq!(data(&e, "public/assets"), Some(Some(FileMark::IgnoredDir)));
+        e.apply_reply(reply(
+            Req::IgnoredChildren {
+                dir: "public/assets".into(),
+            },
+            0,
+            Some(key),
+            Ok(ReplyData::IgnoredChildren(vec![
+                "public/assets/a.png".into(),
+                "public/assets/deep/".into(),
+            ])),
+        ));
+        assert_eq!(
+            data(&e, "public/assets/a.png"),
+            Some(Some(FileMark::Ignored))
+        );
+        assert_eq!(
+            data(&e, "public/assets/deep"),
+            Some(Some(FileMark::IgnoredDir)),
+            "a nested ignored directory is a leaf that opens in turn"
+        );
+        assert!(
+            e.files.model.is_expanded("public/assets"),
+            "the folder opened"
+        );
+        assert!(
+            e.files.model.is_expanded("src"),
+            "other open folders stay open"
+        );
+        assert_eq!(data(&e, "target"), Some(Some(FileMark::IgnoredDir)));
+        // A refresh keeps what the user opened.
+        e.rebuild_file_model();
+        assert!(e.files.model.contains("public/assets/a.png"));
+    }
+
+    #[test]
+    fn a_created_folder_shows_as_an_empty_row_and_a_created_file_opens() {
+        use crate::editor::state::FileMark;
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["src/a.rs".into()];
+        e.rebuild_file_model();
+        let created = |dir: &str, name: &str, folder, path: &str| {
+            reply(
+                Req::CreateEntry {
+                    dir: dir.into(),
+                    name: name.into(),
+                    folder,
+                },
+                0,
+                Some(key.clone()),
+                Ok(ReplyData::Created(path.into())),
+            )
+        };
+        e.apply_reply(created("src", "docs", true, "src/docs"));
+        // The list re-reads, then the tree opens on the new folder.
+        e.apply_reply(reply(
+            Req::FileList,
+            e.req_gens.get("filelist").copied().unwrap_or(0),
+            Some(key.clone()),
+            Ok(ReplyData::FileList(vec!["src/a.rs".into()], Vec::new())),
+        ));
+        assert_eq!(
+            e.files.model.get("src/docs").map(|n| n.data),
+            Some(Some(FileMark::EmptyDir))
+        );
+        assert!(e.files.model.is_expanded("src"), "revealed");
+        assert_eq!(e.files.model.cursor(), Some("src/docs"));
+        // Once a file lands in it, the folder is a real one again.
+        e.files.paths = vec!["src/a.rs".into(), "src/docs/x.md".into()];
+        e.rebuild_file_model();
+        assert_eq!(e.files.model.get("src/docs").map(|n| n.dir), Some(true));
+        // A new file opens in the editor.
+        e.apply_reply(created("src", "b.rs", false, "src/b.rs"));
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::File { path, .. } if path == "src/b.rs"))
+        );
+        assert_eq!(e.files.reveal.as_deref(), Some("src/b.rs"));
+        e.apply_reply(reply(
+            Req::CreateEntry {
+                dir: "src".into(),
+                name: "b.rs".into(),
+                folder: false,
+            },
+            0,
+            Some(key),
+            Err("b.rs already exists".into()),
+        ));
+        assert!(
+            e.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("already exists"))
+        );
+    }
+
+    #[test]
+    fn a_trash_reply_refreshes_and_closes_a_clean_open_doc_but_keeps_a_draft() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        let req = || Req::TrashPath { path: "src".into() };
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        e.apply_reply(reply(req(), 0, Some(key.clone()), Ok(ReplyData::Ok)));
+        assert!(e.doc.is_none(), "the clean doc closed with its folder");
+        assert!(
+            jobs.try_iter().any(|j| matches!(j.req, Req::FileList)),
+            "the tree re-reads"
+        );
+        e.doc = Some(OpenDoc::new("other.txt", &text_file("x")));
+        e.apply_reply(reply(req(), 0, Some(key.clone()), Ok(ReplyData::Ok)));
+        assert!(e.doc.is_some(), "an unrelated doc stays");
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        e.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        e.apply_reply(reply(req(), 0, Some(key.clone()), Ok(ReplyData::Ok)));
+        assert!(e.doc.is_some(), "a draft is kept");
+        assert!(e.notice.as_ref().is_some_and(|n| n.text.contains("Trash")));
+        e.notice = None;
+        e.apply_reply(reply(req(), 0, Some(key), Err("denied".into())));
+        assert!(e.notice.as_ref().is_some_and(|n| n.text == "denied"));
+    }
+
+    #[test]
+    fn a_rename_reply_refreshes_and_moves_a_clean_open_doc() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        let req = || Req::RenamePath {
+            path: "src".into(),
+            new_name: "lib".into(),
+        };
+        e.apply_reply(reply(
+            req(),
+            0,
+            Some(key.clone()),
+            Ok(ReplyData::Renamed("lib".into())),
+        ));
+        assert!(e.doc.is_none(), "the clean doc reloads from its new path");
+        assert!(e.doc_load.is_some());
+        let sent: Vec<Job> = jobs.try_iter().collect();
+        assert!(sent.iter().any(|j| matches!(j.req, Req::FileList)));
+        assert!(
+            sent.iter()
+                .any(|j| matches!(&j.req, Req::File { path, .. } if path == "lib/a.txt"))
+        );
+        // A draft stays where it is, with a notice.
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        e.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        e.apply_reply(reply(
+            req(),
+            0,
+            Some(key),
+            Ok(ReplyData::Renamed("lib".into())),
+        ));
+        assert!(e.doc.is_some());
+        assert!(
+            e.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("lib/a.txt"))
+        );
     }
 
     #[test]

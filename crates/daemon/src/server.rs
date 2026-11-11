@@ -25,7 +25,7 @@ use crate::pty::{PtyError, PtyProcess, Snapshot, StreamItem, FLOW_WINDOW};
 use crate::session::{CreateSpec, SessionError, SessionManager};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use protocol::frame::{self, Frame, FrameError, FrameKind, MAX_FRAME_PAYLOAD};
+use protocol::frame::{self, Frame, FrameError, FrameKind, MAX_FRAME_PAYLOAD, PAINT_SEQ};
 use protocol::message::{
     ErrorCode, Event, Hello, HelloOk, ProtoError, Request, Response, ResponseOutcome,
 };
@@ -220,6 +220,9 @@ impl Drop for Client<'_> {
 struct Output {
     session_id: SessionId,
     snapshot: Snapshot,
+    /// A paint subscription only: the first paint, sent before anything else
+    /// as frames marked `PAINT_SEQ`.
+    paint: Vec<u8>,
     receiver: mpsc::Receiver<StreamItem>,
     /// Flow subscriptions only: the session's acknowledged offset, watched so
     /// replay pieces wait for credit.
@@ -362,9 +365,12 @@ impl Client<'_> {
                 Ok(json!({}))
             }),
             Request::TerminalSubscribe {
-                session_id, flow, ..
+                session_id,
+                flow,
+                paint,
+                ..
             } => {
-                return match self.terminal_subscribe(session_id, flow) {
+                return match self.terminal_subscribe(session_id, flow, paint) {
                     Ok((result, output)) => (Ok(result), Some(output), false),
                     Err(error) => (Err(error), None, false),
                 };
@@ -428,26 +434,40 @@ impl Client<'_> {
         &mut self,
         session_id: SessionId,
         flow: bool,
+        paint: bool,
     ) -> Result<(Value, Output), ProtoError> {
         let pty = self.state.sessions.pty(session_id).map_err(session_error)?;
-        let (snapshot, receiver, credit) = if flow {
+        let (snapshot, painted, receiver, credit) = if paint {
+            let (snapshot, painted, receiver) = pty.subscribe_paint(flow);
+            let credit = flow.then(|| pty.acknowledged_offset());
+            (snapshot, painted, receiver, credit)
+        } else if flow {
             let (snapshot, receiver) = pty.subscribe_flow();
-            (snapshot, receiver, Some(pty.acknowledged_offset()))
+            (
+                snapshot,
+                Vec::new(),
+                receiver,
+                Some(pty.acknowledged_offset()),
+            )
         } else {
             let (snapshot, receiver) = pty.subscribe();
-            (snapshot, receiver, None)
+            (snapshot, Vec::new(), receiver, None)
         };
         // A repeat subscribe (after `terminal.lagged`) replaces the old stream.
         if let Some(old) = self.terminals.remove(&session_id) {
             old.abort();
         }
-        let result = json!({
+        let mut result = json!({
             "replay_from": snapshot.replay_from,
             "next_seq": snapshot.next_seq,
         });
+        if paint {
+            result["paint"] = json!(true);
+        }
         let output = Output {
             session_id,
             snapshot,
+            paint: painted,
             receiver,
             credit,
         };
@@ -508,6 +528,12 @@ async fn forward_events(
 /// offset plus `FLOW_WINDOW`, so replayed bytes count as unacknowledged too.
 async fn stream_output(outgoing: mpsc::Sender<Vec<u8>>, mut output: Output) {
     let id = *output.session_id.as_bytes();
+    // The paint is not stream bytes, so it takes no credit and no offset.
+    for piece in output.paint.chunks(SNAPSHOT_PIECE) {
+        if send_output(&outgoing, id, PAINT_SEQ, piece).await.is_err() {
+            return;
+        }
+    }
     let snapshot = &output.snapshot;
     for (index, piece) in snapshot.bytes.chunks(SNAPSHOT_PIECE).enumerate() {
         let seq = snapshot.replay_from + (index * SNAPSHOT_PIECE) as u64;

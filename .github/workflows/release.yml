@@ -1,0 +1,92 @@
+# Builds Goko for macOS (Apple Silicon) and, for a tag vX.Y.Z, publishes the
+# archive as a GitHub release together with latest.json and install.sh. A manual run builds the same archives and keeps
+# them as workflow artifacts only.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, script: package-macos.sh }
+          # Linux is packaged by package-linux.sh and installed by install.sh, but
+          # not built here until a CI run has proven it. Enable by uncommenting;
+          # Linux builds on 22.04 so the binaries run on older glibc too.
+          # - { os: ubuntu-22.04, script: package-linux.sh }
+          # - { os: ubuntu-22.04-arm, script: package-linux.sh }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        # A mirror that cannot be reached should fail in minutes, not retry for ten.
+        timeout-minutes: 6
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential pkg-config \
+            libfontconfig1-dev libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev \
+            libxkbcommon-x11-dev libvulkan-dev
+
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+          SCRIPT: ${{ matrix.script }}
+        run: |
+          if [ "$IS_TAG" = true ]; then
+            version="${TAG#v}"
+            # The app reports the Cargo version, so a tag that differs would
+            # leave every install believing an update is waiting.
+            cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+            [ "$version" = "$cargo_version" ] || {
+              echo "tag $TAG does not match the Cargo.toml version $cargo_version" >&2
+              exit 1
+            }
+            base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          else
+            version="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+            base="https://example.invalid"
+          fi
+          "apps/rune/$SCRIPT" "$version" "$base"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goko-${{ matrix.os }}
+          path: |
+            dist/*.tar.gz
+            dist/*.target.json
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: goko-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # One manifest for every platform; the version comes first, as install.sh reads it.
+          jq -cs --arg version "${TAG#v}" '{version: $version, targets: add}' dist/*.target.json > dist/latest.json
+          cat dist/latest.json
+          gh release create "$TAG" dist/*.tar.gz dist/latest.json distribution/install.sh \
+            --title "Goko ${TAG#v}" --generate-notes

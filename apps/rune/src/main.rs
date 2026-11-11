@@ -13,9 +13,11 @@ mod project_map;
 mod sessions;
 mod settings;
 mod sidebar;
+mod tab_debug;
 mod term;
 mod theme;
 mod trace;
+mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -53,6 +55,9 @@ pub struct State {
     activity: HashMap<String, app_core::activity::Activity>,
     /// The agent CLIs running under each session's process tree.
     subagents: app_core::subagents::SubagentMap,
+    debug: app_core::session_debug::Snapshot,
+    debug_at: Option<f64>,
+    tab_menu: Option<tab_debug::MenuTarget>,
     /// When the sub-agents were last read; the reader polls every two
     /// seconds.
     subagents_at: Option<f64>,
@@ -171,9 +176,11 @@ pub struct State {
     /// When the usage/accounts read was last issued; the worker re-reads
     /// the sources about every five seconds.
     usage_at: Option<f64>,
-    /// The open usage-chip account menu: the agent it belongs to and where
-    /// the chip was pressed, so the kit menu can anchor there.
+    /// The open usage-chip account menu: the agent it belongs to; the kit
+    /// menu anchors to that chip.
     usage_menu: Option<String>,
+    /// What the check for a newer release found (Settings → Updates).
+    update: update::Status,
     /// The settings page's own state (section, forms, drafts).
     settings: settings::SettingsState,
     /// The appearance choice restored from `goko.theme`.
@@ -216,6 +223,8 @@ impl State {
         // and the session state is driven by synthetic events.
         #[cfg(test)]
         let daemon = daemon::Daemon::spawn_disconnected();
+        #[cfg(not(test))]
+        update::spawn(handle.clone());
         State {
             ink,
             data: Data::default(),
@@ -274,10 +283,14 @@ impl State {
             activity: HashMap::new(),
             activity_at: None,
             subagents: Default::default(),
+            debug: Default::default(),
+            debug_at: None,
+            tab_menu: None,
             subagents_at: None,
             pulse: rune::Live::new(1.0),
             usage_at: None,
             usage_menu: None,
+            update: update::Status::default(),
             settings: settings::SettingsState::default(),
             theme_choice: theme::Theme::Dark,
             os_dark: true,
@@ -612,8 +625,10 @@ impl State {
                 return;
             }
             backend::Req::Subagents { .. } => {
-                if let Ok(backend::ReplyData::Subagents(subagents)) = &reply.result {
-                    self.subagents = subagents.clone();
+                if let Ok(backend::ReplyData::Subagents { agents, debug }) = &reply.result {
+                    self.subagents = agents.clone();
+                    self.debug = debug.clone();
+                    self.debug_at = Some(self.clock);
                 }
                 return;
             }
@@ -1078,10 +1093,16 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         root = root.child(menu);
     }
     sidebar::new_session_layer(s, &mut layer);
+    if let Some(menu) = editor::files::menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
     if let Some(prompt) = sidebar::input_layer(s, ink, &mut layer) {
         root = root.child(prompt);
     }
     if let Some(menu) = chrome::usage_menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
+    if let Some(menu) = tab_debug::menu_layer(s, &mut layer) {
         root = root.child(menu);
     }
     // The New-worktree form is a modal layer too: it mounts above the app
@@ -1110,6 +1131,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         if s.view == View::Terminal
             && !s.project_map.open
             && s.sidebar_input.is_none()
+            && s.tab_menu.is_none()
             && let Some(session) = s.focused_terminal_session()
         {
             s.paste_into_terminal(session, text);
@@ -1275,6 +1297,17 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // The agent CLIs under the sessions: read every two seconds, on the
     // worker.
     changed |= s.poll_subagents(now);
+    if s.tab_menu.is_some() {
+        tx.wake_after(std::time::Duration::from_secs(2));
+        if s.view != View::Terminal
+            || !s
+                .visible_tabs()
+                .any(|(_, tab)| Some(&tab.id) == s.tab_menu.as_ref().map(|m| &m.tab))
+        {
+            s.tab_menu = None;
+            changed = true;
+        }
+    }
     // The quota chips and account labels: read about every five seconds on
     // the worker. The wake keeps the cadence alive while the UI is idle;
     // the `System` theme checks the OS appearance on the same tick.
@@ -1325,6 +1358,9 @@ fn on_quit(s: &mut State, _tx: &mut Tx) {
 /// palette owns every key while open, then F12 runs go-to-definition at the
 /// caret (LSP first, heuristic fallback) and Esc dismisses the hover card.
 fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    if s.tab_menu.is_some() {
+        return true;
+    }
     if s.project_map.open {
         return project_map::key(s, ev, tx);
     }
@@ -1338,7 +1374,7 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if s.view == View::Terminal {
-        return terminal_key(s, ev);
+        return terminal_key(s, ev, tx.key_base());
     }
     if s.view != View::Editor {
         return false;
@@ -1453,16 +1489,30 @@ fn on_modifiers(s: &mut State, mods: rune::Mods, _tx: &mut Tx) {
 
 /// The Terminal view's keyboard: every key belongs to the focused pane's
 /// session — never "the tab's session", a split tab has several. An app
-/// shortcut (⌘ on macOS) is left alone, and an exited session keeps its
-/// final grid without taking input.
-fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
+/// shortcut (⌘ on macOS) is left alone — `term::key_bytes` sends only the
+/// ⌘ line-editing chords — and an exited session keeps its final grid
+/// without taking input.
+fn terminal_key(s: &mut State, ev: &rune::KeyEvent, base: Option<char>) -> bool {
     let Some(session) = s.focused_terminal_session() else {
         return false;
     };
-    // A shortcut belongs to the app, not to the shell.
-    if ev.mods.cmd && !ev.mods.ctrl {
-        return false;
-    }
+    // macOS types `π` for ⌥P; a Meta chord wants the letter under the finger.
+    let meta;
+    let ev = match (&ev.key, base) {
+        (rune::Key::Text(_), Some(c)) if ev.mods.alt && c.is_ascii_alphabetic() => {
+            let c = if ev.mods.shift {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
+            meta = rune::KeyEvent {
+                key: rune::Key::Text(c.to_string()),
+                mods: ev.mods,
+            };
+            &meta
+        }
+        _ => ev,
+    };
     let Some(bytes) = term::key_bytes(ev) else {
         return false;
     };
@@ -1473,7 +1523,7 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
 /// the cursor (`Preedit`) and typed into the focused session once it is
 /// final (`Commit`) — Vietnamese Telex and the other marked-text methods.
 fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
-    if s.project_map.open {
+    if s.project_map.open || s.tab_menu.is_some() {
         return true;
     }
     if s.view != View::Terminal {
@@ -2373,6 +2423,66 @@ mod view_tests {
             .collect();
         assert!(texts.iter().any(|t| t.contains("fix-auth-flow")));
         assert!(texts.contains(&"Unassigned"));
+    }
+
+    /// Click the sidebar row of the session titled `title`.
+    fn click_session_row(rt: &mut Runtime<State>, title: &str) {
+        let row = els(rt)
+            .into_iter()
+            .find(|e| e.text.as_deref().is_some_and(|t| t.contains(title)) && e.rect[0] < 330.0)
+            .unwrap_or_else(|| panic!("session row {title} mounted"));
+        let (x, y) = (row.rect[0] + 10.0, row.rect[1] + row.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn a_session_row_opens_its_terminal_from_the_editor_and_from_settings() {
+        for start in [View::Terminal, View::Editor, View::Settings] {
+            let mut s = sidebar_scene();
+            let first = seed_session(&mut s, "first-agent", "/work/a/web");
+            let second = seed_session(&mut s, "second-agent", "/work/a/web");
+            s.focus_session_tab(&first);
+            s.focus_session_tab(&second);
+            s.view = start;
+            let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            click_session_row(&mut rt, "first-agent");
+            assert_eq!(rt.state.view, View::Terminal, "from {start:?}");
+            assert_eq!(rt.state.selected_session.as_deref(), Some(first.as_str()));
+            assert_eq!(
+                rt.state.focused_session_key().as_deref(),
+                Some(first.as_str()),
+                "the clicked session's pane is the active one, from {start:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_row_click_in_the_editor_respects_the_draft_guard() {
+        let mut s = sidebar_scene();
+        let key = seed_session(&mut s, "agent-one", "/work/a/web");
+        s.focus_session_tab(&key);
+        s.view = View::Editor;
+        s.editor.doc = Some(editor::draft::OpenDoc::new(
+            "a.txt",
+            &app_core::git_view::GitViewFile {
+                path: "a.txt".into(),
+                kind: "text",
+                text: Some("x".into()),
+                truncated: false,
+                size: 1,
+            },
+        ));
+        s.editor.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_session_row(&mut rt, "agent-one");
+        assert_eq!(rt.state.view, View::Editor, "an unsaved draft asks first");
+        assert!(rt.state.editor.guard.is_some(), "the guard dialog is up");
+        assert_eq!(rt.state.selected_session.as_deref(), Some(key.as_str()));
     }
 
     #[test]
@@ -4269,7 +4379,7 @@ mod view_tests {
         rt.update(|s, tx| {
             assert!(on_key(s, &cmd_key('t'), tx), "the app takes ⌘T");
             assert!(
-                !terminal_key(s, &cmd_key('t')),
+                !terminal_key(s, &cmd_key('t'), None),
                 "the terminal never types a ⌘ chord"
             );
         });
@@ -4805,6 +4915,42 @@ mod view_tests {
         assert_eq!(sign_ins, 1, "only the named account can sign in");
     }
 
+    /// Settings → Updates names the running version, and offers the install
+    /// command only once a newer release is known.
+    #[test]
+    fn settings_updates_shows_the_version_and_the_install_command_when_one_is_out() {
+        let page = |status: update::Status| {
+            let mut s = State::new(test_handle());
+            s.settings.section = crate::settings::Section::Updates;
+            s.update = status;
+            let mut rt = Runtime::new(s, settings_view, (1512.0, 814.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            let infos = els(&rt);
+            let has = |wanted: &str| {
+                infos.iter().any(|e| {
+                    e.label.as_deref() == Some(wanted) || e.text.as_deref() == Some(wanted)
+                })
+            };
+            (
+                has(&format!("Goko {}", update::CURRENT)),
+                has("Check for updates"),
+                has("Copy install command"),
+                has("Goko 9.9.9 is available."),
+            )
+        };
+        let (version, check, copy, said) = page(update::Status::UpToDate);
+        assert!(
+            version && check,
+            "the version and the check button are always there"
+        );
+        assert!(!copy && !said, "nothing to install yet");
+        let (version, _, copy, said) = page(update::Status::Available("9.9.9".into()));
+        assert!(
+            version && copy && said,
+            "the new release comes with the command"
+        );
+    }
+
     // -- Terminal row geometry ------------------------------------------------
 
     /// Whether the element `idx` sits under the element `ancestor` —
@@ -4989,7 +5135,10 @@ mod view_tests {
                 key: rune::Key::Text("a".into()),
                 mods: rune::Mods::default(),
             };
-            assert!(terminal_key(s, &ev), "the key reached the live session");
+            assert!(
+                terminal_key(s, &ev, None),
+                "the key reached the live session"
+            );
         });
         rt.frame(1.0 / 60.0);
         assert_eq!(top(&mut rt), live, "typing returned to the live screen");
