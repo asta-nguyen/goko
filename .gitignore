@@ -5,3 +5,8 @@
 /docs/Untitled*.canvas
 .openez/
 .omo
+node_modules/
+perf.data*
+/apps/desktop/
+
+

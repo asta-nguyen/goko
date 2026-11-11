@@ -181,8 +181,8 @@ pub const DEFAULT_LAYOUT: HistoryLayout = HistoryLayout {
     author: 128.0,
     commit: 80.0,
     detail_height: 320.0,
-    detail_width: 420.0,
-    detail_position: DetailPosition::Bottom,
+    detail_width: 550.0,
+    detail_position: DetailPosition::Right,
     panes: PaneWidths {
         files_aside: crate::editor::pane_layout::FILES_ASIDE_DEFAULT,
         changes_list: crate::editor::pane_layout::CHANGES_LIST_DEFAULT,
@@ -324,10 +324,11 @@ impl HistoryLayout {
                 HistoryField::DetailWidth.limits(),
                 DEFAULT_LAYOUT.detail_width,
             ),
-            // Unknown or missing values fall back to Bottom per field.
+            // Unknown or missing values fall back to Right per field.
             detail_position: match record.get("detailPosition").and_then(Value::as_str) {
+                Some("bottom") => DetailPosition::Bottom,
                 Some("right") => DetailPosition::Right,
-                _ => DetailPosition::Bottom,
+                _ => DetailPosition::Right,
             },
             panes: PaneWidths {
                 files_aside: pane_field(record, PaneKind::FilesAside),
@@ -528,8 +529,8 @@ mod tests {
                 "author": 128,
                 "commit": 80,
                 "detailHeight": 320,
-                "detailWidth": 420,
-                "detailPosition": "bottom",
+                "detailWidth": 550,
+                "detailPosition": "right",
                 "panes": {
                     "filesAside": 280,
                     "changesList": 300,
@@ -629,8 +630,8 @@ mod tests {
     #[test]
     fn detail_position_and_width_default_without_storage() {
         let layout = HistoryLayout::load(None);
-        assert_eq!(layout.detail_position, DetailPosition::Bottom);
-        assert_eq!(layout.detail_width, 420.0);
+        assert_eq!(layout.detail_position, DetailPosition::Right);
+        assert_eq!(layout.detail_width, 550.0);
     }
 
     #[test]
@@ -650,7 +651,7 @@ mod tests {
             r#"{"detailPosition":null}"#,
             r#"{"date":200}"#,
         ] {
-            assert_eq!(parse(raw).detail_position, DetailPosition::Bottom, "{raw}");
+            assert_eq!(parse(raw).detail_position, DetailPosition::Right, "{raw}");
         }
     }
 
@@ -659,7 +660,7 @@ mod tests {
         // Below the 280 floor clamps; unbounded above like detailHeight.
         assert_eq!(parse(r#"{"detailWidth":100}"#).detail_width, 280.0);
         assert_eq!(parse(r#"{"detailWidth":500}"#).detail_width, 500.0);
-        assert_eq!(parse(r#"{"detailWidth":"wide"}"#).detail_width, 420.0);
+        assert_eq!(parse(r#"{"detailWidth":"wide"}"#).detail_width, 550.0);
 
         let mut layout = DEFAULT_LAYOUT;
         layout.detail_position = DetailPosition::Right;
@@ -673,6 +674,6 @@ mod tests {
         layout.set_detail_width(f64::NAN);
         assert_eq!(layout.detail_width, 600.0, "non-finite writes are ignored");
         layout.reset(HistoryField::DetailWidth);
-        assert_eq!(layout.detail_width, 420.0);
+        assert_eq!(layout.detail_width, 550.0);
     }
 }

@@ -8,6 +8,7 @@ mod daemon;
 mod data;
 mod editor;
 mod panes;
+mod picker;
 mod project_map;
 mod sessions;
 mod settings;
@@ -109,6 +110,10 @@ pub struct State {
     /// Sessions whose close has a daemon request in flight — a pane never
     /// issues its stop or delete twice.
     close_inflight: HashSet<String>,
+    /// Repository roots a session's `cd` asked to register, until the
+    /// `AddProject` reply lands — one request per root, and no "already
+    /// registered" notice for a registration the user never asked for.
+    auto_project_roots: HashSet<String>,
     /// The wall clock in epoch milliseconds — the elapsed counter's source.
     now_ms: i64,
     /// The app's clock in seconds — the spinner's phase.
@@ -123,9 +128,12 @@ pub struct State {
     sidebar_width: f32,
     /// The open sidebar menu: the row it belongs to and what it offers.
     sidebar_menu: Option<(sidebar::RowTarget, sidebar::MenuKind)>,
-    /// Where the menu opens — the pointer's last position over the row's
-    /// action button.
-    menu_anchor: Option<(f32, f32)>,
+    /// The sidebar's workspace selector (rune-kit's searchable select).
+    pub workspace_picker: rune_kit::ComboboxState,
+    /// The one new-session picker (shell, agent or command to start) and
+    /// where it is open — the PROJECTS `+`, a row's `+`, or New tab's caret.
+    pub new_session_picker: rune_kit::ComboboxState,
+    pub new_session_from: Option<sidebar::NewSessionFrom>,
     /// The text the sidebar asks the user for.
     sidebar_input: Option<sidebar::SidebarInput>,
     /// The text the user typed into the sidebar's prompt.
@@ -158,12 +166,14 @@ pub struct State {
     /// When each session entered the stopping state, so the force kill can
     /// be offered once a stop has hung.
     stopping_since: HashMap<String, i64>,
+    /// Stops the app already escalated to a force kill on its own.
+    auto_forced: HashSet<String>,
     /// When the usage/accounts read was last issued; the worker re-reads
     /// the sources about every five seconds.
     usage_at: Option<f64>,
     /// The open usage-chip account menu: the agent it belongs to and where
     /// the chip was pressed, so the kit menu can anchor there.
-    usage_menu: Option<(String, f32, f32)>,
+    usage_menu: Option<String>,
     /// The settings page's own state (section, forms, drafts).
     settings: settings::SettingsState,
     /// The appearance choice restored from `goko.theme`.
@@ -171,6 +181,8 @@ pub struct State {
     /// What the OS last reported: `true` when dark. Only consulted while
     /// `theme_choice` is `System`.
     os_dark: bool,
+    /// Scroll speed multiplier for terminal and editor/diff scrolling.
+    pub scroll_speed: f32,
 }
 
 /// `AppSpec::init` is a plain `fn() -> S`, so the `AppHandle` the editor's
@@ -232,6 +244,7 @@ impl State {
             preedit: String::new(),
             split_sizes: HashMap::new(),
             close_inflight: HashSet::new(),
+            auto_project_roots: HashSet::new(),
             now_ms: data::now_ms(),
             clock: 0.0,
             notice: None,
@@ -239,7 +252,9 @@ impl State {
             notice_seen: None,
             sidebar_width: sidebar::DEFAULT_SIDEBAR_W,
             sidebar_menu: None,
-            menu_anchor: None,
+            workspace_picker: rune_kit::ComboboxState::default(),
+            new_session_picker: rune_kit::ComboboxState::default(),
+            new_session_from: None,
             sidebar_input: None,
             sidebar_text: rune::edit::TextEdit::new(""),
             workspaces: Vec::new(),
@@ -255,6 +270,7 @@ impl State {
             pending_argv: Vec::new(),
             argv_token: 0,
             stopping_since: HashMap::new(),
+            auto_forced: HashSet::new(),
             activity: HashMap::new(),
             activity_at: None,
             subagents: Default::default(),
@@ -265,6 +281,7 @@ impl State {
             settings: settings::SettingsState::default(),
             theme_choice: theme::Theme::Dark,
             os_dark: true,
+            scroll_speed: 1.0,
         }
     }
 
@@ -354,13 +371,51 @@ impl State {
             .unwrap_or(app_core::store::DEFAULT_WORKSPACE_ID)
     }
 
-    /// The selected workspace's name, for the selector and prompts.
-    pub fn workspace_name(&self) -> &str {
+    /// The selected workspace's label, for the selector and prompts.
+    pub fn workspace_name(&self) -> String {
         let id = self.workspace_id();
         self.workspaces
             .iter()
             .find(|workspace| workspace.id == id)
-            .map_or("Default", |workspace| workspace.name.as_str())
+            .map_or_else(|| "Default".to_string(), |w| self.workspace_label(w))
+    }
+
+    /// What a workspace is called on screen. A named one shows its name. An
+    /// unnamed one (created without a prompt, as herdr creates a space)
+    /// follows its first project, the way herdr's unnamed space follows its
+    /// terminal's folder; with no project yet it reads "New workspace",
+    /// numbered when several are still empty.
+    pub fn workspace_label(&self, workspace: &app_core::store::Workspace) -> String {
+        if !workspace.name.trim().is_empty() {
+            return workspace.name.clone();
+        }
+        let first_project = |id: &str| {
+            self.editor
+                .projects
+                .iter()
+                .find(|p| p.project.workspace_id == id)
+        };
+        if let Some(project) = first_project(&workspace.id) {
+            return project.project.name.clone();
+        }
+        let earlier = self
+            .workspaces
+            .iter()
+            .take_while(|w| w.id != workspace.id)
+            .filter(|w| w.name.trim().is_empty() && first_project(&w.id).is_none())
+            .count();
+        match earlier {
+            0 => "New workspace".to_string(),
+            n => format!("New workspace {}", n + 1),
+        }
+    }
+
+    /// The label of the workspace with `id`, or `fallback` when it is unknown.
+    pub fn workspace_label_of(&self, id: &str, fallback: &str) -> String {
+        self.workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .map_or_else(|| fallback.to_string(), |w| self.workspace_label(w))
     }
 
     /// Sessions waiting for the user, per workspace id. A session counts for
@@ -388,11 +443,11 @@ impl State {
                     .or_default() += n;
             }
         }
-        let n = unassigned.iter().filter(|sv| waiting(sv)).count();
-        if n > 0 {
+        // A session outside every project counts for the workspace it started in.
+        for sv in unassigned.iter().filter(|sv| waiting(sv)) {
             *counts
-                .entry(app_core::store::DEFAULT_WORKSPACE_ID.to_string())
-                .or_default() += n;
+                .entry(self.loose_workspace(sv).to_string())
+                .or_default() += 1;
         }
         counts
     }
@@ -523,12 +578,17 @@ impl State {
         self.sidebar_text = rune::edit::TextEdit::new("");
     }
 
+    /// Whether one of the sidebar's searchable selects is open (it owns the
+    /// keyboard while its search field takes the typing).
+    pub fn sidebar_picker_open(&self) -> bool {
+        self.workspace_picker.open || self.new_session_picker.open
+    }
+
     /// Whether the open prompt edits a workspace name.
     pub fn workspace_input_open(&self) -> bool {
         matches!(
             self.sidebar_input,
-            Some(sidebar::SidebarInput::WorkspaceName)
-                | Some(sidebar::SidebarInput::WorkspaceRename { .. })
+            Some(sidebar::SidebarInput::WorkspaceRename { .. })
         )
     }
 
@@ -680,6 +740,16 @@ impl State {
                 }
                 return;
             }
+            backend::Req::GetSetting { key } if key == settings::SCROLL_SPEED_KEY => {
+                if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
+                    && let Ok(val) = raw.parse::<f32>()
+                    && val > 0.0
+                    && val <= 10.0
+                {
+                    self.scroll_speed = val;
+                }
+                return;
+            }
             backend::Req::Workspaces => {
                 match &reply.result {
                     Ok(backend::ReplyData::Workspaces(list)) => {
@@ -727,12 +797,11 @@ impl State {
                         if !self.workspaces.iter().any(|w| w.id == workspace.id) {
                             self.workspaces.push(workspace.clone());
                         }
+                        // New workspace has no prompt: the created one is
+                        // selected as soon as its own request lands.
                         if self.workspace_pending == Some(*token) {
                             self.workspace_pending = None;
-                            if self.workspace_input_open() {
-                                self.close_sidebar_input();
-                                self.select_workspace(&workspace.id);
-                            }
+                            self.select_workspace(&workspace.id);
                         }
                     }
                     Err(error) => {
@@ -770,6 +839,20 @@ impl State {
             backend::Req::RemoveWorkspace { id } => {
                 match &reply.result {
                     Ok(backend::ReplyData::Workspaces(list)) => {
+                        // Removing a workspace ends what runs in it: its
+                        // projects' sessions and its own terminals close
+                        // (stop, then delete). Found before the list changes,
+                        // while its terminals still name it.
+                        let closing: Vec<String> = self
+                            .data
+                            .sessions
+                            .iter()
+                            .filter(|view| self.session_in_workspace(view, id))
+                            .map(|view| view.info.id.clone())
+                            .collect();
+                        for key in &closing {
+                            self.close_session(key);
+                        }
                         self.workspaces = list.clone();
                         if self.selected_workspace.as_deref() == Some(id.as_str()) {
                             self.select_workspace(app_core::store::DEFAULT_WORKSPACE_ID);
@@ -817,25 +900,47 @@ impl State {
                 }
                 return;
             }
-            backend::Req::AddProject { .. } => {
+            backend::Req::AddProject { path, .. } => {
+                // A cd-discovered repository is registered silently; only a
+                // user's own Add Project hears that it was already there.
+                let auto = self.auto_project_roots.remove(path);
                 // Re-adding a registered folder keeps its membership: say
                 // which workspace already holds it instead of moving it.
-                if let Ok(backend::ReplyData::Added(project)) = &reply.result
-                    && self
-                        .editor
-                        .projects
-                        .iter()
-                        .any(|p| p.project.id == project.project.id)
-                {
-                    let name = self
-                        .workspaces
-                        .iter()
-                        .find(|w| w.id == project.project.workspace_id)
-                        .map_or("Default", |w| w.name.as_str());
-                    self.notice = Some(format!(
-                        "{} is already registered in {name}",
-                        project.project.name
-                    ));
+                if let Ok(backend::ReplyData::Added(project)) = &reply.result {
+                    if !auto
+                        && self
+                            .editor
+                            .projects
+                            .iter()
+                            .any(|p| p.project.id == project.project.id)
+                    {
+                        let name =
+                            self.workspace_label_of(&project.project.workspace_id, "Default");
+                        self.notice = Some(format!(
+                            "{} is already registered in {name}",
+                            project.project.name
+                        ));
+                    }
+                    // Sessions with no project that sit in the new folder join
+                    // it. One that already belongs to a project stays put, so
+                    // its tab is not pulled out from under the project filter.
+                    let root = std::path::Path::new(&project.project.root);
+                    for s in &mut self.data.sessions {
+                        let cwd = std::path::Path::new(&s.info.cwd);
+                        if cwd.starts_with(root)
+                            && let Some(meta) = self.session_metas.get_mut(&s.info.id)
+                            && meta.project_id.is_none()
+                        {
+                            meta.project_id = Some(project.project.id.clone());
+                            s.meta = Some(meta.clone());
+                            backend::enqueue(
+                                &mut self.editor.backend,
+                                backend::Job::project(backend::Req::InsertSessionMeta(
+                                    meta.clone(),
+                                )),
+                            );
+                        }
+                    }
                 }
                 self.editor.apply_reply(reply);
                 return;
@@ -937,6 +1042,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(content),
         )
     };
+    // Overlays (menus, pickers, prompts) collect here and mount above the app.
+    let mut layer = Vec::new();
     let mut root = col()
         .w_full()
         .h_full()
@@ -947,7 +1054,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .grow(1.0)
                 .min_h(0.0)
                 .w_full()
-                .child(sidebar::sidebar(s, ink))
+                .child(sidebar::sidebar(s, ink, &mut layer))
                 .child(sidebar::separator(s, ink))
                 .child(workspace),
         );
@@ -967,10 +1074,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     // The sidebar's menus and its text prompt mount above the app: they are
     // overlays, not part of the tree.
-    let mut layer = Vec::new();
     if let Some(menu) = sidebar::menu_layer(s, &mut layer) {
         root = root.child(menu);
     }
+    sidebar::new_session_layer(s, &mut layer);
     if let Some(prompt) = sidebar::input_layer(s, ink, &mut layer) {
         root = root.child(prompt);
     }
@@ -1078,6 +1185,12 @@ fn setup(s: &mut State, waker: rune::Waker) {
             key: theme::THEME_KEY.to_string(),
         }),
     );
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: settings::SCROLL_SPEED_KEY.to_string(),
+        }),
+    );
 }
 
 /// `AppSpec::poll`: drain the daemon's events and the session replies it
@@ -1101,6 +1214,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     changed |= s.drain_pending();
     // Closing panes drive their own stop→delete lifecycle.
     changed |= s.poll_closes();
+    changed |= s.poll_stop_escalation();
     // Every pane of the active tab holds its own terminal attachment;
     // panes that left the view detach.
     changed |= s.sync_terminals();
@@ -1214,8 +1328,9 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if s.project_map.open {
         return project_map::key(s, ev, tx);
     }
-    // The sidebar's prompt owns the keyboard while it is open.
-    if s.sidebar_input.is_some() {
+    // The sidebar's prompt, or one of its searchable selects, owns the
+    // keyboard while it is open: its field takes the typing, not the shell.
+    if s.sidebar_input.is_some() || s.sidebar_picker_open() {
         return false;
     }
     // App shortcuts come before the Terminal forwards keys to the shell.
@@ -1268,12 +1383,13 @@ fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     let owned = s.sidebar_confirm.is_some()
         || s.workspace_remove_confirm.is_some()
         || s.sidebar_menu.is_some()
+        || s.sidebar_picker_open()
         || s.editor.guard.is_some()
         || s.editor.quick_open.open
-        || s.editor.project_picker_open
-        || s.editor.checkout_picker_open
+        || s.editor.project_picker.open
+        || s.editor.checkout_picker.open
         || s.editor.history.branch_picker.open
-        || s.editor.commit.agent_picker_open
+        || s.editor.commit.agent_picker.open
         || s.editor.history.row_menu.is_some()
         // A composition only owns the keys in the Terminal, where the IME types.
         || (s.view == View::Terminal && !s.preedit.is_empty());
@@ -1381,6 +1497,11 @@ fn main() {
     // A Dock/Finder launch gets launchd's bare PATH, so `claude`/`codex` would not
     // resolve; adopt the login shell's before any thread or the daemon starts.
     app_core::agents::adopt_login_shell_path(&editor::backend::default_shell());
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.iter().any(|a| a == "--scroll-bars") {
+        args.push("--scroll-bars".to_string());
+        args.push("always".to_string());
+    }
     let app = rune::App::new(AppSpec {
         families: ("Inter", "ui-monospace"),
         min_size: Some((760.0, 480.0)),
@@ -1389,6 +1510,7 @@ fn main() {
         on_key: Some(on_key),
         ..AppSpec::new("Goko", (1512.0, 814.0), init_state, view)
     })
+    .args(args)
     // Centre the macOS traffic lights in the 48 pt header band.
     .titlebar(rune::Titlebar::new(48.0))
     .keep_running()
@@ -1910,13 +2032,8 @@ mod view_tests {
         );
         let add = els(&rt)
             .into_iter()
-            .find(|e| e.label.as_deref() == Some("Add project"))
-            .expect("Add project button mounted");
-        assert!(
-            add.rect[0] + add.rect[2] <= 760.0 && add.rect[2] > 0.0,
-            "Add project escapes viewport: {:?}",
-            add.rect
-        );
+            .find(|e| e.label.as_deref() == Some("Add project"));
+        assert!(add.is_none(), "Add project button is removed from header");
         assert_no_horizontal_overflow(&rt, 760.0);
     }
 
@@ -2459,6 +2576,175 @@ mod view_tests {
         s
     }
 
+    /// A shell session with `title` and `project_id`, then the daemon's update
+    /// reporting its shell in `cd_to`. Returns the session key.
+    fn session_that_cds(
+        s: &mut State,
+        title: &str,
+        project_id: Option<&str>,
+        from: &str,
+        cd_to: &str,
+    ) -> String {
+        let mut info = protocol::session::SessionInfo {
+            id: protocol::session::SessionId::new(),
+            title: String::new(),
+            argv: vec!["/bin/zsh".into()],
+            cwd: from.into(),
+            state: protocol::session::SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        };
+        let key = crate::data::SessionInfo::key(info.id);
+        s.session_metas.insert(
+            key.clone(),
+            app_core::store::SessionMeta {
+                session_id: key.clone(),
+                project_id: project_id.map(Into::into),
+                agent: "shell".into(),
+                argv: info.argv.clone(),
+                cwd: from.into(),
+                title: title.into(),
+                created_at: 0,
+                workspace_id: None,
+            },
+        );
+        s.upsert_session(info.clone());
+        info.cwd = cd_to.into();
+        s.upsert_session(info);
+        key
+    }
+
+    /// The flow from a new workspace: its `+` → Shell runs a terminal that
+    /// belongs to it, so its row and tab show there — even with the editor's
+    /// project still in Default — while Default's own loose terminal does not.
+    /// Removing a workspace closes what runs in it — its projects' sessions
+    /// and its own terminals — and nothing else.
+    #[test]
+    fn removing_a_workspace_closes_its_sessions() {
+        let mut s = two_workspace_scene();
+        let in_project = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        let loose_here = seed_session_in(&mut s, "/tmp", None);
+        let loose_default = seed_session_in(&mut s, "/tmp", None);
+        let other_project = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        let meta = s.session_metas.get_mut(loose_here.as_str()).unwrap();
+        meta.workspace_id = Some("w1".into());
+        let meta = meta.clone();
+        s.data
+            .sessions
+            .iter_mut()
+            .find(|v| v.info.id == loose_here)
+            .unwrap()
+            .meta = Some(meta);
+        for key in [&in_project, &loose_here, &loose_default, &other_project] {
+            s.place_session(key, key, panes::Placement::Tab);
+        }
+
+        s.apply_reply(reply(
+            Req::RemoveWorkspace { id: "w1".into() },
+            Ok(ReplyData::Workspaces(vec![workspace(
+                app_core::store::DEFAULT_WORKSPACE_ID,
+                "Default",
+            )])),
+        ));
+
+        let closing = |key: &str| {
+            s.open_tabs.iter().any(|tab| {
+                panes::collect_panes(&tab.layout)
+                    .iter()
+                    .any(|pane| pane.session == key && pane.closing_at.is_some())
+            })
+        };
+        assert!(closing(&in_project), "Work's project session closes");
+        assert!(closing(&loose_here), "Work's own terminal closes");
+        assert!(!closing(&loose_default), "Default's terminal keeps running");
+        assert!(
+            !closing(&other_project),
+            "Default's project session keeps running"
+        );
+    }
+
+    #[test]
+    fn a_new_workspaces_shell_shows_its_row_and_tab_there() {
+        let mut s = sidebar_scene();
+        s.workspaces = vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w2", ""),
+        ];
+        editor::navigation::select_checkout(&mut s, "p1".into(), PathBuf::from("/work/a/web"));
+        let home = seed_session_in(&mut s, "/tmp", None);
+        let mine = seed_session_in(&mut s, "/tmp", None);
+        for (key, title, workspace_id) in [
+            (&home, "default-shell", None),
+            (&mine, "brave-meadow", Some("w2")),
+        ] {
+            let meta = s.session_metas.get_mut(key.as_str()).unwrap();
+            meta.title = title.into();
+            meta.workspace_id = workspace_id.map(Into::into);
+            let meta = meta.clone();
+            let view = s
+                .data
+                .sessions
+                .iter_mut()
+                .find(|v| &v.info.id == key)
+                .unwrap();
+            view.info.title = title.into();
+            view.meta = Some(meta);
+            s.place_session(key, title, panes::Placement::Tab);
+        }
+        s.selected_workspace = Some("w2".into());
+        let rt = key_runtime(s);
+        let live = els(&rt)
+            .into_iter()
+            .filter(|el| !el.exiting)
+            .collect::<Vec<_>>();
+        let shown = |text: &str| live.iter().any(|el| el.text.as_deref() == Some(text));
+        assert!(shown("New workspace"), "the unnamed workspace's label");
+        assert!(shown("brave-meadow"), "its shell has a row");
+        assert!(
+            !shown("default-shell"),
+            "Default's loose terminal stays in Default"
+        );
+        let tabs: Vec<_> = live
+            .iter()
+            .filter(|el| el.key.as_deref().is_some_and(|key| key.starts_with("tab:")))
+            .filter_map(|el| el.label.clone())
+            .collect();
+        assert_eq!(tabs, vec!["brave-meadow".to_string()], "only its tab shows");
+    }
+
+    #[test]
+    fn a_project_session_stays_in_its_project_when_its_shell_cds_elsewhere() {
+        let mut s = sidebar_scene();
+        s.editor.project_id = Some("p1".into());
+        let key = session_that_cds(&mut s, "web", Some("p1"), "/work/a/web", "/work/b/api");
+        let meta = s.session_metas.get(&key).expect("meta");
+        assert_eq!(meta.project_id.as_deref(), Some("p1"), "not moved to p2");
+        assert_eq!(meta.title, "web", "a chosen title is kept");
+    }
+
+    #[test]
+    fn an_unassigned_shell_joins_the_registered_project_it_cds_into() {
+        let mut s = sidebar_scene();
+        // `/work/b/fix` is p2's linked worktree, not its root.
+        let key = session_that_cds(&mut s, "brave-meadow", None, "/tmp", "/work/b/fix");
+        let meta = s.session_metas.get(&key).expect("meta");
+        assert_eq!(meta.project_id.as_deref(), Some("p2"));
+        assert_eq!(meta.title, "api", "the generated name takes the project's");
+        let view = s.data.sessions.iter().find(|v| v.info.id == key).unwrap();
+        assert_eq!(
+            view.meta.as_ref().and_then(|m| m.project_id.as_deref()),
+            Some("p2"),
+            "the sidebar's row joins p2 on this update, not the next one"
+        );
+        assert!(
+            s.auto_project_roots.is_empty(),
+            "a registered project is never re-added"
+        );
+    }
+
     #[test]
     fn the_sidebar_shows_only_the_selected_workspaces_projects() {
         let mut s = two_workspace_scene();
@@ -2532,6 +2818,7 @@ mod view_tests {
                 cwd: info.cwd.clone(),
                 title: info.title.clone(),
                 created_at: 0,
+                workspace_id: None,
             },
         );
         s.upsert_session(info);
@@ -2735,9 +3022,9 @@ mod view_tests {
         }
         let texts: Vec<String> = e.iter().filter_map(|el| el.text.clone()).collect();
         assert!(
-            texts
-                .iter()
-                .any(|t| t.contains("Remove Work? Its projects move to Default.")),
+            texts.iter().any(|t| t.contains(
+                "Remove Work? Its terminals and agents are closed; its projects move to Default."
+            )),
             "{texts:?}"
         );
 
@@ -3467,7 +3754,14 @@ mod view_tests {
         assert!(rt.state.sidebar_confirm.is_some());
 
         click_key(&mut rt, "sidebar-workspace-selector");
+        assert!(rt.state.workspace_picker.open, "the workspace picker opens");
+        // Let the surface finish opening before pressing one of its options.
+        rt.frame(0.5);
         click_label(&mut rt, "Remove workspace…");
+        assert!(
+            !rt.state.workspace_picker.open,
+            "choosing closes the picker"
+        );
         assert_eq!(rt.state.workspace_remove_confirm.as_deref(), Some("w1"));
         assert!(rt.state.sidebar_confirm.is_none());
     }
@@ -3623,8 +3917,12 @@ mod view_tests {
         rt.frame(0.0);
         click_key(&mut rt, "sidebar-action:more:p1");
         assert!(texts_on(&rt).iter().any(|t| t == "Prune missing worktrees"));
-        rt.state.sidebar_menu = None;
-        rt.frame(1.0 / 60.0);
+        rt.update(|s, _| s.sidebar_menu = None);
+        // The menu drops under its button, over the rows below: let it finish
+        // closing before pressing the next row's button.
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
 
         click_key(&mut rt, "sidebar-action:more:/work/a/feat-b");
         assert!(texts_on(&rt).iter().any(|t| t == "Prune missing worktrees"));
@@ -3795,31 +4093,41 @@ mod view_tests {
         assert!(rt.state.pending.is_empty());
     }
 
-    #[test]
-    fn an_unavailable_agent_says_why_in_both_menus() {
-        let reason = "Codex — codex not found on PATH";
-        let (backend, rx) = crate::editor::backend::channel_backend();
-        let mut s = start_scene();
-        s.editor.backend = backend;
-        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
-        rt.frame(0.0);
-        click_key(&mut rt, "new-tab-menu");
-        assert!(texts_on(&rt).iter().any(|t| t == reason), "New tab menu");
-        click_role(&mut rt, "menuitem", reason);
-        assert!(
-            workspace_jobs(&rx).is_empty(),
-            "a disabled entry starts nothing"
-        );
+    /// Steps a picker or menu through its open (or close) animation.
+    fn settle(rt: &mut Runtime<State>) {
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+    }
 
-        let mut s = start_scene();
-        s.editor.projects.truncate(1);
-        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
-        rt.frame(0.0);
-        click_key(&mut rt, "sidebar-action:new-session:p1");
-        assert!(
-            texts_on(&rt).iter().any(|t| t == reason),
-            "sidebar New session menu"
-        );
+    /// Every "start something" button opens the same picker, and an agent
+    /// missing from PATH is listed disabled with the reason: picking it starts
+    /// nothing.
+    #[test]
+    fn an_unavailable_agent_says_why_in_every_new_session_picker() {
+        let reason = "codex not found on PATH";
+        for trigger in ["new-tab-menu", "sidebar-action:new-session:p1"] {
+            let (backend, rx) = crate::editor::backend::channel_backend();
+            let mut s = start_scene();
+            s.editor.backend = backend;
+            let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            click_key(&mut rt, trigger);
+            settle(&mut rt);
+            assert!(
+                rt.state.new_session_picker.open,
+                "{trigger} opens the picker"
+            );
+            assert!(
+                texts_on(&rt).iter().any(|t| t == reason),
+                "{trigger}: the reason is shown"
+            );
+            click_role(&mut rt, "option", "Codex");
+            assert!(
+                workspace_jobs(&rx).is_empty(),
+                "{trigger}: a disabled entry starts nothing"
+            );
+        }
     }
 
     #[test]
@@ -3972,10 +4280,10 @@ mod view_tests {
         type Block = fn(&mut State);
         let blocks: [(&str, Block); 3] = [
             ("the checkout picker", |s| {
-                s.editor.checkout_picker_open = true
+                s.editor.checkout_picker.open = true
             }),
             ("the project picker", |s| {
-                s.editor.project_picker_open = true
+                s.editor.project_picker.open = true
             }),
             ("the sidebar menu", |s| {
                 s.open_menu(
@@ -4062,7 +4370,8 @@ mod view_tests {
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
         click_key(&mut rt, "new-tab-menu");
-        click_role(&mut rt, "menuitem", "Claude Code");
+        settle(&mut rt);
+        click_role(&mut rt, "option", "Claude Code");
         assert!(matches!(
             workspace_jobs(&rx).as_slice(),
             [Req::AgentArgv { agent, .. }] if agent == "claude"
@@ -4420,6 +4729,28 @@ mod view_tests {
     }
 
     #[test]
+    fn the_stored_scroll_speed_restores_on_its_getsetting_reply() {
+        let mut s = State::new(test_handle());
+        assert_eq!(s.scroll_speed, 1.0);
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: settings::SCROLL_SPEED_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(Some("1.5".into()))),
+        ));
+        assert_eq!(s.scroll_speed, 1.5);
+        // A missing row leaves the default alone.
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: settings::SCROLL_SPEED_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(None)),
+        ));
+        assert_eq!(s.scroll_speed, 1.0);
+    }
+
+    #[test]
     fn poll_usage_paces_the_worker_reads() {
         let mut s = State::new(test_handle());
         assert!(s.poll_usage(0.0), "the first read goes out");
@@ -4444,7 +4775,7 @@ mod view_tests {
     #[test]
     fn the_usage_menu_needs_an_account_view() {
         let mut s = State::new(test_handle());
-        s.usage_menu = Some(("claude".to_string(), 10.0, 10.0));
+        s.usage_menu = Some("claude".to_string());
         let mut layer = Vec::new();
         assert!(chrome::usage_menu_layer(&s, &mut layer).is_none());
         s.data.accounts = Some(usage_view());
@@ -5230,6 +5561,7 @@ mod view_tests {
                 title: info.title.clone(),
             },
             placement: panes::Placement::Tab,
+            workspace_id: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         assert!(s.drain_pending());
@@ -5316,15 +5648,13 @@ mod view_tests {
         let blocks: [Block; 9] = [
             |s| s.view = View::Settings,
             |s| s.preedit = "đ".into(),
-            |s| s.editor.project_picker_open = true,
-            |s| s.editor.checkout_picker_open = true,
+            |s| s.editor.project_picker.open = true,
+            |s| s.editor.checkout_picker.open = true,
             |s| s.editor.quick_open.open = true,
             |s| s.editor.history.branch_picker.open = true,
             |s| s.workspace_remove_confirm = Some("w1".into()),
-            |s| s.editor.commit.agent_picker_open = true,
-            |s| {
-                s.sidebar_menu = Some((sidebar::RowTarget::Workspace, sidebar::MenuKind::Workspace))
-            },
+            |s| s.editor.commit.agent_picker.open = true,
+            |s| s.workspace_picker.open = true,
         ];
         for block in blocks {
             let mut s = two_workspace_scene();

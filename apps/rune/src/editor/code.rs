@@ -30,6 +30,7 @@ use rune::{
     TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
+use rune_kit::{Kit, ScrollBar};
 
 use crate::editor::find::FindState;
 use crate::editor::go_to_definition as gtd;
@@ -441,7 +442,7 @@ impl<S: 'static> Code<S> {
         self
     }
 
-    pub fn build(self, s: &S, ink: &Ink) -> El {
+    pub fn build(self, s: &S, ink: &Ink, k: &Kit) -> El {
         let code = (self.get)(s);
         let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
         if code.find.open {
@@ -458,7 +459,7 @@ impl<S: 'static> Code<S> {
             .min_w(0.0)
             .min_h(0.0)
             .child(gutter_el(code, ink))
-            .child(self.surface(s, ink));
+            .child(self.surface(s, ink, k));
         // The blame column is a sibling of the scroll surface: it scrolls
         // with the code, one annotation per line.
         if code.blame_visible {
@@ -546,7 +547,8 @@ impl<S: 'static> Code<S> {
                 "Plain text — no syntax highlighter for this file type".to_string(),
                 ink.muted,
             )
-        } else if let Some(r) = code.active_syntax() {
+        } else {
+            let r = code.active_syntax()?;
             let lang = r.language.as_deref().unwrap_or("text");
             if r.token_capped {
                 (
@@ -556,8 +558,6 @@ impl<S: 'static> Code<S> {
             } else {
                 return None;
             }
-        } else {
-            return None;
         };
         Some(
             row()
@@ -590,7 +590,7 @@ impl<S: 'static> Code<S> {
     }
 
     /// Scroll viewport + editor field(s) + optional go-to overlay.
-    fn surface(&self, s: &S, ink: &Ink) -> El {
+    fn surface(&self, s: &S, ink: &Ink, k: &Kit) -> El {
         let code = (self.get)(s);
         let gutter_shift = code.gutter_shift.clone();
         let scroll_pos = code.scroll_pos.clone();
@@ -615,7 +615,7 @@ impl<S: 'static> Code<S> {
         if let Some(overlay) = self.go_to_overlay(code, ink) {
             wrap = wrap.child(overlay);
         }
-        scroll.child(wrap)
+        scroll.child(wrap).scroll_bar(k)
     }
 
     /// Slim footer strip carrying the blame toggle and the indent-unit chip.
@@ -1413,7 +1413,7 @@ mod tests {
     fn overlay_view(s: &OverlayS, _: &mut Cx<OverlayS>) -> El {
         Code::new(overlay_get, overlay_get_mut)
             .on_go_to(|st: &mut OverlayS, req: GoToRequest, _tx: &mut Tx| st.hits.push(req))
-            .build(s, &Ink::new())
+            .build(s, &Ink::new(), &Kit::neutral(true))
     }
 
     /// Live (non-exiting) link elements: an unmounted overlay's links linger
@@ -1526,7 +1526,7 @@ mod tests {
     fn edit_view(s: &EditS, _: &mut Cx<EditS>) -> El {
         Code::new(edit_get, edit_get_mut)
             .on_changed(|st: &mut EditS, _tx: &mut Tx| st.changed += 1)
-            .build(s, &Ink::new())
+            .build(s, &Ink::new(), &Kit::neutral(true))
     }
 
     fn edit_runtime(read_only: bool) -> Runtime<EditS> {

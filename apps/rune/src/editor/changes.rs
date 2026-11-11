@@ -9,7 +9,7 @@
 //! `paths: None`, and discard is a named one-file confirmation.
 
 use rune::{El, Icon, Tx, col, el, row};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -58,6 +58,11 @@ pub const GROUPS: [(&str, &str); 4] = [
     ("unstaged", "unstaged"),
     ("untracked", "untracked"),
 ];
+
+/// Maximum number of rows rendered per group in the changed files list before
+/// truncating with an informative note. Prevents unbounded UI allocation and
+/// stutter when repositories have thousands of untracked or changed files.
+pub const MAX_GROUP_RENDER: usize = 200;
 
 /// Entries of one group, in display order.
 pub fn group_entries<'a>(
@@ -471,7 +476,8 @@ fn aside(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChange
             })
             .grow(1.0)
             .min_h(0.0)
-            .w_full(),
+            .w_full()
+            .scroll_bar(k),
     );
     col_el
         .child(crate::editor::commit::view(s))
@@ -505,7 +511,7 @@ fn group_block(
         _ => key,
     };
     let collapsed = s.editor.changes.collapsed.contains(key);
-    let mut block = col().w_full().gap(1.0);
+    let mut block = col().w_full().gap(2.0);
 
     // Header row: the toggle (chevron + label + count) grows; the scoped
     // group action is a sibling button so it never toggles the group.
@@ -563,9 +569,51 @@ fn group_block(
     if !collapsed {
         if entries.is_empty() {
             block = block.child(theme::txt("None", T12, ink.muted).px(12.0).py(2.0));
-        }
-        for entry in entries {
-            block = block.child(entry_row(s, ink, k, key, layer, entry));
+        } else {
+            let total = entries.len();
+            let selected_path = s.editor.changes.selected.as_deref();
+            let selected_in_group = s.editor.changes.layer.as_deref() == Some(layer);
+
+            let (visible_entries, truncated_count) = if total <= MAX_GROUP_RENDER {
+                (entries.as_slice(), 0)
+            } else {
+                (&entries[..MAX_GROUP_RENDER], total - MAX_GROUP_RENDER)
+            };
+
+            for entry in visible_entries {
+                block = block.child(entry_row(s, ink, k, key, layer, entry));
+            }
+
+            if truncated_count > 0 {
+                // If the active selection is past MAX_GROUP_RENDER, mount it so it remains visible and interactive.
+                if selected_in_group
+                    && let Some(sel) = selected_path
+                    && let Some(pos) = entries.iter().position(|e| e.path == sel)
+                    && pos >= MAX_GROUP_RENDER
+                {
+                    block = block.child(entry_row(s, ink, k, key, layer, entries[pos]));
+                }
+
+                // If the keyboard navigation item is past MAX_GROUP_RENDER, mount it so j/k can scroll to it.
+                let prefix = format!("change:{layer}:");
+                if let Some(nav) = &s.editor.keyboard.nav
+                    && nav.section == crate::editor::state::Section::Changes
+                    && let Some(nav_path) = nav.key.strip_prefix(&prefix)
+                    && selected_path != Some(nav_path)
+                    && let Some(pos) = entries.iter().position(|e| e.path == nav_path)
+                    && pos >= MAX_GROUP_RENDER
+                {
+                    block = block.child(entry_row(s, ink, k, key, layer, entries[pos]));
+                }
+
+                block = block.child(row().w_full().px(10.0).py(4.0).items_center().child(
+                    theme::txt(
+                        &format!("+{truncated_count} more changed files (use filter to narrow)"),
+                        T11M_LH,
+                        ink.muted,
+                    ),
+                ));
+            }
         }
     }
     block
@@ -578,9 +626,9 @@ fn group_toggle(key: &'static str, label: &str, count: usize, collapsed: bool, i
         .min_w(0.0)
         .h(24.0)
         .px(4.0)
-        .gap(5.0)
+        .gap(4.0)
         .items_center()
-        .radius(5.0)
+        .radius(6.0)
         .hover(ink.text.alpha(0.06))
         .role("button")
         .label(format!("{label} files, {count}"))
@@ -642,9 +690,9 @@ fn entry_row(
                 .min_w(0.0)
                 .h(22.0)
                 .px(4.0)
-                .gap(5.0)
+                .gap(4.0)
                 .items_center()
-                .radius(5.0)
+                .radius(4.0)
                 .key(nav_key)
                 .fill(if nav_cur {
                     ink.accent.alpha(0.14)
@@ -663,11 +711,14 @@ fn entry_row(
                     theme::txt(&name, T12, ink.text)
                         .min_w(0.0)
                         .grow(1.0)
-                        .truncate(),
+                        .truncate_middle()
+                        .help_when_truncated(name.clone()),
                 )
                 .child(
                     el().px(4.0)
-                        .py(0.5)
+                        .h(16.0)
+                        .items_center()
+                        .justify_center()
                         .radius(4.0)
                         .border(1.0, ink.border)
                         .child(theme::txt(status_label(entry.status), T11M_LH, ink.muted)),
@@ -1257,5 +1308,42 @@ mod tests {
         assert!(!s.editor.changes.patch_loading);
         // The selection itself still lands — only the fetch was refused.
         assert_eq!(s.editor.changes.patch_path.as_deref(), Some("src/b.rs"));
+    }
+
+    #[test]
+    fn large_group_truncates_at_cap_and_keeps_selection() {
+        let (mut s, _home, _guard) = editor_scene();
+        let total = MAX_GROUP_RENDER + 50;
+        let mut d = changes();
+        d.unstaged = (0..total)
+            .map(|i| entry(&format!("src/file-{i:03}.rs"), None, "modified"))
+            .collect();
+        s.editor.changes.data = Some(d);
+        // Select an entry past the MAX_GROUP_RENDER threshold.
+        s.editor.changes.selected = Some(format!("src/file-{:03}.rs", total - 1));
+        s.editor.changes.layer = Some("unstaged".into());
+
+        let mut rt = Runtime::new(s, changes_only, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let ls = labels(&rt);
+        // First entry is mounted.
+        assert!(ls.iter().any(|l| l == "src/file-000.rs"));
+        // Entry 199 is mounted.
+        assert!(ls.iter().any(|l| l == "src/file-199.rs"));
+        // Entry 205 (not selected) is truncated.
+        assert!(!ls.iter().any(|l| l == "src/file-205.rs"));
+        // Selected entry (249) is mounted despite being past the cap.
+        assert!(
+            ls.iter()
+                .any(|l| l == &format!("src/file-{:03}.rs", total - 1))
+        );
+        // Truncation note is present.
+        let note = "+50 more changed files (use filter to narrow)".to_string();
+        let note_el = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.text.as_deref() == Some(&note));
+        assert!(note_el.is_some(), "truncation note mounted: {ls:?}");
     }
 }

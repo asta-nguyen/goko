@@ -8,7 +8,7 @@
 //! this surface behind the same `OpenDoc` state.
 
 use rune::{El, KeyEvent, Tx, col, row};
-use rune_kit::{FileNode, Kit, Tree, TreeItem, TreeKey, TreeModel, TreeStyle};
+use rune_kit::{FileNode, Kit, ScrollBar, Tree, TreeItem, TreeKey, TreeModel, TreeStyle};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -49,7 +49,7 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
                     .border_sides([0.0, 1.0, 0.0, 0.0], ink.border)
                     .child(
                         if s.editor.files.search.open {
-                            search_results(s, ink)
+                            search_results(s, ink, k)
                         } else {
                             tree_pane(s, ink, k)
                         }
@@ -389,7 +389,8 @@ fn doc_bar(s: &State, ink: &Ink) -> El {
     bar = bar.child(
         theme::txt(&doc.path, T12TN, ink.muted)
             .max_w(380.0)
-            .truncate(),
+            .truncate_middle()
+            .help_when_truncated(doc.path.clone()),
     );
     if is_md {
         bar = bar.child(
@@ -474,7 +475,7 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
         return col().grow(1.0).items_center().justify_center().child(
             // `truncate` shrinks the line to the column — a narrow
             // editor pane must not push the hint past the window.
-            theme::txt("Open a file from the tree or search", T12, ink.muted).truncate(),
+            theme::txt("Open a file from the tree or search", T12, ink.muted).truncate_middle(),
         );
     };
     let mut pane = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
@@ -515,7 +516,7 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
                     theme::txt(&format!("save failed: {err}"), T11M_LH, ink.danger)
                         .grow(1.0)
                         .min_w(0.0)
-                        .truncate(),
+                        .truncate_middle(),
                 )
                 // Desktop alert row: the draft survives until the reload
                 // reply lands; the button is the escape hatch that replaces
@@ -542,15 +543,15 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
     } else if is_md && doc.markdown_preview {
         pane.child(markdown_surface(s, k).grow(1.0).min_h(0.0))
     } else if doc.editable() {
-        pane.child(editor_surface(s, ink).grow(1.0).min_h(0.0))
+        pane.child(editor_surface(s, ink, k).grow(1.0).min_h(0.0))
     } else {
-        pane.child(read_only_surface(s, ink).grow(1.0).min_h(0.0))
+        pane.child(read_only_surface(s, ink, k).grow(1.0).min_h(0.0))
     }
 }
 
 /// Gutter + scroll-synced text input. `TextEdit` owns selection/undo/IME;
 /// the gutter re-derives line numbers from `edit.text` each frame.
-fn editor_surface(s: &State, ink: &Ink) -> El {
+fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
     crate::editor::code::Code::<State>::new(code_get, code_get_mut)
         .on_changed(|st: &mut State, tx: &mut Tx| {
             // CodeState::text_edited already ran (revision/find/gutter); the
@@ -577,7 +578,7 @@ fn editor_surface(s: &State, ink: &Ink) -> El {
         .on_blame(|st: &mut State, enabled, _tx: &mut Tx| {
             crate::editor::blame::set_enabled(&mut st.editor, enabled);
         })
-        .build(s, ink)
+        .build(s, ink, k)
 }
 
 /// `Code` view accessors: the open document's code surface, or the scratch
@@ -615,10 +616,11 @@ fn markdown_surface(s: &State, k: &Kit) -> El {
         .w_full()
         .h_full()
         .fill(s.ink.bg)
+        .scroll_bar(k)
 }
 
 /// Non-editable kinds show the text read-only (scrollable/selectable).
-fn read_only_surface(s: &State, ink: &Ink) -> El {
+fn read_only_surface(s: &State, ink: &Ink, k: &Kit) -> El {
     let text = s
         .editor
         .doc
@@ -642,11 +644,12 @@ fn read_only_surface(s: &State, ink: &Ink) -> El {
                 .px(12.0)
                 .py(8.0),
         )
+        .scroll_bar(k)
 }
 
 /// Right-hand pane while content search is open: grouped results that open
 /// the file at the matched line.
-fn search_results(s: &State, ink: &Ink) -> El {
+fn search_results(s: &State, ink: &Ink, k: &Kit) -> El {
     let pane = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
     let search = &s.editor.files.search;
     if search.searching {
@@ -704,7 +707,8 @@ fn search_results(s: &State, ink: &Ink) -> El {
                     theme::txt(path, T12M, ink.accent)
                         .min_w(0.0)
                         .grow(1.0)
-                        .truncate(),
+                        .truncate_middle()
+                        .help_when_truncated(path.to_string()),
                 )
                 .child(theme::txt(&matches.len().to_string(), T11M_LH, ink.muted)),
         );
@@ -718,7 +722,7 @@ fn search_results(s: &State, ink: &Ink) -> El {
                     .w_full()
                     .px(10.0)
                     .pl(22.0)
-                    .py(3.0)
+                    .py(4.0)
                     .gap(8.0)
                     .items_center()
                     .key(row_key)
@@ -737,7 +741,7 @@ fn search_results(s: &State, ink: &Ink) -> El {
                         theme::txt(&m.text, T12, ink.text)
                             .min_w(0.0)
                             .grow(1.0)
-                            .truncate(),
+                            .truncate_middle(),
                     )
                     .on_press_tx(move |st: &mut State, tx: &mut Tx| {
                         open_doc(st, &file, Some(line), tx);
@@ -745,7 +749,7 @@ fn search_results(s: &State, ink: &Ink) -> El {
             );
         }
     }
-    pane.child(list)
+    pane.child(list.scroll_bar(k))
 }
 
 #[cfg(test)]
@@ -1121,13 +1125,13 @@ mod tests {
         let els = rt.elements();
         let ls: Vec<&str> = els.iter().filter_map(|e| e.label.as_deref()).collect();
         for e in &els {
-            if let Some(l) = &e.label {
-                if l == "Blame" || l.contains("Spaces") {
-                    println!(
-                        "PROBE {:?} role={} rect={:?} text={:?}",
-                        l, e.role, e.rect, e.text
-                    );
-                }
+            if let Some(l) = &e.label
+                && (l == "Blame" || l.contains("Spaces"))
+            {
+                println!(
+                    "PROBE {:?} role={} rect={:?} text={:?}",
+                    l, e.role, e.rect, e.text
+                );
             }
         }
         assert!(ls.contains(&"Blame"), "the blame chip is missing: {ls:?}");

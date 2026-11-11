@@ -4,7 +4,10 @@
 //! the colour of its line; parents fan out into free lanes, each taking the
 //! next colour in rotation.
 
+use std::sync::LazyLock;
+
 use app_core::git_view::GitViewCommit;
+use rune::Color;
 
 /// One branch-line colour as sRGB bytes. The desktop palette is authored in
 /// HSL (`hsl(0, 75%, 55%)` … `hsl(335, 75%, 58%)`) at mid luminance so the
@@ -34,6 +37,20 @@ pub const GRAPH_PALETTE: [GraphColor; 8] = [
     GraphColor::rgb(160, 78, 218), // hsl(275, 65%, 58%)
     GraphColor::rgb(228, 68, 135), // hsl(335, 75%, 58%)
 ];
+
+static PALETTE_COLORS: LazyLock<[Color; 8]> = LazyLock::new(|| {
+    let mut out = [Color::WHITE; 8];
+    for (i, c) in GRAPH_PALETTE.iter().enumerate() {
+        out[i] = rune::color::hex(&format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+            .unwrap_or(Color::WHITE);
+    }
+    out
+});
+
+/// Palette index → linear colour.
+pub fn palette(idx: usize) -> Color {
+    PALETTE_COLORS[idx.min(GRAPH_PALETTE.len() - 1)]
+}
 
 /// A curved edge from a commit node down into a parent's lane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,6 +97,7 @@ pub struct GraphRow {
 pub struct GraphLayout {
     pub rows: Vec<GraphRow>,
     pub lanes: usize,
+    pub head_index: Option<usize>,
 }
 
 /// Lays out `commits` (already in Git topological order) into lanes, colours
@@ -91,9 +109,13 @@ pub fn layout_graph(commits: &[GitViewCommit]) -> GraphLayout {
     let mut colors: Vec<usize> = Vec::new();
     let mut next_color = 0usize;
     let mut lane_count = 0usize;
+    let mut head_index = None;
     let mut rows = Vec::with_capacity(commits.len());
 
-    for commit in commits {
+    for (i, commit) in commits.iter().enumerate() {
+        if commit.head && head_index.is_none() {
+            head_index = Some(i);
+        }
         let before = expected.clone();
         let found = expected
             .iter()
@@ -186,6 +208,7 @@ pub fn layout_graph(commits: &[GitViewCommit]) -> GraphLayout {
     GraphLayout {
         rows,
         lanes: lane_count,
+        head_index,
     }
 }
 

@@ -1,0 +1,16 @@
+[package]
+name = "rune-kit"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Generic, themable components for Rune. Components read only semantic tokens (`Kit`); a theme crate supplies them."
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", default-features = false }
+rune-motion = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+unicode-segmentation = "1.13"
+pulldown-cmark = { version = "0.13", default-features = false, optional = true }
+
+[features]
+markdown = ["dep:pulldown-cmark"]
+mermaid = []

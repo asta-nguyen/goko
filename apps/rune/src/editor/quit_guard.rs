@@ -14,8 +14,12 @@
 //! logout) can only be vetoed on macOS; elsewhere it remains an honest gap —
 //! the drafts are in-memory and the process exits.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::Ordering;
+#[cfg(target_os = "macos")]
+use std::sync::{Mutex, OnceLock};
 
 use rune::AppHandle;
 
@@ -23,13 +27,16 @@ use crate::State;
 
 #[derive(Clone)]
 struct Slot {
+    #[expect(dead_code, reason = "read on macos")]
     dirty: Arc<AtomicBool>,
+    #[expect(dead_code, reason = "called on macos")]
     notify: Arc<dyn Fn() + Send + Sync>,
 }
 
+#[cfg(target_os = "macos")]
 static SLOT: OnceLock<Mutex<Option<Slot>>> = OnceLock::new();
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 thread_local! {
     /// Test seam: `install` registers into the calling thread's own slot, so
     /// a headless `EditorState::new` on a parallel test thread can never
@@ -51,21 +58,24 @@ pub fn install(dirty: Arc<AtomicBool>, handle: AppHandle<State>) {
 
 /// Store the slot `install` built: the calling thread's own slot under
 /// `cfg(test)` so parallel test installs stay isolated…
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 fn write_slot(slot: Slot) {
     TEST_SLOT.with(|s| *s.borrow_mut() = Some(slot));
 }
 
 /// …and the process-global `SLOT` in production, where the app's single
 /// `EditorState` owns it.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "macos"))]
 fn write_slot(slot: Slot) {
     *SLOT.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(slot);
 }
 
+#[cfg(not(target_os = "macos"))]
+fn write_slot(_slot: Slot) {}
+
 /// What `install` leaves behind for an `EditorState::new` on the calling
 /// thread — the same write minus the `AppHandle` a test cannot build.
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 fn install_test_slot(dirty: Arc<AtomicBool>, notify: Arc<dyn Fn() + Send + Sync>) {
     TEST_SLOT.with(|s| *s.borrow_mut() = Some(Slot { dirty, notify }));
 }
@@ -73,7 +83,7 @@ fn install_test_slot(dirty: Arc<AtomicBool>, notify: Arc<dyn Fn() + Send + Sync>
 /// The slot `should_terminate` consults under `cfg(test)`: this thread's own
 /// slot when it installed one (mirroring a real install on the dispatch
 /// thread), else the process-global `SLOT`.
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 fn slot() -> Option<Slot> {
     if let Some(slot) = TEST_SLOT.with(|s| s.borrow().clone()) {
         return Some(slot);
@@ -81,13 +91,14 @@ fn slot() -> Option<Slot> {
     global_slot()
 }
 
-/// In production there is only the process-global `SLOT`.
-#[cfg(not(test))]
+/// In production on macOS there is only the process-global `SLOT`.
+#[cfg(all(not(test), target_os = "macos"))]
 fn slot() -> Option<Slot> {
     global_slot()
 }
 
 /// The process-global slot the production IMP and the test fixtures share.
+#[cfg(target_os = "macos")]
 fn global_slot() -> Option<Slot> {
     SLOT.get().and_then(|m| m.lock().unwrap().clone())
 }
@@ -112,6 +123,7 @@ pub fn installed() -> bool {
     macos::installed()
 }
 #[cfg(not(target_os = "macos"))]
+#[expect(dead_code, reason = "diagnostic API parity with macos")]
 pub fn installed() -> bool {
     false
 }

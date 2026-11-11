@@ -54,6 +54,8 @@ const MIGRATIONS: &[&str] = &[
     INSERT INTO workspaces (id, name, created_at) VALUES ('default', 'Default', 0);
     INSERT INTO project_workspaces (project_id, workspace_id) SELECT id, 'default' FROM projects;
 ",
+    // A session outside any project belongs to the workspace it started in.
+    "ALTER TABLE sessions ADD COLUMN workspace_id TEXT;",
 ];
 
 /// A registered project row. Whether `root` still exists is computed at list time by the
@@ -91,6 +93,9 @@ pub struct SessionMeta {
     pub title: String,
     /// Unix epoch milliseconds.
     pub created_at: i64,
+    /// The workspace a session with no project was started in; `None` for
+    /// older rows and project sessions (their project's workspace applies).
+    pub workspace_id: Option<String>,
 }
 
 pub struct Store {
@@ -214,11 +219,18 @@ impl Store {
             .map_err(|error| storage("cannot list the workspaces", error))
     }
 
-    /// Create a named workspace. Names are trimmed, nonempty, and unique
-    /// ignoring ASCII case.
+    /// Create a workspace. A blank name makes an unnamed workspace, stored
+    /// with an empty name: the app labels it from its first project, as
+    /// herdr labels an unnamed space from its terminal's folder, and any
+    /// number may exist. A given name is trimmed and unique ignoring ASCII
+    /// case.
     pub fn create_workspace(&self, name: &str) -> Result<Workspace, BridgeError> {
         let conn = self.lock()?;
-        let name = checked_workspace_name(&conn, name, None)?;
+        let name = if name.trim().is_empty() {
+            String::new()
+        } else {
+            checked_workspace_name(&conn, name, None)?
+        };
         let id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO workspaces (id, name, created_at) VALUES (?1, ?2, ?3)",
@@ -320,8 +332,14 @@ impl Store {
             .map_err(|error| storage("cannot encode the session argv", error))?;
         self.lock()?
             .execute(
-                "INSERT INTO sessions (id, project_id, agent, argv, cwd, title, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                // Saving a known session again (it joined a project, took a
+                // repository's name) updates it instead of failing on its id.
+                "INSERT INTO sessions \
+                 (id, project_id, agent, argv, cwd, title, created_at, workspace_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, \
+                 cwd = excluded.cwd, title = excluded.title, \
+                 workspace_id = excluded.workspace_id",
                 params![
                     meta.session_id,
                     meta.project_id,
@@ -330,6 +348,7 @@ impl Store {
                     meta.cwd,
                     meta.title,
                     meta.created_at,
+                    meta.workspace_id,
                 ],
             )
             .map(drop)
@@ -340,7 +359,8 @@ impl Store {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, project_id, agent, argv, cwd, title, created_at FROM sessions \
+                "SELECT id, project_id, agent, argv, cwd, title, created_at, workspace_id \
+                 FROM sessions \
                  ORDER BY created_at, rowid",
             )
             .map_err(|error| storage("cannot list the session metadata", error))?;
@@ -521,6 +541,7 @@ fn session_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionMeta> {
         cwd: row.get(4)?,
         title: row.get(5)?,
         created_at: row.get(6)?,
+        workspace_id: row.get(7)?,
     })
 }
 
@@ -620,6 +641,7 @@ mod tests {
             cwd: "/tmp".into(),
             title: String::new(),
             created_at: 1,
+            workspace_id: None,
         }
     }
 
@@ -728,6 +750,26 @@ mod tests {
         assert_eq!(store.list_session_meta().unwrap(), vec![meta]);
     }
 
+    /// A session saved again — it joined a project, took a repository's name,
+    /// or belongs to a workspace — updates its row instead of failing on the id.
+    #[test]
+    fn saving_a_session_again_updates_its_row() {
+        let dir = TempDir::new("store-upsert-session");
+        let store = open(&dir);
+        let project = store
+            .add_project("p", "/tmp", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        let mut meta = meta("s1", None);
+        meta.workspace_id = Some(DEFAULT_WORKSPACE_ID.into());
+        store.insert_session_meta(&meta).unwrap();
+
+        meta.project_id = Some(project.id.clone());
+        meta.title = "goko".into();
+        meta.cwd = "/tmp/goko".into();
+        store.insert_session_meta(&meta).unwrap();
+        assert_eq!(store.list_session_meta().unwrap(), vec![meta]);
+    }
+
     #[test]
     fn deleting_session_meta_is_idempotent_and_a_storage_failure_is_retryable() {
         let dir = TempDir::new("store-delete-session");
@@ -822,10 +864,11 @@ mod tests {
         assert_eq!(work.name, "Work", "the name is trimmed");
         let other = store.create_workspace("Play").unwrap();
 
-        assert_eq!(
-            store.create_workspace("   ").unwrap_err().code,
-            Code::Daemon(ErrorCode::InvalidArgument)
-        );
+        // A blank name is an unnamed workspace, and several may exist.
+        let first = store.create_workspace("   ").unwrap();
+        let second = store.create_workspace("").unwrap();
+        assert_eq!((first.name.as_str(), second.name.as_str()), ("", ""));
+        assert_ne!(first.id, second.id);
         assert_eq!(
             store.create_workspace("work").unwrap_err().code,
             Code::Daemon(ErrorCode::InvalidArgument),
@@ -862,8 +905,13 @@ mod tests {
             .into_iter()
             .map(|workspace| workspace.name)
             .collect();
-        assert_eq!(names, vec!["Default", "Work two", "Play"]);
+        assert_eq!(names, vec!["Default", "Work two", "Play", "", ""]);
         assert_ne!(other.id, work.id);
+        assert_eq!(
+            store.rename_workspace(&first.id, "  ").unwrap_err().code,
+            Code::Daemon(ErrorCode::InvalidArgument),
+            "a rename still needs a name"
+        );
     }
 
     #[test]

@@ -76,19 +76,6 @@ fn settings_button(open: bool, ink: &Ink) -> El {
         })
 }
 
-/// Connection status dot: a 6 pt core in a 12 pt halo, so it reads as a live
-/// indicator rather than a stray pixel. Both change colour together on the state
-/// spring when the daemon drops or returns.
-fn connection_dot(connected: bool, ink: &Ink) -> El {
-    let tone = if connected { ink.success } else { ink.danger };
-    el().size(12.0, 12.0)
-        .radius(6.0)
-        .center()
-        .fill(tone.alpha(0.16))
-        .motion(STATE_SPRING)
-        .child(el().size(6.0, 6.0).radius(3.0).fill(tone))
-}
-
 /// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
 /// bg-panel px-4` (48 px, gap 12, px 16).
 /// One provider's quota chip: the name, the active account's name when the
@@ -151,15 +138,14 @@ fn usage_chip_for(
     let agent = agent.to_string();
     let mut chip = chip.help(help);
     if multi {
+        // Its account menu drops from the chip itself.
         chip = chip
+            .key(format!("usage-chip:{agent}"))
             .role("button")
             .focusable(true)
-            .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
-                s.menu_anchor = Some((p.x, p.y));
-            })
+            .expanded(s.usage_menu.as_deref() == Some(agent.as_str()))
             .on_press(move |s: &mut State| {
-                let (x, y) = s.menu_anchor.unwrap_or((0.0, 0.0));
-                s.usage_menu = Some((agent.clone(), x, y));
+                s.usage_menu = Some(agent.clone());
             });
     }
     Some(chip)
@@ -262,13 +248,16 @@ pub fn account_usage_summary(
 /// The multi-account chip's dropdown: pick the active account or jump to
 /// the Accounts settings section, like the desktop's AccountMenu.
 pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
-    let (agent, x, y) = s.usage_menu.clone()?;
+    let agent = s.usage_menu.clone()?;
     let view = s.data.accounts.as_ref()?;
     let agent_view = match agent.as_str() {
         "claude" => &view.claude,
         _ => &view.codex,
     };
-    let mut menu = rune_kit::Menu::new("usage-menu").at(x, y).open(true);
+    let mut menu = rune_kit::Menu::new("usage-menu")
+        .anchor(format!("usage-chip:{agent}"))
+        .placement(rune_kit::Placement::BottomEnd)
+        .open(true);
     for item in &agent_view.items {
         let account_id = item.id.clone();
         let account_name = item.name.clone();
@@ -318,6 +307,51 @@ pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
     )
 }
 
+/// `path` with a leading `$HOME` shown as `~`, as a shell prompt shows it.
+/// Only whole components match, so `$HOME=/home/al` leaves `/home/alice` alone.
+/// The cut for width is rune's `truncate_middle`, at paint time.
+pub fn home_relative(path: &str) -> String {
+    let Some(home) = std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty() && h != "/")
+    else {
+        return path.to_string();
+    };
+    match std::path::Path::new(path).strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.to_string(),
+    }
+}
+
+/// The path the header should display:
+/// - In Editor view: the active checkout path.
+/// - In Terminal view: the active session's live working directory (`cwd`).
+/// - Otherwise: falls back to the editor checkout, selected project root, or None.
+pub fn active_display_path(s: &State) -> Option<String> {
+    if s.view == View::Editor
+        && let Some(co) = &s.editor.checkout
+    {
+        return Some(co.display().to_string());
+    }
+    if let Some(tab) = s.open_tabs.get(s.active_tab)
+        && let Some(pane) = panes::pane_by_id(&tab.layout, &tab.active_pane)
+        && let Some(session) = s.session_by_key(&pane.session)
+        && !session.info.cwd.is_empty()
+    {
+        return Some(session.info.cwd.clone());
+    }
+    if let Some(co) = &s.editor.checkout {
+        return Some(co.display().to_string());
+    }
+    if let Some(pid) = &s.editor.project_id
+        && let Some(p) = s.editor.projects.iter().find(|p| &p.project.id == pid)
+    {
+        return Some(p.project.root.clone());
+    }
+    None
+}
+
 /// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
 /// bg-panel px-4` (48 px, gap 12, px 16).
 pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
@@ -354,16 +388,41 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
     }
     right = right.child(settings_button(s.view == View::Settings, ink));
 
-    // Persistent connection dot beside the wordmark; the pill on the right
-    // only appears while disconnected, matching the React header. Hovering the
-    // wordmark names what the dot says, since a bare coloured dot explains nothing.
-    let status = if s.data.connected {
-        "Connected to the Goko daemon"
-    } else {
-        "Disconnected from the Goko daemon"
-    };
+    // In the band's flow between two spacers rather than pinned over it: a
+    // pinned pill ignored the right-hand controls and painted over them in a
+    // narrow window. Here it shrinks and its path elides in the middle.
+    let path_el = active_display_path(s).map(|path| {
+        let shown = home_relative(&path);
+        let path_copy = path.clone();
+        row()
+            .key("header-path")
+            .min_w(0.0)
+            .max_w(520.0)
+            .shrink()
+            .h(26.0)
+            .px(10.0)
+            .gap(6.0)
+            .items_center()
+            .radius(6.0)
+            .fill(ink.panel)
+            .border(1.0, ink.border)
+            .hover(ink.text.alpha(0.06))
+            .press(ink.text.alpha(0.12))
+            .role("button")
+            .label(format!("Path: {path}"))
+            .help(format!("{path} (click to copy)"))
+            .on_press_tx(move |_st: &mut State, tx: &mut Tx| {
+                tx.copy(path_copy.clone());
+            })
+            .child(theme::ic(&theme::FOLDER, 14.0, ink.muted))
+            .child(
+                theme::txt(&shown, T12M, ink.muted)
+                    .min_w(0.0)
+                    .truncate_middle(),
+            )
+    });
 
-    row()
+    let band = row()
         .key("header")
         .w_full()
         .h(48.0)
@@ -375,23 +434,19 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
         .pl(if inset > 0.0 { inset + 12.0 } else { 16.0 })
         .gap(12.0)
         .items_center()
-        .window_drag()
-        .child(
-            row().gap(10.0).items_center().child(
-                // 12 pt halo around the 6 pt dot: gap 5 keeps the dot's
-                // centre where the bare dot's was (8 pt gap + 3 pt radius).
-                row()
-                    .key("status")
-                    .gap(5.0)
-                    .items_center()
-                    .label(status)
-                    .help(status)
-                    .child(theme::txt("goko", WORDMARK, ink.text))
-                    .child(connection_dot(s.data.connected, ink)),
-            ),
-        )
-        .child(spacer())
-        .child(right)
+        .window_drag();
+
+    band.child(
+        row()
+            .key("wordmark")
+            .items_center()
+            .child(theme::txt("goko", WORDMARK, ink.text)),
+    )
+    .child(spacer())
+    // wordmark · spacer · path · spacer · controls: equal spacers center the
+    // path in the free space and give it up first when the window narrows.
+    .children(path_el.into_iter().flat_map(|path_el| [path_el, spacer()]))
+    .child(right)
 }
 
 // ---------------------------------------------------------------------------
@@ -465,16 +520,10 @@ fn new_tab_menu(ink: &Ink) -> El {
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
         .child(theme::ic(&theme::CHEVRON_DOWN, 14.0, ink.text))
-        // Like the sidebar's row buttons, the menu opens where the pointer is.
-        .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
-            s.menu_anchor = Some((p.x, p.y));
-        })
+        // The same new-session picker as the sidebar's `+`, dropping from
+        // this caret: it starts where the app is looking, as New tab does.
         .on_press(|s: &mut State| {
-            // No checkout: the entries start in $HOME, as New tab's shell does.
-            let target = s
-                .active_checkout_target()
-                .unwrap_or(sidebar::RowTarget::Workspace);
-            s.open_menu(target, sidebar::MenuKind::NewSession);
+            sidebar::open_new_session(s, "new-tab-menu".to_string(), None, 300.0);
         })
 }
 
@@ -584,7 +633,8 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             theme::txt(&title, TAB, if active { ink.text } else { ink.muted })
                 .group_color(ink.text)
                 .max_w(160.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(title.clone()),
         );
     if tab.closing {
         pill = pill
@@ -751,7 +801,11 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
             ink.muted,
         ));
     }
-    crumb = crumb.child(theme::txt(&title, T14M, ink.text).truncate());
+    crumb = crumb.child(
+        theme::txt(&title, T14M, ink.text)
+            .truncate_middle()
+            .help_when_truncated(title.clone()),
+    );
 
     // StateBadge + StateDot's tone dot: `rounded border border-border px-1.5
     // py-0.5 text-xs` + TONE, with the tone dot ahead of the label. A
@@ -956,5 +1010,30 @@ mod tests {
             updated_at: Some(now_ms),
         };
         assert_eq!(account_usage_summary(&usage, "claude", now_ms), "5h 42%");
+    }
+
+    #[test]
+    fn home_relative_shortens_only_a_whole_home_prefix() {
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        if home.is_empty() || home == "/" {
+            return;
+        }
+        assert_eq!(home_relative(&home), "~");
+        assert_eq!(home_relative(&format!("{home}/src/goko")), "~/src/goko");
+        // A sibling that merely shares the prefix's characters is untouched.
+        assert_eq!(home_relative(&format!("{home}x/a")), format!("{home}x/a"));
+        assert_eq!(home_relative("/tmp/repo"), "/tmp/repo");
+    }
+
+    #[test]
+    fn header_mounts_active_path_with_middle_ellipsis() {
+        let mut s = State::new(crate::test_handle());
+        s.editor.checkout = Some(std::path::PathBuf::from("/work/my-project/sub-repo"));
+        s.view = View::Editor;
+        let els = header_elements(s);
+        let path_el = els.iter().find(|e| e.key.as_deref() == Some("header-path"));
+        assert!(path_el.is_some(), "header mounts path element");
     }
 }

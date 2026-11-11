@@ -81,10 +81,10 @@ pub fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 fn modal(s: &State) -> bool {
     let e = &s.editor;
     e.guard.is_some()
-        || e.project_picker_open
-        || e.checkout_picker_open
+        || e.project_picker.open
+        || e.checkout_picker.open
         || e.history.branch_picker.open
-        || e.commit.agent_picker_open
+        || e.commit.agent_picker.open
         || e.history.row_menu.is_some()
         || e.quick_open.open
 }

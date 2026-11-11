@@ -13,7 +13,7 @@ lsp-types = "0.97"
 protocol = { path = "../../crates/protocol" }
 rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["native-file-dialog"] }
 rune-highlights = { git = "https://github.com/anomalyco/rune", rev = "711d9574074baf69c63f4bbf36d6a843581595ce" }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["markdown"] }
+rune-kit = { path = "../../crates/rune-kit", features = ["markdown"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }

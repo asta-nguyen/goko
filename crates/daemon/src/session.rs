@@ -14,6 +14,21 @@ use tracing::warn;
 const EVENT_CAPACITY: usize = 64;
 /// How long `shutdown` waits after SIGTERM before sending SIGKILL.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// How long a polite stop waits after SIGHUP and SIGTERM before sending SIGKILL.
+pub const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// SIGKILL `pty`'s group unless it exits within [`STOP_GRACE`]. Outside a Tokio
+/// runtime there is nothing to wait on, so the polite signals stand alone.
+fn escalate_after_grace(pty: Arc<PtyProcess>) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    runtime.spawn(async move {
+        if timeout(STOP_GRACE, pty.wait_exit()).await.is_err() {
+            let _ = pty.kill();
+        }
+    });
+}
 /// How often a live PTY process's working directory is refreshed.
 const CWD_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -238,9 +253,12 @@ impl SessionManager {
             .ok_or_else(|| SessionError::InvalidArgument("the session has no process".to_owned()))
     }
 
-    /// SIGTERM the session's process group (SIGKILL when `force`). Idempotent: a repeat
-    /// stop signals nothing, except that `force` escalates a pending stop to SIGKILL, and
-    /// an exited or failed session is returned untouched.
+    /// Stop the session's process group: SIGHUP then SIGTERM, as closing a terminal
+    /// window does — an interactive shell ignores SIGTERM alone — and SIGKILL if the
+    /// group is still alive after [`STOP_GRACE`], so closing a shell never needs a
+    /// manual force kill. `force` sends SIGKILL at once. Idempotent: a repeat stop
+    /// signals nothing, except that `force` escalates a pending stop to SIGKILL, and an
+    /// exited or failed session is returned untouched.
     pub fn stop(&self, id: SessionId, force: bool) -> Result<SessionInfo, SessionError> {
         let session = self.find(id)?;
         let mut info = lock(&session.info);
@@ -260,7 +278,14 @@ impl SessionManager {
                 .expect("a running session can be stopped");
             let _ = session.events.send(info.clone());
         }
-        let signalled = if force { pty.kill() } else { pty.terminate() };
+        let signalled = if force {
+            pty.kill()
+        } else {
+            let hung_up = pty.hangup();
+            let terminated = pty.terminate();
+            escalate_after_grace(pty.clone());
+            hung_up.and(terminated)
+        };
         if let Err(error) = signalled {
             // The group is already gone; the exit watcher is about to record the exit.
             warn!("could not signal session {}: {error}", id.as_uuid());
@@ -346,10 +371,14 @@ async fn watch_exit(session: Arc<Session>, pty: Arc<PtyProcess>) {
 }
 
 fn refresh_cwd(session: &Session, pty: &PtyProcess) {
-    let cwd = pty
+    // An exiting (zombie) process has no readable cwd: keep the last one seen
+    // rather than recording an empty directory for the finished session.
+    let Some(cwd) = pty
         .current_dir()
         .and_then(|path| path.into_os_string().into_string().ok())
-        .unwrap_or_default();
+    else {
+        return;
+    };
     let mut info = lock(&session.info);
     if is_finished(info.state) || info.cwd == cwd {
         return;

@@ -379,6 +379,9 @@ impl EditorState {
                     } else {
                         self.history.commits.extend(page.commits);
                     }
+                    self.history.graph = Some(std::sync::Arc::new(
+                        crate::editor::history_graph::layout_graph(&self.history.commits),
+                    ));
                     self.history.next_skip = page.next_skip;
                     self.history.checkout = current.clone();
                     self.history.loading = false;

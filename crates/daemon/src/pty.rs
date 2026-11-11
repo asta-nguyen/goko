@@ -314,6 +314,13 @@ impl PtyProcess {
         self.signal_process_group(libc::SIGTERM)
     }
 
+    /// Send SIGHUP to the child process group: what a terminal sends when its
+    /// window closes. Interactive shells ignore SIGTERM but exit on SIGHUP
+    /// (and pass it on to their jobs), as do TUI agents.
+    pub fn hangup(&self) -> Result<(), PtyError> {
+        self.signal_process_group(libc::SIGHUP)
+    }
+
     /// Send SIGKILL to the child process group.
     pub fn kill(&self) -> Result<(), PtyError> {
         self.signal_process_group(libc::SIGKILL)

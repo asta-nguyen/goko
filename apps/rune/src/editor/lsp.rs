@@ -1882,6 +1882,7 @@ pub fn hover_layer(s: &crate::State, cx: &rune::Cx<crate::State>, k: &Kit) -> Op
 /// snapshots; no worker reads are needed.
 pub fn servers_view(s: &crate::State, ink: &crate::theme::Ink, k: &Kit) -> El {
     use crate::theme;
+    use rune_kit::ScrollBar;
     let ed = &s.editor;
     let lsp = &ed.lsp;
     let mut body = col().gap(6.0).padding(12.0);
@@ -1902,7 +1903,18 @@ pub fn servers_view(s: &crate::State, ink: &crate::theme::Ink, k: &Kit) -> El {
     for entry in lsp.servers() {
         body = body.child(server_row(s, ink, k, entry));
     }
-    body
+    col()
+        .grow(1.0)
+        .min_h(0.0)
+        .w_full()
+        .key(crate::editor::keyboard::nav_scroll_scope(
+            crate::editor::state::Section::Servers,
+        ))
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(body)
+        .scroll_bar(k)
 }
 
 fn server_row(s: &crate::State, ink: &crate::theme::Ink, k: &Kit, entry: &ServerEntry) -> El {

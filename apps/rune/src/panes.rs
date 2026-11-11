@@ -369,14 +369,28 @@ enum CloseStep {
 }
 
 impl State {
+    /// Whether a tab shows in the tab bar. With the active project in the
+    /// selected workspace: that project's tabs only. Otherwise (no project,
+    /// or one in another workspace): every tab of the selected workspace,
+    /// its own terminals started outside any project included — so a shell
+    /// opened from `+` in a new workspace shows. A pane whose session has
+    /// not arrived yet counts as here.
     fn tab_in_active_project(&self, tab: &Tab) -> bool {
-        self.editor.project_id.as_deref().is_none_or(|project_id| {
-            collect_panes(&tab.layout).iter().all(|pane| {
-                self.session_by_key(&pane.session)
-                    .and_then(|view| view.meta.as_ref())
-                    .and_then(|meta| meta.project_id.as_deref())
-                    == Some(project_id)
-            })
+        let workspace = self.workspace_id();
+        let active = self.active_project_in_view();
+        collect_panes(&tab.layout).iter().all(|pane| {
+            let Some(view) = self.session_by_key(&pane.session) else {
+                return true;
+            };
+            match active {
+                Some(project_id) => {
+                    view.meta
+                        .as_ref()
+                        .and_then(|meta| meta.project_id.as_deref())
+                        == Some(project_id)
+                }
+                None => self.session_in_workspace(view, workspace),
+            }
         })
     }
 
@@ -592,6 +606,15 @@ impl State {
             closing: false,
         });
         self.active_tab = self.open_tabs.len() - 1;
+    }
+
+    /// Update a tab's title when its session is renamed.
+    pub fn rename_session_tab(&mut self, session_key: &str, new_title: &str) {
+        for tab in &mut self.open_tabs {
+            if layout_has_session(&tab.layout, session_key) {
+                tab.title = new_title.to_string();
+            }
+        }
     }
 
     /// Select `index`'s tab and point the selection at its active pane.
@@ -1653,10 +1676,11 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
         })
         .on_wheel(move |s: &mut State, e: rune::WheelEvent, _tx: &mut Tx| {
             let ink = s.ink;
+            let speed = s.scroll_speed;
             let Some(att) = s.attachments.get_mut(&wheel_key) else {
                 return false;
             };
-            att.term.scroll(e.dy, line_h);
+            att.term.scroll(e.dy * speed, line_h);
             att.lines = att.term.lines(&ink).to_vec();
             true
         })
@@ -1752,7 +1776,8 @@ fn closing_badge(s: &State, ink: &Ink, pane: &Pane, key: &str) -> El {
         badge = badge.child(
             theme::txt(error, theme::T11, ink.danger)
                 .max_w(280.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(error.clone()),
         );
         let retry_key = key.to_string();
         badge = badge.child(badge_button(
@@ -1979,6 +2004,7 @@ mod tests {
                 pane,
                 direction: Direction::SideBySide,
             },
+            workspace_id: None,
         });
         reply_tx.send(Ok(info.clone())).unwrap();
         assert!(s.drain_pending());
@@ -2012,6 +2038,7 @@ mod tests {
                 pane: "pane-gone".into(),
                 direction: Direction::SideBySide,
             },
+            workspace_id: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -2037,6 +2064,7 @@ mod tests {
                 title: String::new(),
             },
             placement: Placement::Tab,
+            workspace_id: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -2181,6 +2209,7 @@ mod tests {
                 pane: pane_a.clone(),
                 direction: Direction::SideBySide,
             },
+            workspace_id: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -2320,6 +2349,7 @@ mod tests {
                 pane,
                 direction: Direction::SideBySide,
             },
+            workspace_id: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -2436,6 +2466,7 @@ mod tests {
                 pane,
                 direction: Direction::SideBySide,
             },
+            workspace_id: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();

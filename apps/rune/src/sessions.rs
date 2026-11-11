@@ -28,6 +28,57 @@ pub const DEFAULT_ROWS: u16 = 24;
 
 /// How long a session may be stopping before the force kill is offered.
 pub const FORCE_KILL_AFTER_MS: i64 = 5_000;
+/// How long a polite stop gets before the app escalates it to a force kill
+/// on its own: an interactive shell ignores SIGTERM, and closing it must not
+/// need a manual Force kill. Matches the daemon's own grace period.
+pub const AUTO_FORCE_AFTER_MS: i64 = 2_000;
+// The automatic force kill fires before the manual one is offered.
+const _: () = assert!(AUTO_FORCE_AFTER_MS < FORCE_KILL_AFTER_MS);
+
+/// Adjectives for generated session names (`brave-meadow`).
+pub const NAME_ADJECTIVES: &[&str] = &[
+    "amber", "bold", "brave", "bright", "calm", "clever", "cosmic", "crisp", "eager", "frosty",
+    "gentle", "golden", "keen", "lively", "lucid", "merry", "noble", "proud", "quiet", "radiant",
+    "serene", "silent", "solar", "swift", "vivid", "wild", "zen", "astral",
+];
+
+/// Nouns for generated session names (`brave-meadow`).
+pub const NAME_NOUNS: &[&str] = &[
+    "badger", "beacon", "breeze", "canyon", "cedar", "echo", "falcon", "forest", "fox", "glade",
+    "harbor", "haven", "island", "lagoon", "meadow", "orbit", "otter", "peak", "river", "shadow",
+    "sparrow", "summit", "timber", "valley", "willow", "grove", "oasis", "ridge",
+];
+
+/// A random adjective-noun name for a shell outside any project: `brave-meadow`, `swift-fox`.
+pub fn generate_session_name() -> String {
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    let adj_idx = (nanos ^ count) % NAME_ADJECTIVES.len();
+    let noun_idx = (nanos.rotate_left(5) ^ (count * 7)) % NAME_NOUNS.len();
+    format!("{}-{}", NAME_ADJECTIVES[adj_idx], NAME_NOUNS[noun_idx])
+}
+
+/// Whether `name` is one `generate_session_name` could have produced.
+pub fn is_generated_name(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() == 2 {
+        NAME_ADJECTIVES.contains(&parts[0]) && NAME_NOUNS.contains(&parts[1])
+    } else {
+        false
+    }
+}
+
+/// A title nobody chose: generated, empty, or a bare shell name. Only these
+/// are replaced by the repository name when a session joins a project.
+fn is_placeholder_title(title: &str) -> bool {
+    title.is_empty()
+        || is_generated_name(title)
+        || matches!(title, "shell" | "zsh" | "bash" | "fish")
+}
 
 /// What a new session runs: its argv, its working directory, and the
 /// project/agent the app records for it.
@@ -84,6 +135,9 @@ pub enum Pending {
         reply: Receiver<Result<SessionInfo, BridgeError>>,
         launch: SessionLaunch,
         placement: Placement,
+        /// The workspace selected when a launch with no project went out:
+        /// the session belongs to it even if the selection moves meanwhile.
+        workspace_id: Option<String>,
     },
     /// `session.stop`: the daemon's answer updates the row. The key lets a
     /// closing pane see the stop's failure instead of a global notice.
@@ -105,24 +159,31 @@ impl State {
         self.launch_session_placed(launch, Placement::Tab);
     }
 
-    /// A shell in the active checkout, else `$HOME`: New tab and ⌘T.
+    /// A shell in the active checkout when its project is in the selected
+    /// workspace, else a `$HOME` shell belonging to that workspace under a
+    /// generated name: New tab, ⌘T and the sidebar's `+`. Either way it lands
+    /// where the sidebar and tab bar are looking, so it is never hidden.
     pub fn new_shell_tab(&mut self) {
-        // A real shell session in the active checkout: the daemon owns the
-        // session, the app records why it exists.
-        let cwd = self
-            .editor
-            .checkout
+        // A real shell session: the daemon owns the session, the app records
+        // why it exists.
+        let project_id = self.active_project_in_view().map(str::to_string);
+        let cwd = project_id
             .as_ref()
+            .and(self.editor.checkout.as_ref())
             .map(|path| path.display().to_string())
             .or_else(|| std::env::var("HOME").ok())
             .unwrap_or_else(|| "/".to_string());
-        let project_id = self.editor.project_id.clone();
+        let title = if project_id.is_none() {
+            generate_session_name()
+        } else {
+            String::new()
+        };
         self.launch_session(SessionLaunch {
             argv: vec![backend::default_shell()],
             cwd,
             project_id,
             agent: "shell".to_string(),
-            title: String::new(),
+            title,
         });
     }
 
@@ -136,10 +197,15 @@ impl State {
             .call_json::<SessionInfo>(move |id| create_request(id, &asked));
         match reply {
             Some(reply) => {
+                let workspace_id = launch
+                    .project_id
+                    .is_none()
+                    .then(|| self.workspace_id().to_string());
                 self.pending.push(Pending::Create {
                     reply,
                     launch,
                     placement,
+                    workspace_id,
                 });
                 true
             }
@@ -174,6 +240,32 @@ impl State {
                 false
             }
         }
+    }
+
+    /// Escalate every polite stop that has hung past [`AUTO_FORCE_AFTER_MS`]
+    /// to a force kill, once per stop. An older daemon only sends SIGTERM,
+    /// which a shell ignores; a newer one hangs up and kills on its own, and
+    /// then this never fires. Returns whether a request went out.
+    pub fn poll_stop_escalation(&mut self) -> bool {
+        if !self.data.connected {
+            return false;
+        }
+        let due: Vec<String> = self
+            .stopping_since
+            .iter()
+            .filter(|(key, since)| {
+                self.now_ms - **since >= AUTO_FORCE_AFTER_MS && !self.auto_forced.contains(*key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut sent = false;
+        for key in due {
+            if self.stop_session(&key, true) {
+                self.auto_forced.insert(key);
+                sent = true;
+            }
+        }
+        sent
     }
 
     /// The session has been stopping for a while: SIGTERM can be ignored
@@ -269,9 +361,10 @@ impl State {
     }
 
     /// Insert or replace a session row, keeping the stored metadata join.
-    pub fn upsert_session(&mut self, info: SessionInfo) {
+    pub fn upsert_session(&mut self, mut info: SessionInfo) {
+        let key = data::SessionInfo::key(info.id);
+        self.adopt_unassigned_session(&key, &mut info);
         let view = self.view_for(info);
-        let key = view.info.id.clone();
         let stopping = view.info.state == data::SessionState::Stopping;
         let was_stopping = self
             .data
@@ -294,6 +387,7 @@ impl State {
             self.stopping_since.insert(key, self.now_ms);
         } else if !stopping {
             self.stopping_since.remove(&key);
+            self.auto_forced.remove(&key);
         }
     }
 
@@ -309,9 +403,10 @@ impl State {
                     reply,
                     launch,
                     placement,
+                    workspace_id,
                 } => match reply.try_recv() {
                     Ok(Ok(info)) => {
-                        self.session_created(info, &launch, placement);
+                        self.session_created(info, &launch, placement, workspace_id);
                         changed = true;
                     }
                     Ok(Err(error)) => {
@@ -322,6 +417,7 @@ impl State {
                         reply,
                         launch,
                         placement,
+                        workspace_id,
                     }),
                     Err(TryRecvError::Disconnected) => {
                         self.notice = Some("the Goko daemon is not reachable".into());
@@ -378,10 +474,23 @@ impl State {
 
     /// A session exists: record why it exists, then place it — its own
     /// tab or a split pane, per the launch's placement.
-    fn session_created(&mut self, info: SessionInfo, launch: &SessionLaunch, placement: Placement) {
+    fn session_created(
+        &mut self,
+        mut info: SessionInfo,
+        launch: &SessionLaunch,
+        placement: Placement,
+        workspace_id: Option<String>,
+    ) {
+        if !launch.title.is_empty() && info.title.is_empty() {
+            info.title = launch.title.clone();
+        }
         let view = self.view_for(info.clone());
         let key = view.info.id.clone();
-        let title = view.title();
+        let title = if !launch.title.is_empty() {
+            launch.title.clone()
+        } else {
+            view.title()
+        };
         let meta = SessionMeta {
             session_id: key.clone(),
             project_id: launch.project_id.clone(),
@@ -390,6 +499,7 @@ impl State {
             cwd: info.cwd.clone(),
             title: title.clone(),
             created_at: self.now_ms,
+            workspace_id,
         };
         // The store is the app's memory of the session; the cache keeps the
         // UI coherent while the write rides the worker lane.
@@ -410,9 +520,15 @@ impl State {
     }
 
     /// The view row for a daemon session, joined with its stored metadata.
-    pub fn view_for(&self, info: SessionInfo) -> SessionView {
+    pub fn view_for(&self, mut info: SessionInfo) -> SessionView {
         let key = data::SessionInfo::key(info.id);
         let meta = self.session_metas.get(&key).cloned();
+        if info.title.is_empty()
+            && let Some(m) = &meta
+            && !m.title.is_empty()
+        {
+            info.title = m.title.clone();
+        }
         SessionView::new(info, meta)
     }
 
@@ -430,11 +546,13 @@ impl State {
     /// projects, the project root's key otherwise, `__unassigned__` when it
     /// belongs to no registered project.
     pub fn session_workspace(&self, view: &SessionView) -> String {
-        let Some(project_id) = view
+        let project_id = view
             .meta
             .as_ref()
             .and_then(|meta| meta.project_id.as_deref())
-        else {
+            .map(str::to_string)
+            .or_else(|| self.project_id_for_cwd(&view.info.cwd));
+        let Some(project_id) = project_id.as_deref() else {
             return data::UNASSIGNED_WORKSPACE.to_string();
         };
         let Some(project) = self
@@ -451,6 +569,191 @@ impl State {
             .get(project_id)
             .and_then(|entry| entry.list.as_ref());
         data::workspace_for_session(view, Some(&data::ProjectCheckout { project, worktrees }))
+    }
+
+    /// A session started outside any project (New Terminal with no active
+    /// project) joins one when its shell `cd`s into it: a registered project
+    /// or worktree claims it, otherwise the enclosing Git repository is
+    /// registered in the selected workspace and its `AddProject` reply links
+    /// the session. A generated or shell-default title takes the repository's
+    /// name. A session that already belongs to a project never moves — under
+    /// the per-project filter, moving it would hide its tab mid-use. Runs
+    /// only when the cwd changed, so the filesystem walk is not repeated on
+    /// every state update.
+    fn adopt_unassigned_session(&mut self, key: &str, info: &mut SessionInfo) {
+        if info.cwd.is_empty() || self.editor.projects_loading {
+            return;
+        }
+        if self
+            .session_metas
+            .get(key)
+            .is_none_or(|meta| meta.project_id.is_some())
+        {
+            return;
+        }
+        let cwd_changed = self
+            .data
+            .sessions
+            .iter()
+            .find(|slot| slot.info.id == key)
+            .is_none_or(|slot| slot.info.cwd != info.cwd);
+        if !cwd_changed {
+            return;
+        }
+        let project_id = self.project_id_for_cwd(&info.cwd);
+        let git_root = Self::git_root_for_cwd(std::path::Path::new(&info.cwd));
+        if project_id.is_none() {
+            let Some(root) = &git_root else {
+                return;
+            };
+            let path = root.display().to_string();
+            if self.auto_project_roots.insert(path.clone()) {
+                // The repository joins the workspace the terminal belongs to,
+                // which need not be the one selected now.
+                let workspace_id = self
+                    .data
+                    .sessions
+                    .iter()
+                    .find(|slot| slot.info.id == key)
+                    .map_or_else(
+                        || {
+                            self.session_metas
+                                .get(key)
+                                .and_then(|meta| meta.workspace_id.clone())
+                                .unwrap_or_else(|| self.workspace_id().to_string())
+                        },
+                        |view| self.loose_workspace(view).to_string(),
+                    );
+                backend::enqueue(
+                    &mut self.editor.backend,
+                    Job::project(Req::AddProject { path, workspace_id }),
+                );
+            }
+        }
+        let name = git_root
+            .as_deref()
+            .and_then(|root| root.file_name())
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .or_else(|| {
+                let pid = project_id.as_deref()?;
+                self.editor
+                    .projects
+                    .iter()
+                    .find(|p| p.project.id == pid)
+                    .map(|p| p.project.name.clone())
+            });
+        let Some(meta) = self.session_metas.get_mut(key) else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(pid) = project_id {
+            meta.project_id = Some(pid);
+            changed = true;
+        }
+        let renamed = name.filter(|_| is_placeholder_title(&meta.title));
+        if let Some(name) = &renamed {
+            meta.title = name.clone();
+            info.title = name.clone();
+            changed = true;
+        }
+        if changed {
+            let meta = meta.clone();
+            backend::enqueue(
+                &mut self.editor.backend,
+                Job::project(Req::InsertSessionMeta(meta)),
+            );
+        }
+        if let Some(name) = renamed {
+            self.rename_session_tab(key, &name);
+        }
+    }
+
+    /// The workspace a session outside every project belongs to: the one it
+    /// was started in, or Default for older sessions and for a workspace that
+    /// has since been removed (Default also receives a removed workspace's
+    /// projects).
+    pub fn loose_workspace<'a>(&'a self, view: &'a SessionView) -> &'a str {
+        view.meta
+            .as_ref()
+            .and_then(|meta| meta.workspace_id.as_deref())
+            .filter(|id| self.workspaces.iter().any(|w| w.id == *id))
+            .unwrap_or(app_core::store::DEFAULT_WORKSPACE_ID)
+    }
+
+    /// The registered project a session belongs to, if any.
+    fn session_project(&self, view: &SessionView) -> Option<&app_core::projects::ProjectView> {
+        let id = view.meta.as_ref()?.project_id.as_deref()?;
+        self.editor.projects.iter().find(|p| p.project.id == id)
+    }
+
+    /// Whether a session belongs to `workspace_id`: through its project, or,
+    /// with none, through the workspace it was started in.
+    pub fn session_in_workspace(&self, view: &SessionView, workspace_id: &str) -> bool {
+        match self.session_project(view) {
+            Some(project) => project.project.workspace_id == workspace_id,
+            None => self.loose_workspace(view) == workspace_id,
+        }
+    }
+
+    /// A session outside every project, started in the selected workspace.
+    pub fn loose_in_selected_workspace(&self, view: &SessionView) -> bool {
+        self.session_project(view).is_none() && self.loose_workspace(view) == self.workspace_id()
+    }
+
+    /// The active project when it is in the selected workspace. Selecting
+    /// another workspace leaves the editor's project alone, but the sidebar
+    /// and tab bar then show that workspace instead of filtering it down to a
+    /// project it does not contain.
+    pub fn active_project_in_view(&self) -> Option<&str> {
+        let id = self.editor.project_id.as_deref()?;
+        self.editor
+            .projects
+            .iter()
+            .any(|p| p.project.id == id && p.project.workspace_id == self.workspace_id())
+            .then_some(id)
+    }
+
+    /// Match a session's `cwd` against registered projects or their worktrees.
+    pub fn project_id_for_cwd(&self, cwd: &str) -> Option<String> {
+        if cwd.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(cwd);
+        for proj in &self.editor.projects {
+            let root = std::path::Path::new(&proj.project.root);
+            if path == root || path.starts_with(root) {
+                return Some(proj.project.id.clone());
+            }
+            if let Some(entry) = self.editor.sidebar_worktrees.get(&proj.project.id)
+                && let Some(list) = &entry.list
+            {
+                for wt in &list.worktrees {
+                    let wt_path = std::path::Path::new(&wt.path);
+                    if path == wt_path || path.starts_with(wt_path) {
+                        return Some(proj.project.id.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Walk up from `path` to find the enclosing Git repository root.
+    /// Excludes `$HOME` and root `/`.
+    pub fn git_root_for_cwd(path: &std::path::Path) -> Option<std::path::PathBuf> {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let mut cur = path;
+        while let Some(parent) = cur.parent() {
+            if home.as_deref() == Some(cur) || cur == std::path::Path::new("/") {
+                break;
+            }
+            if cur.join(".git").exists() {
+                return std::fs::canonicalize(cur).ok();
+            }
+            cur = parent;
+        }
+        None
     }
 
     /// Send bytes to the attached session's PTY.
@@ -973,6 +1276,7 @@ mod tests {
                 cwd: info.cwd.clone(),
                 title: info.title.clone(),
                 created_at: 0,
+                workspace_id: None,
             },
         );
         s.apply_daemon_event(UiEvent::Event(Event::SessionUpdated { session: info }));
@@ -1027,6 +1331,34 @@ mod tests {
         exited.state = DaemonState::Exited;
         s.upsert_session(exited);
         assert!(!s.force_kill_ready(&key));
+    }
+
+    /// A polite stop that a shell ignores is escalated to a force kill by the
+    /// app after two seconds, once — the user never has to press Force kill.
+    #[test]
+    fn a_hung_polite_stop_is_forced_automatically_once() {
+        let mut s = state();
+        s.data.connected = true;
+        let info = daemon_session(DaemonState::Running);
+        let key = crate::data::SessionInfo::key(info.id);
+        s.upsert_session(info.clone());
+        let mut stopping = info.clone();
+        stopping.state = DaemonState::Stopping;
+        s.upsert_session(stopping);
+
+        let forced = |s: &State| {
+            s.pending
+                .iter()
+                .filter(|p| matches!(p, Pending::Stop { key: k, .. } if *k == key))
+                .count()
+        };
+        assert!(!s.poll_stop_escalation(), "inside the grace period");
+        assert_eq!(forced(&s), 0);
+        s.now_ms += AUTO_FORCE_AFTER_MS;
+        assert!(s.poll_stop_escalation(), "past it: a force kill goes out");
+        assert_eq!(forced(&s), 1);
+        assert!(!s.poll_stop_escalation(), "only once per stop");
+        assert_eq!(forced(&s), 1);
     }
 
     #[test]
@@ -1206,5 +1538,64 @@ mod tests {
             Some("the command cannot be parsed; check the quotes")
         );
         assert!(s.pending.is_empty(), "nothing was started");
+    }
+
+    #[test]
+    fn a_generated_name_is_recognized_and_a_repo_name_is_not() {
+        let name = generate_session_name();
+        assert!(name.contains('-'), "name should be hyphenated: {name}");
+        assert!(is_generated_name(&name), "a generated name is recognized");
+        assert!(
+            !is_generated_name("goko"),
+            "a repo name is not a generated name"
+        );
+        assert!(
+            !is_generated_name("random-unrelated-noun"),
+            "words outside the lists are not a generated name"
+        );
+    }
+
+    #[test]
+    fn a_generated_name_becomes_the_repo_name_on_entering_it() {
+        let mut s = state();
+        let repo_dir = std::env::current_dir().unwrap();
+        let git_root = State::git_root_for_cwd(&repo_dir).expect("should find git root");
+        let expected_name = git_root.file_name().unwrap().to_str().unwrap().to_string();
+
+        let mut info = daemon_session(DaemonState::Running);
+        let key = crate::data::SessionInfo::key(info.id);
+        info.title = "brave-meadow".to_string();
+        info.cwd = repo_dir.display().to_string();
+
+        s.session_metas.insert(
+            key.clone(),
+            SessionMeta {
+                session_id: key.clone(),
+                project_id: None,
+                agent: "shell".into(),
+                argv: vec!["/bin/bash".into()],
+                cwd: "/tmp".into(),
+                title: "brave-meadow".into(),
+                created_at: 0,
+                workspace_id: None,
+            },
+        );
+        s.place_session(&key, "brave-meadow", Placement::Tab);
+
+        // When upsert_session processes cwd in git repo, it should auto-rename
+        s.upsert_session(info);
+
+        let meta = s
+            .session_metas
+            .get(&key)
+            .expect("session meta should exist");
+        assert_eq!(
+            meta.title, expected_name,
+            "meta title should auto-rename to git repo name"
+        );
+        assert_eq!(
+            s.open_tabs[0].title, expected_name,
+            "tab title should auto-rename to git repo name"
+        );
     }
 }

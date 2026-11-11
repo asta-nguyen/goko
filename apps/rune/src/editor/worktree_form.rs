@@ -40,14 +40,6 @@ pub enum Mode {
     Existing,
 }
 
-/// Which `Select` listbox is open (at most one, like the other pickers).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pick {
-    Base,
-    Existing,
-    Source,
-}
-
 /// Everything the dialog needs, kept on `EditorState` so replies and
 /// handlers mutate one place. `None` = closed.
 pub struct Form {
@@ -73,8 +65,6 @@ pub struct Form {
     pub base: String,
     /// Selected local branch (mode `Existing`).
     pub existing: String,
-    /// The open `Select`, if any.
-    pub pick: Option<Pick>,
     /// Copy `.env*` files from another checkout (secrets stay local).
     pub copy_env: bool,
     /// Checkout path the env files copy from.
@@ -206,7 +196,6 @@ pub fn open(s: &mut State, project_id: &str, checkout_path: &str) {
         branch_touched: false,
         base,
         existing: String::new(),
-        pick: None,
         copy_env: false,
         env_source: project.root.clone(),
         branches: None,
@@ -490,6 +479,10 @@ fn path_changed(s: &mut State) {
     }
 }
 
+/// The form's selects fill their fieldset: the 560 pt card less its 16 pt
+/// padding, less the fieldset's 10 pt padding and 1 pt border on each side.
+const FORM_SELECT_W: f32 = 560.0 - 2.0 * 16.0 - 2.0 * 11.0;
+
 fn set_mode(s: &mut State, mode: Mode) {
     let Some(f) = s.editor.worktree_form.as_mut() else {
         return;
@@ -498,7 +491,12 @@ fn set_mode(s: &mut State, mode: Mode) {
         return;
     }
     f.mode = mode;
-    f.pick = None;
+    // The other mode's select is gone; none stays open across the switch.
+    s.editor.worktree_base_picker.close();
+    s.editor.worktree_existing_picker.close();
+    let Some(f) = s.editor.worktree_form.as_mut() else {
+        return;
+    };
     match mode {
         Mode::New => {
             let name = f.name.text.clone();
@@ -509,23 +507,6 @@ fn set_mode(s: &mut State, mode: Mode) {
             let free = free_branch_names(f);
             f.existing = free.first().unwrap_or(&"").to_string();
         }
-    }
-}
-
-fn toggle_pick(s: &mut State, pick: Pick) {
-    let Some(f) = s.editor.worktree_form.as_mut() else {
-        return;
-    };
-    f.pick = if f.pick == Some(pick) {
-        None
-    } else {
-        Some(pick)
-    };
-}
-
-fn close_pick(s: &mut State) {
-    if let Some(f) = s.editor.worktree_form.as_mut() {
-        f.pick = None;
     }
 }
 
@@ -729,28 +710,30 @@ pub fn layer(s: &State, layers: &mut Vec<El>) -> Option<El> {
                 .find(|(_, v)| *v == f.base)
                 .map(|(l, _)| l.clone());
             let choose = pairs.clone();
-            let base_select = rune_kit::Select::new("worktree-base", &labels)
-                .appearance(rune_kit::SelectAppearance::Field)
-                .current(current.as_deref())
-                .placeholder(if f.branches_loading {
-                    "Loading…"
-                } else {
-                    "Start from"
-                })
-                .label("Start from")
-                .width(240.0)
-                .open(f.pick == Some(Pick::Base))
-                .on_toggle(|st: &mut State| toggle_pick(st, Pick::Base))
-                .on_close(close_pick)
-                .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
-                    if let Some((_, value)) = choose.iter().find(|(l, _)| l == label)
-                        && let Some(f) = st.editor.worktree_form.as_mut()
-                    {
-                        f.base = value.clone();
-                        f.pick = None;
-                    }
-                })
-                .build(k, layers);
+            let base_select = rune_kit::Combobox::new(
+                "worktree-base",
+                &s.editor.worktree_base_picker,
+                &crate::picker::options(&labels),
+                |st: &mut State| &mut st.editor.worktree_base_picker,
+            )
+            .current(current.as_deref())
+            .placeholder(if f.branches_loading {
+                "Loading…"
+            } else {
+                "Start from"
+            })
+            .label("Start from")
+            .search_placeholder("Search branches")
+            .width(FORM_SELECT_W)
+            .disabled(busy)
+            .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
+                if let Some((_, value)) = choose.iter().find(|(l, _)| l == label)
+                    && let Some(f) = st.editor.worktree_form.as_mut()
+                {
+                    f.base = value.clone();
+                }
+            })
+            .build(k, layers);
             col()
                 .w_full()
                 .gap(8.0)
@@ -775,30 +758,32 @@ pub fn layer(s: &State, layers: &mut Vec<El>) -> Option<El> {
                 .find(|(_, v)| *v == f.existing)
                 .map(|(l, _)| l.clone());
             let choose = pairs.clone();
-            let branch_select = rune_kit::Select::new("worktree-existing", &labels)
-                .appearance(rune_kit::SelectAppearance::Field)
-                .current(current.as_deref())
-                .placeholder(if f.branches_loading {
-                    "Loading…"
-                } else if labels.is_empty() {
-                    "No local branches"
-                } else {
-                    "Local branch"
-                })
-                .label("Local branch")
-                .width(300.0)
-                .open(f.pick == Some(Pick::Existing))
-                .on_toggle(|st: &mut State| toggle_pick(st, Pick::Existing))
-                .on_close(close_pick)
-                .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
-                    if let Some((_, value)) = choose.iter().find(|(l, _)| l == label)
-                        && let Some(f) = st.editor.worktree_form.as_mut()
-                    {
-                        f.existing = value.clone();
-                        f.pick = None;
-                    }
-                })
-                .build(k, layers);
+            let branch_select = rune_kit::Combobox::new(
+                "worktree-existing",
+                &s.editor.worktree_existing_picker,
+                &crate::picker::options(&labels),
+                |st: &mut State| &mut st.editor.worktree_existing_picker,
+            )
+            .current(current.as_deref())
+            .placeholder(if f.branches_loading {
+                "Loading…"
+            } else if labels.is_empty() {
+                "No local branches"
+            } else {
+                "Local branch"
+            })
+            .label("Local branch")
+            .search_placeholder("Search branches")
+            .width(FORM_SELECT_W)
+            .disabled(busy)
+            .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
+                if let Some((_, value)) = choose.iter().find(|(l, _)| l == label)
+                    && let Some(f) = st.editor.worktree_form.as_mut()
+                {
+                    f.existing = value.clone();
+                }
+            })
+            .build(k, layers);
             col().w_full().child(
                 rune_kit::Field::new()
                     .label("Local branch")
@@ -856,29 +841,31 @@ pub fn layer(s: &State, layers: &mut Vec<El>) -> Option<El> {
             .find(|(_, v)| *v == f.env_source)
             .map(|(l, _)| l.clone());
         let choose = pairs.clone();
-        let source_select = rune_kit::Select::new("worktree-env-source", &labels)
-            .appearance(rune_kit::SelectAppearance::Field)
-            .current(current.as_deref())
-            .placeholder("Copy from")
-            .label("Copy from")
-            .width(300.0)
-            .open(f.pick == Some(Pick::Source))
-            .on_toggle(|st: &mut State| toggle_pick(st, Pick::Source))
-            .on_close(close_pick)
-            .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
-                let mut changed = false;
-                if let Some((_, value)) = choose.iter().find(|(l, _)| l == label)
-                    && let Some(f) = st.editor.worktree_form.as_mut()
-                {
-                    f.env_source = value.clone();
-                    f.pick = None;
-                    changed = true;
-                }
-                if changed {
-                    request_env_preview(st);
-                }
-            })
-            .build(k, layers);
+        let source_select = rune_kit::Combobox::new(
+            "worktree-env-source",
+            &s.editor.worktree_source_picker,
+            &crate::picker::options(&labels),
+            |st: &mut State| &mut st.editor.worktree_source_picker,
+        )
+        .current(current.as_deref())
+        .placeholder("Copy from")
+        .label("Copy from")
+        .search_placeholder("Search checkouts")
+        .width(FORM_SELECT_W)
+        .disabled(busy)
+        .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
+            let mut changed = false;
+            if let Some((_, value)) = choose.iter().find(|(l, _)| l == label)
+                && let Some(f) = st.editor.worktree_form.as_mut()
+            {
+                f.env_source = value.clone();
+                changed = true;
+            }
+            if changed {
+                request_env_preview(st);
+            }
+        })
+        .build(k, layers);
         env_box = env_box.child(
             rune_kit::Field::new()
                 .label("Copy from")
@@ -1182,7 +1169,6 @@ mod tests {
             branch_touched: false,
             base: "main".into(),
             existing: String::new(),
-            pick: None,
             copy_env: false,
             env_source: "/root".into(),
             branches: None,

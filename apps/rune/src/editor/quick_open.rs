@@ -309,7 +309,7 @@ pub fn layers(s: &State, ink: &Ink, k: &rune_kit::Kit) -> Vec<El> {
         .role("listbox")
         .label("Matching files")
         .w_full()
-        .gap(1.0);
+        .gap(2.0);
     for (i, path) in qo.matches[start..end].iter().enumerate() {
         let idx = start + i;
         let selected = idx == qo.index;
@@ -329,11 +329,17 @@ pub fn layers(s: &State, ink: &Ink, k: &rune_kit::Kit) -> Vec<El> {
                 st.editor.quick_open.index = idx;
                 activate_index(st, idx, tx);
             })
-            .child(theme::txt(
-                path,
-                theme::T12,
-                if selected { ink.text } else { ink.muted },
-            ));
+            .child(
+                theme::txt(
+                    path,
+                    theme::T12,
+                    if selected { ink.text } else { ink.muted },
+                )
+                .min_w(0.0)
+                .grow(1.0)
+                .truncate_middle()
+                .help_when_truncated(path.clone()),
+            );
         if selected {
             r = r.fill(ink.text.alpha(0.10));
         }

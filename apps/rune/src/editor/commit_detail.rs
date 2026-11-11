@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use app_core::git_view::GitViewCommit;
 use rune::{El, TextStyle, Tx, col, el, row};
+use rune_kit::ScrollBar;
 
 use crate::State;
 use crate::editor::history::{self, entry_name, format_time, ref_badge, status_label};
@@ -48,13 +49,6 @@ pub fn view(s: &State) -> El {
 pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
     let detail = s.editor.history.detail.as_ref();
     let patch_detail = detail.and_then(|p| p.detail.as_ref());
-    let loaded: std::collections::HashSet<&str> = s
-        .editor
-        .history
-        .commits
-        .iter()
-        .map(|c| c.id.as_str())
-        .collect();
 
     let mut body = col().w_full().px(12.0).py(6.0).gap(4.0);
 
@@ -137,7 +131,12 @@ pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
                     .justify_center()
                     .border(1.0, bc)
                     .label(r)
-                    .child(txt(&label, T11MN_BADGE, bc).max_w(160.0).truncate()),
+                    .child({
+                        txt(&label, T11MN_BADGE, bc)
+                            .max_w(160.0)
+                            .truncate_middle()
+                            .help_when_truncated(label.clone())
+                    }),
             );
         }
         body = body.child(badges);
@@ -179,12 +178,12 @@ pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
             .child(txt("Parents", T12, ink.muted));
         for pid in &commit.parents {
             let short = pid.chars().take(8).collect::<String>();
-            let enabled = loaded.contains(pid.as_str());
+            let enabled = s.editor.history.commits.iter().any(|c| c.id == *pid);
             let oid = pid.clone();
             let key_oid = pid.clone();
             let btn = txt(&short, T12TN, if enabled { ink.accent } else { ink.muted })
                 .px(4.0)
-                .py(1.0)
+                .py(2.0)
                 .role("button")
                 .label(format!("Select parent {short}"))
                 .focusable(enabled)
@@ -277,16 +276,22 @@ pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
     // viewport to 0 pt, which is what hid all of this metadata in the CUA
     // smoke.
     let max_h = meta_cap(s);
-    col().w_full().shrink().min_h(0.0).child(
-        col()
-            .w_full()
-            .min_h(0.0)
-            .max_h(max_h)
-            .scroll(rune::ScrollSpec {
-                stick_bottom: false,
-            })
-            .child(body),
-    )
+    col()
+        .key("commit-detail-meta")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(
+            col()
+                .w_full()
+                .min_h(0.0)
+                .max_h(max_h)
+                .scroll(rune::ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(body)
+                .scroll_bar(&s.editor.kit),
+        )
 }
 
 /// Desktop `COPY_FEEDBACK_MS`: how long the "Copied" note shows.
@@ -322,27 +327,62 @@ fn meta_cap(s: &State) -> f32 {
     let pane_h = history::detail_pane_height(s);
     let configured = s.editor.history.layout.detail_height as f32;
     let avail = if pane_h > 0.0 { pane_h } else { configured };
-    (avail - history::PATCH_MIN_H).clamp(0.0, META_MAX_H)
+    avail.clamp(120.0, META_MAX_H)
 }
 
 /// Cap for the metadata header inside the detail pane (desktop has no split —
 /// everything shares one scroll — so this is the native bound that keeps the
 /// patch pane visible). `meta_cap` tightens it further to the pane's
 /// measured height minus the patch floor.
-pub(crate) const META_MAX_H: f32 = 300.0;
+pub(crate) const META_MAX_H: f32 = 600.0;
 
 /// Changed-file list (`ChangedFiles` in panes.tsx): mono path with the
 /// original name muted, an outline status badge in sans, and `+added` /
 /// `−removed` counts in success/danger pushed to the row's end.
 pub(crate) fn changed_files(files: &[app_core::git_view::StatusEntry], ink: &Ink) -> El {
+    let count = files.len();
     let mut list = col()
         .w_full()
         .gap(2.0)
         .px(12.0)
         .py(8.0)
         .border_sides([0.0, 0.0, 1.0, 0.0], ink.border);
+    list = list.child(row().w_full().items_center().py(2.0).child(txt(
+        &format!("{count} changed file{}", if count == 1 { "" } else { "s" }),
+        T11M,
+        ink.muted,
+    )));
     for f in files {
-        let mut r = row().w_full().items_center().gap(8.0).px(4.0);
+        let path = f.path.clone();
+        let key_path = f.path.clone();
+        let mut r = row()
+            .w_full()
+            .items_center()
+            .gap(8.0)
+            .px(6.0)
+            .py(4.0)
+            .radius(4.0)
+            .cursor(rune::Cursor::Pointer)
+            .hover(ink.panel)
+            .role("button")
+            .label(format!("View diff for {}", f.path))
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                if let Some(idx) = st.editor.history.diff.file_index(&path) {
+                    st.editor.history.diff.scroll_to_file(idx, tx);
+                }
+            })
+            .on_key(move |st: &mut State, ev: &rune::KeyEvent, tx: &mut Tx| {
+                if activate_key(ev) {
+                    if let Some(idx) = st.editor.history.diff.file_index(&key_path) {
+                        st.editor.history.diff.scroll_to_file(idx, tx);
+                    }
+                    true
+                } else {
+                    false
+                }
+            });
         r = r.child(
             el().px(6.0)
                 .h(20.0)
@@ -361,7 +401,8 @@ pub(crate) fn changed_files(files: &[app_core::git_view::StatusEntry], ink: &Ink
             txt(&f.path, T12MONO, ink.text)
                 .min_w(0.0)
                 .grow(1.0)
-                .truncate()
+                .truncate_middle()
+                .help_when_truncated(f.path.clone())
                 .label(entry_name(f)),
         );
         r = r.child(name);
@@ -430,15 +471,17 @@ pub(crate) fn uncommitted_view(s: &State, ink: &Ink) -> El {
                 .label(status_label(e.status))
                 .child(txt(status_label(e.status), T11MN_BADGE, ink.muted)),
         );
+        let full_name = entry_name(e);
         r = r.child(
-            txt(&entry_name(e), T12TN, ink.text)
+            txt(&full_name, T12TN, ink.text)
                 .min_w(0.0)
                 .grow(1.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(full_name),
         );
         list = list.child(r);
     }
-    root.child(list)
+    root.child(list.scroll_bar(&s.editor.kit))
 }
 
 // Body expand state: single-slot per commit id (desktop resets on commit
@@ -583,7 +626,7 @@ index 1111111..2222222 100644\n\
     /// shared patch pane child 1 — which also keeps patch texts (the patch
     /// toolbar repeats the commit hash) out of metadata lookups.
     fn in_meta(e: &rune::runtime::ElementInfo) -> bool {
-        e.path.contains("/#3/#0/")
+        e.path.contains("commit-detail-meta")
     }
 
     /// Finds a live metadata text containing `needle`.

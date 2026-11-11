@@ -42,7 +42,8 @@ fn rows(s: &State) -> Vec<MapRow> {
     let query = s.project_map.query.text.trim().to_lowercase();
     let mut rows = Vec::new();
     for workspace in &s.workspaces {
-        let all = query.is_empty() || workspace.name.to_lowercase().contains(&query);
+        let label = s.workspace_label(workspace);
+        let all = query.is_empty() || label.to_lowercase().contains(&query);
         let projects: Vec<_> = s
             .editor
             .projects
@@ -59,7 +60,7 @@ fn rows(s: &State) -> Vec<MapRow> {
         }
         rows.push(MapRow {
             target: Target::Workspace(workspace.id.clone()),
-            name: workspace.name.clone(),
+            name: label,
             detail: if projects.is_empty() {
                 "No projects".into()
             } else {
@@ -95,15 +96,16 @@ pub fn available(s: &State) -> bool {
         && s.sidebar_confirm.is_none()
         && s.workspace_remove_confirm.is_none()
         && s.sidebar_menu.is_none()
+        && !s.sidebar_picker_open()
         && s.usage_menu.is_none()
         && s.editor.worktree_form.is_none()
         && s.editor.guard.is_none()
         && s.editor.save_resume.is_none()
         && !s.editor.quick_open.open
-        && !s.editor.project_picker_open
-        && !s.editor.checkout_picker_open
+        && !s.editor.project_picker.open
+        && !s.editor.checkout_picker.open
         && !s.editor.history.branch_picker.open
-        && !s.editor.commit.agent_picker_open
+        && !s.editor.commit.agent_picker.open
         && s.editor.history.row_menu.is_none()
         && (s.view != View::Terminal || s.preedit.is_empty())
 }
@@ -305,8 +307,16 @@ pub fn layers(s: &State) -> Vec<El> {
                     .grow(1.0)
                     .min_w(0.0)
                     .gap(2.0)
-                    .child(theme::txt(&r.name, theme::T12M, ink.text).truncate())
-                    .child(theme::txt(&r.detail, theme::T11, ink.muted).truncate()),
+                    .child({
+                        theme::txt(&r.name, theme::T12M, ink.text)
+                            .truncate_middle()
+                            .help_when_truncated(r.name.clone())
+                    })
+                    .child(
+                        theme::txt(&r.detail, theme::T11, ink.muted)
+                            .truncate_middle()
+                            .help_when_truncated(r.detail.clone()),
+                    ),
             );
         if r.current {
             line = line.child(theme::txt("✓ Current", theme::T11, ink.accent));

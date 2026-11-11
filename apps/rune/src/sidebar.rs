@@ -59,12 +59,8 @@ pub enum RowTarget {
 /// What a row's action button opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuKind {
-    /// The agents a session can be started with.
-    NewSession,
     /// The row's other commands.
     More,
-    /// The workspace selector: switch, create, rename, or remove.
-    Workspace,
 }
 
 impl RowTarget {
@@ -87,8 +83,6 @@ pub enum SidebarInput {
     CustomCommand { target: RowTarget },
     /// The name of a new worktree.
     NewWorktree { project_id: String },
-    /// The name of a new workspace.
-    WorkspaceName,
     /// A named workspace's new name.
     WorkspaceRename { id: String },
 }
@@ -137,11 +131,6 @@ fn action_button(
         .focusable(true)
         .tab_index(-1)
         .child(theme::ic(icon, 12.0, ink.muted).group_color(ink.text))
-        // The menu opens where the pointer is: the button remembers the
-        // last position it saw.
-        .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
-            s.menu_anchor = Some((p.x, p.y));
-        })
         .on_press(action)
 }
 
@@ -173,7 +162,9 @@ fn checkout_actions(ink: &Ink, target: RowTarget, name: &str) -> El {
             &format!("New session in {name}"),
             format!("sidebar-action:new-session:{identity}"),
             move |s: &mut State| {
-                s.open_menu(new_session.clone(), MenuKind::NewSession);
+                let anchor = format!("sidebar-row:{}", new_session.identity());
+                let width = row_picker_width(s);
+                open_new_session(s, anchor, Some(new_session.clone()), width);
             },
         ))
         .child(action_button(
@@ -187,6 +178,32 @@ fn checkout_actions(ink: &Ink, target: RowTarget, name: &str) -> El {
         ))
 }
 
+/// A session row's hover action (stop, close): an icon button with
+/// icon hover coloring instead of a background wash.
+fn session_action_button(
+    ink: &Ink,
+    icon: &'static rune::Icon,
+    hover_color: Color,
+    label: &str,
+    key: String,
+    action: impl Fn(&mut State) + 'static,
+) -> El {
+    el().key(key)
+        .size(20.0, 20.0)
+        .center()
+        .radius(4.0)
+        .hover_group()
+        .press_scale(0.92)
+        .group_opacity(0.0, 1.0)
+        .role("button")
+        .label(label)
+        .help(label)
+        .focusable(true)
+        .tab_index(-1)
+        .child(theme::ic(icon, 12.0, ink.muted).group_color(hover_color))
+        .on_press(action)
+}
+
 /// The actions a session row offers: stop it and close its pane.
 fn session_actions(ink: &Ink, session_id: String, title: &str) -> El {
     let stop = session_id.clone();
@@ -196,18 +213,20 @@ fn session_actions(ink: &Ink, session_id: String, title: &str) -> El {
         .h(ROW_H)
         .gap(2.0)
         .items_center()
-        .child(action_button(
+        .child(session_action_button(
             ink,
             &theme::SQUARE,
+            ink.danger,
             &format!("Stop session {title}"),
             format!("sidebar-action:stop:{session_id}"),
             move |s: &mut State| {
                 s.stop_session(&stop, false);
             },
         ))
-        .child(action_button(
+        .child(session_action_button(
             ink,
             &theme::X,
+            ink.danger,
             &format!("Close pane {title}"),
             format!("sidebar-action:close:{session_id}"),
             move |s: &mut State| {
@@ -216,50 +235,15 @@ fn session_actions(ink: &Ink, session_id: String, title: &str) -> El {
         ))
 }
 
-/// The agent entries of a start menu, shared by the sidebar's New session
-/// menu and the New tab menu: each starts its agent in `target`. An agent
-/// whose binary is missing stays disabled and names the reason.
-pub fn agent_entries(agents: &[data::AgentInfo], target: RowTarget) -> Vec<MenuItem> {
-    agents
-        .iter()
-        .map(|agent| {
-            let label = match (agent.available, &agent.binary) {
-                (false, Some(binary)) => {
-                    format!("{} — {binary} not found on PATH", agent.label)
-                }
-                _ => agent.label.clone(),
-            };
-            let agent_id = agent.id.clone();
-            let target = target.clone();
-            MenuItem::new(label)
-                .disabled(!agent.available)
-                .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
-                    st.sidebar_menu = None;
-                    st.request_session_argv(target.clone(), agent_id.clone());
-                })
-        })
-        .collect()
-}
-
 /// The open menu, as a kit layer. `None` when no menu is open.
 pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
     let (target, kind) = s.sidebar_menu.clone()?;
-    let (x, y) = s.menu_anchor.unwrap_or((0.0, 0.0));
-    let mut menu = rune_kit::Menu::new("sidebar-menu").at(x, y).open(true);
+    // A command menu drops from the button that opened it, right-aligned.
+    let mut menu = rune_kit::Menu::new("sidebar-menu")
+        .anchor(format!("sidebar-action:more:{}", target.identity()))
+        .placement(rune_kit::Placement::BottomEnd)
+        .open(true);
     match kind {
-        MenuKind::NewSession => {
-            for entry in agent_entries(&s.data.agents, target.clone()) {
-                menu = menu.item(entry);
-            }
-            menu = menu.item(MenuItem::new("Custom command…").on_select_tx(
-                move |st: &mut State, _tx: &mut Tx| {
-                    st.sidebar_menu = None;
-                    st.ask_for_input(SidebarInput::CustomCommand {
-                        target: target.clone(),
-                    });
-                },
-            ));
-        }
         MenuKind::More => {
             let open_target = target.clone();
             menu = menu.item(MenuItem::new("Open Editor").on_select_tx(
@@ -391,7 +375,8 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         .map(|workspace| {
                             let pid = project_id.clone();
                             let wid = workspace.id.clone();
-                            rune_kit::MenuEntry::item(MenuItem::new(&workspace.name).on_select_tx(
+                            let label = s.workspace_label(workspace);
+                            rune_kit::MenuEntry::item(MenuItem::new(label).on_select_tx(
                                 move |st: &mut State, _tx: &mut Tx| {
                                     st.sidebar_menu = None;
                                     st.move_project(&pid, &wid);
@@ -423,57 +408,6 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                 RowTarget::Session { .. } | RowTarget::Workspace => {}
             }
         }
-        MenuKind::Workspace => {
-            let selected = s.workspace_id().to_string();
-            let counts = s.workspace_waiting_counts();
-            for workspace in &s.workspaces {
-                let id = workspace.id.clone();
-                let current = workspace.id == selected;
-                // Another workspace's waiting sessions, named in its entry.
-                let label = match counts.get(&workspace.id) {
-                    Some(n) if !current && *n > 0 => {
-                        format!("{} · {n} need you", workspace.name)
-                    }
-                    _ => workspace.name.clone(),
-                };
-                menu = menu.item(MenuItem::new(label).checked(current).on_select_tx(
-                    move |st: &mut State, _tx: &mut Tx| {
-                        st.sidebar_menu = None;
-                        st.select_workspace(&id);
-                    },
-                ));
-            }
-            menu = menu.item(MenuItem::new("New workspace…").on_select_tx(
-                |st: &mut State, _tx: &mut Tx| {
-                    st.sidebar_menu = None;
-                    st.ask_for_input(SidebarInput::WorkspaceName);
-                },
-            ));
-            let is_default = selected == app_core::store::DEFAULT_WORKSPACE_ID;
-            if let Some(current) = s.workspaces.iter().find(|w| w.id == selected) {
-                let id = current.id.clone();
-                let name = current.name.clone();
-                menu = menu.item(
-                    MenuItem::new("Rename workspace…")
-                        .disabled(is_default)
-                        .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
-                            st.sidebar_menu = None;
-                            st.ask_for_workspace_rename(&id, &name);
-                        }),
-                );
-                let id = current.id.clone();
-                menu = menu.item(
-                    MenuItem::new("Remove workspace…")
-                        .danger(true)
-                        .disabled(is_default)
-                        .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
-                            st.sidebar_menu = None;
-                            st.sidebar_confirm = None;
-                            st.workspace_remove_confirm = Some(id.clone());
-                        }),
-                );
-            }
-        }
     }
     Some(
         menu.on_close(|st: &mut State| st.sidebar_menu = None)
@@ -492,7 +426,6 @@ pub fn input_layer(s: &State, ink: &Ink, layer: &mut Vec<El>) -> Option<El> {
         // `worktree_form::open` so `on_key` returns early) — no prompt
         // mounts for it; the name-only route is retired.
         SidebarInput::NewWorktree { .. } => return None,
-        SidebarInput::WorkspaceName => ("Workspace name…", "New workspace"),
         SidebarInput::WorkspaceRename { .. } => ("Workspace name…", "Rename workspace"),
     };
     let field = rune_kit::TextInput::new(&s.sidebar_text)
@@ -526,10 +459,6 @@ fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
             match s.sidebar_input.clone() {
                 // A workspace name stays in its prompt until the worker's
                 // reply: a failed write keeps the text for correction.
-                Some(SidebarInput::WorkspaceName) => {
-                    s.submit_workspace_create(&text);
-                    true
-                }
                 Some(SidebarInput::WorkspaceRename { id }) => {
                     s.submit_workspace_rename(&id, &text);
                     true
@@ -706,7 +635,7 @@ fn row_layer(fill: Color, row_h: f32) -> El {
 /// `Data::projects`. Mock sessions can never join a real project id, so
 /// they all render under Unassigned and no fake session is ever associated
 /// with a registered project.
-pub fn sidebar(s: &State, ink: &Ink) -> El {
+pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
     let known: HashSet<&str> = s
         .editor
         .projects
@@ -715,7 +644,6 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         .collect();
     let (by_project, unassigned) = data::partition(&s.data, &known);
     let selected = s.workspace_id();
-    let in_default = selected == app_core::store::DEFAULT_WORKSPACE_ID;
 
     let empty: &[&SessionView] = &[];
     let mut list = col()
@@ -745,18 +673,9 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         } else if let Some(err) = &s.editor.projects_error {
             (err.clone(), ink.danger)
         } else if s.editor.projects.is_empty() {
-            (
-                "No projects registered. Add a project folder to start.".to_string(),
-                ink.muted,
-            )
+            ("No projects registered.".to_string(), ink.muted)
         } else {
-            (
-                format!(
-                    "No projects in {}. Add a project folder to start.",
-                    s.workspace_name()
-                ),
-                ink.muted,
-            )
+            (format!("No projects in {}.", s.workspace_name()), ink.muted)
         };
         list = list.child(status_row(&text, tone));
     } else if let Some(err) = &s.editor.projects_error {
@@ -764,9 +683,7 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
     }
     for project in &visible {
         let sessions = if s
-            .editor
-            .project_id
-            .as_deref()
+            .active_project_in_view()
             .is_none_or(|id| id == project.project.id)
         {
             by_project
@@ -784,9 +701,16 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         let suffix = ordinal_suffix(earlier);
         list = list.child(project_node(s, ink, project, sessions, &suffix));
     }
-    // Unassigned sessions appear only in Default without an active project.
-    if in_default && s.editor.project_id.is_none() && !unassigned.is_empty() {
-        list = list.child(unassigned_node(s, ink, &unassigned));
+    // Terminals started outside every project belong to the workspace they
+    // were started in (older ones to Default) and show there unless one of
+    // its projects is active (the per-project filter) — as a herdr space
+    // shows its terminal before it has a repository.
+    let loose: Vec<&SessionView> = unassigned
+        .into_iter()
+        .filter(|sv| s.loose_in_selected_workspace(sv))
+        .collect();
+    if s.active_project_in_view().is_none() && !loose.is_empty() {
+        list = list.child(unassigned_node(s, ink, &loose));
     }
 
     let mut header = col().w_full().gap(4.0).child(
@@ -794,7 +718,7 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
             .w_full()
             .items_center()
             .gap(4.0)
-            .child(workspace_header(s, ink).grow(1.0).min_w(0.0))
+            .child(workspace_picker(s, ink, layer).grow(1.0).min_w(0.0))
             .child(
                 el().key("project-map-button")
                     .size(28.0, 28.0)
@@ -824,23 +748,241 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
             .gap(4.0)
             .padding(8.0)
             .child(header)
-            // header row `px-1`: h2 + ghost-sm "Add Project"
+            // header row: PROJECTS, its count and `+` (shell, agent or command).
             .child(
                 row()
+                    .key(PROJECTS_HEADER_KEY)
                     .w_full()
                     .h(ROW_H)
                     .px(4.0)
                     .items_center()
                     .justify_between()
                     .child(theme::txt("PROJECTS", HDR, ink.muted))
-                    .child(add_project(ink)),
+                    .child(
+                        row()
+                            .items_center()
+                            .gap(4.0)
+                            .children(
+                                (!s.editor.projects.is_empty())
+                                    .then(|| theme::count_badge(s.editor.projects.len(), ink)),
+                            )
+                            .child(
+                                el().key("sidebar-projects-new-session")
+                                    .size(20.0, 20.0)
+                                    .center()
+                                    .radius(4.0)
+                                    .hover_group()
+                                    .hover(ink.text.alpha(0.10))
+                                    .press(ink.text.alpha(0.16))
+                                    .press_scale(0.92)
+                                    .role("button")
+                                    .label("New session")
+                                    .help("New session: shell, agent or command")
+                                    .focusable(true)
+                                    .expanded(
+                                        s.new_session_picker.open
+                                            && s.new_session_from
+                                                .as_ref()
+                                                .is_some_and(|f| f.anchor == PROJECTS_HEADER_KEY),
+                                    )
+                                    .child(
+                                        theme::ic(&theme::PLUS, 12.0, ink.muted)
+                                            .group_color(ink.text),
+                                    )
+                                    .on_press(|s: &mut State| {
+                                        let width = picker_width(s);
+                                        open_new_session(
+                                            s,
+                                            PROJECTS_HEADER_KEY.to_string(),
+                                            None,
+                                            width,
+                                        );
+                                    }),
+                            ),
+                    ),
             )
             .child(list),
     )
 }
 
-/// The workspace selector: the selected group's name and a caret, opening
-/// the switch/manage menu where the pointer last was.
+/// The sidebar's pickers are rune-kit's searchable select, spanning the
+/// sidebar's content. Right-aligned under the PROJECTS header (8 pt in from
+/// the sidebar's edge), the surface reaches 12 pt from the window's left —
+/// rune keeps overlays 8 pt inside it, and a wider one would flip to open
+/// rightwards, off the sidebar.
+fn picker_width(s: &State) -> f32 {
+    (s.sidebar_width - 20.0).max(200.0)
+}
+
+/// A row's picker opens under the row, whose right edge sits 8 pt further in
+/// (the list's scroll gutter): 8 pt narrower keeps the same left margin.
+fn row_picker_width(s: &State) -> f32 {
+    (s.sidebar_width - 28.0).max(200.0)
+}
+
+/// The PROJECTS header row: the `+` picker drops from it, spanning the sidebar.
+const PROJECTS_HEADER_KEY: &str = "sidebar-projects-header";
+
+/// The new-session picker's option for a custom command; agent ids never
+/// start with `:`.
+const PICK_CUSTOM: &str = ":custom";
+/// The workspace picker's actions; workspace ids never start with `:`.
+const PICK_NEW_WORKSPACE: &str = ":new";
+const PICK_RENAME_WORKSPACE: &str = ":rename";
+const PICK_REMOVE_WORKSPACE: &str = ":remove";
+
+/// Where the one new-session picker is open: the element it drops from, how
+/// wide it is, and the checkout it starts in — `None` for "where the app is
+/// looking" (the active project when it is in the selected workspace, else a
+/// terminal of the selected workspace).
+#[derive(Clone, Debug)]
+pub struct NewSessionFrom {
+    pub anchor: String,
+    pub target: Option<RowTarget>,
+    pub width: f32,
+}
+
+/// Open the new-session picker under `anchor`. Every "start something"
+/// button — the PROJECTS `+`, a row's `+`, the tab bar's New tab caret —
+/// opens this same searchable select.
+pub fn open_new_session(s: &mut State, anchor: String, target: Option<RowTarget>, width: f32) {
+    s.sidebar_menu = None;
+    s.new_session_from = Some(NewSessionFrom {
+        anchor,
+        target,
+        width,
+    });
+    s.new_session_picker.show(None);
+}
+
+/// The new-session picker, as a kit layer: Shell first, then every agent (one
+/// whose binary is missing is listed, disabled, with the reason), then a
+/// custom command. It drops right-aligned from the element that opened it.
+pub fn new_session_layer(s: &State, layer: &mut Vec<El>) {
+    let Some(from) = &s.new_session_from else {
+        return;
+    };
+    if !s.new_session_picker.open {
+        return;
+    }
+    let mut agents: Vec<&data::AgentInfo> = s.data.agents.iter().collect();
+    agents.sort_by_key(|agent| agent.id != "shell");
+    let mut options: Vec<rune_kit::ComboboxOption> = agents
+        .into_iter()
+        .map(|agent| {
+            let mut option = rune_kit::ComboboxOption::new(&agent.id, &agent.label);
+            if !agent.available {
+                option.disabled = true;
+                if let Some(binary) = &agent.binary {
+                    option.detail = format!("{binary} not found on PATH");
+                }
+            }
+            option
+        })
+        .collect();
+    options.push(rune_kit::ComboboxOption::new(
+        PICK_CUSTOM,
+        "Custom command…",
+    ));
+    let _ = rune_kit::Combobox::new(
+        "new-session",
+        &s.new_session_picker,
+        &options,
+        |st: &mut State| &mut st.new_session_picker,
+    )
+    .label("New session")
+    .search_placeholder("Shell, agent or command")
+    .width(from.width)
+    .placement(rune_kit::Placement::BottomEnd)
+    .anchor(from.anchor.clone())
+    .on_choose(|st: &mut State, id: &str, _tx: &mut Tx| start_picked_session(st, id))
+    .build(&s.editor.kit, layer);
+}
+
+/// Start what the new-session picker chose. From a row: in that row's
+/// checkout. Otherwise where the app is looking: in the active project when
+/// it is in the selected workspace, else as a terminal of the selected
+/// workspace in `$HOME` (a shell then takes a generated name). Either way its
+/// tab and row show.
+fn start_picked_session(s: &mut State, id: &str) {
+    let from_row = s.new_session_from.take().and_then(|from| from.target);
+    let in_view = from_row.is_none();
+    let target = from_row.unwrap_or_else(|| {
+        s.active_project_in_view()
+            .and_then(|_| s.active_checkout_target())
+            .unwrap_or(RowTarget::Workspace)
+    });
+    s.view = crate::View::Terminal;
+    match id {
+        PICK_CUSTOM => s.ask_for_input(SidebarInput::CustomCommand { target }),
+        "shell" if in_view => s.new_shell_tab(),
+        agent => s.request_session_argv(target, agent.to_string()),
+    }
+}
+
+/// The workspace selector: a searchable select of every workspace (another
+/// one's waiting sessions named beside it), then New, Rename and Remove.
+fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
+    let selected = s.workspace_id().to_string();
+    let counts = s.workspace_waiting_counts();
+    let mut options: Vec<rune_kit::ComboboxOption> = s
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            let name = s.workspace_label(workspace);
+            let label = match counts.get(&workspace.id) {
+                Some(n) if *n > 0 && workspace.id != selected => {
+                    format!("{name} · {n} need you")
+                }
+                _ => name,
+            };
+            rune_kit::ComboboxOption::new(&workspace.id, label)
+        })
+        .collect();
+    options.push(rune_kit::ComboboxOption::new(
+        PICK_NEW_WORKSPACE,
+        "New workspace",
+    ));
+    if selected != app_core::store::DEFAULT_WORKSPACE_ID {
+        options.push(rune_kit::ComboboxOption::new(
+            PICK_RENAME_WORKSPACE,
+            "Rename workspace…",
+        ));
+        options.push(rune_kit::ComboboxOption::new(
+            PICK_REMOVE_WORKSPACE,
+            "Remove workspace…",
+        ));
+    }
+    rune_kit::Combobox::new(
+        "sidebar-workspace",
+        &s.workspace_picker,
+        &options,
+        |st: &mut State| &mut st.workspace_picker,
+    )
+    .current(Some(&selected))
+    .label("Workspace")
+    .search_placeholder("Switch workspace")
+    .width(picker_width(s))
+    .placement(rune_kit::Placement::BottomStart)
+    .trigger(workspace_header(s, ink))
+    .on_choose(|st: &mut State, id: &str, _tx: &mut Tx| match id {
+        PICK_NEW_WORKSPACE => st.submit_workspace_create(""),
+        PICK_RENAME_WORKSPACE => {
+            let id = st.workspace_id().to_string();
+            let name = st.workspace_name();
+            st.ask_for_workspace_rename(&id, &name);
+        }
+        PICK_REMOVE_WORKSPACE => {
+            st.sidebar_confirm = None;
+            st.workspace_remove_confirm = Some(st.workspace_id().to_string());
+        }
+        id => st.select_workspace(id),
+    })
+    .build(&s.editor.kit, layer)
+}
+
+/// The workspace selector's face: the selected workspace's label and a caret.
+/// The picker around it opens and closes it.
 fn workspace_header(s: &State, ink: &Ink) -> El {
     let name = s.workspace_name().to_string();
     // A waiting session in a hidden workspace is flagged here: the selector
@@ -869,18 +1011,13 @@ fn workspace_header(s: &State, ink: &Ink) -> El {
         .hover_group()
         .hover(ink.text.alpha(0.08))
         .press(ink.text.alpha(0.12))
-        .on_pointer_move(|s: &mut State, p: rune::PointerPress| {
-            s.menu_anchor = Some((p.x, p.y));
-        })
-        .on_press(|s: &mut State| {
-            s.open_menu(RowTarget::Workspace, MenuKind::Workspace);
-        })
         .child(theme::ic(&theme::FOLDER_TREE, 14.0, ink.muted).group_color(ink.text))
         .child(
             theme::txt(&name, T12M, ink.text)
                 .grow(1.0)
                 .min_w(0.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(name.clone()),
         )
         .children(hidden_waiting.then(|| {
             el().size(6.0, 6.0)
@@ -898,8 +1035,7 @@ fn workspace_remove_confirm_row(s: &State, ink: &Ink, id: &str) -> El {
         .workspaces
         .iter()
         .find(|workspace| workspace.id == id)
-        .map_or("this workspace", |workspace| workspace.name.as_str())
-        .to_string();
+        .map_or_else(|| "this workspace".to_string(), |w| s.workspace_label(w));
     let remove_id = id.to_string();
     col()
         .w_full()
@@ -908,7 +1044,9 @@ fn workspace_remove_confirm_row(s: &State, ink: &Ink, id: &str) -> El {
         .radius(6.0)
         .border(1.0, ink.border)
         .child(theme::txt(
-            &format!("Remove {name}? Its projects move to Default."),
+            &format!(
+                "Remove {name}? Its terminals and agents are closed; its projects move to Default."
+            ),
             T11M,
             ink.muted,
         ))
@@ -1064,7 +1202,7 @@ fn status_row(text: &str, tone: Color) -> El {
         .h(ROW_H)
         .px(8.0)
         .items_center()
-        .child(theme::txt(text, T12, tone).min_w(0.0).truncate())
+        .child(theme::txt(text, T12, tone).min_w(0.0).truncate_middle())
 }
 
 fn project_node(
@@ -1128,7 +1266,12 @@ fn project_node(
         // only paints on the element that owns the press handler). The chevron keeps
         // its own handler and captures its own presses.
         .press(press_wash(ink))
-        .child(row_layer(row_fill(ink, active), row_h).child(active_edge(ink, active)));
+        .child(
+            row_layer(row_fill(ink, active), row_h)
+                // A row's new-session picker drops from the whole row.
+                .key(format!("sidebar-row:{pid}"))
+                .child(active_edge(ink, active)),
+        );
 
     // Chevron button 20×20; expanded chevron-down, collapsed chevron-right.
     let pid_toggle = pid.to_string();
@@ -1154,7 +1297,7 @@ fn project_node(
                 theme::txt(&project.project.name, NAME, ink.text)
                     .group_color(lit(ink))
                     .min_w(40.0)
-                    .truncate()
+                    .truncate_middle()
                     .help_when_truncated(project.project.name.clone()),
             )
             .children(checkout_status(project.missing, root, ink)),
@@ -1220,12 +1363,11 @@ fn project_node(
     // same honest-error placement the desktop gives `worktreeQuery.error`.
     if let Some(err) = entry.and_then(|e| e.error.as_ref()) {
         node = node.child(
-            row()
-                .ml(GUIDE + 6.0)
-                .px(8.0)
-                .h(ROW_H)
-                .items_center()
-                .child(theme::txt(err, T11M, ink.danger).min_w(0.0).truncate()),
+            row().ml(GUIDE + 6.0).px(8.0).h(ROW_H).items_center().child(
+                theme::txt(err, T11M, ink.danger)
+                    .min_w(0.0)
+                    .truncate_middle(),
+            ),
         );
     }
     if expanded {
@@ -1287,7 +1429,8 @@ fn branch_subtitle<'a>(is_git: bool, root: Option<&'a WorktreeInfo>, ink: &'a In
         theme::txt(&label, BRANCH, ink.muted)
             .group_color(ink.text)
             .min_w(0.0)
-            .truncate(),
+            .truncate_middle()
+            .help_when_truncated(label),
     )
 }
 
@@ -1427,14 +1570,14 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
                 theme::txt(&l, NAME, rest)
                     .group_color(hovered)
                     .min_w(0.0)
-                    .truncate()
+                    .truncate_middle()
                     .help_when_truncated(l.clone()),
             )
             .child(
                 theme::txt(&title, SUB, ink.muted)
                     .group_color(ink.text)
                     .min_w(0.0)
-                    .truncate()
+                    .truncate_middle()
                     .help_when_truncated(title.clone()),
             );
     } else {
@@ -1443,7 +1586,7 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
             theme::txt(&title, NAME, rest)
                 .group_color(hovered)
                 .min_w(0.0)
-                .truncate()
+                .truncate_middle()
                 .help_when_truncated(title.clone()),
         );
     }
@@ -1457,7 +1600,8 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
             theme::txt(&format!("↳ {label}"), SUBS, ink.muted)
                 .group_color(ink.text)
                 .min_w(0.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(label),
         );
     }
     b = b.child(texts);
@@ -1573,7 +1717,7 @@ fn worktree_group(
                             .group_color(lit(ink))
                             .grow(1.0)
                             .min_w(0.0)
-                            .truncate(),
+                            .truncate_middle(),
                     )
                     .child(theme::count_badge(linked.len(), ink)),
             )
@@ -1638,7 +1782,7 @@ fn worktree_node(
         theme::txt(&wt.name, NAME, ink.text)
             .group_color(lit(ink))
             .min_w(40.0)
-            .truncate()
+            .truncate_middle()
             .help_when_truncated(wt.name.clone()),
     );
     if let Some(st) = checkout_status_of(wt, ink) {
@@ -1650,7 +1794,8 @@ fn worktree_node(
             theme::txt(&branch_label, BRANCH, ink.muted)
                 .group_color(ink.text)
                 .min_w(0.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(branch_label.clone()),
         );
     }
 
@@ -1678,7 +1823,11 @@ fn worktree_node(
         .hover_group()
         .press(press_wash(ink))
         .label(accessible.clone())
-        .child(row_layer(row_fill(ink, active), ROW_H).child(active_edge(ink, active)))
+        .child(
+            row_layer(row_fill(ink, active), ROW_H)
+                .key(format!("sidebar-row:{}", wt.path))
+                .child(active_edge(ink, active)),
+        )
         .child(
             chevron(wt_open, &accessible, ink).on_press(move |s: &mut State| {
                 let cur = s
@@ -1877,7 +2026,7 @@ mod tests {
         use rune::{Cx, Env, Runtime};
 
         fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
-            sidebar(s, &s.ink)
+            sidebar(s, &s.ink, &mut Vec::new())
         }
 
         let mut s = State::new(test_handle());
@@ -1929,6 +2078,7 @@ mod tests {
                 cwd: info.cwd.clone(),
                 title: info.title.clone(),
                 created_at: 0,
+                workspace_id: None,
             },
         );
         // A running sub-agent adds `↳ devin` inside the label cell.
@@ -2024,7 +2174,7 @@ mod tests {
         use rune::{Cx, Env, Runtime};
 
         fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
-            sidebar(s, &s.ink)
+            sidebar(s, &s.ink, &mut Vec::new())
         }
 
         let mut s = State::new(test_handle());
@@ -2173,7 +2323,7 @@ mod tests {
         use rune::{Cx, Env, Runtime};
 
         fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
-            sidebar(s, &s.ink)
+            sidebar(s, &s.ink, &mut Vec::new())
         }
 
         let project = |id: &str, name: &str, root: &str| ProjectView {
@@ -2291,7 +2441,7 @@ mod tests {
         use rune::{Cx, Env, Runtime};
 
         fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
-            sidebar(s, &s.ink)
+            sidebar(s, &s.ink, &mut Vec::new())
         }
 
         let project = |id: &str, root: &str| ProjectView {
@@ -2369,7 +2519,7 @@ mod tests {
         use rune::{Cx, Env, Runtime};
 
         fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
-            sidebar(s, &s.ink)
+            sidebar(s, &s.ink, &mut Vec::new())
         }
 
         let long_project = "a-project-name-far-too-long-for-the-narrow-sidebar";
@@ -2446,6 +2596,8 @@ mod tests {
             has_help("This folder no longer exists on disk"),
             "missing badge",
         );
+        // The element keeps the whole string (rune cuts it at paint time), so
+        // the tooltip, copy and accessibility text are never the "…" version.
         assert_eq!(help_of(long_project).as_deref(), Some(long_project));
         assert_eq!(help_of(long_worktree).as_deref(), Some(long_worktree));
         assert_eq!(help_of(long_title).as_deref(), Some(long_title));
@@ -2522,57 +2674,69 @@ mod tests {
         assert_eq!(s.workspace_id(), "w1");
     }
 
+    /// New workspace asks for no name: an unnamed one is created and selected,
+    /// and reads "New workspace" until a project gives it a label.
     #[test]
-    fn a_create_reply_selects_the_new_workspace_and_closes_the_prompt() {
+    fn new_workspace_is_created_unnamed_selected_and_labelled_by_its_project() {
         let mut s = State::new(test_handle());
         s.apply_reply(list_reply(vec![workspace(
             app_core::store::DEFAULT_WORKSPACE_ID,
             "Default",
         )]));
-        s.ask_for_input(SidebarInput::WorkspaceName);
-        s.sidebar_text = rune::edit::TextEdit::new("Work");
-        s.submit_workspace_create("Work");
+        s.submit_workspace_create("");
         let token = s.workspace_pending.expect("submission in flight");
+        assert!(s.sidebar_input.is_none(), "no name prompt opens");
 
         s.apply_reply(reply(
             Req::CreateWorkspace {
-                name: "Work".into(),
+                name: String::new(),
                 token,
             },
-            Ok(ReplyData::WorkspaceCreated(workspace("w1", "Work"))),
+            Ok(ReplyData::WorkspaceCreated(workspace("w1", ""))),
         ));
+        assert_eq!(s.workspace_id(), "w1", "the new workspace is selected");
+        assert_eq!(s.workspace_name(), "New workspace");
 
-        assert_eq!(s.workspace_id(), "w1");
-        assert!(s.sidebar_input.is_none(), "the prompt closes on success");
-        assert!(s.workspaces.iter().any(|w| w.id == "w1"));
+        // A second empty one is told apart.
+        s.workspaces.push(workspace("w2", ""));
+        let w2 = s.workspaces[2].clone();
+        assert_eq!(s.workspace_label(&w2), "New workspace 2");
+
+        // Its first project names it, as herdr's space follows its folder.
+        s.editor.projects.push(app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: "p1".into(),
+                name: "goko".into(),
+                root: "/src/goko".into(),
+                workspace_id: "w1".into(),
+                created_at: 0,
+            },
+            missing: false,
+        });
+        assert_eq!(s.workspace_name(), "goko");
+        assert_eq!(s.workspace_label(&w2), "New workspace");
     }
 
     #[test]
-    fn a_failed_workspace_create_keeps_the_prompt_and_selection() {
+    fn a_failed_workspace_create_keeps_the_selection() {
         let mut s = State::new(test_handle());
         s.apply_reply(list_reply(vec![workspace(
             app_core::store::DEFAULT_WORKSPACE_ID,
             "Default",
         )]));
-        s.ask_for_input(SidebarInput::WorkspaceName);
-        s.sidebar_text = rune::edit::TextEdit::new("Work");
-        s.submit_workspace_create("Work");
+        s.submit_workspace_create("");
         let token = s.workspace_pending.expect("submission in flight");
 
         s.apply_reply(reply(
             Req::CreateWorkspace {
-                name: "Work".into(),
+                name: String::new(),
                 token,
             },
-            Err("a workspace named 'Work' already exists".into()),
+            Err("cannot create the workspace".into()),
         ));
 
         assert_eq!(s.workspace_id(), app_core::store::DEFAULT_WORKSPACE_ID);
-        assert!(
-            matches!(s.sidebar_input, Some(SidebarInput::WorkspaceName)),
-            "the name entry stays for correction"
-        );
-        assert_eq!(s.sidebar_text.text, "Work");
+        assert!(s.workspace_pending.is_none(), "another try can go out");
         assert!(s.notice.is_some(), "the reason is shown");
     }
 
@@ -2624,5 +2788,159 @@ mod tests {
             Some(SidebarInput::WorkspaceRename { .. })
         ));
         assert_eq!(s.sidebar_text.text, "Work");
+    }
+
+    /// The empty sidebar has no New Terminal button: the PROJECTS `+` is the
+    /// one way to start something, and there is no Add Project button.
+    #[test]
+    fn the_empty_sidebar_offers_only_the_plus_picker() {
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink, &mut Vec::new())
+        }
+
+        let s = State::new(test_handle());
+        let mut rt = Runtime::new(s, sidebar_view, (260.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let els = rt.elements();
+        let has = |key: &str| els.iter().any(|e| e.key.as_deref() == Some(key));
+        assert!(!has("sidebar-empty-new-session"), "no New Terminal button");
+        assert!(!has("sidebar-empty-new-session-dropdown"));
+        assert!(!has("sidebar-add-project"), "no Add Project button");
+        assert!(has("sidebar-projects-new-session"), "the + is there");
+        assert!(
+            has("sidebar-workspace-selector"),
+            "the workspace selector is there"
+        );
+    }
+
+    /// Both sidebar pickers are rune-kit's searchable select, opened by their
+    /// triggers and as wide as the sidebar's content.
+    #[test]
+    fn the_plus_and_workspace_pickers_open_a_full_width_search() {
+        use rune::{Cx, Env, Runtime};
+
+        fn view(s: &State, _: &mut Cx<State>) -> El {
+            let mut layer = Vec::new();
+            let bar = sidebar(s, &s.ink, &mut layer);
+            new_session_layer(s, &mut layer);
+            rune_kit::root(rune::row().child(bar), layer)
+        }
+
+        for picker in ["new-session", "sidebar-workspace"] {
+            let mut s = State::new(test_handle());
+            s.data.agents = vec![crate::data::AgentInfo {
+                id: "shell".into(),
+                label: "Shell".into(),
+                available: true,
+                path: None,
+                binary: None,
+            }];
+            let width = s.sidebar_width;
+            match picker {
+                "new-session" => {
+                    let width = picker_width(&s);
+                    open_new_session(&mut s, PROJECTS_HEADER_KEY.to_string(), None, width);
+                }
+                _ => s.workspace_picker.open = true,
+            }
+            let mut rt = Runtime::new(s, view, (900.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            let els = rt.elements();
+            let surface = els
+                .iter()
+                .find(|e| e.key.as_deref() == Some(&format!("{picker}-content")))
+                .unwrap_or_else(|| panic!("{picker}: its surface is open"));
+            let [x, _, w, _] = surface.rect;
+            assert!(
+                x >= 0.0 && x + w <= width,
+                "{picker}: the surface stays over the sidebar ({x}..{} of {width})",
+                x + w
+            );
+            assert!(
+                w >= width - 24.0,
+                "{picker}: the surface spans the sidebar ({w} of {width})"
+            );
+            let search = els
+                .iter()
+                .find(|e| e.key.as_deref() == Some("search") && e.role == "textbox")
+                .unwrap_or_else(|| panic!("{picker}: its search field is open"));
+            assert!(
+                search.rect[2] >= w - 8.5,
+                "{picker}: the search spans the surface"
+            );
+        }
+    }
+
+    /// With a project active in the selected workspace, `+` → Shell starts in
+    /// its checkout, so the new tab stays inside the project filter.
+    #[test]
+    fn plus_shell_starts_in_the_active_project_of_this_workspace() {
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: "p1".into(),
+                name: "web".into(),
+                root: "/work/a/web".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+        }];
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        start_picked_session(&mut s, "shell");
+        assert_eq!(s.view, crate::View::Terminal);
+        let launch = s
+            .pending
+            .iter()
+            .find_map(|p| match p {
+                crate::sessions::Pending::Create { launch, .. } => Some(launch),
+                _ => None,
+            })
+            .expect("a shell launch went out");
+        assert_eq!(launch.project_id.as_deref(), Some("p1"));
+        assert_eq!(launch.cwd, "/work/a/web");
+    }
+
+    /// In a new workspace (the active project lives elsewhere), `+` → Shell
+    /// starts a terminal that belongs to this workspace: no project, and the
+    /// workspace recorded, so its row and tab show here.
+    #[test]
+    fn plus_shell_in_a_new_workspace_belongs_to_it() {
+        let mut s = State::new(test_handle());
+        s.workspaces = vec![
+            workspace(app_core::store::DEFAULT_WORKSPACE_ID, "Default"),
+            workspace("w1", ""),
+        ];
+        s.editor.projects = vec![app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: "p1".into(),
+                name: "web".into(),
+                root: "/work/a/web".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+        }];
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.selected_workspace = Some("w1".into());
+        start_picked_session(&mut s, "shell");
+        let (launch, workspace_id) = s
+            .pending
+            .iter()
+            .find_map(|p| match p {
+                crate::sessions::Pending::Create {
+                    launch,
+                    workspace_id,
+                    ..
+                } => Some((launch, workspace_id)),
+                _ => None,
+            })
+            .expect("a shell launch went out");
+        assert_eq!(launch.project_id, None, "not the other workspace's project");
+        assert_eq!(workspace_id.as_deref(), Some("w1"));
     }
 }

@@ -15,22 +15,19 @@ use std::collections::HashSet;
 use chrono::{DateTime, Local, TimeZone};
 use rune::{Color, Cursor, El, LineCap, Path, Shape, TextStyle, Tx, canvas, col, el, row};
 use rune_kit::Kit;
-use rune_kit::{
-    Cell, MenuItem, SegmentedControl, Table, TableColumn, TableState, TableStyle, context_menu,
-};
+use rune_kit::{MenuItem, context_menu};
 
 use crate::State;
 use crate::editor::backend::Req;
 use crate::editor::commit_detail;
-use crate::editor::history_graph::{
-    GRAPH_PALETTE, GraphColor, GraphLayout, GraphRow, layout_graph,
-};
+use crate::editor::history_graph::{GraphLayout, GraphRow, layout_graph};
 use crate::editor::history_layout::{
     DEFAULT_LAYOUT, DetailPosition, HistoryColumn, HistoryField, HistoryLayout,
 };
 use crate::editor::patch::{self, Pane};
 use crate::editor::state::{HistoryRowMenu, HistoryState, Section};
-use crate::theme::{Ink, T11MN_BADGE, T12, T12M, btn_sm, txt};
+use crate::editor::table::{Cell, Table, TableColumn, TableState, TableStyle};
+use crate::theme::{Ink, STATE_SPRING, T11M_LH, T11MN_BADGE, T12, T12M, btn_sm, txt};
 
 pub const ROW_H: f32 = 28.0;
 const LANE_W: f32 = 14.0;
@@ -405,18 +402,23 @@ pub fn connector_segments(
 
 fn circle_pts(cx: f32, cy: f32, r: f32) -> Vec<[f32; 2]> {
     const N: usize = 24;
-    (0..N)
-        .map(|i| {
+    static UNIT_CIRCLE: std::sync::LazyLock<[[f32; 2]; 24]> = std::sync::LazyLock::new(|| {
+        let mut pts = [[0.0, 0.0]; N];
+        for (i, pt) in pts.iter_mut().enumerate() {
             let a = i as f32 / N as f32 * std::f32::consts::TAU;
-            [cx + a.cos() * r, cy + a.sin() * r]
-        })
+            *pt = [a.cos(), a.sin()];
+        }
+        pts
+    });
+    UNIT_CIRCLE
+        .iter()
+        .map(|[cos, sin]| [cx + cos * r, cy + sin * r])
         .collect()
 }
 
-/// Palette index → linear colour (palette stores sRGB bytes; `hex` decodes).
+/// Palette index → linear colour.
 pub fn palette(idx: usize) -> Color {
-    let c: GraphColor = GRAPH_PALETTE[idx.min(GRAPH_PALETTE.len() - 1)];
-    rune::color::hex(&format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)).unwrap_or(Color::WHITE)
+    crate::editor::history_graph::palette(idx)
 }
 
 fn paint(p: Paint, bg: Color, muted: Color, opacity: f32) -> Color {
@@ -533,64 +535,63 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
     }
 
     if h.layout.detail_position == DetailPosition::Right {
-        // Table | handle | detail side by side. The detail takes its
-        // persisted width clamped against the measured row ([`detail_width_bounds`])
-        // so the table keeps [`TABLE_MIN_W`] and the pane is never pushed
-        // off-screen; flex shrink is the same display clamp `pane_layout`
-        // uses for the list asides.
+        // Lazygit-style column layout:
+        // Left column: Commits table on top + Commit details & changed files on bottom.
+        // Right column: Full-height, prominent Diff / changes pane.
         let (wfloor, wmax) = detail_width_bounds(h);
         let detail_w = h.layout.detail_width.clamp(wfloor, wmax) as f32;
+
+        let (detail_floor, dmax) = detail_height_bounds(h);
+        let detail_h = h.layout.detail_height.clamp(detail_floor, dmax) as f32;
+
         root = root.child(
             row()
                 .grow(1.0)
                 .min_h(0.0)
                 .w_full()
-                .child(table_view(s, ink, k).grow(1.0).min_w(TABLE_MIN_W).h_full())
+                .child(
+                    col()
+                        .grow(1.0)
+                        .min_w(TABLE_MIN_W)
+                        .h_full()
+                        .child(table_view(s, ink, k).grow(1.0).min_h(TABLE_MIN_H))
+                        .child(commit_detail_drawer_handle(ink))
+                        .child(
+                            col()
+                                .h(detail_h)
+                                .shrink()
+                                .min_h(0.0)
+                                .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+                                .child(commit_detail::view(s)),
+                        ),
+                )
                 .child(detail_width_handle(ink))
                 .child(
-                    // Fixed-width wrapper like the Bottom split's fixed-height
-                    // one: `detail_pane` branches root in `.grow(1.0)`, and a
-                    // column's grow is its height — `w(detail_w)` is the
-                    // wrapper's exact flex base, the pane inside fills it.
+                    // Right column: full-height diff pane
                     col()
                         .w(detail_w)
                         .h_full()
                         .shrink()
                         .min_w(0.0)
                         .border_sides([0.0, 0.0, 0.0, 1.0], ink.border)
-                        .child(detail_pane(s, ink, k)),
+                        .child(right_diff_pane(s, ink, k)),
                 ),
         );
     } else {
         root = root.child(table_view(s, ink, k).grow(1.0).min_h(TABLE_MIN_H));
 
-        // Detail height clamped to the measured container when known. The clamp
-        // subtracts every fixed sibling — toolbar, the stale-refresh notice when
-        // present, the table's minimum and the drag handle — so the detail pane
-        // (and therefore the patch) can never be pushed below the window, a case
-        // desktop's `detailMax` misses by the toolbar height. The persisted drag
-        // minimum (160) still governs the handle, but the *render* clamp may
-        // yield small: a short window gets whatever space the table's 120pt
-        // floor and the patch's 96pt leave, never a forced 160.
+        // Detail height clamped to the measured container when known.
         let (detail_floor, dmax) = detail_height_bounds(h);
         let detail_h = h.layout.detail_height.clamp(detail_floor, dmax) as f32;
 
         root = root.child(detail_handle(ink));
         root = root.child(
-            // Fixed-height wrapper: `detail_pane` branches root themselves in
-            // `.grow(1.0)`, and rune's `grow` sets `flex-basis: 0` — so `detail_h`
-            // applied to the pane directly would be only a flex *basis of zero*
-            // plus a free-space share, never the rendered height (the dead-handle
-            // bug: the boundary ignored `detailHeight` entirely). This wrapper
-            // never grows, so `h(detail_h)` is its exact flex base; the pane
-            // inside keeps `.grow(1)` and fills it. `shrink`+`min_h(0)` let the
-            // pane yield below content size on short windows.
             col()
                 .h(detail_h)
                 .shrink()
                 .min_h(0.0)
                 .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
-                .child(detail_pane(s, ink, k)),
+                .child(bottom_detail_pane(s, ink, k)),
         );
     }
 
@@ -663,6 +664,11 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     if s.editor.section != Section::History {
         return false;
+    }
+    if s.editor.history.graph.is_none() && !s.editor.history.commits.is_empty() {
+        s.editor.history.graph = Some(std::sync::Arc::new(
+            crate::editor::history_graph::layout_graph(&s.editor.history.commits),
+        ));
     }
     let mut changed = auto_select(s);
     changed |= consume_jump_to(s, tx);
@@ -939,6 +945,7 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
     .placeholder("All branches")
     .search_placeholder("Search branches")
     .width(160.0)
+    .popover_width(crate::picker::list_width(160.0))
     .on_choose(move |st: &mut State, id: &str, _tx: &mut Tx| {
         let branch = (id != ALL_BRANCHES).then(|| id.to_string());
         if st.editor.history.branch == branch {
@@ -946,6 +953,7 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         }
         st.editor.history.branch = branch.clone();
         st.editor.history.commits.clear();
+        st.editor.history.graph = None;
         st.editor.history.next_skip = None;
         st.editor.history.selected = None;
         st.editor.history.detail = None;
@@ -965,28 +973,7 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
     // Detail position: Bottom stacks the pane under the table (desktop
     // layout), Right docks it beside the table. Same persisted lane as the
     // drag handles — `layout_dirty` arms `poll_layout_save`.
-    let pos = match h.layout.detail_position {
-        DetailPosition::Bottom => Some(0),
-        DetailPosition::Right => Some(1),
-    };
-    bar = bar.child(
-        SegmentedControl::new(&["Bottom", "Right"], pos)
-            .fit()
-            .label("Detail position")
-            .on_pick(|st: &mut State, i: usize, _tx: &mut Tx| {
-                let next = if i == 0 {
-                    DetailPosition::Bottom
-                } else {
-                    DetailPosition::Right
-                };
-                if st.editor.history.layout.detail_position != next {
-                    st.editor.history.layout.detail_position = next;
-                    st.editor.history.layout_dirty = true;
-                }
-            })
-            .build(k)
-            .help("Detail: bottom / right"),
-    );
+    bar = bar.child(detail_position_switch(h.layout.detail_position, ink));
     bar = bar.child(
         rune_kit::TextInput::new(&h.filter)
             .placeholder("Filter commits")
@@ -1048,6 +1035,78 @@ fn toolbar(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
     bar
 }
 
+/// Bottom / Right detail position segmented switch matching `chrome::view_switch`.
+fn detail_position_switch(pos: DetailPosition, ink: &Ink) -> El {
+    row()
+        .key("history-detail-pos-switch")
+        .role("radiogroup")
+        .label("Detail position")
+        .focus_group()
+        .focus_follows()
+        .h(24.0)
+        .gap(2.0)
+        .items_center()
+        .padding(2.0)
+        .radius(6.0)
+        .border(1.0, ink.border)
+        .fill(ink.bg)
+        .child(detail_pos_item(
+            "Bottom",
+            DetailPosition::Bottom,
+            pos == DetailPosition::Bottom,
+            ink,
+        ))
+        .child(detail_pos_item(
+            "Right",
+            DetailPosition::Right,
+            pos == DetailPosition::Right,
+            ink,
+        ))
+}
+
+fn detail_pos_item(label: &'static str, target: DetailPosition, active: bool, ink: &Ink) -> El {
+    let tone = if active { ink.text } else { ink.muted };
+    let hover_tone = ink.text;
+    let mut b = row()
+        .key(format!("history-detail-pos:{label}"))
+        .h(20.0)
+        .px(8.0)
+        .items_center()
+        .justify_center()
+        .radius(4.0)
+        .hover_group()
+        .press_scale(0.96)
+        .motion(STATE_SPRING)
+        .role("radio")
+        .label(label)
+        .checked(active)
+        .focusable(true)
+        .focus_selected(active)
+        .focus_ring(2.0, 1.0, ink.accent);
+    if active {
+        b = b.child(
+            el().key("thumb")
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .radius(4.0)
+                .fill(ink.text.alpha(0.10))
+                .matched("history-detail-pos-thumb"),
+        );
+    }
+    b.child(
+        txt(label, T11M_LH, tone)
+            .key("label")
+            .group_color(hover_tone),
+    )
+    .on_press_tx(move |st: &mut State, _tx: &mut Tx| {
+        if st.editor.history.layout.detail_position != target {
+            st.editor.history.layout.detail_position = target;
+            st.editor.history.layout_dirty = true;
+        }
+    })
+}
+
 fn filter_active(s: &State) -> bool {
     !s.editor.history.filter.text.trim().is_empty()
 }
@@ -1055,9 +1114,24 @@ fn filter_active(s: &State) -> bool {
 fn match_ids(s: &State) -> HashSet<String> {
     let h = &s.editor.history;
     let q = h.filter.text.trim();
+    let terms: Vec<String> = q
+        .to_lowercase()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    if terms.is_empty() {
+        return HashSet::new();
+    }
     h.commits
         .iter()
-        .filter(|c| matches_query(&format!("{} {} {}", c.id, c.subject, c.author), q))
+        .filter(|c| {
+            let id_l = c.id.to_lowercase();
+            let sub_l = c.subject.to_lowercase();
+            let aut_l = c.author.to_lowercase();
+            terms
+                .iter()
+                .all(|term| id_l.contains(term) || sub_l.contains(term) || aut_l.contains(term))
+        })
         .map(|c| c.id.clone())
         .collect()
 }
@@ -1170,7 +1244,10 @@ fn uncommitted_count(s: &State) -> usize {
 
 fn table_view(s: &State, ink: &Ink, k: &Kit) -> El {
     let h = &s.editor.history;
-    let graph = layout_graph(&h.commits);
+    let graph = h
+        .graph
+        .clone()
+        .unwrap_or_else(|| std::sync::Arc::new(layout_graph(&h.commits)));
     let graph_w = h
         .layout
         .graph
@@ -1273,7 +1350,7 @@ struct CellCtx {
     matches: Option<HashSet<String>>,
     now: u64,
     ink: Ink,
-    graph: GraphLayout,
+    graph: std::sync::Arc<GraphLayout>,
     graph_w: f32,
     /// The table style's text faces, so `Cell::text` arms converted to
     /// `Cell::el` (needed to carry the row's context-menu handler) keep the
@@ -1328,7 +1405,7 @@ fn cell_content(s: &State, i: usize, col_id: &str, ctx: &CellCtx) -> Cell {
                     ink.muted,
                 )
                 .w_full()
-                .truncate(),
+                .truncate_middle(),
             ),
             _ => Cell::text(""),
         };
@@ -1360,10 +1437,11 @@ fn cell_content(s: &State, i: usize, col_id: &str, ctx: &CellCtx) -> Cell {
                 )
                 .min_w(96.0)
                 .grow(1.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(c.subject.clone()),
             );
             if c.head || !c.refs.is_empty() {
-                let mut badges = row().items_center().gap(3.0).shrink();
+                let mut badges = row().items_center().gap(4.0).shrink();
                 if c.head {
                     badges = badges.child(
                         el().px(6.0)
@@ -1412,7 +1490,7 @@ fn cell_content(s: &State, i: usize, col_id: &str, ctx: &CellCtx) -> Cell {
 /// same font face, truncate, shrink and truncated-text tooltip.
 fn cell_text(t: String, mono: bool, color: Color, ctx: &CellCtx) -> El {
     txt(&t, if mono { ctx.mono } else { ctx.font }, color)
-        .truncate()
+        .truncate_middle()
         .shrink()
         .min_w(0.0)
         .help_when_truncated(t)
@@ -1437,7 +1515,8 @@ fn ref_badge_el(r: &str, paint: Color, ink: &Ink, color: impl Fn(Color) -> Color
         .child(
             txt(&label, T11MN_BADGE, color(paint))
                 .max_w(112.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(label),
         );
     if is_tag {
         badge.fill(color(ink.warning.alpha(0.15)))
@@ -1456,7 +1535,7 @@ fn graph_cell(s: &State, ci: usize, dim: bool, graph: &GraphLayout, graph_w: f32
     let Some(row) = graph.rows.get(ci) else {
         return el();
     };
-    let head_index = graph.rows.iter().position(|r| r.head);
+    let head_index = graph.head_index;
     let uncommitted = uncommitted_visible(s);
     // Desktop paints the uncommitted connector under the row's own strokes.
     let mut segs = Vec::new();
@@ -1480,7 +1559,7 @@ fn graph_cell(s: &State, ci: usize, dim: bool, graph: &GraphLayout, graph_w: f32
 }
 
 fn graph_cell_uncommitted(s: &State, graph: &GraphLayout, graph_w: f32) -> El {
-    let head = graph.rows.iter().find(|r| r.head);
+    let head = graph.head_index.and_then(|hi| graph.rows.get(hi));
     let segs = uncommitted_segments(head.map(|r| r.lane), head.map(|r| r.color).unwrap_or(0));
     canvas(segs_to_shape(&segs, s.ink.bg, s.ink.muted, 1.0))
         .size(graph_w, ROW_H)
@@ -1491,12 +1570,12 @@ fn graph_cell_uncommitted(s: &State, graph: &GraphLayout, graph_w: f32) -> El {
 // Detail pane.
 // ---------------------------------------------------------------------------
 
-fn detail_pane(s: &State, ink: &Ink, _k: &Kit) -> El {
+fn right_diff_pane(s: &State, ink: &Ink, _k: &Kit) -> El {
     let h = &s.editor.history;
     let selected = h.selected.as_deref();
 
     if selected == Some(UNCOMMITTED_ID) {
-        return commit_detail::uncommitted_view(s, ink);
+        return patch::view(s, Pane::History).grow(1.0).h_full();
     }
     if selected
         .and_then(|id| h.commits.iter().find(|c| c.id == id))
@@ -1505,26 +1584,92 @@ fn detail_pane(s: &State, ink: &Ink, _k: &Kit) -> El {
         return empty_pane(ink, "Select a commit to see its patch", "");
     }
     if h.detail.is_some() {
-        return col()
-            .grow(1.0)
-            .min_h(0.0)
-            .child(commit_detail::view(s))
-            .child(patch::view(s, Pane::History).grow(1.0).min_h(PATCH_MIN_H))
-            .on_layout_tx(|st: &mut State, r: [f32; 4], tx: &mut Tx| {
-                let hgt = r[3];
-                if (hgt - st.editor.history.measured_detail_height).abs() > 0.5 {
-                    st.editor.history.measured_detail_height = hgt;
-                    // The metadata cap reads this measurement — schedule one
-                    // more frame so the split re-lays out with the real pane
-                    // height instead of the configured-height estimate.
-                    tx.wake_after(std::time::Duration::from_millis(16));
-                }
-            });
+        return patch::view(s, Pane::History).grow(1.0).h_full();
     }
     if h.detail_loading {
         return loading_pane("Loading commit…", ink);
     }
     empty_pane(ink, "Select a commit to see its patch", "")
+}
+
+fn bottom_detail_pane(s: &State, ink: &Ink, _k: &Kit) -> El {
+    let h = &s.editor.history;
+    let selected = h.selected.as_deref();
+
+    if selected == Some(UNCOMMITTED_ID) {
+        return row()
+            .grow(1.0)
+            .h_full()
+            .min_h(0.0)
+            .w_full()
+            .child(
+                col()
+                    .w(380.0)
+                    .h_full()
+                    .shrink()
+                    .min_w(0.0)
+                    .border_sides([0.0, 1.0, 0.0, 0.0], ink.border)
+                    .child(commit_detail::uncommitted_view(s, ink)),
+            )
+            .child(patch::view(s, Pane::History).grow(1.0).h_full());
+    }
+    if selected
+        .and_then(|id| h.commits.iter().find(|c| c.id == id))
+        .is_none()
+    {
+        return empty_pane(ink, "Select a commit to see its patch", "");
+    }
+    if h.detail.is_some() {
+        return row()
+            .grow(1.0)
+            .h_full()
+            .min_h(0.0)
+            .w_full()
+            .child(
+                col()
+                    .w(380.0)
+                    .h_full()
+                    .shrink()
+                    .min_w(0.0)
+                    .border_sides([0.0, 1.0, 0.0, 0.0], ink.border)
+                    .child(commit_detail::view(s)),
+            )
+            .child(patch::view(s, Pane::History).grow(1.0).h_full());
+    }
+    if h.detail_loading {
+        return loading_pane("Loading commit…", ink);
+    }
+    empty_pane(ink, "Select a commit to see its patch", "")
+}
+
+fn commit_detail_drawer_handle(ink: &Ink) -> El {
+    el().key("detail-drawer-handle")
+        .role("separator")
+        .label("Resize commit details")
+        .h(DETAIL_HANDLE_H)
+        .w_full()
+        .cursor(Cursor::ResizeRow)
+        .hover(ink.border)
+        .on_drag(
+            |st: &mut State, d: &mut rune::Drag, _tx: &mut Tx| match d.phase {
+                rune::Phase::Down => {
+                    let (floor, dmax) = detail_height_bounds(&st.editor.history);
+                    d.data = st.editor.history.layout.detail_height.clamp(floor, dmax) as f32;
+                }
+                rune::Phase::Move | rune::Phase::Up => {
+                    if !d.cancelled() {
+                        let (floor, dmax) = detail_height_bounds(&st.editor.history);
+                        let v = (d.data - d.dy).clamp(floor as f32, dmax as f32);
+                        st.editor.history.layout.set_detail_height(f64::from(v));
+                        st.editor.history.layout_dirty = true;
+                    }
+                }
+            },
+        )
+        .on_double_press(|st: &mut State| {
+            st.editor.history.layout.reset(HistoryField::DetailHeight);
+            st.editor.history.layout_dirty = true;
+        })
 }
 
 /// Measured detail-pane height (0 before the first layout pass) — feeds
@@ -2277,6 +2422,7 @@ mod tests {
             commit("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &[], false),
         ];
         s.editor.history.layout.set_detail_height(detail_height);
+        s.editor.history.layout.detail_position = DetailPosition::Bottom;
         s
     }
 
@@ -2887,7 +3033,7 @@ mod tests {
             rt.frame(1.0 / 60.0);
         }
         assert_eq!(
-            rt.state.editor.history.layout.detail_width, 420.0,
+            rt.state.editor.history.layout.detail_width, 550.0,
             "double-press resets to the default width"
         );
         assert!(rt.state.editor.history.layout_dirty);

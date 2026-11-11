@@ -172,7 +172,8 @@ async fn exit_code_title_and_creation_order_are_recorded() {
 #[tokio::test]
 async fn stop_is_idempotent_and_sends_one_signal() {
     let manager = SessionManager::new();
-    let script = "trap 'echo got-term' TERM; echo ready; while true; do sleep 0.05; done";
+    let script = "trap 'echo got-hup' HUP; trap 'echo got-term' TERM; echo ready; \
+                  while true; do sleep 0.05; done";
     let session = manager.create(spec(&["sh", "-c", script])).unwrap();
     wait_for_output(&manager, session.id, "ready").await;
 
@@ -188,11 +189,55 @@ async fn stop_is_idempotent_and_sends_one_signal() {
         SessionState::Stopping
     );
     sleep(Duration::from_millis(300)).await;
-    assert_eq!(output(&manager, session.id).matches("got-term").count(), 1);
+    let out = output(&manager, session.id);
+    assert_eq!(out.matches("got-hup").count(), 1, "one hangup");
+    assert_eq!(out.matches("got-term").count(), 1, "one terminate");
 
     // The script keeps running; a forced stop escalates to SIGKILL.
     manager.stop(session.id, true).unwrap();
     wait_for_state(&manager, session.id, SessionState::Exited).await;
+}
+
+/// A shell ignores SIGTERM, as an interactive bash, zsh or fish does; a polite
+/// stop still ends it, because closing a terminal also hangs it up.
+#[tokio::test]
+async fn a_polite_stop_ends_a_shell_that_ignores_sigterm() {
+    let manager = SessionManager::new();
+    let script = "trap '' TERM; echo ready; while true; do sleep 0.05; done";
+    let session = manager.create(spec(&["sh", "-c", script])).unwrap();
+    wait_for_output(&manager, session.id, "ready").await;
+
+    manager.stop(session.id, false).unwrap();
+    timeout(
+        Duration::from_secs(1),
+        wait_for_state(&manager, session.id, SessionState::Exited),
+    )
+    .await
+    .expect("the hangup ends it well before the grace period");
+}
+
+/// A process that ignores every polite signal is killed once the grace period
+/// passes: closing a session never needs a manual force kill.
+#[tokio::test]
+async fn a_stubborn_process_is_killed_after_the_grace_period() {
+    let manager = SessionManager::new();
+    let script = "trap '' HUP TERM; echo ready; while true; do sleep 0.05; done";
+    let session = manager.create(spec(&["sh", "-c", script])).unwrap();
+    wait_for_output(&manager, session.id, "ready").await;
+
+    manager.stop(session.id, false).unwrap();
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        manager.stop(session.id, false).unwrap().state,
+        SessionState::Stopping,
+        "still inside the grace period"
+    );
+    timeout(
+        daemon::session::STOP_GRACE + Duration::from_secs(2),
+        wait_for_state(&manager, session.id, SessionState::Exited),
+    )
+    .await
+    .expect("SIGKILL after the grace period, with no forced stop");
 }
 
 #[tokio::test]

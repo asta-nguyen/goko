@@ -157,7 +157,7 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         .fill(ink.panel);
 
     // Project select (native rune-kit Select — fully controlled: `open`
-    // mirrors `editor.project_picker_open`, toggled/dismissed via the
+    // mirrors `editor.project_picker.open`, toggled/dismissed via the
     // callbacks; choosing routes through the draft guard as SelectProject
     // so a Cancel keeps the old project AND checkout intact). Options carry
     // unique labels mapped to project ids — same-name projects stay
@@ -170,45 +170,38 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         .as_deref()
         .and_then(|id| project_opts.iter().find(|(_, pid)| pid == id))
         .map(|(l, _)| l.clone());
-    // Field (boxed) appearance is the only Select variant that honours
-    // `.width()` — Inline sizes its trigger to the label, and a
-    // path-disambiguated project name stretched the whole picker bar.
-    // `.shrink()` lets the trigger give way at narrow widths; the inner
-    // label truncates and `.help` keeps the full identity reachable.
+    // The field trigger has a fixed width — a path-disambiguated project name
+    // must not stretch the bar. `.shrink()` lets it give way at narrow
+    // widths; the label truncates and `.help` keeps the full identity.
     let project_help = current.clone().unwrap_or_else(|| "Select a project".into());
     bar = bar.child(
-        rune_kit::Select::new("editor-project", &options)
-            .appearance(rune_kit::SelectAppearance::Field)
-            .current(current.as_deref())
-            .placeholder("Select a project")
-            .label("Project")
-            .width(200.0)
-            .open(s.editor.project_picker_open)
-            .on_toggle(|st: &mut State| {
-                st.editor.project_picker_open = !st.editor.project_picker_open;
-                if st.editor.project_picker_open {
-                    st.editor.checkout_picker_open = false;
-                }
-            })
-            .on_close(|st: &mut State| {
-                st.editor.project_picker_open = false;
-            })
-            .on_choose(move |st: &mut State, label: &str, tx: &mut Tx| {
-                st.editor.project_picker_open = false;
-                if let Some((_, pid)) = project_opts.iter().find(|(l, _)| l == label) {
-                    navigation::navigate(
-                        st,
-                        PendingNav::SelectProject {
-                            project_id: pid.clone(),
-                        },
-                        tx,
-                    );
-                }
-            })
-            .build(k, layer)
-            .shrink()
-            .min_w(120.0)
-            .help(project_help),
+        rune_kit::Combobox::new(
+            "editor-project",
+            &s.editor.project_picker,
+            &crate::picker::options(&options),
+            |st: &mut State| &mut st.editor.project_picker,
+        )
+        .current(current.as_deref())
+        .placeholder("Select a project")
+        .label("Project")
+        .search_placeholder("Search projects")
+        .width(200.0)
+        .popover_width(crate::picker::list_width(200.0))
+        .on_choose(move |st: &mut State, label: &str, tx: &mut Tx| {
+            if let Some((_, pid)) = project_opts.iter().find(|(l, _)| l == label) {
+                navigation::navigate(
+                    st,
+                    PendingNav::SelectProject {
+                        project_id: pid.clone(),
+                    },
+                    tx,
+                );
+            }
+        })
+        .help(project_help)
+        .build(k, layer)
+        .shrink()
+        .min_w(120.0),
     );
 
     // Checkout select: project root + listed worktrees of the selected
@@ -234,72 +227,63 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         .clone()
         .unwrap_or_else(|| "Select a checkout".into());
     bar = bar.child(
-        rune_kit::Select::new("editor-checkout", &labels)
-            .appearance(rune_kit::SelectAppearance::Field)
-            .current(current_checkout.as_deref())
-            .placeholder(if s.editor.worktrees_loading {
-                "Loading…"
-            } else {
-                "Select a checkout"
-            })
-            .label("Checkout")
-            .width(240.0)
-            .open(s.editor.checkout_picker_open)
-            .on_toggle(|st: &mut State| {
-                st.editor.checkout_picker_open = !st.editor.checkout_picker_open;
-                if st.editor.checkout_picker_open {
-                    st.editor.project_picker_open = false;
-                }
-            })
-            .on_close(|st: &mut State| {
-                st.editor.checkout_picker_open = false;
-            })
-            .on_choose(move |st: &mut State, label: &str, tx: &mut Tx| {
-                st.editor.checkout_picker_open = false;
-                let Some(pid) = st.editor.project_id.clone() else {
-                    return;
-                };
-                let Some((_, path)) = checkout_opts.iter().find(|(l, _)| l == label) else {
-                    return;
-                };
-                navigation::navigate(
-                    st,
-                    PendingNav::SelectCheckout {
-                        project_id: pid,
-                        checkout: path.clone(),
-                    },
-                    tx,
-                );
-            })
-            .build(k, layer)
-            .shrink()
-            .min_w(140.0)
-            .help(checkout_help),
+        rune_kit::Combobox::new(
+            "editor-checkout",
+            &s.editor.checkout_picker,
+            &crate::picker::options(&labels),
+            |st: &mut State| &mut st.editor.checkout_picker,
+        )
+        .current(current_checkout.as_deref())
+        .placeholder(if s.editor.worktrees_loading {
+            "Loading…"
+        } else {
+            "Select a checkout"
+        })
+        .label("Checkout")
+        .search_placeholder("Search checkouts")
+        .width(240.0)
+        .popover_width(crate::picker::list_width(240.0))
+        .on_choose(move |st: &mut State, label: &str, tx: &mut Tx| {
+            let Some(pid) = st.editor.project_id.clone() else {
+                return;
+            };
+            let Some((_, path)) = checkout_opts.iter().find(|(l, _)| l == label) else {
+                return;
+            };
+            navigation::navigate(
+                st,
+                PendingNav::SelectCheckout {
+                    project_id: pid,
+                    checkout: path.clone(),
+                },
+                tx,
+            );
+        })
+        .help(checkout_help)
+        .build(k, layer)
+        .shrink()
+        .min_w(140.0),
     );
 
-    // "Add project" opens the native folder picker.
-    bar = bar.child(
-        theme::btn_sm("Add project", Some((&theme::FOLDER_PLUS, 14.0)), true, ink).on_press_tx(
-            |_s: &mut State, tx: &mut Tx| {
-                tx.open_folder(
-                    rune::file_dialog::FileDialogOptions {
-                        title: "Choose a project folder".into(),
-                        ..Default::default()
-                    },
-                    |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
-                        if let Ok(Some(path)) = result {
-                            st.editor
-                                .backend
-                                .send(backend::Job::project(Req::AddProject {
-                                    path: path.display().to_string(),
-                                    workspace_id: st.workspace_id().to_string(),
-                                }));
-                        }
-                    },
-                );
-            },
-        ),
-    );
+    if let Some(co) = &s.editor.checkout {
+        bar = bar.child(
+            row()
+                .gap(6.0)
+                .items_center()
+                .px(8.0)
+                .h(26.0)
+                .radius(6.0)
+                .fill(ink.panel)
+                .border(1.0, ink.border)
+                .help(co.display().to_string())
+                .child(theme::ic(&theme::FOLDER, 12.0, ink.muted))
+                .child(theme::txt(
+                    &co.display().to_string(),
+                    theme::T11M,
+                    ink.muted,
+                )),
+        );
+    }
 
     if let Some(err) = &s.editor.projects_error {
         bar = bar.child(theme::txt(err, theme::T11M_LH, ink.danger));
@@ -336,30 +320,46 @@ fn section_tabs(s: &State, ink: &Ink) -> El {
 
 fn el_tab(section: Section, active: bool, ink: &Ink) -> rune::El {
     use rune::el;
-    el().key(format!("section:{}", section.label()))
+    let tone = if active { ink.text } else { ink.muted };
+    let hover_tone = ink.text;
+    let mut b = el()
+        .key(format!("section:{}", section.label()))
         .h(28.0)
         .px(12.0)
         .radius(7.0)
         .items_center()
         .justify_center()
-        .fill(if active {
-            ink.text.alpha(0.10)
-        } else {
+        .hover_group()
+        .hover(if active {
             rune::Color::TRANSPARENT
+        } else {
+            ink.text.alpha(0.06)
         })
-        .hover(ink.text.alpha(0.06))
+        .press_scale(0.96)
+        .motion(theme::STATE_SPRING)
         .role("tab")
         .label(section.label())
         // `Role::Tab` is a selectable item: this reports selected/unselected
         // both in `Runtime::elements` (`item_selected`) and the OS a11y tree.
         .focus_selected(active)
         .focusable(true)
-        .focus_ring(2.0, 1.0, ink.accent)
-        .child(theme::txt(
-            section.label(),
-            theme::T12M,
-            if active { ink.text } else { ink.muted },
-        ))
+        .focus_ring(2.0, 1.0, ink.accent);
+    if active {
+        b = b.child(
+            el().key("thumb")
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .radius(7.0)
+                .fill(ink.text.alpha(0.10))
+                .matched("workspace-section-thumb"),
+        );
+    }
+    b.child(
+        theme::txt(section.label(), theme::T12M, tone)
+            .key("label")
+            .group_color(hover_tone),
+    )
 }
 
 fn notice_bar(notice: &crate::editor::state::Notice, ink: &Ink) -> El {
@@ -418,16 +418,18 @@ fn project_row(project: &ProjectView, ink: &Ink) -> El {
         .help(root.clone())
         .focusable(true)
         .key(format!("editor-empty-project:{}", project.project.id))
-        .child(
+        .child({
             theme::txt(&project.project.name, theme::T12M, ink.text)
                 .min_w(0.0)
-                .truncate(),
-        )
-        .child(
+                .truncate_middle()
+                .help_when_truncated(project.project.name.clone())
+        })
+        .child({
             theme::txt(&root, theme::T11, ink.muted)
                 .min_w(0.0)
-                .truncate(),
-        )
+                .truncate_middle()
+                .help_when_truncated(root.clone())
+        })
         .on_press_tx(move |s: &mut State, tx: &mut Tx| {
             navigation::navigate(
                 s,

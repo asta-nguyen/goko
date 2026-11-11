@@ -13,7 +13,7 @@ use app_core::projects::ProjectView;
 use app_core::worktrees::WorktreeList;
 use rune::edit::TextEdit;
 use rune_kit::diff::DiffState;
-use rune_kit::{FileNode, Kit, TableState, TreeModel};
+use rune_kit::{FileNode, Kit, TreeModel};
 
 use crate::State;
 use crate::editor::acp::Acp;
@@ -23,6 +23,7 @@ use crate::editor::draft::OpenDoc;
 use crate::editor::indent::UnitChoice;
 use crate::editor::lsp::Lsp;
 use crate::editor::navigation::{self, Guard};
+use crate::editor::table::TableState;
 use crate::editor::{history_layout, quit_guard};
 
 /// Identity of one checkout inside the editor: `project_id` + canonical path.
@@ -226,6 +227,8 @@ pub struct HistoryState {
     /// shows "Copied" for `commit_detail::COPY_FEEDBACK_MS` like desktop's
     /// `copyNote` timer, and `history::poll` expires it.
     pub copied_hash: Option<(String, std::time::Instant)>,
+    /// Precomputed/cached commit lane graph; recomputed only when commits change.
+    pub graph: Option<std::sync::Arc<crate::editor::history_graph::GraphLayout>>,
 }
 
 /// A secondary press on a commit row awaiting its menu choice.
@@ -260,9 +263,8 @@ pub struct CommitState {
     pub generate_error: Option<String>,
     /// The agent picked for Generate (empty = first configured agent).
     pub agent_id: Option<String>,
-    /// Controlled open state for the agent `Select` (same pattern as the
-    /// project/checkout pickers).
-    pub agent_picker_open: bool,
+    /// The agent select (rune-kit's searchable Combobox), like every picker.
+    pub agent_picker: rune_kit::ComboboxState,
     /// Commit/push busy labels.
     pub committing: bool,
     pub pushing: bool,
@@ -405,10 +407,15 @@ pub struct EditorState {
     /// Last modifier set reported by `App::on_modifiers`; the code owner's
     /// `CodeState` reads this for glyph-hit link overlays.
     pub modifiers: rune::Mods,
-    /// rune-kit `Select` is fully controlled: these flags are its `open`
-    /// state, toggled by `on_toggle`/`on_close`. At most one picker is open.
-    pub project_picker_open: bool,
-    pub checkout_picker_open: bool,
+    /// The project and checkout selects (rune-kit's searchable Combobox);
+    /// their `open` flags say whether one owns the keyboard.
+    pub project_picker: rune_kit::ComboboxState,
+    pub checkout_picker: rune_kit::ComboboxState,
+    /// The New-worktree form's selects: start-from, existing branch, and the
+    /// environment files' source checkout.
+    pub worktree_base_picker: rune_kit::ComboboxState,
+    pub worktree_existing_picker: rune_kit::ComboboxState,
+    pub worktree_source_picker: rune_kit::ComboboxState,
     /// Global keyboard state: the highlight-only j/k list cursor plus the
     /// section/digit bookkeeping (`keyboard.rs`).
     pub keyboard: crate::editor::keyboard::KeyboardState,
@@ -495,6 +502,7 @@ impl EditorState {
                 measured_detail_height: 0.0,
                 row_menu: None,
                 copied_hash: None,
+                graph: None,
             },
             stashes: StashesState {
                 stashes: Vec::new(),
@@ -514,7 +522,7 @@ impl EditorState {
                 generating: false,
                 generate_error: None,
                 agent_id: None,
-                agent_picker_open: false,
+                agent_picker: rune_kit::ComboboxState::default(),
                 committing: false,
                 pushing: false,
                 error: None,
@@ -543,8 +551,11 @@ impl EditorState {
             pending_apply: None,
             req_gens: HashMap::new(),
             modifiers: rune::Mods::default(),
-            project_picker_open: false,
-            checkout_picker_open: false,
+            project_picker: rune_kit::ComboboxState::default(),
+            checkout_picker: rune_kit::ComboboxState::default(),
+            worktree_base_picker: rune_kit::ComboboxState::default(),
+            worktree_existing_picker: rune_kit::ComboboxState::default(),
+            worktree_source_picker: rune_kit::ComboboxState::default(),
             keyboard: Default::default(),
             quick_open: Default::default(),
         }

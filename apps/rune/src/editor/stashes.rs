@@ -3,7 +3,7 @@
 //! desktop `EditorStashes` — no stash write actions.
 
 use rune::{El, ScrollSpec, TextStyle, Tx, col, el, row};
-use rune_kit::Kit;
+use rune_kit::{Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -233,7 +233,12 @@ fn aside(s: &State, ink: &Ink, k: &Kit) -> El {
                     .child(el().grow(1.0))
                     .child(txt(&format_time(item.time), T11, ink.muted)),
             )
-            .child(txt(&item.message, T12, ink.muted).w_full().truncate());
+            .child({
+                txt(&item.message, T12, ink.muted)
+                    .w_full()
+                    .truncate_middle()
+                    .help_when_truncated(item.message.clone())
+            });
         btn = if nav_cur {
             btn.fill(ink.accent.alpha(0.14))
         } else if selected {
@@ -253,7 +258,7 @@ fn aside(s: &State, ink: &Ink, k: &Kit) -> El {
             });
         list = list.child(btn);
     }
-    col_el.child(list).child(pane_layout::grip(
+    col_el.child(list.scroll_bar(k)).child(pane_layout::grip(
         s,
         ink,
         PaneKind::StashesList,
@@ -326,7 +331,8 @@ fn stash_header(s: &State, ink: &Ink, stash: Option<&app_core::git_view::GitView
             txt(&format!(" {msg}"), T12M, ink.text)
                 .min_w(0.0)
                 .grow(1.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(msg.clone()),
         );
     }
     top = top.child(title);

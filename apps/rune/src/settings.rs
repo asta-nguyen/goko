@@ -61,10 +61,12 @@ pub struct AcpDraft {
 #[derive(Default)]
 pub struct SettingsState {
     pub section: Section,
-    /// Appearance: the theme Select's open flag.
-    theme_picker_open: bool,
-    /// Editor: the indent Select's open flag.
-    indent_picker_open: bool,
+    /// Appearance: the theme select (rune-kit's searchable Combobox).
+    pub theme_picker: rune_kit::ComboboxState,
+    /// Editor: the indent select.
+    pub indent_picker: rune_kit::ComboboxState,
+    /// Editor: the scroll speed select.
+    pub scroll_speed_picker: rune_kit::ComboboxState,
     /// Accounts: the agent whose add form is open.
     add_open: Option<String>,
     add_name: rune::edit::TextEdit,
@@ -372,28 +374,49 @@ pub fn view(s: &State, ink: &Ink) -> El {
     let mut rail = col().w(176.0).h_full().min_h(0.0).gap(2.0).padding(12.0);
     for section in Section::ALL {
         let active = s.settings.section == section;
-        rail = rail.child(
-            row()
-                .w_full()
-                .h(28.0)
-                .px(8.0)
-                .items_center()
-                .radius(6.0)
-                .fill(ink.text.alpha(if active { 0.10 } else { 0.0 }))
-                .hover(ink.text.alpha(0.06))
-                .press(ink.text.alpha(0.10))
-                .role("button")
-                .label(section.label())
-                .focusable(true)
-                .child(theme::txt(
-                    section.label(),
-                    T12M,
-                    if active { ink.text } else { ink.muted },
-                ))
-                .on_press(move |s: &mut State| {
-                    s.settings.section = section;
-                }),
-        );
+        let tone = if active { ink.text } else { ink.muted };
+        let hover_tone = ink.text;
+        let mut b = row()
+            .key(format!("settings-section:{}", section.label()))
+            .w_full()
+            .h(28.0)
+            .px(8.0)
+            .items_center()
+            .radius(6.0)
+            .hover_group()
+            .hover(if active {
+                rune::Color::TRANSPARENT
+            } else {
+                ink.text.alpha(0.06)
+            })
+            .press_scale(0.96)
+            .motion(theme::STATE_SPRING)
+            .role("tab")
+            .label(section.label())
+            .focusable(true)
+            .focus_selected(active)
+            .focus_ring(2.0, 1.0, ink.accent);
+        if active {
+            b = b.child(
+                el().key("thumb")
+                    .absolute(0.0, 0.0)
+                    .w_full()
+                    .h_full()
+                    .radius(6.0)
+                    .fill(ink.text.alpha(0.10))
+                    .matched("settings-section-thumb"),
+            );
+        }
+        b = b
+            .child(
+                theme::txt(section.label(), T12M, tone)
+                    .key("label")
+                    .group_color(hover_tone),
+            )
+            .on_press(move |s: &mut State| {
+                s.settings.section = section;
+            });
+        rail = rail.child(b);
     }
 
     let root = row()
@@ -489,37 +512,76 @@ fn acp_empty_draft() -> &'static AcpDraft {
 // ---------------------------------------------------------------------------
 
 fn editor_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
-    let options: Vec<String> = INDENT_OPTIONS.iter().map(|(_, l)| l.to_string()).collect();
-    let current = INDENT_OPTIONS
+    let indent_options: Vec<String> = INDENT_OPTIONS.iter().map(|(_, l)| l.to_string()).collect();
+    let indent_current = INDENT_OPTIONS
         .iter()
         .find(|(choice, _)| *choice == s.editor.indent_choice)
         .map(|(_, l)| *l)
         .unwrap_or("Auto-detect");
-    field(
-        "Indentation",
-        "How the editor indents: Auto-detect sniffs the file, the rest pin a style.",
-        rune_kit::Select::new("settings-indent", &options)
-            .appearance(rune_kit::SelectAppearance::Field)
-            .current(Some(current))
+
+    let speed_options: Vec<String> = SCROLL_SPEED_OPTIONS
+        .iter()
+        .map(|(_, l)| l.to_string())
+        .collect();
+    let speed_current = SCROLL_SPEED_OPTIONS
+        .iter()
+        .find(|(val, _)| (*val - s.scroll_speed).abs() < 0.01)
+        .map(|(_, l)| *l)
+        .unwrap_or("1.0× (Normal)");
+
+    col()
+        .w_full()
+        .gap(20.0)
+        .child(field(
+            "Indentation",
+            "How the editor indents: Auto-detect sniffs the file, the rest pin a style.",
+            rune_kit::Combobox::new(
+                "settings-indent",
+                &s.settings.indent_picker,
+                &crate::picker::options(&indent_options),
+                |s: &mut State| &mut s.settings.indent_picker,
+            )
+            .current(Some(indent_current))
             .placeholder("Auto-detect")
             .label("Indentation")
+            .search_placeholder("Search indentation")
             .width(176.0)
-            .open(s.settings.indent_picker_open)
-            .on_toggle(|s: &mut State| {
-                s.settings.indent_picker_open = !s.settings.indent_picker_open;
-            })
-            .on_close(|s: &mut State| {
-                s.settings.indent_picker_open = false;
-            })
+            .popover_width(crate::picker::list_width(176.0))
             .on_choose(|s: &mut State, label: &str, _tx: &mut Tx| {
-                s.settings.indent_picker_open = false;
                 if let Some((choice, _)) = INDENT_OPTIONS.iter().find(|(_, l)| *l == label) {
                     s.editor.set_indent_choice(*choice);
                 }
             })
             .build(&s.editor.kit, layer),
-        ink,
-    )
+            ink,
+        ))
+        .child(field(
+            "Scroll Speed",
+            "Multiplier for mouse wheel scrolling in terminal panes and views.",
+            rune_kit::Combobox::new(
+                "settings-scroll-speed",
+                &s.settings.scroll_speed_picker,
+                &crate::picker::options(&speed_options),
+                |s: &mut State| &mut s.settings.scroll_speed_picker,
+            )
+            .current(Some(speed_current))
+            .placeholder("1.0× (Normal)")
+            .label("Scroll Speed")
+            .search_placeholder("Search speeds")
+            .width(176.0)
+            .popover_width(crate::picker::list_width(176.0))
+            .on_choose(|s: &mut State, label: &str, _tx: &mut Tx| {
+                if let Some((speed, _)) = SCROLL_SPEED_OPTIONS.iter().find(|(_, l)| *l == label) {
+                    s.scroll_speed = *speed;
+                    s.account_job(Req::SetSetting {
+                        key: SCROLL_SPEED_KEY.to_string(),
+                        value: speed.to_string(),
+                    });
+                }
+            })
+            .build(&s.editor.kit, layer),
+            ink,
+        ))
 }
 
 /// The indent picker's options: the labels UnitChoice parses back from.
@@ -529,6 +591,19 @@ const INDENT_OPTIONS: [(UnitChoice, &str); 5] = [
     (UnitChoice::Fixed(indent::IndentUnit::Spaces(4)), "4 spaces"),
     (UnitChoice::Fixed(indent::IndentUnit::Spaces(8)), "8 spaces"),
     (UnitChoice::Fixed(indent::IndentUnit::Tab), "Tabs"),
+];
+
+/// The key under which scroll speed multiplier is stored.
+pub const SCROLL_SPEED_KEY: &str = "goko.scroll_speed";
+
+/// Scroll speed multiplier options: (multiplier, label).
+pub const SCROLL_SPEED_OPTIONS: [(f32, &str); 6] = [
+    (0.5, "0.5× (Slow)"),
+    (0.75, "0.75× (Comfortable)"),
+    (1.0, "1.0× (Normal)"),
+    (1.25, "1.25× (Fast)"),
+    (1.5, "1.5× (Faster)"),
+    (2.0, "2.0× (Very Fast)"),
 ];
 
 // ---------------------------------------------------------------------------
@@ -543,33 +618,31 @@ fn appearance_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
     field(
         "Theme",
         "Dark+ is the default. System follows the OS appearance.",
-        rune_kit::Select::new("settings-theme", &options)
-            .appearance(rune_kit::SelectAppearance::Field)
-            .current(Some(s.theme_choice.label()))
-            .placeholder("System")
-            .label("Theme")
-            .width(176.0)
-            .open(s.settings.theme_picker_open)
-            .on_toggle(|s: &mut State| {
-                s.settings.theme_picker_open = !s.settings.theme_picker_open;
-            })
-            .on_close(|s: &mut State| {
-                s.settings.theme_picker_open = false;
-            })
-            .on_choose(|s: &mut State, label: &str, _tx: &mut Tx| {
-                s.settings.theme_picker_open = false;
-                if let Some(choice) = Theme::OPTIONS.iter().find(|t| t.label() == label) {
-                    s.theme_choice = *choice;
-                    // A fresh OS read keeps System honest at pick time.
-                    s.os_dark = os_dark_mode();
-                    s.apply_theme();
-                    s.account_job(Req::SetSetting {
-                        key: theme::THEME_KEY.to_string(),
-                        value: choice.id().to_string(),
-                    });
-                }
-            })
-            .build(&s.editor.kit, layer),
+        rune_kit::Combobox::new(
+            "settings-theme",
+            &s.settings.theme_picker,
+            &crate::picker::options(&options),
+            |s: &mut State| &mut s.settings.theme_picker,
+        )
+        .current(Some(s.theme_choice.label()))
+        .placeholder("System")
+        .label("Theme")
+        .search_placeholder("Search themes")
+        .width(176.0)
+        .popover_width(crate::picker::list_width(176.0))
+        .on_choose(|s: &mut State, label: &str, _tx: &mut Tx| {
+            if let Some(choice) = Theme::OPTIONS.iter().find(|t| t.label() == label) {
+                s.theme_choice = *choice;
+                // A fresh OS read keeps System honest at pick time.
+                s.os_dark = os_dark_mode();
+                s.apply_theme();
+                s.account_job(Req::SetSetting {
+                    key: theme::THEME_KEY.to_string(),
+                    value: choice.id().to_string(),
+                });
+            }
+        })
+        .build(&s.editor.kit, layer),
         ink,
     )
 }
@@ -661,12 +734,18 @@ fn account_row(
             col()
                 .grow(1.0)
                 .min_w(0.0)
-                .child(theme::txt(&item.name, T12M, ink.text).min_w(0.0).truncate())
-                .child(
+                .child({
+                    theme::txt(&item.name, T12M, ink.text)
+                        .min_w(0.0)
+                        .truncate_middle()
+                        .help_when_truncated(item.name.clone())
+                })
+                .child({
                     theme::txt(&item.dir, T11M.lh(16.0), ink.muted)
                         .min_w(0.0)
-                        .truncate(),
-                ),
+                        .truncate_middle()
+                        .help_when_truncated(item.dir.clone())
+                }),
         );
     if let Some((rename_agent, rename_id)) = &s.settings.rename_open
         && rename_agent == agent
@@ -1037,6 +1116,19 @@ mod tests {
     fn theme_labels_round_trip_the_option_list() {
         for theme in Theme::OPTIONS {
             assert_eq!(Theme::parse(theme.id()), theme);
+        }
+    }
+
+    #[test]
+    fn scroll_speed_options_include_normal_and_parseable_floats() {
+        assert!(
+            SCROLL_SPEED_OPTIONS
+                .iter()
+                .any(|(speed, label)| *speed == 1.0 && label.contains("Normal"))
+        );
+        for (speed, label) in SCROLL_SPEED_OPTIONS {
+            assert!(speed > 0.0 && speed <= 10.0);
+            assert!(!label.is_empty());
         }
     }
 

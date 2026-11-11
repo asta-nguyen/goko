@@ -277,6 +277,14 @@ stroke_icon!(
     "<path d=\"M11 13h4\"/>",
     "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" ry=\"2\"/>"
 );
+stroke_icon!(
+    WRAP_TEXT,
+    "wrap-text",
+    "<path d=\"m16 16-2 2 2 2\"/>",
+    "<path d=\"M3 12h15a3 3 0 1 1 0 6h-4\"/>",
+    "<path d=\"M3 18h7\"/>",
+    "<path d=\"M3 6h18\"/>"
+);
 // AgentIcon.tsx: shell uses SquareTerminal; custom/unknown agents use Terminal.
 stroke_icon!(
     TERMINAL,
@@ -423,7 +431,7 @@ pub fn count_badge(n: usize, ink: &Ink) -> El {
     row()
         .h(16.0)
         .min_w(20.0)
-        .px(5.0)
+        .px(6.0)
         .radius(8.0)
         .border(1.0, ink.border)
         .fill(ink.panel)

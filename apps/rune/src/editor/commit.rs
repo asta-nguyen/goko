@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use app_core::acp::{AcpAgent, AcpStatus, AgentState};
 use rune::{El, Key, Tx, col, row};
-use rune_kit::{Button, ButtonVariant, ControlSize, Select, TextArea};
+use rune_kit::{Button, ButtonVariant, ControlSize, TextArea};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -253,67 +253,44 @@ pub fn view(s: &State) -> El {
 
     // -- agent picker + connect ----------------------------------------------
     let mut agent_row = row().w_full().gap(6.0).items_center();
-    let label_refs: Vec<&str> = agents.iter().map(|a| a.label.as_str()).collect();
     // Each option carries its live connection state as secondary text — the
     // desktop renders `StatusDot` + the state string inside every item. An
-    // agent missing from PATH is marked too: the kit Select has no per-option
-    // disable, so `on_choose` rejects it visibly instead.
-    let details: Vec<Option<String>> = agents
+    // agent missing from PATH is listed disabled, saying so.
+    let options: Vec<rune_kit::ComboboxOption> = agents
         .iter()
         .map(|a| {
             let state = agent_state_label(agent_status(&s.editor.acp.statuses, &a.id).state);
-            Some(if a.available {
+            let mut option = rune_kit::ComboboxOption::new(&a.id, &a.label);
+            option.detail = if a.available {
                 state.to_string()
             } else {
                 format!("{state} · not on PATH")
-            })
+            };
+            option.disabled = !a.available;
+            option
         })
         .collect();
     let picked_label = picked
         .as_deref()
         .and_then(|id| agents.iter().find(|a| a.id == id).map(|a| a.label.clone()));
     let mut layer = Vec::new();
-    // (label, id, available) triples: the picker's options are labels, the
-    // stored pick is the id, and `available` gates the choose — same
-    // label→entity mapping the project/checkout pickers use.
-    let agent_map: Vec<(String, String, bool)> = agents
-        .iter()
-        .map(|a| (a.label.clone(), a.id.clone(), a.available))
-        .collect();
-    let select = Select::new("commit-agent", &label_refs)
-        .current(picked_label.as_deref())
-        .placeholder("No ACP agent")
-        .label("Agent")
-        // Fixed width (the kit Select can't flex): sized so Select + the
-        // widest Connect label still fit the ~280 px aside at 760 px.
-        .width(160.0)
-        .details(&details)
-        .open(s.editor.commit.agent_picker_open)
-        .on_toggle(|st: &mut State| {
-            st.editor.commit.agent_picker_open = !st.editor.commit.agent_picker_open;
-            if st.editor.commit.agent_picker_open {
-                st.editor.project_picker_open = false;
-                st.editor.checkout_picker_open = false;
-            }
-        })
-        .on_close(|st: &mut State| {
-            st.editor.commit.agent_picker_open = false;
-        })
-        .on_choose(move |st: &mut State, label: &str, _tx: &mut Tx| {
-            let Some((_, id, available)) = agent_map.iter().find(|(l, _, _)| l == label) else {
-                return;
-            };
-            let (id, available) = (id.clone(), *available);
-            if !available {
-                // Desktop disables the item ("was not found on PATH"); the
-                // kit Select can't, so reject the pick with the same
-                // visible detail and keep the picker open.
-                st.editor.acp.error = Some(format!("{label} was not found on PATH"));
-                return;
-            }
-            st.editor.commit.agent_picker_open = false;
-            crate::editor::acp::choose_agent(st, &id);
-        });
+    let select = rune_kit::Combobox::new(
+        "commit-agent",
+        &s.editor.commit.agent_picker,
+        &options,
+        |st: &mut State| &mut st.editor.commit.agent_picker,
+    )
+    .current(picked.as_deref())
+    .placeholder("No ACP agent")
+    .label("Agent")
+    .search_placeholder("Search agents")
+    // Fixed width: sized so the select + the widest Connect label still fit
+    // the ~280 px aside at 760 px; the open list is wider.
+    .width(160.0)
+    .popover_width(crate::picker::list_width(160.0))
+    .on_choose(|st: &mut State, id: &str, _tx: &mut Tx| {
+        crate::editor::acp::choose_agent(st, id);
+    });
     agent_row = agent_row.child(select.build(k, &mut layer));
 
     // Connect shows for every non-connected state (desktop `showConnect`);
@@ -377,7 +354,8 @@ pub fn view(s: &State) -> El {
             theme::txt(&format!("Asking {asking}…"), T11M_LH, ink.muted)
                 .grow(1.0)
                 .min_w(0.0)
-                .truncate(),
+                .truncate_middle()
+                .help_when_truncated(asking),
         );
     } else {
         actions = actions.child(
@@ -602,21 +580,28 @@ mod tests {
         let (x, y) = element_center(&rt, "commit-agent-trigger");
         click(&mut rt, x, y);
         assert!(
-            rt.state.editor.commit.agent_picker_open,
+            rt.state.editor.commit.agent_picker.open,
             "trigger press opens the picker"
         );
+        // The list animates open before its rows take presses.
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
         let opts = option_elements(&rt);
         assert_eq!(opts.len(), 2, "both enabled agents are listed: {opts:?}");
 
         // Choosing the second option stores its id and closes the picker.
         let b = opts
             .iter()
-            .find(|e| e.key.as_deref() == Some("option1"))
-            .expect("option1 mounted");
+            .find(|e| e.key.as_deref() == Some("commit-agent-option-b"))
+            .expect("agent b's option mounted");
         let r = b.rect;
         click(&mut rt, r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
         assert_eq!(rt.state.editor.commit.agent_id.as_deref(), Some("b"));
-        assert!(!rt.state.editor.commit.agent_picker_open);
+        assert!(!rt.state.editor.commit.agent_picker.open);
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
         assert!(
             option_elements(&rt).is_empty(),
             "options unmount after choose"
@@ -625,13 +610,13 @@ mod tests {
         // Reopen, then Escape closes without changing the pick.
         let (x, y) = element_center(&rt, "commit-agent-trigger");
         click(&mut rt, x, y);
-        assert!(rt.state.editor.commit.agent_picker_open);
+        assert!(rt.state.editor.commit.agent_picker.open);
         rt.key(KeyEvent {
             key: Key::Escape,
             mods: Mods::default(),
         });
         rt.frame(1.0 / 60.0);
-        assert!(!rt.state.editor.commit.agent_picker_open, "Escape closes");
+        assert!(!rt.state.editor.commit.agent_picker.open, "Escape closes");
         assert_eq!(
             rt.state.editor.commit.agent_id.as_deref(),
             Some("b"),
@@ -641,10 +626,10 @@ mod tests {
         // Reopen, then a press outside the listbox closes it too.
         let (x, y) = element_center(&rt, "commit-agent-trigger");
         click(&mut rt, x, y);
-        assert!(rt.state.editor.commit.agent_picker_open);
+        assert!(rt.state.editor.commit.agent_picker.open);
         click(&mut rt, 4.0, 4.0);
         assert!(
-            !rt.state.editor.commit.agent_picker_open,
+            !rt.state.editor.commit.agent_picker.open,
             "outside press closes"
         );
     }

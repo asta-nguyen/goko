@@ -10,13 +10,13 @@
 //! `patch.raw` into it via `diff::parse` + `set_files` when the matching
 //! reply lands. This module only reads it.
 
-use rune::{El, Tx, col, row};
+use rune::{El, Tx, col, el, row};
 use rune_kit::diff::{DiffMode, DiffState, DiffView};
-use rune_kit::{Kit, SegmentedControl};
+use rune_kit::{Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::state::Patch;
-use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
+use crate::theme::{self, Ink, STATE_SPRING, T11M_LH, T12, T12M, T12TN};
 
 /// Which section's diff the pane renders.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -191,17 +191,13 @@ pub fn view(s: &State, pane: Pane) -> El {
     root.child(body_el)
 }
 
-fn toolbar(s: &State, pane: Pane, ink: &Ink, k: &Kit) -> El {
+fn toolbar(s: &State, pane: Pane, ink: &Ink, _k: &Kit) -> El {
     let title = title_for(s, pane);
     let label = patch_for(s, pane)
         .map(|p| p.label.clone())
         .unwrap_or_default();
     let mode = diff_state(s, pane).mode();
-    let selected = if mode == DiffMode::Split {
-        Some(1)
-    } else {
-        Some(0)
-    };
+    let wrap = diff_state(s, pane).wrap();
     row()
         .w_full()
         .h(32.0)
@@ -209,33 +205,145 @@ fn toolbar(s: &State, pane: Pane, ink: &Ink, k: &Kit) -> El {
         .gap(8.0)
         .items_center()
         .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
-        .child(
+        .child({
             theme::txt(&title, T12M, ink.text)
                 .min_w(0.0)
                 .grow(1.0)
-                .truncate(),
-        )
+                .truncate_middle()
+                .help_when_truncated(title)
+        })
         // `min_w(0)` lets the label compress to nothing before the fixed
         // mode control is pushed out of a narrow patch pane.
         .child(
             theme::txt(&label, T11M_LH, ink.muted)
                 .min_w(0.0)
                 .max_w(160.0)
-                .truncate(),
+                .truncate_middle(),
+        )
+        .child(wrap_button(pane, wrap, ink))
+        .child(diff_mode_switch(pane, mode, ink))
+}
+
+/// Toggle button to break long lines (wrap) or keep them single-line (horizontal scroll).
+fn wrap_button(pane: Pane, wrap: bool, ink: &Ink) -> El {
+    let tone = if wrap { ink.text } else { ink.muted };
+    let bg = if wrap { ink.text.alpha(0.10) } else { ink.bg };
+    row()
+        .key(format!("diff-wrap-btn:{}", pane.label()))
+        .h(24.0)
+        .px(8.0)
+        .gap(4.0)
+        .items_center()
+        .justify_center()
+        .radius(6.0)
+        .border(1.0, if wrap { ink.accent } else { ink.border })
+        .fill(bg)
+        .hover_group()
+        .hover(ink.text.alpha(0.06))
+        .press_scale(0.96)
+        .motion(STATE_SPRING)
+        .role("button")
+        .label(if wrap {
+            "Break lines enabled"
+        } else {
+            "Break lines disabled"
+        })
+        .help(if wrap {
+            "Break lines (wrapping active)"
+        } else {
+            "Break lines (scroll horizontal)"
+        })
+        .child(
+            theme::ic(&theme::WRAP_TEXT, 14.0, tone)
+                .key("icon")
+                .group_color(ink.text),
         )
         .child(
-            SegmentedControl::new(&["Unified", "Split"], selected)
-                .fit()
-                .label("Diff view")
-                .on_pick(move |st: &mut State, i: usize, _tx: &mut Tx| {
-                    diff_state_mut(st, pane).set_mode(if i == 1 {
-                        DiffMode::Split
-                    } else {
-                        DiffMode::Unified
-                    });
-                })
-                .build(k),
+            theme::txt("Break lines", T11M_LH, tone)
+                .key("label")
+                .group_color(ink.text),
         )
+        .on_press_tx(move |st: &mut State, _tx: &mut Tx| {
+            let next = !diff_state(st, pane).wrap();
+            diff_state_mut(st, pane).set_wrap(next);
+        })
+}
+
+/// Unified / Split segmented control matching the top chrome's `view_switch` design.
+fn diff_mode_switch(pane: Pane, mode: DiffMode, ink: &Ink) -> El {
+    row()
+        .key(format!("diff-mode-switch:{}", pane.label()))
+        .role("segmented")
+        .label("Diff view mode")
+        .focus_group()
+        .focus_follows()
+        .h(24.0)
+        .gap(2.0)
+        .items_center()
+        .padding(2.0)
+        .radius(6.0)
+        .border(1.0, ink.border)
+        .fill(ink.bg)
+        .child(diff_mode_item(
+            "Unified",
+            DiffMode::Unified,
+            mode == DiffMode::Unified,
+            pane,
+            ink,
+        ))
+        .child(diff_mode_item(
+            "Split",
+            DiffMode::Split,
+            mode == DiffMode::Split,
+            pane,
+            ink,
+        ))
+}
+
+fn diff_mode_item(
+    label: &'static str,
+    target: DiffMode,
+    active: bool,
+    pane: Pane,
+    ink: &Ink,
+) -> El {
+    let tone = if active { ink.text } else { ink.muted };
+    let hover_tone = ink.text;
+    let mut b = row()
+        .key(format!("diff-mode:{}:{}", pane.label(), label))
+        .h(20.0)
+        .px(8.0)
+        .items_center()
+        .justify_center()
+        .radius(4.0)
+        .hover_group()
+        .press_scale(0.96)
+        .motion(STATE_SPRING)
+        .role("segment")
+        .label(label)
+        .checked(active)
+        .focusable(true)
+        .focus_selected(active)
+        .focus_ring(2.0, 1.0, ink.accent);
+    if active {
+        b = b.child(
+            el().key("thumb")
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .radius(4.0)
+                .fill(ink.text.alpha(0.10))
+                .matched(format!("diff-mode-thumb:{}", pane.label())),
+        );
+    }
+    b.child(
+        theme::txt(label, T11M_LH, tone)
+            .key("label")
+            .group_color(hover_tone),
+    )
+    .on_press_tx(move |st: &mut State, _tx: &mut Tx| {
+        diff_state_mut(st, pane).set_mode(target);
+    })
 }
 
 fn notice_bar(notice: Notice, ink: &Ink) -> El {
@@ -267,7 +375,7 @@ fn body(s: &State, pane: Pane, ink: &Ink, k: &Kit) -> El {
     };
     let files_in_diff = diff_state(s, pane).files().len();
     if show_file_names(files_in_diff, patch.files.len()) {
-        return file_names(patch, ink);
+        return file_names(patch, ink, k);
     }
     if files_in_diff == 0 {
         return centered(ink, "No diff to show");
@@ -285,7 +393,7 @@ fn centered(ink: &Ink, label: &str) -> El {
 }
 
 /// Changed-file names for diffs the parser can't render (binary, merges).
-fn file_names(patch: &Patch, ink: &Ink) -> El {
+fn file_names(patch: &Patch, ink: &Ink, k: &Kit) -> El {
     let mut list = col()
         .grow(1.0)
         .min_h(0.0)
@@ -318,7 +426,8 @@ fn file_names(patch: &Patch, ink: &Ink) -> El {
                     theme::txt(&name, T12, ink.text)
                         .min_w(0.0)
                         .grow(1.0)
-                        .truncate(),
+                        .truncate_middle()
+                        .help_when_truncated(name),
                 )
                 .child(theme::txt(f.status, T12TN, ink.muted)),
         );
@@ -331,6 +440,7 @@ fn file_names(patch: &Patch, ink: &Ink) -> El {
         .grow(1.0)
         .min_h(0.0)
         .w_full()
+        .scroll_bar(k)
 }
 
 /// The real `DiffView`, keyed per pane, with `DiffState::key` wired for
