@@ -674,9 +674,13 @@ Evidence: `apps/rune/src/tab_debug.rs`, `apps/rune/src/chrome.rs`, `apps/rune/sr
 
 ### RNC-terminal-attach
 
-The system SHALL attach the Terminal view to the selected daemon session:
-`terminal.subscribe` replays retained output then streams live kind-1 frames
-into the alacritty `Term` grid rendered as styled runs; keyboard input
+The system SHALL keep each session's terminal state in the daemon and attach
+the Terminal view to the selected session: when the daemon supports it,
+`terminal.subscribe {paint: true}` starts the stream with a first paint (an ANSI
+rebuild of the retained scrollback, the screen, cursor and terminal modes,
+sent as kind-1 frames marked `PAINT_SEQ`) followed by live kind-1 frames, all
+parsed into the alacritty `Term` grid rendered as styled runs; a daemon without
+that support is attached through the retained raw replay. Keyboard input
 encodes to `terminal.write`, viewport changes send `terminal.resize`,
 `terminal.lagged` or a session switch resubscribes, `terminal.unsubscribe`
 runs on detach, and an exited session keeps its final grid with input
@@ -689,21 +693,74 @@ suppressed.
 - THEN the grid renders them; typing sends bytes the session receives (echo
   returns through the same path)
 
+#### Scenario: GUI restart with retained history
+
+- GIVEN a daemon kept a session while its output exceeded the raw replay buffer
+- WHEN the GUI attaches again
+- THEN the grid shows the current screen and the retained scrollback, and live
+  output continues from the paint without a gap or duplicate
+
+#### Scenario: no viewers
+
+- GIVEN a session has no subscribers
+- WHEN it writes output
+- THEN the daemon's emulator keeps consuming it, so a later attach paints the
+  current state
+
 #### Scenario: lagged subscriber recovers
 
 - GIVEN the terminal subscriber fell behind
 - WHEN the daemon sends `terminal.lagged`
-- THEN the client unsubscribes and resubscribes, replaying from the retained
-  buffer
+- THEN the client unsubscribes and resubscribes, and the new stream starts from
+  a fresh paint (or the retained raw buffer on a daemon without paint)
+
+#### Scenario: compatible legacy daemon
+
+- GIVEN the daemon predates first paint
+- WHEN Rune opens a session
+- THEN it attaches with the raw replay and sends no unsupported request
 
 #### Scenario: switch sessions
 
 - GIVEN session A attached
 - WHEN session B is selected
-- THEN A is unsubscribed, B subscribes, and B's retained+live output renders
+- THEN A is unsubscribed, B subscribes, and B's paint or retained output and
+  live output render
 
-Evidence: `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/main.rs`, `crates/protocol/src/frame.rs`, `crates/protocol/src/message.rs`
+Evidence: `crates/daemon/src/terminal.rs`, `crates/daemon/src/pty.rs`, `crates/daemon/src/server.rs`, `crates/daemon/tests/paint.rs`, `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/panes.rs`, `crates/protocol/src/frame.rs`, `crates/protocol/src/message.rs`
 
+### RNC-terminal-wheel
+
+The system SHALL route terminal wheel input according to the program's mouse and
+alternate-screen modes, sending PTY wheel reports or alternate-scroll keys when
+requested and otherwise scrolling terminal history, with Shift selecting history
+instead of application reporting.
+
+#### Scenario: primary history
+
+- GIVEN primary-screen output has retained history and no mouse capture applies
+- WHEN the user wheels upward
+- THEN the view reveals older retained rows
+
+#### Scenario: mouse reporting
+
+- GIVEN the application requested terminal mouse reports
+- WHEN the user wheels without Shift
+- THEN the PTY receives reports with the correct direction, modifiers, coordinate encoding and bounds
+
+#### Scenario: alternate scrolling
+
+- GIVEN alternate screen and alternate-scroll are enabled without mouse capture
+- WHEN the user wheels without Shift
+- THEN the PTY receives correctly encoded Up/Down input rather than fabricated alternate-screen history
+
+#### Scenario: explicit history override
+
+- GIVEN a terminal application captures mouse or alternate scrolling
+- WHEN the user wheels with Shift
+- THEN the operation targets emulator history and emits no application wheel report; alternate-screen history may be empty
+
+Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`
 
 ### RNC-terminal-splits
 

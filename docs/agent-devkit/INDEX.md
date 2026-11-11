@@ -2,6 +2,7 @@
 
 ## Changes
 
+- [Daemon-owned terminal state: first paint on attach](changes/daemon-terminal-state/design.md) ([tasks](changes/daemon-terminal-state/tasks.md), [delta](changes/daemon-terminal-state/delta.md))
 - [Tab IDs, agent IDs, and RAM debug information](changes/tab-debug-info/delta.md)
 
 - [Project terminal filter](changes/project-terminal-filter/delta.md)

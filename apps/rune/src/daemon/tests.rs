@@ -347,7 +347,7 @@ fn terminal_output_reaches_the_subscriber_of_its_session() {
     let daemon = Daemon::spawn_connect_only(home.path(), || {});
     let session = SessionId::new();
 
-    let (chunks, ready) = daemon.attach_output(session, false).unwrap();
+    let (chunks, ready) = daemon.attach_output(session, false, false).unwrap();
     ready.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
 
     let first = chunks.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -375,7 +375,7 @@ fn a_consumer_that_falls_behind_loses_the_subscription_and_is_told() {
     let session = SessionId::new();
     let mut events = Events::default();
 
-    let (chunks, ready) = daemon.attach_output(session, false).unwrap();
+    let (chunks, ready) = daemon.attach_output(session, false, false).unwrap();
     // The reply comes after the frames, so the queue is already full when
     // the consumer starts reading.
     ready.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
@@ -542,7 +542,7 @@ fn a_real_daemon_serves_a_session() {
 
     // Its output comes back through the kind-1 frames.
     let (chunks, ready) = daemon
-        .attach_output(session.id, false)
+        .attach_output(session.id, false, false)
         .expect("subscribe to the session");
     ready
         .recv_timeout(Duration::from_secs(30))

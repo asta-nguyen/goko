@@ -7,6 +7,7 @@ pub mod paths;
 pub mod pty;
 pub mod server;
 pub mod session;
+pub mod terminal;
 
 #[cfg(test)]
 mod test_support;

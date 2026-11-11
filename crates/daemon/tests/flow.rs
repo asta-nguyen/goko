@@ -114,7 +114,7 @@ async fn dropping_the_receiver_releases_the_reader() {
     let (_snapshot, mut receiver) = process.subscribe_flow();
 
     // Drain while the window fills so the queue never nears the lag limit.
-    while process.buffer().2 <= WINDOW {
+    while process.buffer().2 < WINDOW {
         match tokio::time::timeout(Duration::from_secs(10), receiver.recv()).await {
             Ok(Some(StreamItem::Chunk { .. })) => {}
             other => panic!("the stream ended early: {other:?}"),

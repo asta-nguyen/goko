@@ -5,6 +5,11 @@ const FRAME_PREFIX_LEN: usize = 4;
 const FRAME_HEADER_LEN: usize = FRAME_PREFIX_LEN + 1;
 const OUTPUT_HEADER_LEN: usize = 16 + 8;
 
+/// The `seq` of a kind-1 frame that carries a first paint rather than stream
+/// bytes: it is not an offset, and the receiver parses it without moving its
+/// own offset.
+pub const PAINT_SEQ: u64 = u64::MAX;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameKind {

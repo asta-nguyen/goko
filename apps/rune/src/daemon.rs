@@ -98,6 +98,11 @@ pub struct SubscribeReply {
     pub replay_from: u64,
     /// The next byte the live stream will carry.
     pub next_seq: u64,
+    /// The stream starts with a first paint of the daemon's terminal
+    /// (frames marked `PAINT_SEQ`) instead of the retained raw output.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub paint: bool,
 }
 
 /// The outcome of one request.
@@ -298,12 +303,13 @@ impl Daemon {
     /// Attach to a session's terminal: register the output route first,
     /// then ask the daemon to stream it. The first channel carries the
     /// output chunks, the second the daemon's `terminal.subscribe` reply.
-    pub fn attach_output(&self, session: SessionId, flow: bool) -> Option<Attached> {
+    pub fn attach_output(&self, session: SessionId, flow: bool, paint: bool) -> Option<Attached> {
         let chunks = self.subscribe_output(session)?;
         let ready = self.call(move |id| Request::TerminalSubscribe {
             id,
             session_id: session,
             flow,
+            paint,
         })?;
         Some((chunks, ready))
     }
@@ -328,6 +334,13 @@ impl Daemon {
     pub fn supports_flow_control(&self) -> bool {
         self.daemon_version()
             .is_some_and(|version| version_at_least(&version, (0, 1, 2)))
+    }
+
+    /// True when the daemon can start a stream from a first paint of its
+    /// terminal, so a reattach shows the current screen and scrollback.
+    pub fn supports_paint(&self) -> bool {
+        self.daemon_version()
+            .is_some_and(|version| version_at_least(&version, (0, 1, 3)))
     }
 
     fn send(&self, cmd: Cmd) -> bool {

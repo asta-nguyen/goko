@@ -7,14 +7,16 @@
 //! #1e1e1e, ported from the verified rune-spike `fidelity.rs`.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
+use protocol::frame::PAINT_SEQ;
 use protocol::message::Response;
 use protocol::session::SessionId;
 use rune::{Color, El, LineCap, Link, LinkPaint, Shape, Span, TextStyle, text};
@@ -99,6 +101,22 @@ impl Dimensions for Size {
     }
 }
 
+/// The answers the parser writes for the program's queries (cursor position,
+/// device attributes, status): the terminal is the one that must reply, or a
+/// program that asks, like Codex asking where the cursor is, waits for nothing.
+#[derive(Clone, Default)]
+struct Replies(Arc<Mutex<Vec<u8>>>);
+
+impl EventListener for Replies {
+    fn send_event(&self, event: Event) {
+        // ponytail: colour and text-area-size queries are not answered yet;
+        // they need the theme and the cell size the parser does not hold.
+        if let Event::PtyWrite(text) = event {
+            self.0.lock().unwrap().extend_from_slice(text.as_bytes());
+        }
+    }
+}
+
 /// How long the output has to be quiet before the grid is repainted: a
 /// full-screen program redraws in bursts, and repainting every chunk
 /// would show the screen rebuilding itself line by line.
@@ -127,8 +145,15 @@ pub struct Terminal {
     pub next_seq: u64,
     /// The last byte acknowledged to the daemon.
     acked_seq: u64,
-    term: Term<VoidListener>,
+    term: Term<Replies>,
     parser: Processor,
+    /// What the parser answered the program, not yet written to the PTY.
+    replies: Replies,
+    /// The stream started with a first paint, so no query the program
+    /// already got an answer to is replayed: only then are queries answered.
+    /// A raw replay of an old daemon carries them, and answering those again
+    /// would type the answers into the program.
+    paint_seen: bool,
     /// The rendered rows of the visible grid.
     lines: Vec<TermLine>,
     /// New output arrived since the last render.
@@ -159,14 +184,17 @@ impl Terminal {
             screen_lines: TERM_ROWS,
             columns: TERM_COLS,
         };
+        let replies = Replies::default();
         Terminal {
             session,
             chunks,
             ready: Some(ready),
             next_seq: 0,
             acked_seq: 0,
-            term: Term::new(Config::default(), &size, VoidListener),
+            term: Term::new(Config::default(), &size, replies.clone()),
             parser: Processor::new(),
+            replies,
+            paint_seen: false,
             lines: Vec::new(),
             dirty: true,
             rendered: false,
@@ -176,18 +204,60 @@ impl Terminal {
         }
     }
 
-    /// Scroll the history by wheel points (positive reveals older lines),
-    /// `line_h` points to a line. Drawn at once; new output leaves the
-    /// view where it is while it is scrolled up.
-    pub fn scroll(&mut self, dy: f32, line_h: f32) {
+    /// A wheel turn over the cell `(row, column)`, in wheel points (positive
+    /// reveals older lines), `line_h` points to a line: what the program asked
+    /// for decides where it goes. Without Shift, a program that requested
+    /// mouse reporting gets wheel reports, and one on the alternate screen
+    /// with alternate scroll gets Up/Down keys; the bytes are returned for
+    /// the PTY. Otherwise (and always with Shift) the history scrolls, drawn at
+    /// once, and nothing is returned; new output leaves the view where it is
+    /// while it is scrolled up. `mods` is the report's modifier
+    /// bits: 8 for Alt, 16 for Ctrl.
+    pub fn wheel(
+        &mut self,
+        dy: f32,
+        line_h: f32,
+        cell: (usize, usize),
+        shift: bool,
+        mods: u8,
+    ) -> Option<Vec<u8>> {
+        let lines = self.take_lines(dy, line_h);
+        if lines == 0 {
+            return None;
+        }
+        let mode = *self.term.mode();
+        let count = lines.unsigned_abs().min(MAX_WHEEL_LINES) as usize;
+        // Positive lines reveal older rows: the wheel turned up.
+        let up = lines > 0;
+        if !shift && mode.intersects(TermMode::MOUSE_MODE) {
+            let report = wheel_report(mode, up, cell, mods)?;
+            return Some(report.repeat(count));
+        }
+        if !shift && mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+            let key: &[u8] = match (up, mode.contains(TermMode::APP_CURSOR)) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            return Some(key.repeat(count));
+        }
+        self.scroll_history(lines);
+        None
+    }
+
+    /// Whole lines the wheel points add up to; a part of a line waits.
+    fn take_lines(&mut self, dy: f32, line_h: f32) -> i32 {
         self.scroll_rem += dy / line_h.max(1.0);
         let lines = self.scroll_rem.trunc();
         self.scroll_rem -= lines;
-        if lines != 0.0 {
-            self.term.scroll_display(Scroll::Delta(lines as i32));
-            self.dirty = true;
-            self.burst = None;
-        }
+        lines as i32
+    }
+
+    fn scroll_history(&mut self, lines: i32) {
+        self.term.scroll_display(Scroll::Delta(lines));
+        self.dirty = true;
+        self.burst = None;
     }
 
     /// Whether the program asked for pastes wrapped in ESC[200~ … ESC[201~.
@@ -251,6 +321,17 @@ impl Terminal {
     pub fn feed(&mut self) -> bool {
         let mut changed = false;
         while let Ok(chunk) = self.chunks.try_recv() {
+            if chunk.seq == PAINT_SEQ {
+                // The daemon's first paint rebuilds the screen and is not
+                // part of the stream: `next_seq` stays where it was, and the
+                // first live chunk, ahead of it, is parsed whole.
+                self.parser.advance(&mut self.term, &chunk.data);
+                self.replies.0.lock().unwrap().clear();
+                self.paint_seen = true;
+                self.last = Instant::now();
+                changed = true;
+                continue;
+            }
             let end = chunk.seq + chunk.data.len() as u64;
             if end <= self.next_seq {
                 // A resubscribe replays bytes the parser already has.
@@ -265,6 +346,9 @@ impl Terminal {
                 continue;
             }
             self.parser.advance(&mut self.term, data);
+            if !self.paint_seen {
+                self.replies.0.lock().unwrap().clear();
+            }
             self.next_seq = end;
             self.last = Instant::now();
             changed = true;
@@ -276,6 +360,12 @@ impl Terminal {
             }
         }
         changed
+    }
+
+    /// The answers to the program's queries since the last call, to write to
+    /// the PTY. Empty on a stream that did not start with a paint.
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut *self.replies.0.lock().unwrap())
     }
 
     /// How long the repaint may be held back: the output has to settle
@@ -469,7 +559,7 @@ fn ansi_color(c: alacritty_terminal::vte::ansi::Color, ink: &Ink) -> Color {
 }
 
 /// Turn the terminal's visible grid rows into `TermLine`s.
-fn render_lines(term: &Term<VoidListener>, ink: &Ink) -> Vec<TermLine> {
+fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
     use alacritty_terminal::vte::ansi::{Color as A, NamedColor as N};
     let content = term.renderable_content();
     let rows = term.grid().screen_lines();
@@ -661,6 +751,41 @@ fn render_lines(term: &Term<VoidListener>, ink: &Ink) -> Vec<TermLine> {
             }
         })
         .collect()
+}
+
+/// Most wheel lines one turn reports or sends as keys, so a fling cannot
+/// flood the PTY.
+const MAX_WHEEL_LINES: u32 = 100;
+
+/// One wheel report for the cell `(row, column)`, in the encoding the program
+/// chose: SGR, or the legacy one (UTF-8 when requested). `None` when the cell
+/// is past what the legacy encoding can address.
+fn wheel_report(
+    mode: TermMode,
+    up: bool,
+    (row, column): (usize, usize),
+    mods: u8,
+) -> Option<Vec<u8>> {
+    let button: u8 = (if up { 64 } else { 65 }) + mods;
+    let (row, column) = (row + 1, column + 1);
+    if mode.contains(TermMode::SGR_MOUSE) {
+        return Some(format!("\x1b[<{button};{column};{row}M").into_bytes());
+    }
+    let mut report = vec![0x1b, b'[', b'M', 32 + button];
+    for position in [column, row] {
+        let value = 32 + position;
+        if mode.contains(TermMode::UTF8_MOUSE) && value >= 128 {
+            let mut utf8 = [0; 4];
+            report.extend(
+                char::from_u32(value as u32)?
+                    .encode_utf8(&mut utf8)
+                    .as_bytes(),
+            );
+        } else {
+            report.push(u8::try_from(value).ok()?);
+        }
+    }
+    Some(report)
 }
 
 /// The bytes a key press sends to the PTY: the ANSI sequences a terminal
@@ -1159,22 +1284,22 @@ mod tests {
         term.feed();
         let live = first_line(&mut term, &ink());
         // Positive points reveal older lines; a part of a line waits.
-        term.scroll(40.0, 16.0);
+        term.wheel(40.0, 16.0, (0, 0), false, 0);
         let up = first_line(&mut term, &ink());
         assert_ne!(up, live, "the view moved into the history");
         // 40 points left half a line over: 4 more are still under a
         // line, 8 more make one.
-        term.scroll(4.0, 16.0);
+        term.wheel(4.0, 16.0, (0, 0), false, 0);
         assert_eq!(first_line(&mut term, &ink()), up, "part of a line waits");
-        term.scroll(4.0, 16.0);
+        term.wheel(4.0, 16.0, (0, 0), false, 0);
         assert_ne!(first_line(&mut term, &ink()), up, "the parts add up");
-        term.scroll(-1000.0, 16.0);
+        term.wheel(-1000.0, 16.0, (0, 0), false, 0);
         assert_eq!(
             first_line(&mut term, &ink()),
             live,
             "scrolled back to the bottom"
         );
-        term.scroll(40.0, 16.0);
+        term.wheel(40.0, 16.0, (0, 0), false, 0);
         term.scroll_to_bottom();
         assert_eq!(first_line(&mut term, &ink()), live);
     }
@@ -1290,7 +1415,7 @@ mod tests {
         term.feed();
         let live = term.cursor_cell();
         assert!(live.is_some());
-        term.scroll(1600.0, 16.0);
+        term.wheel(1600.0, 16.0, (0, 0), false, 0);
         assert_eq!(
             term.cursor_cell(),
             None,
@@ -1475,6 +1600,140 @@ mod tests {
         .unwrap();
         assert!(!term.feed(), "the replayed bytes were already parsed");
         assert_eq!(term.lines(&ink()), &before[..]);
+    }
+
+    #[test]
+    fn a_first_paint_rebuilds_the_grid_and_the_live_stream_continues() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: b"stale\r\n".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.next_seq, 7);
+
+        // The daemon's paint starts with a reset; it is not stream bytes, so
+        // the offset stays and the live chunk after it is parsed whole.
+        tx.send(Output {
+            seq: PAINT_SEQ,
+            data: b"\x1bcpainted\r\n".to_vec(),
+        })
+        .unwrap();
+        tx.send(Output {
+            seq: 100,
+            data: b"live".to_vec(),
+        })
+        .unwrap();
+        assert!(term.feed());
+        let text: String = settled_lines(&mut term, &ink())
+            .iter()
+            .map(TermLine::text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("painted") && text.contains("live"),
+            "{text:?}"
+        );
+        assert!(!text.contains("stale"), "the paint replaced the old grid");
+        assert_eq!(term.next_seq, 104);
+    }
+
+    /// A terminal that has parsed `bytes`, with the history to scroll.
+    fn terminal_with(bytes: &str) -> Terminal {
+        let (mut term, tx) = terminal();
+        let history: String = (0..100).map(|n| format!("line{n}\r\n")).collect();
+        tx.send(Output {
+            seq: 0,
+            data: (history + bytes).into_bytes(),
+        })
+        .unwrap();
+        term.feed();
+        term
+    }
+
+    #[test]
+    fn the_wheel_reports_to_a_program_that_asked_for_the_mouse() {
+        let mut term = terminal_with("\x1b[?1000h\x1b[?1006h");
+        // 40 points at 16 a line: two lines up, at row 3, column 6.
+        assert_eq!(
+            term.wheel(40.0, 16.0, (2, 5), false, 0),
+            Some(b"\x1b[<64;6;3M\x1b[<64;6;3M".to_vec())
+        );
+        // Down, with Ctrl held (half a line was left over from the turn up).
+        assert_eq!(
+            term.wheel(-32.0, 16.0, (2, 5), false, 16),
+            Some(b"\x1b[<81;6;3M".to_vec())
+        );
+        // Shift bypasses the program: the history scrolls and nothing is sent.
+        let live = first_line(&mut term, &ink());
+        assert_eq!(term.wheel(160.0, 16.0, (2, 5), true, 0), None);
+        assert_ne!(first_line(&mut term, &ink()), live);
+    }
+
+    #[test]
+    fn the_legacy_mouse_encoding_is_bytes_with_a_cap() {
+        let mut term = terminal_with("\x1b[?1000h");
+        assert_eq!(
+            term.wheel(16.0, 16.0, (0, 0), false, 0),
+            Some(vec![0x1b, b'[', b'M', 96, 33, 33])
+        );
+        // A column past 222 cannot be written in one byte: nothing is sent.
+        assert_eq!(term.wheel(16.0, 16.0, (0, 300), false, 0), None);
+    }
+
+    #[test]
+    fn the_alternate_screen_scrolls_with_arrow_keys() {
+        let mut term = terminal_with("\x1b[?1049h");
+        assert_eq!(
+            term.wheel(32.0, 16.0, (0, 0), false, 0),
+            Some(b"\x1b[A\x1b[A".to_vec())
+        );
+        assert_eq!(
+            term.wheel(-16.0, 16.0, (0, 0), false, 0),
+            Some(b"\x1b[B".to_vec())
+        );
+        // Application cursor keys use the SS3 form.
+        let mut app = terminal_with("\x1b[?1049h\x1b[?1h");
+        assert_eq!(
+            app.wheel(16.0, 16.0, (0, 0), false, 0),
+            Some(b"\x1bOA".to_vec())
+        );
+        // Without alternate scroll, or with Shift, no key is sent.
+        let mut off = terminal_with("\x1b[?1049h\x1b[?1007l");
+        assert_eq!(off.wheel(16.0, 16.0, (0, 0), false, 0), None);
+        assert_eq!(term.wheel(16.0, 16.0, (0, 0), true, 0), None);
+    }
+
+    #[test]
+    fn queries_are_answered_on_a_paint_stream_and_not_on_a_replay() {
+        // The cursor is after "abc" when the program asks where it is, and
+        // what it is: the answers are the terminal's to write.
+        let query = b"abc\x1b[6n\x1b[c".to_vec();
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: PAINT_SEQ,
+            data: b"\x1bc".to_vec(),
+        })
+        .unwrap();
+        tx.send(Output {
+            seq: 0,
+            data: query.clone(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.take_replies(), b"\x1b[1;4R\x1b[?6c".to_vec());
+        assert!(term.take_replies().is_empty(), "taken once");
+
+        // A raw replay carries queries the program already got an answer to.
+        let (mut replayed, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: query,
+        })
+        .unwrap();
+        replayed.feed();
+        assert!(replayed.take_replies().is_empty());
     }
 
     #[test]

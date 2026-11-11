@@ -140,7 +140,7 @@ xterm has parsed it, so the backlog accumulates inside the WebView.
 
 ## Reference
 
-Herdr's wire protocol (herdr-core, Apache-2.0) uses the same shape: a 256 KiB initial
+A published terminal host's wire protocol uses the same shape: a 256 KiB initial
 credit and a `CREDIT` message for consumed bytes, with stalls never blocking the control
 channel. Only that published design was read; no code is copied.
 
