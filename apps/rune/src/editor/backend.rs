@@ -1310,9 +1310,21 @@ impl EditorState {
                 .cmp(&folder(a))
                 .then_with(|| rune_kit::natural_cmp(&a.name, &b.name))
         });
-        for id in &open {
-            if model.contains(id) {
-                model.set_expanded(id, true);
+        // The kit merges a folder whose only child is a folder into one row
+        // (`public` + `assets` → `public/assets`), so a row's id can change
+        // between rebuilds: a folder stays open when its own path, or a
+        // folder it merged, was open.
+        let open_paths: std::collections::HashSet<&str> = open
+            .iter()
+            .flat_map(|id| {
+                id.match_indices('/')
+                    .map(|(i, _)| &id[..i])
+                    .chain([id.as_str()])
+            })
+            .collect();
+        for id in folder_ids(&model) {
+            if open_paths.contains(id.as_str()) {
+                model.set_expanded(&id, true);
             }
         }
         if let Some(id) = cursor.filter(|id| model.contains(id)) {
@@ -1654,19 +1666,24 @@ fn expand_ignored(
     out
 }
 
-/// The folders of `model` that are open.
-fn expanded_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Vec<String> {
+/// Every folder row of `model`.
+fn folder_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Vec<String> {
     let mut out = Vec::new();
     let mut stack: Vec<String> = model.children(None).map(str::to_string).collect();
     while let Some(id) = stack.pop() {
         if model.has_children(&id) {
-            if model.is_expanded(&id) {
-                out.push(id.clone());
-            }
             stack.extend(model.children(Some(&id)).map(str::to_string));
+            out.push(id);
         }
     }
     out
+}
+
+/// The folders of `model` that are open.
+fn expanded_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Vec<String> {
+    let mut ids = folder_ids(model);
+    ids.retain(|id| model.is_expanded(id));
+    ids
 }
 
 fn kind_key(req: &Req) -> &'static str {
@@ -2599,6 +2616,165 @@ mod tests {
             Ok(ReplyData::IgnoredChildren(vec!["public/a.png".into()])),
         ));
         assert_eq!(roots(&e), want, "opening a folder does not move it");
+    }
+
+    /// The whole way to a media file in an ignored folder, on a real Git
+    /// repository and the real worker jobs: open the folders one by one,
+    /// then the file.
+    #[test]
+    fn a_media_file_in_an_ignored_folder_opens_with_a_preview() {
+        use crate::editor::media::Media;
+        let (dir, storage) = temp_storage("rune-ignored-media");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("public/assets/clip")).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "a@b.c"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(&args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repo.join(".gitignore"), "public/assets\n").unwrap();
+        std::fs::write(repo.join("README.md"), "hi\n").unwrap();
+        std::fs::write(
+            repo.join("public/assets/clip/lumen-with.mp4"),
+            [0u8, 0, 0, 0x18, b'f', b't', b'y', b'p'],
+        )
+        .unwrap();
+        std::fs::write(repo.join("public/assets/pic.png"), [0u8, 1, 2, 3]).unwrap();
+        let reply = run_job(
+            &storage,
+            &Job::project(Req::AddProject {
+                path: repo.display().to_string(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+            }),
+        );
+        let Ok(ReplyData::Added(project)) = reply.result else {
+            panic!("project added: {:?}", reply.result);
+        };
+        let checkout = std::fs::canonicalize(&repo).unwrap();
+        let key = checkout_key(&project.project.id, &checkout);
+        let mut e = editor();
+        e.project_id = Some(project.project.id.clone());
+        e.checkout = Some(checkout.clone());
+        e.checkout_key = Some(key.clone());
+        let waker: rune::Waker = std::sync::Arc::new(|| {});
+        e.media_host = Some((rune::ImageCache::new(waker.clone()), waker));
+        let mut run = |e: &mut EditorState, job: Job| {
+            let reply = run_job(&storage, &job);
+            assert!(reply.result.is_ok(), "{:?} -> {:?}", job.req, reply.result);
+            e.apply_reply(reply);
+        };
+        let mut read = |e: &mut EditorState, req: Req| {
+            assert!(e.enqueue_read(checkout.clone(), key.clone(), req.clone()));
+        };
+        let _ = &mut read;
+        let (pid, co) = (project.project.id.clone(), checkout.clone());
+        // The file list, with the ignored folder collapsed.
+        let mut list = Job::read(&pid, co.clone(), key.clone(), Req::FileList);
+        list.generation = {
+            let g = e.req_gens.entry("filelist").or_insert(0);
+            *g += 1;
+            *g
+        };
+        run(&mut e, list);
+        assert_eq!(
+            e.files.model.get("public/assets").map(|n| n.data),
+            Some(Some(crate::editor::state::FileMark::IgnoredDir))
+        );
+        for dir in ["public/assets", "public/assets/clip"] {
+            run(
+                &mut e,
+                Job::write(
+                    &pid,
+                    co.clone(),
+                    key.clone(),
+                    Req::IgnoredChildren { dir: dir.into() },
+                ),
+            );
+        }
+        let file = "public/assets/clip/lumen-with.mp4";
+        assert!(
+            e.files.model.get(file).is_some(),
+            "the media file is in the tree: {:?}",
+            e.files
+                .model
+                .children(Some("public/assets/clip"))
+                .collect::<Vec<_>>()
+        );
+        // Open it like the tree does.
+        e.doc_seq += 1;
+        let token = e.doc_seq;
+        e.doc_load = Some(token);
+        let mut open = Job::read(
+            &pid,
+            co.clone(),
+            key.clone(),
+            Req::File {
+                path: file.into(),
+                token,
+                line: None,
+            },
+        );
+        open.generation = {
+            let g = e.req_gens.entry("file").or_insert(0);
+            *g += 1;
+            *g
+        };
+        run(&mut e, open);
+        let doc = e.doc.as_ref().expect("the file opened");
+        assert_eq!(doc.path, file);
+        assert!(
+            matches!(doc.media, Some(Media::Player(_, true))),
+            "a video preview"
+        );
+    }
+
+    /// Opening the only ignored child of an open folder merges the two rows
+    /// (`public` + `assets` → `public/assets`): the merged row opens, and a
+    /// later rebuild keeps it open instead of dropping the stale id.
+    #[test]
+    fn a_folder_merged_by_opening_its_only_child_stays_open_across_rebuilds() {
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["README.md".into()];
+        e.files.ignored = vec!["public/assets/".into()];
+        e.rebuild_file_model();
+        e.files.model.set_expanded("public", true);
+        e.apply_reply(reply(
+            Req::IgnoredChildren {
+                dir: "public/assets".into(),
+            },
+            0,
+            Some(key),
+            Ok(ReplyData::IgnoredChildren(vec![
+                "public/assets/clip/".into(),
+            ])),
+        ));
+        let m = &e.files.model;
+        assert!(
+            m.contains("public/assets") && !m.contains("public"),
+            "merged row"
+        );
+        assert!(m.is_expanded("public/assets"));
+        assert_eq!(
+            m.children(Some("public/assets")).collect::<Vec<_>>(),
+            ["public/assets/clip"]
+        );
+        e.rebuild_file_model();
+        assert!(
+            e.files.model.is_expanded("public/assets"),
+            "a rebuild keeps it"
+        );
     }
 
     #[test]
