@@ -1299,6 +1299,17 @@ impl EditorState {
         let mut model = rune_kit::FileTree::new()
             .dirs_first(true)
             .build(tracked.chain(ignored).chain(empty));
+        // Folders first — including an ignored or empty folder, which is a
+        // leaf row the kit would sort among the files, only to jump up
+        // among the folders once opened.
+        let folder = |n: &rune_kit::FileNode<FileMark>| {
+            n.dir || matches!(n.data, Some(FileMark::IgnoredDir | FileMark::EmptyDir))
+        };
+        model.sort_by(|a, b| {
+            folder(b)
+                .cmp(&folder(a))
+                .then_with(|| rune_kit::natural_cmp(&a.name, &b.name))
+        });
         for id in &open {
             if model.contains(id) {
                 model.set_expanded(id, true);
@@ -2553,6 +2564,41 @@ mod tests {
         e.install_doc("blob.bin".into(), binary("blob.bin"), None);
         assert!(e.doc.as_ref().unwrap().media.is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An ignored or empty folder sorts with the folders, before and after
+    /// it is opened — it must not jump when clicked.
+    #[test]
+    fn ignored_and_empty_folders_sort_with_the_folders_and_stay_put_when_opened() {
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["README.md".into(), "src/a.rs".into(), "top.txt".into()];
+        e.files.ignored = vec!["public/".into(), "target/".into(), "zed.log".into()];
+        e.files.empty_dirs.insert("new".into());
+        e.rebuild_file_model();
+        let roots = |e: &EditorState| -> Vec<String> {
+            e.files.model.children(None).map(str::to_string).collect()
+        };
+        let want = [
+            "new",
+            "public",
+            "src",
+            "target",
+            "README.md",
+            "top.txt",
+            "zed.log",
+        ];
+        assert_eq!(roots(&e), want, "folders first, files after");
+        e.apply_reply(reply(
+            Req::IgnoredChildren {
+                dir: "public".into(),
+            },
+            0,
+            Some(key),
+            Ok(ReplyData::IgnoredChildren(vec!["public/a.png".into()])),
+        ));
+        assert_eq!(roots(&e), want, "opening a folder does not move it");
     }
 
     #[test]
