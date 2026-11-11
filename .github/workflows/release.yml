@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, script: package-macos.sh }
+          - { os: macos-15, script: package-macos.sh }
           # Linux builds on 22.04 so the binaries run on older glibc too.
           - { os: ubuntu-22.04, script: package-linux.sh }
           - { os: ubuntu-22.04-arm, script: package-linux.sh }
@@ -30,9 +30,11 @@ jobs:
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
+        # A mirror that cannot be reached should fail in minutes, not retry for ten.
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential pkg-config \
             libfontconfig1-dev libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev \
             libxkbcommon-x11-dev libvulkan-dev
 
