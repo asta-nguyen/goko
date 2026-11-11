@@ -1,0 +1,46 @@
+apps/rune/src/editor/state.rs
+  s_49b55767a52b3c::t_979bccbd5fbce9 356-357,525
+apps/rune/src/editor/media.rs
+  s_49b55767a52b3c::t_979bccbd5fbce9 112-115,143-148
+  s_49b55767a52b3c::t_5da06fffee2f1b 1-111,116-142,149-183
+apps/rune/src/editor/draft.rs
+  s_49b55767a52b3c::t_979bccbd5fbce9 125-126,150
+apps/rune/src/term.rs
+  s_49b55767a52b3c::t_e753cd401d5f60 1023-1024,1028-1029,1061,1203,1206-1207
+  s_49b55767a52b3c::t_233ef021042d44 1041-1047,1051,1054,1189-1202,1204-1205,1208
+  s_49b55767a52b3c::t_81b0bfa948ad31 67-68,72,658-660,721-722,837-843,1030-1040,1048-1050,1052-1053,1055-1060,1209
+  s_49b55767a52b3c::t_25491ab9c012f4 1062-1063,1210
+apps/rune/src/editor/mod.rs
+  s_49b55767a52b3c::t_979bccbd5fbce9 24
+apps/rune/src/main.rs
+  s_49b55767a52b3c::t_979bccbd5fbce9 1016-1017
+apps/rune/src/panes.rs
+  s_49b55767a52b3c::t_4ea19b7bb7acc7 1028-1033,1035-1040,1102-1113,1123-1130
+  s_49b55767a52b3c::t_979bccbd5fbce9 472
+  s_49b55767a52b3c::t_2974f4394cfa02 2235,2237,2242,2244,2246-2247,2250-2254,2256
+  s_49b55767a52b3c::t_9b2cabe2aa490c 473-475,1796
+apps/rune/src/editor/files.rs
+  s_49b55767a52b3c::t_979bccbd5fbce9 273,481,540-542
+  s_49b55767a52b3c::t_9b2cabe2aa490c 274-278
+apps/rune/src/editor/backend.rs
+  s_49b55767a52b3c::t_aeb9edd11fa80a 2420-2422
+  s_49b55767a52b3c::t_979bccbd5fbce9 1271-1276
+  s_49b55767a52b3c::t_419ca0de308d20 2416-2419,2423-2450
+  s_49b55767a52b3c::t_f1cd6d248691dc 2415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "281d826b7c5f7a937ceee5cc362b99bed38040b7",
+  "prompts": {},
+  "sessions": {
+    "s_49b55767a52b3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b07a741d-25e6-4430-8e4f-d88f938e468a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
