@@ -668,6 +668,30 @@ fn render_lines(term: &Term<VoidListener>, ink: &Ink) -> Vec<TermLine> {
 /// the modifier keys themselves).
 pub fn key_bytes(ev: &rune::KeyEvent) -> Option<Vec<u8>> {
     use rune::Key;
+    // ⌘ is the app's, except the line-editing chords Terminal.app and iTerm
+    // map to readline: ⌘←/⌘→ line start/end (^A/^E), ⌘⌫ kill line (^U).
+    if ev.mods.cmd && !ev.mods.ctrl {
+        return match ev.key {
+            Key::Left => Some(vec![0x01]),
+            Key::Right => Some(vec![0x05]),
+            Key::Backspace => Some(vec![0x15]),
+            _ => None,
+        };
+    }
+    // xterm's modifier parameter: 1 + Shift(1) + Alt(2) + Ctrl(4).
+    let m = (ev.mods.shift as u8) | (ev.mods.alt as u8) << 1 | (ev.mods.ctrl as u8) << 2;
+    let m = (m != 0).then_some(m + 1);
+    // CSI A–D/H/F, `CSI 1;m X` when modified; CSI n~, `CSI n;m ~` when modified.
+    let cursor = |c: char| match m {
+        Some(m) => format!("\x1b[1;{m}{c}"),
+        None => format!("\x1b[{c}"),
+    };
+    let tilde = |n: u8| match m {
+        Some(m) => format!("\x1b[{n};{m}~"),
+        None => format!("\x1b[{n}~"),
+    };
+    // ⌥←/⌥→ move by word: ESC b / ESC f, what readline and Claude Code read.
+    let word = ev.mods.alt && !ev.mods.shift && !ev.mods.ctrl;
     match &ev.key {
         Key::Text(text) => {
             // Ctrl+letter is a control byte; everything else is its UTF-8.
@@ -675,9 +699,23 @@ pub fn key_bytes(ev: &rune::KeyEvent) -> Option<Vec<u8>> {
                 && !ev.mods.cmd
                 && let Some(ch) = text.chars().next()
                 && text.chars().count() == 1
-                && ch.is_ascii_alphabetic()
+                && (ch.is_ascii_alphabetic() || " @[\\]^_".contains(ch))
             {
                 return Some(vec![(ch.to_ascii_lowercase() as u8) & 0x1f]);
+            }
+            // Ctrl+- and Ctrl+/ are xterm's ^_ (readline undo).
+            if ev.mods.ctrl && !ev.mods.cmd && matches!(text.as_str(), "-" | "/") {
+                return Some(vec![0x1f]);
+            }
+            // ⌥+letter is Meta: ESC then the letter (Claude Code's ⌥P model
+            // switch, readline's ⌥B/⌥F/⌥D). `terminal_key` swaps in the letter
+            // the key sits on, since macOS types `π` for ⌥P.
+            if ev.mods.alt
+                && !ev.mods.ctrl
+                && text.len() == 1
+                && text.starts_with(|c: char| c.is_ascii_alphabetic())
+            {
+                return Some([&[0x1b][..], text.as_bytes()].concat());
             }
             Some(text.as_bytes().to_vec())
         }
@@ -686,19 +724,25 @@ pub fn key_bytes(ev: &rune::KeyEvent) -> Option<Vec<u8>> {
         // bare terminal cannot tell it from Enter's CR otherwise.
         Key::Enter if ev.mods.shift || ev.mods.alt => Some(vec![0x1b, b'\r']),
         Key::Enter => Some(vec![b'\r']),
+        // ⌥⌫ deletes a word: ESC DEL.
+        Key::Backspace if ev.mods.alt => Some(vec![0x1b, 0x7f]),
         Key::Backspace => Some(vec![0x7f]),
-        Key::Delete => Some(vec![0x1b, b'[', b'3', b'~']),
+        // Shift+Tab is back-tab (CSI Z): how Claude Code-style TUIs cycle modes.
+        Key::Tab if ev.mods.shift => Some(b"\x1b[Z".to_vec()),
         Key::Tab => Some(vec![b'\t']),
         Key::Escape => Some(vec![0x1b]),
-        Key::Left => Some(vec![0x1b, b'[', b'D']),
-        Key::Right => Some(vec![0x1b, b'[', b'C']),
-        Key::Up => Some(vec![0x1b, b'[', b'A']),
-        Key::Down => Some(vec![0x1b, b'[', b'B']),
-        Key::Home => Some(vec![0x1b, b'[', b'H']),
-        Key::End => Some(vec![0x1b, b'[', b'F']),
-        Key::PageUp => Some(vec![0x1b, b'[', b'5', b'~']),
-        Key::PageDown => Some(vec![0x1b, b'[', b'6', b'~']),
-        Key::Insert => Some(vec![0x1b, b'[', b'2', b'~']),
+        Key::Left if word => Some(vec![0x1b, b'b']),
+        Key::Right if word => Some(vec![0x1b, b'f']),
+        Key::Left => Some(cursor('D').into_bytes()),
+        Key::Right => Some(cursor('C').into_bytes()),
+        Key::Up => Some(cursor('A').into_bytes()),
+        Key::Down => Some(cursor('B').into_bytes()),
+        Key::Home => Some(cursor('H').into_bytes()),
+        Key::End => Some(cursor('F').into_bytes()),
+        Key::Delete => Some(tilde(3).into_bytes()),
+        Key::PageUp => Some(tilde(5).into_bytes()),
+        Key::PageDown => Some(tilde(6).into_bytes()),
+        Key::Insert => Some(tilde(2).into_bytes()),
         _ => None,
     }
 }
@@ -1778,6 +1822,61 @@ mod tests {
         };
         assert_eq!(enter(shift), b"\x1b\r");
         assert_eq!(enter(alt), b"\x1b\r");
+    }
+
+    #[test]
+    fn modified_keys_encode_like_a_mac_terminal() {
+        let send = |key: rune::Key, shift, alt, ctrl, cmd| {
+            let mods = Mods {
+                shift,
+                alt,
+                ctrl,
+                cmd,
+                logo: cmd,
+            };
+            key_bytes(&KeyEvent { key, mods }).map(|b| String::from_utf8(b).unwrap())
+        };
+        use rune::Key::*;
+        // Shift+Tab is back-tab.
+        assert_eq!(send(Tab, true, false, false, false).unwrap(), "\u{1b}[Z");
+        // ⌘←/⌘→/⌘⌫ are line start / end / kill; other ⌘ keys stay the app's.
+        assert_eq!(send(Left, false, false, false, true).unwrap(), "\u{1}");
+        assert_eq!(send(Right, false, false, false, true).unwrap(), "\u{5}");
+        assert_eq!(
+            send(Backspace, false, false, false, true).unwrap(),
+            "\u{15}"
+        );
+        assert_eq!(send(Up, false, false, false, true), None);
+        assert_eq!(send(Command('c'), false, false, false, true), None);
+        // ⌥←/⌥→/⌥⌫ are word moves and word delete.
+        assert_eq!(send(Left, false, true, false, false).unwrap(), "\u{1b}b");
+        assert_eq!(send(Right, false, true, false, false).unwrap(), "\u{1b}f");
+        assert_eq!(
+            send(Backspace, false, true, false, false).unwrap(),
+            "\u{1b}\u{7f}"
+        );
+        // Other modified navigation keys carry xterm's modifier parameter.
+        assert_eq!(
+            send(Right, true, false, false, false).unwrap(),
+            "\u{1b}[1;2C"
+        );
+        assert_eq!(
+            send(Left, false, false, true, false).unwrap(),
+            "\u{1b}[1;5D"
+        );
+        assert_eq!(
+            send(Delete, false, false, true, false).unwrap(),
+            "\u{1b}[3;5~"
+        );
+        // Ctrl+punctuation control bytes.
+        assert_eq!(
+            send(Text("[".into()), false, false, true, false).unwrap(),
+            "\u{1b}"
+        );
+        assert_eq!(
+            send(Text(" ".into()), false, false, true, false).unwrap(),
+            "\0"
+        );
     }
 
     #[test]

@@ -1226,7 +1226,7 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if s.view == View::Terminal {
-        return terminal_key(s, ev);
+        return terminal_key(s, ev, tx.key_base());
     }
     if s.view != View::Editor {
         return false;
@@ -1340,16 +1340,30 @@ fn on_modifiers(s: &mut State, mods: rune::Mods, _tx: &mut Tx) {
 
 /// The Terminal view's keyboard: every key belongs to the focused pane's
 /// session — never "the tab's session", a split tab has several. An app
-/// shortcut (⌘ on macOS) is left alone, and an exited session keeps its
-/// final grid without taking input.
-fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
+/// shortcut (⌘ on macOS) is left alone — `term::key_bytes` sends only the
+/// ⌘ line-editing chords — and an exited session keeps its final grid
+/// without taking input.
+fn terminal_key(s: &mut State, ev: &rune::KeyEvent, base: Option<char>) -> bool {
     let Some(session) = s.focused_terminal_session() else {
         return false;
     };
-    // A shortcut belongs to the app, not to the shell.
-    if ev.mods.cmd && !ev.mods.ctrl {
-        return false;
-    }
+    // macOS types `π` for ⌥P; a Meta chord wants the letter under the finger.
+    let meta;
+    let ev = match (&ev.key, base) {
+        (rune::Key::Text(_), Some(c)) if ev.mods.alt && c.is_ascii_alphabetic() => {
+            let c = if ev.mods.shift {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
+            meta = rune::KeyEvent {
+                key: rune::Key::Text(c.to_string()),
+                mods: ev.mods,
+            };
+            &meta
+        }
+        _ => ev,
+    };
     let Some(bytes) = term::key_bytes(ev) else {
         return false;
     };
@@ -4024,7 +4038,7 @@ mod view_tests {
         rt.update(|s, tx| {
             assert!(on_key(s, &cmd_key('t'), tx), "the app takes ⌘T");
             assert!(
-                !terminal_key(s, &cmd_key('t')),
+                !terminal_key(s, &cmd_key('t'), None),
                 "the terminal never types a ⌘ chord"
             );
         });
@@ -4721,7 +4735,10 @@ mod view_tests {
                 key: rune::Key::Text("a".into()),
                 mods: rune::Mods::default(),
             };
-            assert!(terminal_key(s, &ev), "the key reached the live session");
+            assert!(
+                terminal_key(s, &ev, None),
+                "the key reached the live session"
+            );
         });
         rt.frame(1.0 / 60.0);
         assert_eq!(top(&mut rt), live, "typing returned to the live screen");
