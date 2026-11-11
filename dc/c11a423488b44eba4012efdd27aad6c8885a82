@@ -1,0 +1,137 @@
+crates/daemon/src/terminal.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-445
+docs/agent-devkit/changes/daemon-terminal-state/delta.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-112
+docs/agent-devkit/changes/daemon-terminal-state/design.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-114
+apps/rune/src/editor/backend/apply.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 405-408,414-417,426-432,564-573,697-804
+crates/app-core/src/git_view.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 632-656,944-1042,2467-2556
+apps/rune/src/tab_debug.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-336
+crates/daemon/Cargo.toml
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 3,8
+crates/protocol/src/message.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 73-76,267,311,323,327,334,338
+apps/rune/run-macos.sh
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 23
+apps/rune/package-macos.sh
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-31
+crates/protocol/src/frame.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 8-12
+docs/agent-devkit/changes/daemon-terminal-state/research.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-103
+docs/agent-devkit/INDEX.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 5-8
+apps/rune/src/daemon/tests.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 350,378,545
+apps/rune/src/settings.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 29,33,38,47,461,655-704,707
+  s_a3ac5e3748dcdd::t_893b9ee7a4c422 705-706
+docs/llm/domains/rune-chrome.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 351-352,368-372,414-420,427,661-684,687-693,706-719,724-731,737-738,740,742-773,960-972,993-996,1011-1017,1029-1044,1067-1071,1098-1106,1130,1137
+README.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 3-7,18-37,42-46,118-131,133-136
+crates/daemon/tests/flow.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 117
+docs/agent-devkit/changes/tab-debug-info/delta.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-57
+apps/rune/src/editor/code.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 35,858-871,1621-1665
+  s_a3ac5e3748dcdd::t_0f2899ca0177a1 1666
+docs/agent-devkit/changes/macos-release/tasks.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-38
+apps/rune/src/sessions.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 892,895
+apps/rune/src/editor/comment.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-225
+apps/rune/src/editor/trash.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-21
+docs/agent-devkit/changes/macos-release/design.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-81
+AGENTS.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 20-30
+.gitignore
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 11
+apps/rune/src/sidebar.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 88-91,434-436,473-480
+  s_a3ac5e3748dcdd::t_f29340a5bd081e 1553,1559-1564
+distribution/install.sh
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-113
+crates/app-core/src/lib.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 15
+crates/daemon/tests/paint.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-98
+apps/rune/bundle-macos.sh
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-47
+docs/agent-devkit/changes/archive/2026-11-04-terminal-output-backpressure/design.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 143
+apps/rune/src/daemon.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 101-105,306,312,339-343
+  s_a3ac5e3748dcdd::t_5ac3f1de81d0b3 344-345
+CHANGELOG.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 13-14,55-71,77-83
+docs/agent-devkit/changes/daemon-terminal-state/tasks.md
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-84
+apps/rune/src/editor/backend.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 210,292-312,371-374,394-399,571-573,837,840,845-846,969,971,974,977,979,1138-1152,1276-1280,1287-1304,1306-1338,1653-1693,2591-2964
+  s_a3ac5e3748dcdd::t_a6be20d8e4f001 2965
+apps/rune/src/chrome.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 582,645-653,655-656
+  s_a3ac5e3748dcdd::t_4a06d982d440a4 654
+apps/rune/package-linux.sh
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-35
+apps/rune/src/editor/mod.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 11,36
+apps/rune/Cargo.toml
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 24
+apps/rune/src/update.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-277
+apps/rune/src/main.rs
+  s_a3ac5e3748dcdd::t_874e0b6a600e1f 179-180
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 16,20,58-60,182-183,226-227,286-288,293,628-631,1096-1098,1105-1107,1134,1300-1310,1361-1363,1377,1492-1495,1499-1515,1526,2428-2487,4382,4918-4953,5138-5141
+apps/rune/src/panes.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1078,1086,1125,1148-1153,1202-1204,1241-1242,1695-1703,1708-1711
+  s_a3ac5e3748dcdd::t_86d4cf458ecc78 1704-1706
+crates/app-core/src/session_debug.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-481
+apps/rune/src/editor/state.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 79-80,99-117,484-488
+crates/daemon/src/lib.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 10
+.github/workflows/release.yml
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 1-92
+crates/daemon/src/pty.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 2,100-102,115,171-181,266,319-321,329-331,373,393,408-430
+  s_a3ac5e3748dcdd::t_96c854b3687189 431
+crates/daemon/src/server.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 28,223-225,368-371,373,437,440-444,446-451,454,460,464-466,470,531-536
+apps/rune/src/theme.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 330-353
+apps/rune/src/editor/files.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 11,13,22,30-32,107,129,133-150,154-230,285-286,295,300,305-535,544-569,576-578,1781-1960
+  s_a3ac5e3748dcdd::t_86d4cf458ecc78 12
+  s_a3ac5e3748dcdd::t_d230a0e45e667b 1961
+apps/rune/src/term.rs
+  s_a3ac5e3748dcdd::t_7ca8699a4e9b15 10,13,19,104-119,148,150-156,187,194,196-197,207-250,254-260,324-334,349-351,365-370,562,756-790,796-819,827,831-844,852-853,855-856,859-870,1287,1292,1294,1296,1302,1418,1605-1738,2086-2139
+  s_a3ac5e3748dcdd::t_ac87ceef3dec6f 2140
+Cargo.lock
+  s_a3ac5e3748dcdd::t_9ad0f7132949c2 759,761
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dcc11a423488b44eba4012efdd27aad6c8885a82",
+  "prompts": {},
+  "sessions": {
+    "s_a3ac5e3748dcdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1e816-caa2-42f6-8a55-eb0be0ad54ae",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
