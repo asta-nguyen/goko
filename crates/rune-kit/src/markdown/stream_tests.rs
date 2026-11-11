@@ -42,6 +42,10 @@ fn prefixes(doc: &str) -> impl Iterator<Item = &str> {
 
 /// Streamed a byte at a time, each string's text is the start of the whole text: no marker
 /// shows and then goes, and no word changes.
+///
+/// Known failing (released in 0.1.1, see the changelog): the image case
+/// `…and ![a` shows its alt text in the paragraph, while the finished parse
+/// moves the image to its own block.
 #[test]
 fn an_open_span_never_shows_its_markers() {
     for doc in [

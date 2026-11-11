@@ -59,6 +59,14 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 - Clicking a terminal tab while in the Editor now switches to the Terminal; a
   draft guard still runs first and resumes on the chosen tab.
 
+### Known issues
+
+- Streamed Markdown shows the alt text of an image that is still being typed
+  (`![a`) inside its paragraph until the image closes and moves to its own
+  block. `an_open_span_never_shows_its_markers` in `rune-kit` fails on it under
+  `cargo test --workspace` (the `markdown` feature); fix the stream parser in
+  `crates/rune-kit/src/markdown/stream.rs` or the test's expectation.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added
