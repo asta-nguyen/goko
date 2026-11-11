@@ -15,21 +15,27 @@ processes. Project and session metadata is stored separately in SQLite. See
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
 
-## Install (macOS Apple Silicon)
+## Install (macOS Apple Silicon, Linux aarch64)
 
 ```sh
 curl -fsSL https://github.com/asta-nguyen/goko/releases/latest/download/install.sh | sh
 ```
 
-This downloads the latest release, checks its sha256 and signature, and installs
-`Goko.app` in `~/Applications`; run it again to update. The app is signed ad hoc
-(free, no Apple Developer account), so install it with this command: a copy
-downloaded through a browser is quarantined and macOS asks you to allow it in
-System Settings → Privacy & Security.
+This downloads the latest release, checks its sha256 (and, on macOS, its
+signature), and installs it; run it again to update. On macOS it installs
+`Goko.app` in `~/Applications`. The app is signed ad hoc (free, no Apple
+Developer account), so install it with this command: a copy downloaded through
+a browser is quarantined and macOS asks you to allow it in System Settings →
+Privacy & Security.
 
-Intel Macs and Linux build from source (below): the installer and
-`apps/rune/package-linux.sh` already handle Linux, but the release workflow does
-not build it yet. There is no Windows release.
+On Linux it puts `goko` in `~/.local/bin` (the app and `gokod` in
+`~/.local/share/goko`) and adds a launcher entry. It needs a desktop session, a
+working Vulkan or OpenGL driver and `libxkbcommon`. The Linux archive is built by
+hand and attached to the release, since the release workflow does not build it
+yet, and the installed app has not been run on a desktop.
+
+Intel Macs and Linux x86_64 build from source (below). There is no Windows
+release.
 
 Goko → Settings → Updates shows the running version and tells you when a newer
 release is out (set `GOKO_NO_UPDATE_CHECK=1` to stop the automatic check). To
