@@ -288,6 +288,12 @@ pub enum Req {
         expected: String,
         text: String,
     },
+    /// One level of an ignored directory, read from disk (the file list
+    /// leaves it collapsed). Sent on the write lane: its reply must apply
+    /// whatever else was clicked since, so it is never generation-gated.
+    IgnoredChildren {
+        dir: String,
+    },
     /// Rename a file or folder in place; `new_name` is a plain name.
     RenamePath {
         path: String,
@@ -371,6 +377,8 @@ pub enum ReplyData {
         line: Option<u64>,
     },
     Saved(GitViewFile),
+    /// The entries one level below an ignored directory.
+    IgnoredChildren(Vec<String>),
     /// The new checkout-relative path after a rename.
     Renamed(String),
     /// The config lookup's answer: `paths` aliases parsed worker-side from
@@ -1108,6 +1116,9 @@ fn run_checkout(
         } => git_view::save_file(checkout, path, expected, text)
             .map(ReplyData::Saved)
             .map_err(|e| e.to_string()),
+        Req::IgnoredChildren { dir } => git_view::ignored_children(checkout, dir)
+            .map(ReplyData::IgnoredChildren)
+            .map_err(|e| e.to_string()),
         Req::RenamePath { path, new_name } => git_view::rename_path(checkout, path, new_name)
             .map(ReplyData::Renamed)
             .map_err(|e| e.to_string()),
@@ -1234,20 +1245,33 @@ impl EditorState {
             .map(String::as_str)
             .filter(|p| keep(p))
             .map(|p| (p, FileMark::Tracked));
-        // Ignored entries sit beside the tracked ones, dimmed; an ignored
-        // directory is a leaf row (not expandable).
-        let ignored = self
-            .files
-            .ignored
+        // Ignored entries sit beside the tracked ones, dimmed. An ignored
+        // directory is a leaf row until the user opens it; then its entries
+        // stand in for it.
+        let ignored_entries = expand_ignored(&self.files.ignored, &self.files.ignored_open);
+        let ignored = ignored_entries
             .iter()
             .filter(|p| keep(p.trim_end_matches('/')))
             .map(|p| match p.strip_suffix('/') {
                 Some(dir) => (dir, FileMark::IgnoredDir),
                 None => (p.as_str(), FileMark::Ignored),
             });
-        self.files.model = rune_kit::FileTree::new()
+        // A rebuild (refresh, rename, an opened ignored directory) keeps
+        // the folders the user had open and the cursor.
+        let open = expanded_ids(&self.files.model);
+        let cursor = self.files.model.cursor().map(str::to_string);
+        let mut model = rune_kit::FileTree::new()
             .dirs_first(true)
             .build(tracked.chain(ignored));
+        for id in &open {
+            if model.contains(id) {
+                model.set_expanded(id, true);
+            }
+        }
+        if let Some(id) = cursor.filter(|id| model.contains(id)) {
+            model.select(&id);
+        }
+        self.files.model = model;
         self.files.model_checkout = self.checkout_key.clone();
     }
 
@@ -1562,6 +1586,42 @@ impl EditorState {
 
 /// Request-kind key for generation tracking; writes and project calls map
 /// to kinds that never carry a generation.
+/// The ignored entries with every opened directory replaced by its entries
+/// (an opened directory with nothing in it stays a leaf).
+fn expand_ignored(
+    ignored: &[String],
+    open: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(ignored.len());
+    let mut stack: Vec<&String> = ignored.iter().rev().collect();
+    while let Some(entry) = stack.pop() {
+        match entry
+            .strip_suffix('/')
+            .and_then(|dir| open.get(dir))
+            .filter(|children| !children.is_empty())
+        {
+            Some(children) => stack.extend(children.iter().rev()),
+            None => out.push(entry.clone()),
+        }
+    }
+    out
+}
+
+/// The folders of `model` that are open.
+fn expanded_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack: Vec<String> = model.children(None).map(str::to_string).collect();
+    while let Some(id) = stack.pop() {
+        if model.has_children(&id) {
+            if model.is_expanded(&id) {
+                out.push(id.clone());
+            }
+            stack.extend(model.children(Some(&id)).map(str::to_string));
+        }
+    }
+    out
+}
+
 fn kind_key(req: &Req) -> &'static str {
     match req {
         Req::Changes => "changes",
@@ -2457,6 +2517,52 @@ mod tests {
         e.install_doc("blob.bin".into(), binary("blob.bin"), None);
         assert!(e.doc.as_ref().unwrap().media.is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_opened_ignored_directory_shows_its_entries_and_keeps_the_open_folders() {
+        use crate::editor::state::FileMark;
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.files.paths = vec!["README.md".into(), "src/a.rs".into()];
+        e.files.ignored = vec!["public/assets/".into(), "target/".into()];
+        e.rebuild_file_model();
+        e.files.model.set_expanded("src", true);
+        let data = |e: &EditorState, id: &str| e.files.model.get(id).map(|n| n.data);
+        assert_eq!(data(&e, "public/assets"), Some(Some(FileMark::IgnoredDir)));
+        e.apply_reply(reply(
+            Req::IgnoredChildren {
+                dir: "public/assets".into(),
+            },
+            0,
+            Some(key),
+            Ok(ReplyData::IgnoredChildren(vec![
+                "public/assets/a.png".into(),
+                "public/assets/deep/".into(),
+            ])),
+        ));
+        assert_eq!(
+            data(&e, "public/assets/a.png"),
+            Some(Some(FileMark::Ignored))
+        );
+        assert_eq!(
+            data(&e, "public/assets/deep"),
+            Some(Some(FileMark::IgnoredDir)),
+            "a nested ignored directory is a leaf that opens in turn"
+        );
+        assert!(
+            e.files.model.is_expanded("public/assets"),
+            "the folder opened"
+        );
+        assert!(
+            e.files.model.is_expanded("src"),
+            "other open folders stay open"
+        );
+        assert_eq!(data(&e, "target"), Some(Some(FileMark::IgnoredDir)));
+        // A refresh keeps what the user opened.
+        e.rebuild_file_model();
+        assert!(e.files.model.contains("public/assets/a.png"));
     }
 
     #[test]

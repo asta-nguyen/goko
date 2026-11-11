@@ -93,6 +93,9 @@ pub struct FilesState {
     pub error: Option<String>,
     /// Content-search state (debounced query → worker).
     pub search: search_state::Search,
+    /// Ignored directories the user opened: the entries one level below
+    /// each, keyed by the directory's path. Cleared with the checkout.
+    pub ignored_open: std::collections::BTreeMap<String, Vec<String>>,
     /// The row context menu: the entry it was opened on and where.
     pub menu: Option<FileMenu>,
 }
@@ -462,6 +465,7 @@ impl EditorState {
                 loading: false,
                 error: None,
                 search: search_state::Search::default(),
+                ignored_open: Default::default(),
                 menu: None,
             },
             changes: ChangesState {

@@ -197,16 +197,12 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
             // Desktop parity: activating a file row opens it — a plain click
             // moves the cursor (this callback) and Enter/double-click routes
             // through `on_open`. Both land in the draft guard via `open_doc`.
-            if is_openable(st, id) {
-                open_doc(st, id, None, tx);
-            }
+            tree_activate(st, id, tx);
         })
         .on_open(|st: &mut State, id: &str, tx: &mut Tx| {
             // Re-activating the already-selected file (Enter/Space or a
             // double-click) still opens — same-file requests only reveal.
-            if is_openable(st, id) {
-                open_doc(st, id, None, tx);
-            }
+            tree_activate(st, id, tx);
         })
         .style(TreeStyle::from_kit(k))
         .build(s, k)
@@ -354,6 +350,32 @@ pub fn submit_rename(s: &mut State, id: &str, name: &str) {
 fn tree_activate(st: &mut State, id: &str, tx: &mut Tx) {
     if is_openable(st, id) {
         open_doc(st, id, None, tx);
+    } else if st
+        .editor
+        .files
+        .model
+        .get(id)
+        .is_some_and(|n| n.data == Some(FileMark::IgnoredDir))
+    {
+        open_ignored_dir(st, id);
+    }
+}
+
+/// An ignored directory is a leaf until opened: ask for its entries, which
+/// replace it in the tree. One whose entries were read stays as it is.
+fn open_ignored_dir(s: &mut State, dir: &str) {
+    if s.editor.files.ignored_open.contains_key(dir) {
+        return;
+    }
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let req = Req::IgnoredChildren {
+        dir: dir.to_string(),
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
     }
 }
 
@@ -1588,6 +1610,32 @@ mod tests {
             Some("docs/guide.md"),
             "the row is selected"
         );
+    }
+
+    /// Clicking an ignored directory asks for its entries instead of doing
+    /// nothing, and a second click on one already read sends no second job.
+    #[test]
+    fn clicking_an_ignored_directory_reads_its_entries() {
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        let mut s = scene();
+        s.editor.backend = backend;
+        s.editor.files.ignored = vec!["target/".into()];
+        s.editor.rebuild_file_model();
+        let mut rt = kb_runtime(s);
+        click_tree_row(&mut rt, "target");
+        let sent: Vec<_> = jobs.try_iter().collect();
+        assert!(
+            sent.iter()
+                .any(|j| matches!(&j.req, Req::IgnoredChildren { dir } if dir == "target")),
+            "the directory was requested"
+        );
+        rt.state
+            .editor
+            .files
+            .ignored_open
+            .insert("target".into(), Vec::new());
+        click_tree_row(&mut rt, "target");
+        assert!(jobs.try_iter().next().is_none(), "already read: no new job");
     }
 
     #[test]

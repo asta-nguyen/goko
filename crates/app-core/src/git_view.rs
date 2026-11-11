@@ -629,6 +629,31 @@ pub fn ignored_list(checkout: &Path) -> Result<Vec<String>, BridgeError> {
     Ok(paths)
 }
 
+/// One level of an ignored directory, which `ignored_list` leaves collapsed:
+/// files as `dir/name`, subdirectories as `dir/name/`. Sorted.
+pub fn ignored_children(checkout: &Path, directory: &str) -> Result<Vec<String>, BridgeError> {
+    let rel = relative_path(directory)?;
+    let target = std::fs::canonicalize(checkout.join(&rel))
+        .map_err(|_| invalid(format!("the directory {directory} is not accessible")))?;
+    if !target.starts_with(checkout) || !target.is_dir() {
+        return Err(invalid(format!(
+            "{directory} is not a directory in the checkout"
+        )));
+    }
+    let prefix = rel_str(&rel)?;
+    let mut out: Vec<String> = std::fs::read_dir(&target)
+        .map_err(|e| invalid(format!("cannot read {directory}: {e}")))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let dir = entry.file_type().ok()?.is_dir();
+            Some(format!("{prefix}/{name}{}", if dir { "/" } else { "" }))
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 /// Search tracked and non-ignored untracked text files without changing the checkout.
 pub fn search(checkout: &Path, query: &str) -> Result<GitViewSearch, BridgeError> {
     let query = query.trim();
@@ -2401,5 +2426,21 @@ mod tests {
         assert!(rename("../x", "y").is_err());
         assert!(rename("lib/missing", "y").is_err());
         assert!(rename(".git/HEAD", "y").is_err());
+    }
+
+    #[test]
+    fn ignored_children_lists_one_level_and_stays_in_the_checkout() {
+        let dir = TempDir::new("ignored-children");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("public/assets/deep")).unwrap();
+        fs::write(root.join("public/assets/a.png"), "x").unwrap();
+        fs::write(root.join("public/assets/deep/b.png"), "x").unwrap();
+        assert_eq!(
+            ignored_children(&root, "public/assets").unwrap(),
+            vec!["public/assets/a.png", "public/assets/deep/"]
+        );
+        assert!(ignored_children(&root, "public/assets/a.png").is_err());
+        assert!(ignored_children(&root, "../x").is_err());
+        assert!(ignored_children(&root, "missing").is_err());
     }
 }

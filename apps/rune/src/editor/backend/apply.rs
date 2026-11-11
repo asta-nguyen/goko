@@ -399,6 +399,9 @@ impl EditorState {
                 self.history.branches = branches;
             }
             (Req::FileList, Ok(ReplyData::FileList(paths, ignored))) => {
+                if self.files.model_checkout != self.checkout_key {
+                    self.files.ignored_open.clear();
+                }
                 self.files.paths = paths;
                 self.files.ignored = ignored;
                 self.files.loading = false;
@@ -412,6 +415,13 @@ impl EditorState {
                     crate::editor::quick_open::refresh_matches(self);
                 }
             }
+            (Req::IgnoredChildren { dir }, Ok(ReplyData::IgnoredChildren(children))) => {
+                self.files.ignored_open.insert(dir.clone(), children);
+                self.rebuild_file_model();
+                self.files.model.set_expanded(dir, true);
+                self.files.model.select(dir);
+            }
+            (Req::IgnoredChildren { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::FileList, Err(e)) => {
                 self.files.loading = false;
                 if self.files.paths.is_empty() {
