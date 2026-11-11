@@ -1,0 +1,75 @@
+.gitignore
+  s_94f7ddaae2abc0::t_857c1a8416eb06 8
+docs/agent-devkit/changes/macos-release/tasks.md
+  s_94f7ddaae2abc0::t_cea9fd6f6bdcf1 36
+  s_94f7ddaae2abc0::t_4d5e0b23388fc5 31-35
+  s_94f7ddaae2abc0::t_010c9d2152fe3a 38
+  s_94f7ddaae2abc0::t_238dc190b6087a 1,5,22-23,37
+  s_94f7ddaae2abc0::t_3b1acc406d6978 2-4,6-21,24-30
+apps/rune/bundle-macos.sh
+  s_94f7ddaae2abc0::t_857c1a8416eb06 1-47
+apps/rune/package-linux.sh
+  s_94f7ddaae2abc0::t_81e417d8ebd85c 1-35
+distribution/install.sh
+  s_94f7ddaae2abc0::t_345342fbb3197e 2-107,109,113
+  s_94f7ddaae2abc0::t_a2e26242ef4299 1,108,110-112
+apps/rune/src/update.rs
+  s_94f7ddaae2abc0::t_8b921211c626f5 1,5-12,15-38,44-57,72,74-76,79,82-89,93,149-150,153,155-158,160-161,167-186,191-202,204,218-220,223-224,226,229-230,240-241,276-277
+  s_94f7ddaae2abc0::t_1eefd48dcc527f 39-43,187-190,252-255,257-261
+  s_94f7ddaae2abc0::t_a8c50d038dd7a1 2-4,13-14,94-148,151-152,154,159,162-166,242-251,256,262-275
+  s_94f7ddaae2abc0::t_7196b7bbaeccd3 58-71,73,77-78,80-81,90-92,203,205-212,217,221-222,225,227-228,231-239
+  s_94f7ddaae2abc0::t_433945ab8eb700 213-216
+docs/agent-devkit/changes/macos-release/design.md
+  s_94f7ddaae2abc0::t_3b1acc406d6978 2-4,8-12,25-26,31-36,49-58,67-68,70-73,79-80
+  s_94f7ddaae2abc0::t_010c9d2152fe3a 37-42,44-48,64-66
+  s_94f7ddaae2abc0::t_238dc190b6087a 1,5-7,13-24,27-30,43,59-63,69,74-78
+apps/rune/src/settings.rs
+  s_94f7ddaae2abc0::t_7bcb23405d1116 29,33,38,47,438,581-603,612-618,620-627,629-631
+  s_94f7ddaae2abc0::t_b52adaee132e79 619,628
+  s_94f7ddaae2abc0::t_1eefd48dcc527f 604-611
+  s_94f7ddaae2abc0::t_2e6db8c2bcb45a 632-633
+apps/rune/package-macos.sh
+  s_94f7ddaae2abc0::t_81e417d8ebd85c 6-7,28-29
+  s_94f7ddaae2abc0::t_857c1a8416eb06 1-5,8-27,30-31
+apps/rune/run-macos.sh
+  s_94f7ddaae2abc0::t_857c1a8416eb06 23
+.github/workflows/release.yml
+  s_94f7ddaae2abc0::t_345342fbb3197e 1-44,59-87
+  s_94f7ddaae2abc0::t_4904c68f628310 47-53
+  s_94f7ddaae2abc0::t_c15b626ab149e8 45-46,54-58,88-89
+docs/agent-devkit/INDEX.md
+  s_94f7ddaae2abc0::t_cea9fd6f6bdcf1 5
+apps/rune/src/main.rs
+  s_94f7ddaae2abc0::t_1eefd48dcc527f 4587-4622
+  s_94f7ddaae2abc0::t_a8c50d038dd7a1 172-173,214-215,277
+  s_94f7ddaae2abc0::t_8b921211c626f5 19
+CHANGELOG.md
+  s_94f7ddaae2abc0::t_238dc190b6087a 61,63-69
+  s_94f7ddaae2abc0::t_e9c790777c0628 53-60,62,75-81
+AGENTS.md
+  s_94f7ddaae2abc0::t_4d5e0b23388fc5 21
+  s_94f7ddaae2abc0::t_238dc190b6087a 20
+docs/llm/domains/rune-chrome.md
+  s_94f7ddaae2abc0::t_feef34eec49eec 351-352,368,370-372,414-420,427
+  s_94f7ddaae2abc0::t_238dc190b6087a 369
+README.md
+  s_94f7ddaae2abc0::t_238dc190b6087a 18,24-25,27-37,40
+  s_94f7ddaae2abc0::t_4904c68f628310 3-7,38-39,45-49,121-135,137-140
+  s_94f7ddaae2abc0::t_9460eb9504e189 19-23,26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "64c7b918a9e8a0e508cbe9775b3d120db75b9fb1",
+  "prompts": {},
+  "sessions": {
+    "s_94f7ddaae2abc0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36d1571a-745b-468a-8c78-a2fb465a848e",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
