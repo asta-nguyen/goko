@@ -1,0 +1,21 @@
+CHANGELOG.md
+  s_a3ac5e3748dcdd::t_fa905851bab763 62-69
+crates/rune-kit/src/markdown/stream_tests.rs
+  s_a3ac5e3748dcdd::t_9a936ffb76ef44 45-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4525f560591e7114386a29a4d391ca0dc2f3544a",
+  "prompts": {},
+  "sessions": {
+    "s_a3ac5e3748dcdd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1e816-caa2-42f6-8a55-eb0be0ad54ae",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
