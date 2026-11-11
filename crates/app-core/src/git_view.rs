@@ -916,6 +916,43 @@ pub fn save_file(
     })
 }
 
+/// Rename a file or folder to `new_name` inside its own directory and return
+/// the new checkout-relative path. The name is a plain name (no separators),
+/// never `.git`, and never an existing entry — a case-only change of the same
+/// entry is the one exception, as a case-insensitive disk reports it as taken.
+pub fn rename_path(checkout: &Path, path: &str, new_name: &str) -> Result<String, BridgeError> {
+    let rel = relative_path(path)?;
+    let name = new_name.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.eq_ignore_ascii_case(".git")
+        || name.contains(['/', '\\', '\0'])
+    {
+        return Err(invalid("enter a plain file name without slashes"));
+    }
+    let from = checkout.join(&rel);
+    std::fs::symlink_metadata(&from)
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    let parent = from.parent().unwrap_or(checkout);
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|_| not_found(format!("{} is not available", rel.display())))?;
+    if !parent.starts_with(checkout) {
+        return Err(invalid("the path resolves outside the checkout"));
+    }
+    let to_rel = rel.with_file_name(name);
+    let to = parent.join(name);
+    let case_only = rel
+        .file_name()
+        .is_some_and(|old| old != name && old.to_string_lossy().eq_ignore_ascii_case(name));
+    if !case_only && std::fs::symlink_metadata(&to).is_ok() {
+        return Err(invalid(format!("{name} already exists")));
+    }
+    std::fs::rename(parent.join(rel.file_name().unwrap_or_default()), &to)
+        .map_err(|e| invalid(format!("cannot rename: {e}")))?;
+    Ok(rel_str(&to_rel)?.to_owned())
+}
+
 fn current_text(path: &Path) -> Result<Vec<u8>, BridgeError> {
     let mut current = Vec::new();
     match std::fs::File::open(path)
@@ -2339,5 +2376,30 @@ mod tests {
         let unborn = dir.path().canonicalize().unwrap();
         git_ok(&unborn, &["init", "-b", "main"]);
         assert_eq!(changes(&unborn).unwrap().ahead, None);
+    }
+
+    #[test]
+    fn rename_path_renames_in_place_and_refuses_the_rest() {
+        let dir = TempDir::new("rename-path");
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.txt"), "a").unwrap();
+        fs::write(root.join("src/b.txt"), "b").unwrap();
+        let rename = |path: &str, name: &str| rename_path(&root, path, name);
+        assert_eq!(rename("src/a.txt", "c.txt").unwrap(), "src/c.txt");
+        assert!(root.join("src/c.txt").is_file() && !root.join("src/a.txt").exists());
+        assert_eq!(rename("src", "lib").unwrap(), "lib", "a folder renames too");
+        assert!(root.join("lib/c.txt").is_file());
+        assert_eq!(
+            rename("lib/c.txt", "C.txt").unwrap(),
+            "lib/C.txt",
+            "case only"
+        );
+        for bad in ["", "  ", ".", "..", ".git", "x/y", "a\\b", "b.txt"] {
+            assert!(rename("lib/C.txt", bad).is_err(), "{bad:?}");
+        }
+        assert!(rename("../x", "y").is_err());
+        assert!(rename("lib/missing", "y").is_err());
+        assert!(rename(".git/HEAD", "y").is_err());
     }
 }

@@ -8,7 +8,9 @@
 //! this surface behind the same `OpenDoc` state.
 
 use rune::{El, KeyEvent, Tx, col, row};
-use rune_kit::{FileNode, Kit, Tree, TreeItem, TreeKey, TreeModel, TreeStyle};
+use rune_kit::{
+    FileNode, Kit, MenuItem, Tree, TreeItem, TreeKey, TreeModel, TreeStyle, context_menu,
+};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -17,7 +19,7 @@ use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
 use crate::editor::navigation::{self, PendingNav};
 use crate::editor::pane_layout;
-use crate::editor::state::FileMark;
+use crate::editor::state::{FileMark, FileMenu};
 use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 
 /// Files section root: toolbar (filter + search toggle + refresh), then
@@ -209,6 +211,141 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
         .style(TreeStyle::from_kit(k))
         .build(s, k)
         .on_key(tree_key)
+        // A row has no handler of its own for this press, so it lands here:
+        // the element under the pointer names the row.
+        .on_secondary_press(|_: &mut State, p: rune::PointerPress, tx: &mut Tx| {
+            tx.element_at(p.x, p.y, move |st: &mut State, picked, _tx: &mut Tx| {
+                let Some(id) = picked.and_then(|e| row_id(tree_get(st), e.path())) else {
+                    return;
+                };
+                tree_get_mut(st).select(&id);
+                st.editor.files.menu = Some(FileMenu { id, x: p.x, y: p.y });
+            });
+        })
+}
+
+/// The tree row an element path belongs to: `…/rows/<row id>/<part>`. A row id
+/// holds slashes of its own, so it is the longest prefix that names a node.
+fn row_id(model: &TreeModel<FileNode<FileMark>>, path: &str) -> Option<String> {
+    let rest = path.split_once("/rows/")?.1;
+    std::iter::once(rest.len())
+        .chain(rest.match_indices('/').map(|(i, _)| i).rev())
+        .map(|end| &rest[..end])
+        .find(|id| model.contains(id))
+        .map(str::to_string)
+}
+
+/// The row context menu: copy the path, show it in Finder, rename it.
+pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    if s.view != crate::View::Editor {
+        return None;
+    }
+    let menu = s.editor.files.menu.as_ref()?;
+    let checkout = s.editor.checkout.as_ref()?;
+    if !tree_get(s).contains(&menu.id) {
+        return None;
+    }
+    let absolute = checkout.join(&menu.id);
+    let (full, relative, reveal_path, id) = (
+        absolute.to_string_lossy().into_owned(),
+        menu.id.clone(),
+        absolute,
+        menu.id.clone(),
+    );
+    let at = rune::PointerPress {
+        x: menu.x,
+        y: menu.y,
+    };
+    Some(
+        context_menu("files-row", rune::el(), Some(at))
+            .item(
+                MenuItem::new("Copy Path").on_select_tx(move |st: &mut State, tx: &mut Tx| {
+                    st.editor.files.menu = None;
+                    tx.copy(full.clone());
+                }),
+            )
+            .item(MenuItem::new("Copy Relative Path").on_select_tx(
+                move |st: &mut State, tx: &mut Tx| {
+                    st.editor.files.menu = None;
+                    tx.copy(relative.clone());
+                },
+            ))
+            .item(
+                MenuItem::new("Reveal in Finder").on_select(move |st: &mut State| {
+                    st.editor.files.menu = None;
+                    reveal(&reveal_path);
+                }),
+            )
+            .separator()
+            .item(MenuItem::new("Rename…").on_select(move |st: &mut State| {
+                st.editor.files.menu = None;
+                ask_for_rename(st, &id);
+            }))
+            .on_close(|st: &mut State| st.editor.files.menu = None)
+            .build(&s.editor.kit, layer),
+    )
+}
+
+/// Show `path` selected in the system file manager.
+// ponytail: macOS `open -R`; elsewhere the folder opens, with no selection.
+fn reveal(path: &std::path::Path) {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg("-R").arg(path);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path.parent().unwrap_or(path));
+        c
+    };
+    if let Ok(mut child) = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
+/// Open the rename prompt with the entry's current name filled in.
+fn ask_for_rename(s: &mut State, id: &str) {
+    s.ask_for_input(crate::sidebar::SidebarInput::RenameFile { id: id.to_string() });
+    let name = id.rsplit('/').next().unwrap_or(id);
+    s.sidebar_text = rune::edit::TextEdit::new(name);
+    s.sidebar_text.focused = true;
+}
+
+/// Send the rename. A name that did not change closes the prompt; an open
+/// draft under the entry blocks it, so the rename never strands unsaved text.
+pub fn submit_rename(s: &mut State, id: &str, name: &str) {
+    s.close_sidebar_input();
+    let name = name.trim();
+    if name.is_empty() || id.rsplit('/').next() == Some(name) {
+        return;
+    }
+    let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
+    else {
+        return;
+    };
+    let blocked = s.editor.doc.as_ref().is_some_and(|doc| {
+        doc.dirty() && (doc.path == id || doc.path.starts_with(&format!("{id}/")))
+    });
+    if blocked {
+        s.notice = Some(format!(
+            "save or discard the changes in {id} before renaming it"
+        ));
+        return;
+    }
+    let req = Req::RenamePath {
+        path: id.to_string(),
+        new_name: name.to_string(),
+    };
+    if !s.editor.enqueue_write(checkout, key, req) {
+        files_queue_full(s);
+    }
 }
 
 /// What a tree activation means: directories only toggle via the tree's own
@@ -1424,6 +1561,48 @@ mod tests {
             rt.elements().iter().any(|e| e.focused && e.role == "tree"),
             "tree holds focus after row click"
         );
+    }
+
+    /// A right-click anywhere on a nested row names that row — the menu
+    /// opens on it with the pointer's position, not on the cursor row.
+    #[test]
+    fn secondary_press_on_a_row_opens_its_menu() {
+        let mut rt = kb_runtime(scene());
+        click_tree_row(&mut rt, "docs");
+        click_tree_row(&mut rt, "README.md");
+        let row = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "treeitem" && e.label.as_deref() == Some("guide.md"))
+            .expect("the folder opened");
+        let (x, y) = (row.rect[0] + 60.0, row.rect[1] + row.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+        let menu = rt.state.editor.files.menu.as_ref().expect("menu opened");
+        assert_eq!(menu.id, "docs/guide.md");
+        assert_eq!((menu.x, menu.y), (x, y));
+        assert_eq!(
+            rt.state.editor.files.model.cursor(),
+            Some("docs/guide.md"),
+            "the row is selected"
+        );
+    }
+
+    #[test]
+    fn a_row_id_is_the_longest_node_prefix_of_the_element_path() {
+        let s = scene();
+        let model = tree_get(&s);
+        let id = |path: &str| row_id(model, path);
+        assert_eq!(
+            id("#0/files/viewport/rows/src/a.rs/label"),
+            Some("src/a.rs".into())
+        );
+        assert_eq!(id("#0/files/viewport/rows/src/icon"), Some("src".into()));
+        assert_eq!(id("#0/files/viewport/rows/top.txt"), Some("top.txt".into()));
+        assert_eq!(id("#0/files/viewport/rows/nope/label"), None);
+        assert_eq!(id("#0/files/toolbar"), None);
     }
 
     /// `j`/`k` must reach global nav instead of the tree's typeahead: the

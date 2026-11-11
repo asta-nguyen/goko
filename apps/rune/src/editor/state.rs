@@ -93,6 +93,15 @@ pub struct FilesState {
     pub error: Option<String>,
     /// Content-search state (debounced query → worker).
     pub search: search_state::Search,
+    /// The row context menu: the entry it was opened on and where.
+    pub menu: Option<FileMenu>,
+}
+
+/// A tree row's context menu, opened by a secondary press at (`x`, `y`).
+pub struct FileMenu {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// Search bookkeeping kept beside the files section: the debounced query and
@@ -453,6 +462,7 @@ impl EditorState {
                 loading: false,
                 error: None,
                 search: search_state::Search::default(),
+                menu: None,
             },
             changes: ChangesState {
                 data: None,

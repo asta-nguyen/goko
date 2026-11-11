@@ -91,6 +91,8 @@ pub enum SidebarInput {
     WorkspaceName,
     /// A named workspace's new name.
     WorkspaceRename { id: String },
+    /// The new name of a file or folder in the Files tree.
+    RenameFile { id: String },
 }
 
 /// A removal awaiting confirmation. The row's facts are captured when the
@@ -494,6 +496,7 @@ pub fn input_layer(s: &State, ink: &Ink, layer: &mut Vec<El>) -> Option<El> {
         SidebarInput::NewWorktree { .. } => return None,
         SidebarInput::WorkspaceName => ("Workspace name…", "New workspace"),
         SidebarInput::WorkspaceRename { .. } => ("Workspace name…", "Rename workspace"),
+        SidebarInput::RenameFile { .. } => ("New name…", "Rename"),
     };
     let field = rune_kit::TextInput::new(&s.sidebar_text)
         .placeholder(placeholder)
@@ -532,6 +535,10 @@ fn input_key(s: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx) -> bool {
                 }
                 Some(SidebarInput::WorkspaceRename { id }) => {
                     s.submit_workspace_rename(&id, &text);
+                    true
+                }
+                Some(SidebarInput::RenameFile { id }) => {
+                    crate::editor::files::submit_rename(s, &id, &text);
                     true
                 }
                 _ => {

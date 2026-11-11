@@ -543,6 +543,10 @@ impl EditorState {
             (Req::SaveFile { path, .. }, Err(e)) => {
                 self.finish_save(path.clone(), Err(e));
             }
+            (Req::RenamePath { path, .. }, Ok(ReplyData::Renamed(to))) => {
+                self.finish_rename(path, to);
+            }
+            (Req::RenamePath { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::Stage { .. } | Req::Unstage { .. } | Req::Discard { .. }, Ok(ReplyData::Ok)) => {
                 self.changes.busy = None;
                 self.changes.error = None;
@@ -666,6 +670,48 @@ impl EditorState {
     /// checkout the write ran on — if the user has since switched, the
     /// replies drop on the staleness check instead of clobbering the new
     /// selection.
+    /// A file or folder was renamed on disk: the tree and Changes re-read,
+    /// and an open document under it follows to its new path — reloaded
+    /// from disk when clean, left alone (with a notice) when it holds a draft.
+    fn finish_rename(&mut self, from: &str, to: String) {
+        let (Some(checkout), Some(key)) = (self.checkout.clone(), self.checkout_key.clone()) else {
+            return;
+        };
+        self.enqueue_read(checkout.clone(), key.clone(), Req::FileList);
+        self.enqueue_read(checkout.clone(), key.clone(), Req::Changes);
+        let Some(doc) = self.doc.as_ref() else {
+            return;
+        };
+        let new_path = if doc.path == from {
+            to
+        } else if let Some(rest) = doc.path.strip_prefix(&format!("{from}/")) {
+            format!("{to}/{rest}")
+        } else {
+            return;
+        };
+        if doc.dirty() {
+            self.notice = Some(err_notice(&format!(
+                "{} was renamed to {new_path} — the open draft still points at the old path",
+                doc.path
+            )));
+            return;
+        }
+        self.doc = None;
+        self.doc_seq += 1;
+        let token = self.doc_seq;
+        if self.enqueue_read(
+            checkout,
+            key,
+            Req::File {
+                path: new_path,
+                token,
+                line: None,
+            },
+        ) {
+            self.doc_load = Some(token);
+        }
+    }
+
     fn after_write(&mut self, what: &str) {
         let Some(key) = self.checkout_key.clone() else {
             return;

@@ -288,6 +288,11 @@ pub enum Req {
         expected: String,
         text: String,
     },
+    /// Rename a file or folder in place; `new_name` is a plain name.
+    RenamePath {
+        path: String,
+        new_name: String,
+    },
     Stage {
         paths: Option<Vec<String>>,
     },
@@ -366,6 +371,8 @@ pub enum ReplyData {
         line: Option<u64>,
     },
     Saved(GitViewFile),
+    /// The new checkout-relative path after a rename.
+    Renamed(String),
     /// The config lookup's answer: `paths` aliases parsed worker-side from
     /// the nearest `tsconfig`/`jsconfig` candidate that defined any
     /// (empty when none did).
@@ -537,6 +544,7 @@ fn is_mutating(req: &Req) -> bool {
             | Req::PruneWorktrees { .. }
             | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
+            | Req::RenamePath { .. }
             | Req::Stage { .. }
             | Req::Unstage { .. }
             | Req::Discard { .. }
@@ -1099,6 +1107,9 @@ fn run_checkout(
             text,
         } => git_view::save_file(checkout, path, expected, text)
             .map(ReplyData::Saved)
+            .map_err(|e| e.to_string()),
+        Req::RenamePath { path, new_name } => git_view::rename_path(checkout, path, new_name)
+            .map(ReplyData::Renamed)
             .map_err(|e| e.to_string()),
         Req::Stage { paths } => git_write::stage(checkout, paths.as_deref())
             .map(|_| ReplyData::Ok)
@@ -2446,6 +2457,49 @@ mod tests {
         e.install_doc("blob.bin".into(), binary("blob.bin"), None);
         assert!(e.doc.as_ref().unwrap().media.is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rename_reply_refreshes_and_moves_a_clean_open_doc() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let key = e.checkout_key.clone().unwrap();
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        let req = || Req::RenamePath {
+            path: "src".into(),
+            new_name: "lib".into(),
+        };
+        e.apply_reply(reply(
+            req(),
+            0,
+            Some(key.clone()),
+            Ok(ReplyData::Renamed("lib".into())),
+        ));
+        assert!(e.doc.is_none(), "the clean doc reloads from its new path");
+        assert!(e.doc_load.is_some());
+        let sent: Vec<Job> = jobs.try_iter().collect();
+        assert!(sent.iter().any(|j| matches!(j.req, Req::FileList)));
+        assert!(
+            sent.iter()
+                .any(|j| matches!(&j.req, Req::File { path, .. } if path == "lib/a.txt"))
+        );
+        // A draft stays where it is, with a notice.
+        e.doc = Some(OpenDoc::new("src/a.txt", &text_file("x")));
+        e.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        e.apply_reply(reply(
+            req(),
+            0,
+            Some(key),
+            Ok(ReplyData::Renamed("lib".into())),
+        ));
+        assert!(e.doc.is_some());
+        assert!(
+            e.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("lib/a.txt"))
+        );
     }
 
     #[test]

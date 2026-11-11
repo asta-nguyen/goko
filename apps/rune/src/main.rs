@@ -971,6 +971,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(menu) = sidebar::menu_layer(s, &mut layer) {
         root = root.child(menu);
     }
+    if let Some(menu) = editor::files::menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
     if let Some(prompt) = sidebar::input_layer(s, ink, &mut layer) {
         root = root.child(prompt);
     }
