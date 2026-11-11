@@ -2,6 +2,10 @@
 
 ## Changes
 
+- [Project terminal filter](changes/project-terminal-filter/delta.md)
+
+- [Project Map](changes/project-map/design.md) ([tasks](changes/project-map/tasks.md), [delta](changes/project-map/delta.md))
+
 - [Native Rune language servers](changes/rune-native-lsp/design.md) ([tasks](changes/rune-native-lsp/tasks.md))
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))

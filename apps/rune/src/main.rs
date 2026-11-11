@@ -8,6 +8,7 @@ mod daemon;
 mod data;
 mod editor;
 mod panes;
+mod project_map;
 mod sessions;
 mod settings;
 mod sidebar;
@@ -66,6 +67,8 @@ pub struct State {
     /// tab's id is never "the tab's session".
     open_tabs: Vec<panes::Tab>,
     active_tab: usize,
+    /// Project id → last focused tab id; hidden tabs keep their pane layouts.
+    project_tabs: HashMap<String, String>,
     /// "Worktrees" group header open per project id; absent means open.
     worktree_groups: HashMap<String, bool>,
     /// Per-worktree session list open, keyed by worktree path; absent = open.
@@ -134,6 +137,7 @@ pub struct State {
     /// The workspace whose projects the sidebar shows — distinct from the
     /// checkout `active_workspace` highlight.
     selected_workspace: Option<String>,
+    project_map: project_map::ProjectMapState,
     /// The saved selection read from startup is still pending; a user choice
     /// or its reply clears it.
     workspace_restore_pending: bool,
@@ -211,6 +215,7 @@ impl State {
             active_workspace: None,
             open_tabs: Vec::new(),
             active_tab: 0,
+            project_tabs: HashMap::new(),
             worktree_groups: HashMap::new(),
             worktrees_open: HashMap::new(),
             view: View::Terminal,
@@ -241,6 +246,7 @@ impl State {
             workspaces_loading: false,
             workspaces_error: None,
             selected_workspace: None,
+            project_map: Default::default(),
             workspace_restore_pending: true,
             workspace_remove_confirm: None,
             sidebar_confirm: None,
@@ -541,6 +547,7 @@ impl State {
                     for view in self.data.sessions.iter_mut() {
                         view.meta = metas.get(&view.info.id).cloned();
                     }
+                    self.sync_selection();
                 }
                 return;
             }
@@ -853,6 +860,7 @@ impl State {
                             meta.project_id = None;
                         }
                     }
+                    self.sync_selection();
                 }
                 return;
             }
@@ -974,6 +982,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(form) = editor::worktree_form::layer(s, &mut layer) {
         root = root.child(form);
     }
+    for map_layer in project_map::layers(s) {
+        root = root.child(map_layer);
+    }
     // A failed call's notice: a toast the user closes, or that expires after
     // 8 s. Without it the message was recorded and never shown.
     if let Some(text) = &s.notice {
@@ -990,6 +1001,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // Paste with no text field focused belongs to the focused terminal pane.
     rune_kit::root(root, layer).on_paste(|s: &mut State, text: &str, _tx: &mut Tx| {
         if s.view == View::Terminal
+            && !s.project_map.open
             && s.sidebar_input.is_none()
             && let Some(session) = s.focused_terminal_session()
         {
@@ -1126,6 +1138,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     changed |= editor::lsp::poll(&mut s.editor, tx);
     // Quick-open: rebuild matches when the path cache or checkout moved.
     changed |= editor::quick_open::poll(s);
+    changed |= project_map::poll(s);
     // A resolved LSP definition navigates through the same dirty-draft
     // guard as every other pending navigation.
     if let Some(nav) = editor::lsp::take_nav(&mut s.editor) {
@@ -1197,6 +1210,9 @@ fn on_quit(s: &mut State, _tx: &mut Tx) {
 /// palette owns every key while open, then F12 runs go-to-definition at the
 /// caret (LSP first, heuristic fallback) and Esc dismisses the hover card.
 fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    if s.project_map.open {
+        return project_map::key(s, ev, tx);
+    }
     // The sidebar's prompt owns the keyboard while it is open.
     if s.sidebar_input.is_some() {
         return false;
@@ -1267,6 +1283,10 @@ fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     match c {
+        'k' if project_map::available(s) => {
+            project_map::open(s, tx);
+            true
+        }
         't' if s.view != View::Settings => {
             s.new_shell_tab();
             true
@@ -1281,10 +1301,16 @@ fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         '1'..='9' => {
-            let index = c as usize - '1' as usize;
-            if index >= s.open_tabs.len() || s.view == View::Settings {
+            if s.view == View::Settings {
                 return false;
             }
+            let Some(index) = s
+                .visible_tabs()
+                .nth(c as usize - '1' as usize)
+                .map(|(i, _)| i)
+            else {
+                return false;
+            };
             // Activate before leaving the Editor, so a draft guard's resume
             // lands on the chosen tab.
             s.activate_tab(index);
@@ -1330,6 +1356,9 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent) -> bool {
 /// the cursor (`Preedit`) and typed into the focused session once it is
 /// final (`Commit`) — Vietnamese Telex and the other marked-text methods.
 fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
+    if s.project_map.open {
+        return true;
+    }
     if s.view != View::Terminal {
         return false;
     }
@@ -5043,6 +5072,451 @@ mod view_tests {
                     row.rect
                 );
             }
+        }
+    }
+    #[test]
+    fn project_terminals_filter_rows_tabs_and_shortcuts_and_restore_split_focus() {
+        let mut s = sidebar_scene();
+        let a = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        let b = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        let a2 = seed_session_in(&mut s, "/work/a/feat-a", Some("p1"));
+        let a3 = seed_session_in(&mut s, "/work/a/feat-a", Some("p1"));
+        let unassigned = seed_session_in(&mut s, "/tmp", None);
+        for (key, title) in [
+            (&a, "A shell"),
+            (&b, "B shell"),
+            (&a2, "A worktree"),
+            (&a3, "A split"),
+            (&unassigned, "Unassigned shell"),
+        ] {
+            s.data
+                .sessions
+                .iter_mut()
+                .find(|view| &view.info.id == key)
+                .unwrap()
+                .info
+                .title = title.into();
+        }
+        s.focus_session_tab(&a);
+        s.focus_session_tab(&b);
+        s.focus_session_tab(&a2);
+        let split_tab = s.open_tabs[2].id.clone();
+        s.place_session(
+            &a3,
+            "A split",
+            panes::Placement::Split {
+                tab: split_tab.clone(),
+                pane: panes::pane_id(&a2),
+                direction: panes::Direction::SideBySide,
+            },
+        );
+        editor::navigation::select_checkout(&mut s, "p1".into(), PathBuf::from("/work/a/web"));
+        let mut rt = key_runtime(s);
+        let live = els(&rt)
+            .into_iter()
+            .filter(|el| !el.exiting)
+            .collect::<Vec<_>>();
+        for key in ["sidebar-project:p1", "sidebar-project:p2"] {
+            assert!(live.iter().any(|el| el.key.as_deref() == Some(key)));
+        }
+        assert!(
+            live.iter()
+                .any(|el| el.text.as_deref() == Some("A worktree"))
+        );
+        for hidden in ["B shell", "Unassigned shell"] {
+            assert!(!live.iter().any(|el| el.text.as_deref() == Some(hidden)));
+        }
+        assert_eq!(
+            live.iter()
+                .filter(|el| el.key.as_deref().is_some_and(|key| key.starts_with("tab:")))
+                .count(),
+            2
+        );
+        press_cmd(&mut rt, '1');
+        assert_eq!(rt.state.selected_session.as_deref(), Some(a.as_str()));
+        press_cmd(&mut rt, '2');
+        assert_eq!(rt.state.selected_session.as_deref(), Some(a3.as_str()));
+        press_cmd(&mut rt, '3');
+        assert_eq!(rt.state.selected_session.as_deref(), Some(a3.as_str()));
+        click_key(&mut rt, "sidebar-project:p2");
+        assert_eq!(rt.state.visible_tabs().count(), 1);
+        assert_eq!(rt.state.selected_session.as_deref(), Some(b.as_str()));
+        click_key(&mut rt, "sidebar-project:p1");
+        assert_eq!(rt.state.selected_session.as_deref(), Some(a3.as_str()));
+        assert_eq!(rt.state.open_tabs[rt.state.active_tab].id, split_tab);
+        assert!(matches!(
+            &rt.state.open_tabs[rt.state.active_tab].layout,
+            panes::Layout::Split(_)
+        ));
+        assert_eq!(rt.state.open_tabs.len(), 3);
+        assert_eq!(rt.state.data.sessions.len(), 5);
+        assert!(
+            rt.state.pending.is_empty(),
+            "switching does not stop or delete sessions"
+        );
+    }
+
+    #[test]
+    fn project_terminals_empty_project_has_no_selection_input_or_controls() {
+        let mut s = sidebar_scene();
+        let a = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        s.focus_session_tab(&a);
+        editor::navigation::select_checkout(&mut s, "p1".into(), PathBuf::from("/work/a/web"));
+        let mut rt = key_runtime(s);
+        assert!(
+            els(&rt)
+                .iter()
+                .any(|el| el.key.as_deref() == Some("controls-bar"))
+        );
+        click_key(&mut rt, "sidebar-project:p2");
+        assert!(rt.state.selected_session.is_none());
+        assert!(rt.state.focused_terminal_session().is_none());
+        assert!(rt.state.focused_session_key().is_none());
+        assert!(!rt.state.can_split());
+        assert_eq!(
+            rt.state.active_workspace,
+            Some(data::checkout_key("p2", "/work/b/api"))
+        );
+        let live = els(&rt)
+            .into_iter()
+            .filter(|el| !el.exiting)
+            .collect::<Vec<_>>();
+        assert!(live.iter().any(|el| {
+            el.text
+                .as_deref()
+                .is_some_and(|text| text.starts_with("No terminal sessions"))
+        }));
+        assert!(
+            !live
+                .iter()
+                .any(|el| el.key.as_deref() == Some("controls-bar"))
+        );
+        press_cmd(&mut rt, '1');
+        assert!(rt.state.selected_session.is_none());
+        click_key(&mut rt, "sidebar-project:p1");
+        assert_eq!(rt.state.selected_session.as_deref(), Some(a.as_str()));
+    }
+
+    #[test]
+    fn project_terminals_editor_picker_and_background_placement_keep_project_focus() {
+        let mut s = sidebar_scene();
+        let a = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        let b = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        s.focus_session_tab(&a);
+        s.focus_session_tab(&b);
+        editor::navigation::select_project(&mut s, "p2".into());
+        let info = protocol::session::SessionInfo {
+            id: protocol::session::SessionId::new(),
+            title: "late A".into(),
+            argv: vec!["/bin/zsh".into()],
+            cwd: "/work/a/feat-a".into(),
+            state: protocol::session::SessionState::Running,
+            pid: None,
+            exit_code: None,
+            error: None,
+            started_at: 0,
+            ended_at: None,
+        };
+        let late = data::SessionInfo::key(info.id);
+        let (reply_tx, reply) = std::sync::mpsc::channel();
+        s.pending.push(sessions::Pending::Create {
+            reply,
+            launch: sessions::SessionLaunch {
+                argv: info.argv.clone(),
+                cwd: info.cwd.clone(),
+                project_id: Some("p1".into()),
+                agent: "shell".into(),
+                title: info.title.clone(),
+            },
+            placement: panes::Placement::Tab,
+        });
+        reply_tx.send(Ok(info)).unwrap();
+        assert!(s.drain_pending());
+        assert_eq!(s.selected_session.as_deref(), Some(b.as_str()));
+        assert_eq!(s.visible_tabs().count(), 1);
+        editor::navigation::select_project(&mut s, "p1".into());
+        assert_eq!(s.visible_tabs().count(), 2);
+        assert_eq!(s.selected_session.as_deref(), Some(a.as_str()));
+        s.remove_session_everywhere(&a);
+        assert_eq!(s.selected_session.as_deref(), Some(late.as_str()));
+        assert_eq!(s.focused_terminal_session(), s.session_id(&late));
+        s.remove_session_everywhere(&late);
+        assert!(s.selected_session.is_none());
+        assert!(s.focused_terminal_session().is_none());
+        assert!(s.session_placed(&b));
+    }
+
+    #[test]
+    fn project_map_opens_from_shortcut_or_button_and_switch_hides_foreign_terminal() {
+        for button in [false, true] {
+            let mut s = two_workspace_scene();
+            let sid = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+            s.focus_session_tab(&sid);
+            let mut rt = key_runtime(s);
+            if button {
+                click_key(&mut rt, "project-map-button");
+            } else {
+                press_cmd(&mut rt, 'k');
+            }
+            assert!(rt.state.project_map.open);
+            click_key(&mut rt, "project-map-project:p2");
+            assert!(!rt.state.project_map.open);
+            assert_eq!(rt.state.workspace_id(), "default");
+            assert_eq!(rt.state.editor.project_id.as_deref(), Some("p2"));
+            assert_eq!(rt.state.view, View::Terminal);
+            assert!(rt.state.selected_session.is_none());
+            assert!(rt.state.focused_terminal_session().is_none());
+            assert_eq!(rt.state.visible_tabs().count(), 0);
+            assert!(rt.state.session_by_key(&sid).is_some());
+            assert_eq!(rt.state.open_tabs.len(), 1);
+            assert!(rt.state.pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn project_map_types_filters_and_consumes_underlying_shortcuts() {
+        let mut rt = key_runtime(two_workspace_scene());
+        press_cmd(&mut rt, 'k');
+        rt.key(KeyEvent {
+            key: Key::Text("API".into()),
+            mods: Mods::default(),
+        });
+        rt.frame(0.1);
+        assert_eq!(rt.state.project_map.query.text, "API");
+        assert!(
+            els(&rt)
+                .iter()
+                .any(|el| el.key.as_deref() == Some("project-map-project:p2"))
+        );
+        assert!(
+            !els(&rt)
+                .iter()
+                .any(|el| el.key.as_deref() == Some("project-map-project:p1"))
+        );
+        press_cmd(&mut rt, 't');
+        press_cmd(&mut rt, ',');
+        assert_eq!(rt.state.view, View::Terminal);
+        assert!(rt.state.pending.is_empty());
+        rt.key(KeyEvent {
+            key: Key::Down,
+            mods: Mods::default(),
+        });
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.2);
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p2"));
+    }
+
+    #[test]
+    fn project_map_shortcut_respects_settings_ime_modifiers_and_modal_owners() {
+        type Block = fn(&mut State);
+        let blocks: [Block; 9] = [
+            |s| s.view = View::Settings,
+            |s| s.preedit = "đ".into(),
+            |s| s.editor.project_picker_open = true,
+            |s| s.editor.checkout_picker_open = true,
+            |s| s.editor.quick_open.open = true,
+            |s| s.editor.history.branch_picker.open = true,
+            |s| s.workspace_remove_confirm = Some("w1".into()),
+            |s| s.editor.commit.agent_picker_open = true,
+            |s| {
+                s.sidebar_menu = Some((sidebar::RowTarget::Workspace, sidebar::MenuKind::Workspace))
+            },
+        ];
+        for block in blocks {
+            let mut s = two_workspace_scene();
+            block(&mut s);
+            let mut tx = Tx::default();
+            on_key(&mut s, &cmd_key('k'), &mut tx);
+            assert!(!s.project_map.open);
+        }
+        for mods in [
+            Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+            Mods {
+                cmd: true,
+                alt: true,
+                ..Mods::default()
+            },
+            Mods {
+                cmd: true,
+                ctrl: true,
+                ..Mods::default()
+            },
+        ] {
+            let mut s = two_workspace_scene();
+            on_key(
+                &mut s,
+                &KeyEvent {
+                    key: Key::Command('k'),
+                    mods,
+                },
+                &mut Tx::default(),
+            );
+            assert!(!s.project_map.open);
+        }
+    }
+
+    #[test]
+    fn project_map_dismissal_and_editor_focus_restore() {
+        let mut s = two_workspace_scene();
+        s.view = View::Editor;
+        let mut rt = key_runtime(s);
+        for close_button in [false, true] {
+            press_cmd(&mut rt, 'k');
+            assert!(rt.state.project_map.open);
+            if close_button {
+                click_label(&mut rt, "Close");
+            } else {
+                rt.key(KeyEvent {
+                    key: Key::Escape,
+                    mods: Mods::default(),
+                });
+            }
+            rt.frame(0.2);
+            assert!(!rt.state.project_map.open);
+            assert_eq!(rt.state.workspace_id(), "w1");
+            assert!(rt.state.editor.project_id.is_none());
+            assert_eq!(rt.state.view, View::Editor);
+        }
+    }
+
+    #[test]
+    fn project_map_fits_narrow_window_in_both_themes() {
+        for theme in [theme::Theme::Light, theme::Theme::Dark] {
+            let mut s = two_workspace_scene();
+            s.theme_choice = theme;
+            s.apply_theme();
+            project_map::open(&mut s, &mut Tx::default());
+            let mut rt = Runtime::new(
+                s,
+                view,
+                (760.0, 480.0),
+                Env::new(theme == theme::Theme::Dark, 2.0),
+            );
+            rt.frame(0.0);
+            let card = els(&rt)
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("project-map-dialog"))
+                .unwrap();
+            assert!(card.rect[0] >= 0.0 && card.rect[1] >= 0.0);
+            assert!(card.rect[0] + card.rect[2] <= 760.0);
+            assert!(card.rect[1] + card.rect[3] <= 480.0);
+        }
+    }
+
+    #[test]
+    fn project_map_paste_stays_in_search_and_sidebar_reveals_distant_target() {
+        let mut s = two_workspace_scene();
+        for i in 0..35 {
+            s.editor.projects.push(project(
+                &format!("extra-{i}"),
+                &format!("Extra {i}"),
+                &format!("/tmp/extra-{i}"),
+            ));
+        }
+        let mut rt = key_runtime(s);
+        press_cmd(&mut rt, 'k');
+        rt.paste("Extra 34");
+        rt.frame(0.1);
+        assert_eq!(rt.state.project_map.query.text, "Extra 34");
+        click_key(&mut rt, "project-map-project:extra-34");
+        for i in 1..20 {
+            rt.frame(0.1 + i as f64 * 0.1);
+        }
+        assert_eq!(rt.state.workspace_id(), "default");
+        let elements = els(&rt);
+        let viewport = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some(sidebar::PROJECTS_SCROLL_KEY))
+            .unwrap();
+        let target = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("sidebar-project:extra-34"))
+            .unwrap();
+        assert!(
+            target.rect[1] >= viewport.rect[1],
+            "target above viewport: {:?}",
+            target.rect
+        );
+        assert!(
+            target.rect[1] + target.rect[3] <= viewport.rect[1] + viewport.rect[3] + 1.0,
+            "target below viewport: {:?}, {:?}",
+            target.rect,
+            viewport.rect
+        );
+    }
+    #[test]
+    fn project_map_ime_composes_in_search_and_fallback_cannot_type_into_terminal() {
+        let mut rt = key_runtime(two_workspace_scene());
+        press_cmd(&mut rt, 'k');
+        rt.ime(rune::Ime::Preedit("vie".into(), None));
+        rt.frame(0.1);
+        assert!(rt.state.preedit.is_empty());
+        rt.ime(rune::Ime::Commit("việt".into()));
+        rt.frame(0.2);
+        assert_eq!(rt.state.project_map.query.text, "việt");
+        assert!(rt.state.preedit.is_empty());
+        rt.update(|s, tx| assert!(on_ime(s, &rune::Ime::Commit("blocked".into()), tx)));
+        assert_eq!(rt.state.project_map.query.text, "việt");
+    }
+
+    #[test]
+    fn project_map_scrim_dismissal_restores_focused_trigger_and_tab_is_trapped() {
+        let mut rt = key_runtime(two_workspace_scene());
+        click_key(&mut rt, "project-map-button");
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(0.1);
+        let focused = els(&rt)
+            .into_iter()
+            .filter(|e| e.focused)
+            .collect::<Vec<_>>();
+        assert!(
+            focused.iter().any(|e| e.label.as_deref() == Some("Close")),
+            "{focused:?}"
+        );
+        rt.pointer_down(20.0, 400.0);
+        rt.pointer_up(20.0, 400.0);
+        rt.frame(0.2);
+        assert!(!rt.state.project_map.open);
+        assert!(
+            els(&rt)
+                .iter()
+                .any(|e| e.focused && e.key.as_deref() == Some("project-map-button"))
+        );
+    }
+
+    #[test]
+    fn project_map_status_distinguishes_loading_errors_empty_and_no_matches() {
+        for (kind, want) in [
+            (0, "Loading projects and workspaces…"),
+            (1, "read failed"),
+            (2, "No registered projects"),
+            (3, "No matching projects or workspaces"),
+        ] {
+            let mut s = two_workspace_scene();
+            project_map::open(&mut s, &mut Tx::default());
+            match kind {
+                0 => s.editor.projects_loading = true,
+                1 => s.workspaces_error = Some("read failed".into()),
+                2 => s.editor.projects.clear(),
+                _ => s.project_map.query.text = "no-such-project".into(),
+            }
+            let mut rt = Runtime::new(s, view, (760.0, 480.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            assert!(
+                texts_on(&rt).iter().any(|t| t == want),
+                "{kind}: {:?}",
+                texts_on(&rt)
+            );
         }
     }
 }

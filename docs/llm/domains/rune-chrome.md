@@ -19,7 +19,7 @@ real project, Git, file, and ACP work through `app-core`.
 
 ### RNC-app-shortcuts
 
-The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth tab in the Terminal view, and `⌘,` to the Settings toggle through the draft guard, ignoring them while the sidebar prompt, a removal confirmation, a sidebar or editor menu or picker, the draft guard, quick-open, or a terminal input-method composition owns input and for any chord that adds Shift or Option, leaving `⌘W` as window close.
+The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth visible tab in the Terminal view, and `⌘,` to the Settings toggle through the draft guard, ignoring them while the sidebar prompt, a removal confirmation, a sidebar or editor menu or picker, the draft guard, quick-open, or a terminal input-method composition owns input and for any chord that adds Shift or Option, leaving `⌘W` as window close.
 
 #### Scenario: switch tab by number
 
@@ -155,6 +155,84 @@ The system SHALL close the global notice toast 8 seconds after it was last set, 
 - THEN the first does not close at 8 seconds and the second closes at 15 seconds
 
 Evidence: `apps/rune/src/main.rs`
+
+### RNC-project-map
+
+The system SHALL provide a searchable, keyboard-accessible Workspace → Project map from plain `⌘K` or a sidebar button in Terminal/Editor, with workspace-only selection preserving the checkout and project selection atomically choosing its current owning workspace and root checkout through the draft guard while preserving the app view, terminal tabs and sessions.
+
+#### Scenario: inspect and search membership
+
+- GIVEN registered projects in Default and named workspaces, including duplicate project names
+- WHEN Project Map opens and a trimmed case-insensitive workspace name, project name or root path is entered
+- THEN matching projects appear under their owning workspace headings with distinguishing paths, a workspace-name match includes that workspace's projects, and current workspace/project markers remain distinct from the keyboard cursor
+
+#### Scenario: select a workspace
+
+- GIVEN the map shows a valid workspace heading
+- WHEN the user clicks it or activates it with Enter
+- THEN the map closes, the sidebar selects and remembers that workspace through the existing settings path, and the checkout, view, tabs and sessions stay unchanged
+
+#### Scenario: jump to a project
+
+- GIVEN a project belongs to another workspace and no dirty draft blocks selection
+- WHEN its map row is clicked or activated with Enter
+- THEN the map closes, its current owning workspace is selected, its root checkout becomes active, the sidebar reveals its row, the existing view remains unchanged, and terminal visibility and selection follow the active project as described in [RNC-project-terminals](#rnc-project-terminals)
+
+#### Scenario: cancel or fail a draft save
+
+- GIVEN a dirty draft and a project jump requiring the draft guard
+- WHEN Cancel is chosen or Save fails
+- THEN the prior workspace, checkout and document remain selected and no destination workspace setting is written
+
+#### Scenario: membership changes while a guard waits
+
+- GIVEN a project was chosen and the draft guard is waiting
+- WHEN the project moves to another workspace before navigation resumes
+- THEN navigation uses its current owning workspace; a removed project or missing owner instead shows a notice and changes neither selection
+
+#### Scenario: map owns input and dismisses
+
+- GIVEN the map is open
+- WHEN the user types, pastes, uses Up/Down or Enter, or dismisses with Escape, close or scrim
+- THEN input stays in the map, navigation stays visible, dismissal restores usable prior focus without switching selection, and underlying terminal/editor actions do not run
+
+#### Scenario: unavailable data and shortcut ownership
+
+- GIVEN initial lists are loading, reads failed, results are empty, or another modal/terminal composition owns input
+- WHEN the map is displayed or plain `⌘K` is attempted
+- THEN loading/error/empty/no-results states remain distinguishable, unready initial data cannot be selected, failed reads can retry through existing refresh requests, and the shortcut does not override another input owner or open from Settings
+
+Evidence: `apps/rune/src/project_map.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`
+
+### RNC-project-terminals
+
+The system SHALL show only the active project's session rows and terminal tabs, including its worktrees, remember its active tab in memory, preserve other projects' running sessions and tab layouts, and apply numbered tab shortcuts to the visible tabs; without an active project the existing unfiltered view remains available.
+
+#### Scenario: switch projects and return
+
+- GIVEN projects A and B have open tabs and A is active
+- WHEN B is selected through the sidebar, editor picker or Project Map, then A is selected again
+- THEN each selection shows only that project's sessions and tabs and restores its remembered tab and pane without stopping or deleting other sessions
+
+#### Scenario: project with no tab
+
+- GIVEN A has a selected terminal and B has no open tab
+- WHEN B becomes active
+- THEN the terminal start screen appears, no session is selected and terminal input cannot reach A
+
+#### Scenario: visible tab shortcuts
+
+- GIVEN tabs belonging to multiple projects and one active project
+- WHEN Command plus a digit from 1 through 9 is pressed
+- THEN it selects the corresponding visible tab, or does nothing when that visible position is absent
+
+#### Scenario: session creation completes after switching
+
+- GIVEN a session launch for A is pending and B becomes active
+- WHEN A's launch completes
+- THEN its tab is retained for A without replacing B's selected terminal
+
+Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/main.rs`
 
 ### RNC-project-workspaces
 
@@ -379,19 +457,19 @@ Evidence: `apps/rune/src/sidebar.rs`
 
 ### RNC-sidebar-projects
 
-The system SHALL render the selected workspace's registered projects and per-project worktree lists from the editor backend — never mock rows — with one expandable project row (chevron, folder icon, name, missing badge, checkout status, branch label), a collapsible Worktrees group for linked checkouts, real daemon sessions nested under matching checkouts, an Other sessions group for project sessions matching no checkout, honest loading/error/empty-group states, and Add Project through the native folder picker; Unassigned sessions appear only in Default, while switching workspaces leaves existing tabs, sessions, and editor checkout intact.
+The system SHALL render the selected workspace's registered projects and per-project worktree lists from the editor backend — never mock rows — with one expandable project row (chevron, folder icon, name, missing badge, checkout status, branch label), a collapsible Worktrees group for linked checkouts, real daemon sessions nested under matching checkouts subject to the active-project filter in [RNC-project-terminals](#rnc-project-terminals), an Other sessions group for project sessions matching no checkout, honest loading/error/empty-group states, and Add Project through the native folder picker; Unassigned sessions appear only in Default when no project is active, while switching workspaces leaves existing tabs, sessions, and editor checkout intact.
 
 #### Scenario: selected workspace
 
 - GIVEN projects in two workspaces with worktrees and live sessions
 - WHEN one workspace is selected
-- THEN its projects, worktrees, and nested sessions render with their existing row behavior, including a per-project worktree failure under only that row and unmatched sessions under Other sessions; the other workspace's project rows are hidden without stopping sessions or changing the editor checkout
+- THEN its projects and worktrees render, with nested sessions subject to the active-project filter, including a per-project worktree failure under only that row and unmatched sessions under Other sessions; the other workspace's project rows are hidden without stopping sessions or changing the editor checkout
 
 #### Scenario: Unassigned and empty group
 
 - GIVEN unassigned sessions and a named workspace with no projects
 - WHEN the named workspace is selected
-- THEN it shows an empty-group hint and Add Project, without Unassigned; Default shows Unassigned
+- THEN it shows an empty-group hint and Add Project, without Unassigned; Default shows Unassigned when no project is active
 
 #### Scenario: add or move project
 
@@ -770,10 +848,28 @@ never a fabricated list. Its project-root and worktree row presses call
 draft guard and commit path with the editor's pickers; session-row and tab
 presses only mutate `Data`/`State`.
 
+Project Map opens from the sidebar button or plain `⌘K` in Terminal/Editor.
+`project_map::rows` groups registered project IDs beneath their workspace IDs,
+with case-insensitive substring matching of workspace/project names and root
+paths. A workspace click uses `State::select_workspace`; a project click uses
+`PendingNav::SelectMappedProject` through the shared draft guard. Its apply
+step resolves the current root/owner, commits both selections, and reveals the
+keyed sidebar row against the new layout. Both paths retain the current view;
+project jumps preserve all terminal layouts and running sessions while displaying only the destination project’s tabs and restoring its remembered pane focus.
+
+Project selection through the sidebar, editor picker or Project Map calls
+`sync_selection` after the draft guard commits. `visible_tabs` filters every
+pane by its session metadata’s project ID; the tab strip, numbered shortcuts,
+terminal rendering, input target, split controls and output subscriptions use
+that same scope. The sidebar keeps project navigation rows and worktrees
+visible while filtering their session lists. A pending create for another
+project retains its new tab without changing the visible project’s selection.
+With no active project, the existing unfiltered view remains available.
+
 ## State changes
 
 In-memory only for the chrome itself: `open_tabs`, `active_tab`,
-`selected_session`, `active_workspace`, `view`, and the sidebar disclosure
+`project_tabs` (project ID → remembered tab ID), `selected_session`, `active_workspace`, `view`, and the sidebar disclosure
 maps (`expanded`, `worktree_groups`, `worktrees_open`) mutate on tab
 press/close, New tab, Stop, Close pane, session-row presses, sidebar chevron
 and project/worktree presses, the view switch, and the settings button.
@@ -786,6 +882,10 @@ sidebar actions only enqueue jobs on the editor backend, which owns all
 persistence and is documented in
 [Rune editor](rune-editor.md#state-changes).
 
+Project Map's open flag, query and keyboard cursor are in memory. Only the
+existing selected-workspace setting is persisted; no recent-project history is
+written. Cancel or failed Save never commits the destination workspace setting.
+
 ## Side effects
 
 None from the chrome's session/tab controls — they render daemon session data and
@@ -795,18 +895,26 @@ project/worktree presses commit a checkout selection whose section reads run
 Git and file jobs — all on the editor backend's worker, documented in
 [Rune editor](rune-editor.md#side-effects).
 
+Project Map delegates selected-workspace persistence to the existing worker
+`SetSetting` path and checkout reads to the existing editor refresh path. It
+sends no session create/stop/delete request and changes no workspace membership
+or project file; the draft guard's explicit Save retains its existing write.
+
 ## Authorization & constraints
 
 None for the chrome — a local prototype shell with no access checks or
 validation. Editor operations enforce their own project/checkout validation
 in `app-core`; see [Rune editor](rune-editor.md#authorization--constraints).
 
+Project Map only selects registered IDs from the current caches and rechecks
+project ownership after a guard delay. Existing app-core checkout validation
+still applies. It owns keyboard, paste and IME fallback while open, is suppressed
+by other modal owners/terminal composition, and is unavailable in Settings.
+
 ## Error paths
 
 `controls_bar` returns an empty element when no session is selected (and the
-whole strip is absent in the Editor view). Closing the last tab clears
-`selected_session`/`active_workspace`; `active_tab` re-clamps with
-`saturating_sub`. `sync_selection` clears the selection when the active tab's
+whole strip is absent in the Editor view). Closing the active project’s last tab clears `selected_session` and shows its start screen while retaining the committed checkout highlight. Hidden tabs remain stored; `active_tab` has no valid index when the current project has no tab. `sync_selection` clears the selection when the active tab's
 title matches no session. Stop no-ops on non-live states, and the split
 buttons remain inert — real pane splits need a layout the milestone doesn't
 have — so they render dimmed and disabled, with no hover, a tooltip, and no Tab
@@ -818,6 +926,12 @@ enqueues surface queue-full errors on the projects/worktree state rather than
 spinning forever. Editor-side navigation failures (dirty-draft guard, stale
 replies, backend errors) are documented in
 [Rune editor](rune-editor.md#error-paths).
+
+Project Map distinguishes loading, failed reads, no registered projects, empty
+workspace groups and no search results. Initial/unready data cannot activate a
+row; Retry reuses project/workspace refresh requests. A vanished target or owner
+shows a notice without changing checkout/workspace. Workspace persistence failure
+keeps the in-memory selection and reports the existing queue/write error.
 
 ## Tests
 
@@ -832,6 +946,18 @@ including in-flight replies (the count grows per slice; `cargo test -p
 goko-rune` is the current total). See
 [Rune editor](rune-editor.md#tests) for the coverage inventory; no dedicated
 chrome-only test module exists.
+
+Project terminal runtime tests in `main.rs` cover sidebar row/tab filtering,
+worktree sessions, numbered visible-tab shortcuts, restoring a split’s focused
+pane, no input target or controls for a project with no tab, editor-picker and
+Project Map switches, late create replies, and deleting the current project’s
+last tab while a foreign tab remains.
+
+Project Map tests in `apps/rune/src/project_map.rs`, `main.rs`, and
+`editor/navigation.rs` cover grouping/filtering, stable duplicate IDs, cursor
+updates, data readiness, stale targets, guarded Save/Discard/Cancel and failed
+writes, shortcut/input/paste/IME isolation, focus return and dismissal, distant
+sidebar reveal and narrow-window bounds in light/dark themes.
 
 ## Related
 
@@ -852,6 +978,7 @@ chrome-only test module exists.
 - `apps/rune/src/editor/worktree_form.rs`
 - `apps/rune/src/main.rs`
 - `apps/rune/src/panes.rs`
+- `apps/rune/src/project_map.rs`
 - `apps/rune/src/sessions.rs`
 - `apps/rune/src/settings.rs`
 - `apps/rune/src/sidebar.rs`

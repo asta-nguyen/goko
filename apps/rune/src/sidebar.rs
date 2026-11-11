@@ -32,6 +32,7 @@ pub const MAX_SIDEBAR_W: f32 = 480.0;
 pub const SIDEBAR_WIDTH_KEY: &str = "rune.sidebar_width";
 /// The settings key the selected workspace id is stored under.
 pub const SELECTED_WORKSPACE_KEY: &str = "rune.selected_workspace";
+pub const PROJECTS_SCROLL_KEY: &str = "sidebar-projects-scroll";
 
 /// Clamp a sidebar width to the draggable range.
 pub fn clamp_width(width: f32) -> f32 {
@@ -718,6 +719,7 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
 
     let empty: &[&SessionView] = &[];
     let mut list = col()
+        .key(PROJECTS_SCROLL_KEY)
         .grow(1.0)
         .min_h(0.0)
         .w_full()
@@ -761,9 +763,18 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         list = list.child(status_row(err, ink.danger));
     }
     for project in &visible {
-        let sessions = by_project
-            .get(project.project.id.as_str())
-            .map_or(empty, Vec::as_slice);
+        let sessions = if s
+            .editor
+            .project_id
+            .as_deref()
+            .is_none_or(|id| id == project.project.id)
+        {
+            by_project
+                .get(project.project.id.as_str())
+                .map_or(empty, Vec::as_slice)
+        } else {
+            empty
+        };
         // Projects sharing a name in this list number their labels apart.
         let earlier = visible
             .iter()
@@ -773,12 +784,32 @@ pub fn sidebar(s: &State, ink: &Ink) -> El {
         let suffix = ordinal_suffix(earlier);
         list = list.child(project_node(s, ink, project, sessions, &suffix));
     }
-    // Unassigned sessions belong to no project, so only Default shows them.
-    if in_default && !unassigned.is_empty() {
+    // Unassigned sessions appear only in Default without an active project.
+    if in_default && s.editor.project_id.is_none() && !unassigned.is_empty() {
         list = list.child(unassigned_node(s, ink, &unassigned));
     }
 
-    let mut header = col().w_full().gap(4.0).child(workspace_header(s, ink));
+    let mut header = col().w_full().gap(4.0).child(
+        row()
+            .w_full()
+            .items_center()
+            .gap(4.0)
+            .child(workspace_header(s, ink).grow(1.0).min_w(0.0))
+            .child(
+                el().key("project-map-button")
+                    .size(28.0, 28.0)
+                    .center()
+                    .role("button")
+                    .label("Project Map")
+                    .help("Project Map (⌘K)")
+                    .focusable(true)
+                    .disabled(!crate::project_map::available(s))
+                    .hover(ink.text.alpha(0.08))
+                    .press(ink.text.alpha(0.12))
+                    .on_press_tx(crate::project_map::open)
+                    .child(theme::ic(&theme::FOLDER_TREE, 14.0, ink.muted)),
+            ),
+    );
     if let Some(id) = &s.workspace_remove_confirm {
         header = header.child(workspace_remove_confirm_row(s, ink, id));
     }

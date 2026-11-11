@@ -406,7 +406,7 @@ const TAB: TextStyle = T12M.lh(16.0);
 
 pub fn tab_bar(s: &State, ink: &Ink) -> El {
     let mut tabs = row().grow(1.0).min_w(0.0).items_center().gap(4.0);
-    for (i, tab) in s.open_tabs.iter().enumerate() {
+    for (i, tab) in s.visible_tabs() {
         tabs = tabs.child(tab_el(tab, i, i == s.active_tab, ink));
     }
     // A border is drawn inside the box without shrinking the space children are

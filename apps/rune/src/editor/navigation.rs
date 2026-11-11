@@ -43,6 +43,8 @@ pub enum PendingNav {
     /// every identity change: `project_id` only commits in `apply`, so a
     /// Cancel keeps BOTH the old project and its checkout/draft intact.
     SelectProject { project_id: String },
+    /// Select a registered project's current owner and root after the guard.
+    SelectMappedProject { project_id: String },
     /// Switch workspace section inside the editor.
     SetSection(Section),
     /// Jump to one Changes entry: select `path` in `layer`'s patch pane and
@@ -160,6 +162,29 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
         PendingNav::SelectProject { project_id } => {
             select_project(s, project_id);
         }
+        PendingNav::SelectMappedProject { project_id } => {
+            let Some(project) = s
+                .editor
+                .projects
+                .iter()
+                .find(|p| p.project.id == project_id)
+                .map(|p| p.project.clone())
+            else {
+                s.notice = Some("The project is no longer registered".into());
+                return;
+            };
+            if !s.workspaces.iter().any(|w| w.id == project.workspace_id) {
+                s.notice = Some("The project's workspace is no longer available".into());
+                return;
+            }
+            s.select_workspace(&project.workspace_id);
+            select_checkout(s, project.id.clone(), PathBuf::from(project.root));
+            // Rune applies reveals against the layout produced by this transition.
+            tx.scroll_into_view_in(
+                crate::sidebar::PROJECTS_SCROLL_KEY,
+                format!("sidebar-project:{}", project.id),
+            );
+        }
         PendingNav::SetSection(section) => set_section(s, section),
         PendingNav::ShowChanges { layer, path } => {
             // Post-guard: point the patch pane at the entry, then activate
@@ -254,10 +279,8 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     // The sidebar highlights the committed workspace identity — record it
     // here (post-guard) so a Cancel never moved it. `data::checkout_key`
     // uses the desktop's NUL separator; the editor key above keeps its own.
-    s.active_workspace = Some(crate::data::checkout_key(
-        &project_id,
-        &checkout.display().to_string(),
-    ));
+    let workspace = crate::data::checkout_key(&project_id, &checkout.display().to_string());
+    s.active_workspace = Some(workspace.clone());
     if s.editor.checkout_key.as_deref() == Some(key.as_str()) {
         return;
     }
@@ -320,6 +343,9 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     crate::editor::search::reset(s);
     s.editor.sync_quit_dirty();
     refresh_checkout_data(s);
+    s.sync_selection();
+    // The chosen checkout stays highlighted even when its project has no tab.
+    s.active_workspace = Some(workspace);
 }
 
 /// Commit a project switch after the guard passed: update the identity,
@@ -356,6 +382,7 @@ pub fn select_project(s: &mut State, project_id: String) {
     if !keep {
         clear_checkout(s);
     }
+    s.sync_selection();
 }
 
 /// Drop the checkout selection and every per-checkout cache (the shared tail
@@ -454,6 +481,7 @@ pub fn cancel_guard(s: &mut State) {
 /// Rune's close is not a veto, so the window hides and `poll` reopens it once
 /// the guard resolves (or immediately when the draft turned out clean).
 pub fn on_window_close(s: &mut State, tx: &mut Tx) {
+    crate::project_map::close(s);
     let dirty = s.editor.has_dirty_doc();
     s.editor.sync_quit_dirty();
     if !dirty {
@@ -498,6 +526,7 @@ pub fn reopen_if_cancelled(s: &mut State) {
 /// The OS quit veto (macOS `applicationShouldTerminate` swizzle, see
 /// quit_guard) landed: surface the guard as a Quit prompt.
 pub fn on_quit_vetoed(s: &mut State) {
+    crate::project_map::close(s);
     if !s.editor.has_dirty_doc() {
         // Stale flag: nothing to protect — let the quit continue.
         if let Some(app) = s.editor.app.clone() {
@@ -1976,6 +2005,169 @@ mod tests {
         assert_eq!(
             s.active_workspace.as_deref(),
             Some(crate::data::checkout_key("p2", "/work/b/api").as_str())
+        );
+    }
+    fn mapped_state() -> State {
+        let mut s = checkout_state();
+        s.selected_workspace = Some("old".into());
+        s.workspaces = ["old", "new", "moved"]
+            .into_iter()
+            .map(|id| app_core::store::Workspace {
+                id: id.into(),
+                name: id.into(),
+                created_at: 0,
+            })
+            .collect();
+        let mut project = project_view("p2", "api", "/work/b/api");
+        project.project.workspace_id = "new".into();
+        s.editor.projects = vec![project];
+        s
+    }
+
+    #[test]
+    fn project_map_guard_cancel_and_failed_save_keep_workspace_and_setting() {
+        for action in [GuardAction::Cancel, GuardAction::Save] {
+            let mut s = mapped_state();
+            dirty_doc(&mut s);
+            s.editor.doc.as_mut().unwrap().code.edit.text = "a\0b".into();
+            let (backend, rx) = backend::channel_backend();
+            s.editor.backend = backend;
+            let mut tx = Tx::default();
+            navigate(
+                &mut s,
+                PendingNav::SelectMappedProject {
+                    project_id: "p2".into(),
+                },
+                &mut tx,
+            );
+            assert_eq!(s.workspace_id(), "old");
+            resolve_guard(&mut s, action, &mut tx);
+            assert_eq!(s.workspace_id(), "old");
+            assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
+            assert!(s.editor.doc.as_ref().unwrap().dirty());
+            assert!(
+                rx.try_recv().is_err(),
+                "no destination setting or checkout read"
+            );
+        }
+    }
+
+    #[test]
+    fn project_map_guard_resolves_current_owner_after_discard() {
+        let mut s = mapped_state();
+        dirty_doc(&mut s);
+        let (backend, rx) = backend::channel_backend();
+        s.editor.backend = backend;
+        let mut tx = Tx::default();
+        let view = s.view;
+        navigate(
+            &mut s,
+            PendingNav::SelectMappedProject {
+                project_id: "p2".into(),
+            },
+            &mut tx,
+        );
+        s.editor.projects[0].project.workspace_id = "moved".into();
+        resolve_guard(&mut s, GuardAction::Discard, &mut tx);
+        assert_eq!(s.workspace_id(), "moved");
+        assert_eq!(s.editor.checkout, Some(PathBuf::from("/work/b/api")));
+        assert_eq!(s.view, view);
+        assert!(!s.workspace_restore_pending);
+        assert!(
+            rx.try_iter()
+                .any(|j| matches!(j.req, Req::SetSetting { value, .. } if value == "moved"))
+        );
+    }
+
+    #[test]
+    fn project_map_missing_targets_do_not_change_identity() {
+        for remove_project in [true, false] {
+            let mut s = mapped_state();
+            dirty_doc(&mut s);
+            let (backend, rx) = backend::channel_backend();
+            s.editor.backend = backend;
+            let mut tx = Tx::default();
+            navigate(
+                &mut s,
+                PendingNav::SelectMappedProject {
+                    project_id: "p2".into(),
+                },
+                &mut tx,
+            );
+            if remove_project {
+                s.editor.projects.clear();
+            } else {
+                s.workspaces.clear();
+            }
+            resolve_guard(&mut s, GuardAction::Discard, &mut tx);
+            assert_eq!(s.workspace_id(), "old");
+            assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
+            assert!(s.notice.is_some());
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn project_map_successful_save_resumes_after_write_and_failed_write_stays_put() {
+        for success in [true, false] {
+            let mut s = mapped_state();
+            dirty_editable_doc(&mut s);
+            let (backend, rx) = backend::channel_backend();
+            s.editor.backend = backend;
+            let mut tx = Tx::default();
+            navigate(
+                &mut s,
+                PendingNav::SelectMappedProject {
+                    project_id: "p2".into(),
+                },
+                &mut tx,
+            );
+            resolve_guard(&mut s, GuardAction::Save, &mut tx);
+            assert_eq!(s.workspace_id(), "old");
+            assert!(s.editor.save_resume.is_some());
+            assert!(
+                rx.try_iter()
+                    .all(|j| !matches!(j.req, Req::SetSetting { .. }))
+            );
+            let result = if success {
+                Ok(file("edited"))
+            } else {
+                Err("disk unavailable".into())
+            };
+            s.editor.apply_reply(save_reply(&s, result));
+            if success {
+                let nav = s.editor.pending_apply.take().unwrap();
+                navigate(&mut s, nav, &mut tx);
+                assert_eq!(s.workspace_id(), "new");
+                assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+            } else {
+                assert!(s.editor.pending_apply.is_none());
+                assert_eq!(s.workspace_id(), "old");
+                assert!(s.editor.doc.as_ref().unwrap().dirty());
+            }
+        }
+    }
+
+    #[test]
+    fn project_map_settings_failure_does_not_undo_committed_navigation() {
+        let mut s = mapped_state();
+        let (backend, rx) = backend::channel_backend();
+        s.editor.backend = backend;
+        drop(rx);
+        navigate(
+            &mut s,
+            PendingNav::SelectMappedProject {
+                project_id: "p2".into(),
+            },
+            &mut Tx::default(),
+        );
+        assert_eq!(s.workspace_id(), "new");
+        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert!(
+            s.notice
+                .as_deref()
+                .unwrap()
+                .contains("choice was not saved")
         );
     }
 }

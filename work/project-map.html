@@ -1,0 +1,49 @@
+<div id="goko-project-map">
+  <div class="viz-row"><h3>Workspace → Project</h3><span class="text-small text-muted">Ví dụ minh họa · bấm project để chuyển</span></div>
+  <p id="gpm-current" aria-live="polite"></p>
+  <div id="gpm-tree" aria-label="Bản đồ project theo workspace">
+    <section aria-labelledby="gpm-work"><h3 id="gpm-work">Work</h3><div class="gpm-branches">
+      <button class="btn" type="button" data-project="Goko" data-workspace="Work" aria-pressed="true">Goko</button>
+      <button class="btn" type="button" data-project="Client portal" data-workspace="Work" aria-pressed="false">Client portal</button>
+      <button class="btn" type="button" data-project="API service" data-workspace="Work" aria-pressed="false">API service</button>
+    </div></section>
+    <section aria-labelledby="gpm-personal"><h3 id="gpm-personal">Personal</h3><div class="gpm-branches">
+      <button class="btn" type="button" data-project="Portfolio" data-workspace="Personal" aria-pressed="false">Portfolio</button>
+      <button class="btn" type="button" data-project="Notes" data-workspace="Personal" aria-pressed="false">Notes</button>
+    </div></section>
+    <section aria-labelledby="gpm-lab"><h3 id="gpm-lab">Lab</h3><div class="gpm-branches">
+      <button class="btn" type="button" data-project="Agent sandbox" data-workspace="Lab" aria-pressed="false">Agent sandbox</button>
+      <button class="btn" type="button" data-project="Terminal demo" data-workspace="Lab" aria-pressed="false">Terminal demo</button>
+    </div></section>
+  </div>
+</div>
+<style>
+#goko-project-map { display:grid; gap:calc(var(--font-size-base) * 1.5); }
+#gpm-tree { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:calc(var(--font-size-base) * 2); }
+#gpm-tree section { display:grid; align-content:start; gap:var(--font-size-base); }
+#gpm-tree .gpm-branches { display:flex; flex-direction:column; align-items:flex-start; gap:var(--font-size-base); padding-left:var(--font-size-base); border-left:1px solid var(--border); }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('goko-project-map');
+  const current = root.querySelector('#gpm-current');
+  const buttons = [...root.querySelectorAll('button[data-project]')];
+  function apply(project) {
+    const selected = buttons.find(button => button.dataset.project === project) || buttons[0];
+    buttons.forEach(button => button.setAttribute('aria-pressed', String(button === selected)));
+    current.textContent = 'Đang ở: ' + selected.dataset.workspace + ' / ' + selected.dataset.project;
+    return selected;
+  }
+  apply(window.openai?.widgetState?.modelContent?.project);
+  root.addEventListener('click', event => {
+    const button = event.target.closest('button[data-project]');
+    if (!button || !root.contains(button)) return;
+    const selected = apply(button.dataset.project);
+    if (window.openai?.setWidgetState) window.openai.setWidgetState({modelContent:{project:selected.dataset.project, workspace:selected.dataset.workspace},privateContent:null}).catch(() => {});
+  });
+  window.addEventListener('openai:set_globals', event => {
+    const state = event.detail?.globals?.widgetState;
+    if (state) apply(state.modelContent?.project);
+  });
+})();
+</script>

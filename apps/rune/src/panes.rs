@@ -369,9 +369,29 @@ enum CloseStep {
 }
 
 impl State {
+    fn tab_in_active_project(&self, tab: &Tab) -> bool {
+        self.editor.project_id.as_deref().is_none_or(|project_id| {
+            collect_panes(&tab.layout).iter().all(|pane| {
+                self.session_by_key(&pane.session)
+                    .and_then(|view| view.meta.as_ref())
+                    .and_then(|meta| meta.project_id.as_deref())
+                    == Some(project_id)
+            })
+        })
+    }
+
+    pub fn visible_tabs(&self) -> impl Iterator<Item = (usize, &Tab)> {
+        self.open_tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| self.tab_in_active_project(tab))
+    }
+
     /// The tab `active_tab` points at, when there is one.
     fn current_tab(&self) -> Option<&Tab> {
-        self.open_tabs.get(self.active_tab)
+        self.open_tabs
+            .get(self.active_tab)
+            .filter(|tab| self.tab_in_active_project(tab))
     }
 
     /// The pane the tab's selection, controls strip and keyboard point at.
@@ -572,7 +592,11 @@ impl State {
 
     /// Select `index`'s tab and point the selection at its active pane.
     pub fn activate_tab(&mut self, index: usize) {
-        if index >= self.open_tabs.len() {
+        if !self
+            .open_tabs
+            .get(index)
+            .is_some_and(|tab| self.tab_in_active_project(tab))
+        {
             return;
         }
         self.active_tab = index;
@@ -616,6 +640,22 @@ impl State {
     /// Point the selection at the active tab's active pane; clears it when
     /// that pane's session row is gone. Shared by every tab/pane change.
     pub fn sync_selection(&mut self) {
+        if self.current_tab().is_none() {
+            let remembered = self
+                .editor
+                .project_id
+                .as_ref()
+                .and_then(|id| self.project_tabs.get(id));
+            let active_tab = self
+                .visible_tabs()
+                .find(|(_, tab)| Some(&tab.id) == remembered)
+                .or_else(|| self.visible_tabs().next())
+                .map_or(usize::MAX, |(index, _)| index);
+            self.active_tab = active_tab;
+        }
+        if let (Some(project), Some(tab)) = (&self.editor.project_id, self.current_tab()) {
+            self.project_tabs.insert(project.clone(), tab.id.clone());
+        }
         let found = self.current_tab().and_then(|tab| {
             Self::focused_pane(tab)
                 .and_then(|pane| self.session_by_key(&pane.session))
@@ -628,7 +668,9 @@ impl State {
             }
             None => {
                 self.selected_session = None;
-                self.active_workspace = None;
+                if self.editor.checkout.is_none() {
+                    self.active_workspace = None;
+                }
             }
         }
     }
@@ -1020,15 +1062,23 @@ impl State {
             let Some((chunks, ready)) = self.daemon.attach_output(session, flow) else {
                 continue;
             };
-            let (cols, rows) = self
-                .pane_grids
-                .get(&key)
-                .copied()
-                .unwrap_or((term::TERM_COLS, term::TERM_ROWS));
+            // Wait for the pane's first layout: the replay has to be parsed
+            // at the real grid size, and the layout asks for a frame once
+            // it has measured the pane.
+            let Some(&(cols, rows)) = self.pane_grids.get(&key) else {
+                continue;
+            };
+            // The daemon replays its retained output as soon as the stream
+            // attaches: the grid must already be the pane's size, or the
+            // replay is parsed at the default grid and reflowed to a
+            // broken layout (the PTY is already this size, so no SIGWINCH
+            // makes the program redraw).
+            let mut terminal = term::Terminal::new(session, chunks, ready);
+            terminal.resize(cols, rows);
             self.attachments.insert(
                 key.clone(),
                 Attachment {
-                    term: term::Terminal::new(session, chunks, ready),
+                    term: terminal,
                     lines: Vec::new(),
                     cols,
                     rows,
@@ -1259,7 +1309,7 @@ impl State {
 /// draws its own attached session's grid; splits get a draggable,
 /// keyboard-resizable separator with the desktop's minimum pane size.
 pub fn terminal_workspace(s: &State, ink: &Ink) -> El {
-    let Some(tab) = s.open_tabs.get(s.active_tab) else {
+    let Some(tab) = s.current_tab() else {
         return start_view(s, ink);
     };
     layout_el(s, ink, &tab.layout, tab)
@@ -1600,7 +1650,11 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 .floor()
                 .max(20.0) as usize;
             let rows = ((rect[3] - 2.0 * PANE_PAD) / line_h).floor().max(4.0) as usize;
-            s.pane_grids.insert(pane_key.clone(), (cols, rows));
+            let measured = s.pane_grids.insert(pane_key.clone(), (cols, rows));
+            if measured.is_none() {
+                // The first measure lets the terminal attach.
+                tx.wake_after(Duration::from_millis(16));
+            }
             let resized = s.attachments.get_mut(&pane_key).is_some_and(|att| {
                 if (att.cols, att.rows) == (cols, rows) {
                     return false;
@@ -2145,6 +2199,19 @@ mod tests {
         assert!(s.sync_terminals());
         let att = &s.attachments[&a];
         assert_eq!((att.cols, att.rows), (90, 20));
+        assert_eq!(att.term.size(), (90, 20));
+    }
+
+    #[test]
+    fn an_unmeasured_pane_does_not_attach_yet() {
+        let mut s = state();
+        let (a, _) = tabbed_session(&mut s, "first");
+        s.data.connected = true;
+        assert!(!s.sync_terminals());
+        assert!(!s.attachments.contains_key(&a));
+        s.pane_grids.insert(a.clone(), (90, 20));
+        assert!(s.sync_terminals());
+        assert!(s.attachments.contains_key(&a));
     }
 
     #[test]
@@ -2153,6 +2220,8 @@ mod tests {
         let (a, info_a) = tabbed_session(&mut s, "first");
         let (b, _) = tabbed_session(&mut s, "second");
         s.data.connected = true;
+        s.pane_grids.insert(a.clone(), (90, 20));
+        s.pane_grids.insert(b.clone(), (90, 20));
         // B's tab was focused last: only its pane attaches, not A's.
         assert!(s.sync_terminals());
         assert!(!s.attachments.contains_key(&a));
