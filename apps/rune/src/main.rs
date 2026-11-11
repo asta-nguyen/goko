@@ -12,6 +12,7 @@ mod project_map;
 mod sessions;
 mod settings;
 mod sidebar;
+mod tab_debug;
 mod term;
 mod theme;
 mod trace;
@@ -52,6 +53,9 @@ pub struct State {
     activity: HashMap<String, app_core::activity::Activity>,
     /// The agent CLIs running under each session's process tree.
     subagents: app_core::subagents::SubagentMap,
+    debug: app_core::session_debug::Snapshot,
+    debug_at: Option<f64>,
+    tab_menu: Option<tab_debug::MenuTarget>,
     /// When the sub-agents were last read; the reader polls every two
     /// seconds.
     subagents_at: Option<f64>,
@@ -258,6 +262,9 @@ impl State {
             activity: HashMap::new(),
             activity_at: None,
             subagents: Default::default(),
+            debug: Default::default(),
+            debug_at: None,
+            tab_menu: None,
             subagents_at: None,
             pulse: rune::Live::new(1.0),
             usage_at: None,
@@ -552,8 +559,10 @@ impl State {
                 return;
             }
             backend::Req::Subagents { .. } => {
-                if let Ok(backend::ReplyData::Subagents(subagents)) = &reply.result {
-                    self.subagents = subagents.clone();
+                if let Ok(backend::ReplyData::Subagents { agents, debug }) = &reply.result {
+                    self.subagents = agents.clone();
+                    self.debug = debug.clone();
+                    self.debug_at = Some(self.clock);
                 }
                 return;
             }
@@ -980,6 +989,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(menu) = chrome::usage_menu_layer(s, &mut layer) {
         root = root.child(menu);
     }
+    if let Some(menu) = tab_debug::menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
     // The New-worktree form is a modal layer too: it mounts above the app
     // while `sidebar_input` shields the keyboard for it.
     if let Some(form) = editor::worktree_form::layer(s, &mut layer) {
@@ -1006,6 +1018,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         if s.view == View::Terminal
             && !s.project_map.open
             && s.sidebar_input.is_none()
+            && s.tab_menu.is_none()
             && let Some(session) = s.focused_terminal_session()
         {
             s.paste_into_terminal(session, text);
@@ -1164,6 +1177,17 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // The agent CLIs under the sessions: read every two seconds, on the
     // worker.
     changed |= s.poll_subagents(now);
+    if s.tab_menu.is_some() {
+        tx.wake_after(std::time::Duration::from_secs(2));
+        if s.view != View::Terminal
+            || !s
+                .visible_tabs()
+                .any(|(_, tab)| Some(&tab.id) == s.tab_menu.as_ref().map(|m| &m.tab))
+        {
+            s.tab_menu = None;
+            changed = true;
+        }
+    }
     // The quota chips and account labels: read about every five seconds on
     // the worker. The wake keeps the cadence alive while the UI is idle;
     // the `System` theme checks the OS appearance on the same tick.
@@ -1214,6 +1238,9 @@ fn on_quit(s: &mut State, _tx: &mut Tx) {
 /// palette owns every key while open, then F12 runs go-to-definition at the
 /// caret (LSP first, heuristic fallback) and Esc dismisses the hover card.
 fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    if s.tab_menu.is_some() {
+        return true;
+    }
     if s.project_map.open {
         return project_map::key(s, ev, tx);
     }
@@ -1374,7 +1401,7 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent, base: Option<char>) -> bool 
 /// the cursor (`Preedit`) and typed into the focused session once it is
 /// final (`Commit`) — Vietnamese Telex and the other marked-text methods.
 fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
-    if s.project_map.open {
+    if s.project_map.open || s.tab_menu.is_some() {
         return true;
     }
     if s.view != View::Terminal {

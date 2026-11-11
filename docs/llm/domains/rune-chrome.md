@@ -648,6 +648,30 @@ stop it only through the explicit Close pane action, never implicitly.
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`
 
+### RNC-tab-debug
+
+The system SHALL offer a secondary-press tab menu with Copy Tab ID, Copy Goko Session ID, Copy Agent Session ID, and Copy Debug Info, resolving session actions against the target tab's focused pane, exposing agent IDs only when attributable to that session, and reporting approximate local process-tree RAM for the whole tab without blocking the UI.
+
+#### Scenario: target tab and focused pane
+
+- GIVEN a tab with multiple terminal panes
+- WHEN its tab menu is opened
+- THEN Tab ID identifies that tab, session copy actions identify its focused pane, and Debug Info includes every pane's Goko session ID and PID
+
+#### Scenario: agent identity unavailable
+
+- GIVEN a Claude, Codex, OpenCode, Devin, Antigravity, or Shell session
+- WHEN the tab menu opens
+- THEN an attributable agent conversation ID can be copied, otherwise the agent copy item is disabled with a reason; Shell has no agent conversation ID
+
+#### Scenario: memory estimate
+
+- GIVEN live sessions in a tab
+- WHEN a worker sample is available
+- THEN RAM sums unique local process RSS across its session trees, labels the value approximate, and excludes shared Goko UI/daemon and cloud memory; a missing sample is reported as unavailable rather than zero
+
+Evidence: `apps/rune/src/tab_debug.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/session_debug.rs`
+
 ### RNC-terminal-attach
 
 The system SHALL attach the Terminal view to the selected daemon session:
@@ -866,6 +890,19 @@ visible while filtering their session lists. A pending create for another
 project retains its new tab without changing the visible project’s selection.
 With no active project, the existing unfiltered view remains available.
 
+Secondary-pressing a tab stores its stable ID and pointer position without
+activating it. `tab_debug::menu_layer` resolves its focused pane for session
+copy actions; Copy Debug Info includes all its panes. Selection writes through
+`Tx::copy` and shows a copy notice. Escape or an outside press dismisses the
+menu; a vanished or hidden target also clears it.
+
+The existing two-second subagent worker scan reads process RSS alongside PID,
+parent PID and command. `session_debug::sample` collects each live session's
+tree plus attributed tools below shared Codex servers. The tab totals the union
+of PIDs across panes. While its menu is open, that worker also inspects agent
+processes' open session files with `lsof`; no process command or database read
+runs on the UI thread.
+
 ## State changes
 
 In-memory only for the chrome itself: `open_tabs`, `active_tab`,
@@ -886,6 +923,10 @@ Project Map's open flag, query and keyboard cursor are in memory. Only the
 existing selected-workspace setting is persisted; no recent-project history is
 written. Cancel or failed Save never commits the destination workspace setting.
 
+The tab menu target, process snapshot, agent identity results, and sample clock
+are ephemeral. They do not alter the daemon protocol, agent launch commands,
+agent configuration, or persisted session metadata.
+
 ## Side effects
 
 None from the chrome's session/tab controls — they render daemon session data and
@@ -900,6 +941,13 @@ Project Map delegates selected-workspace persistence to the existing worker
 sends no session create/stop/delete request and changes no workspace membership
 or project file; the draft guard's explicit Save retains its existing write.
 
+Tab diagnostics read process metadata and, for a PID-owned Devin lock, validate
+its basename with a read-only lookup of `sessions.id` in that agent's adjacent
+database. Antigravity presence locks require a matching conversation database.
+Claude transcript and Codex rollout filenames can identify their owning
+process's conversation. The diagnostics read no conversation bodies and write
+only the clipboard when the user selects a copy action.
+
 ## Authorization & constraints
 
 None for the chrome — a local prototype shell with no access checks or
@@ -910,6 +958,22 @@ Project Map only selects registered IDs from the current caches and rechecks
 project ownership after a guard delay. Existing app-core checkout validation
 still applies. It owns keyboard, paste and IME fallback while open, is suppressed
 by other modal owners/terminal composition, and is unavailable in Settings.
+
+All adapters share the same menu: Claude, Codex, OpenCode, Devin, Antigravity,
+and Shell. A PID-linked session file takes precedence over an explicit agent
+launch/resume ID. Launch IDs carry a warning that switching conversations
+inside the CLI can change them. Multiple candidate IDs disable agent copying.
+Shared session databases, directory matches and creation times alone are not
+used to guess an ID. In particular, a fresh OpenCode or Codex CLI using only a
+shared store/server may expose no attributable ID; a known explicit resume ID
+is still available. Shell has no conversation ID of its own.
+
+RAM is approximate local RSS, displayed in decimal MB. Each PID is summed once
+per tab, but pages shared between different processes may still be counted
+more than once. Goko UI/daemon, shared agent servers and cloud memory are
+excluded. Values older than six seconds and missing process samples are
+unavailable rather than zero. Keyboard, paste and terminal IME fallback do not
+reach the terminal while the menu owns input.
 
 ## Error paths
 
@@ -932,6 +996,11 @@ workspace groups and no search results. Initial/unready data cannot activate a
 row; Retry reuses project/workspace refresh requests. A vanished target or owner
 shows a notice without changing checkout/workspace. Workspace persistence failure
 keeps the in-memory selection and reports the existing queue/write error.
+
+An unavailable process command, `lsof`, session file, or busy/unreadable Devin
+database leaves the corresponding diagnostic unavailable; other copy actions
+remain usable. A stale tab/session at selection time shows a notice instead of
+copying a different target. Exited sessions cannot supply a current agent ID.
 
 ## Tests
 
@@ -959,6 +1028,15 @@ updates, data readiness, stale targets, guarded Save/Discard/Cancel and failed
 writes, shortcut/input/paste/IME isolation, focus return and dismissal, distant
 sidebar reveal and narrow-window bounds in light/dark themes.
 
+`tab_debug.rs` tests copy payloads for the clicked tab and a split's focused
+pane, every pane's debug data, unique RSS totals, stale samples and deleted
+targets. Its Rune runtime test secondary-clicks an inactive tab, checks menu
+entries, reads the copied ID from an in-memory clipboard and dismisses with
+Escape. `session_debug.rs` tests process parsing, unique/missing memory,
+launch IDs for all five agents, PID-separated open files, read-only Devin ID
+validation, Antigravity presence metadata, ambiguous/exited identities and
+attributed tools without charging the shared server.
+
 ## Related
 
 - [Architecture overview](../architecture/overview.md)
@@ -982,12 +1060,14 @@ sidebar reveal and narrow-window bounds in light/dark themes.
 - `apps/rune/src/sessions.rs`
 - `apps/rune/src/settings.rs`
 - `apps/rune/src/sidebar.rs`
+- `apps/rune/src/tab_debug.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/theme.rs`
 - `crates/app-core/src/accounts.rs`
 - `crates/app-core/src/acp.rs`
 - `crates/app-core/src/agents.rs`
 - `crates/app-core/src/projects.rs`
+- `crates/app-core/src/session_debug.rs`
 - `crates/app-core/src/store.rs`
 - `crates/app-core/src/usage.rs`
 - `crates/app-core/src/worktrees.rs`

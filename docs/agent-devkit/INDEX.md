@@ -2,6 +2,8 @@
 
 ## Changes
 
+- [Tab IDs, agent IDs, and RAM debug information](changes/tab-debug-info/delta.md)
+
 - [Project terminal filter](changes/project-terminal-filter/delta.md)
 
 - [Project Map](changes/project-map/design.md) ([tasks](changes/project-map/tasks.md), [delta](changes/project-map/delta.md))

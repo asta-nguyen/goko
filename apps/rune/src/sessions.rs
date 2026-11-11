@@ -586,9 +586,10 @@ impl State {
         if sessions.is_empty() {
             return false;
         }
+        let inspect = crate::tab_debug::inspection_sessions(self);
         backend::enqueue(
             &mut self.editor.backend,
-            Job::project(Req::Subagents { sessions }),
+            Job::project(Req::Subagents { sessions, inspect }),
         )
     }
 

@@ -207,6 +207,7 @@ pub enum Req {
     /// The agent CLIs running under the sessions' process trees.
     Subagents {
         sessions: Vec<protocol::session::SessionInfo>,
+        inspect: Vec<String>,
     },
     // reads (all take the job's checkout)
     Changes,
@@ -367,7 +368,10 @@ pub enum ReplyData {
     /// The child process's activity, keyed by session id.
     Activity(HashMap<String, Activity>),
     /// The agent CLIs under each session, keyed by session id.
-    Subagents(app_core::subagents::SubagentMap),
+    Subagents {
+        agents: app_core::subagents::SubagentMap,
+        debug: app_core::session_debug::Snapshot,
+    },
     Changes(GitViewChanges),
     Diff(GitViewDiff),
     History(GitViewHistory),
@@ -830,15 +834,16 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
         Req::RemoveProject { id } => storage_req(storage, |store| {
             projects::remove_project(store, id).map(|_| ReplyData::Ok)
         }),
-        Req::Subagents { sessions } => {
+        Req::Subagents { sessions, inspect } => {
             // The process table is read on the worker: `ps` is a command,
             // not a file the UI thread should run.
-            let rows = process_table();
+            let (rows, rss) = process_table();
             let mut map = app_core::subagents::compute_subagents(sessions, &rows);
             // Codex 0.167 runs its agents under a shared `codex app-server`
             // daemon: those are attributed through the thread id.
             add_codex_daemon_agents(&mut map, sessions, &rows);
-            Ok(ReplyData::Subagents(map))
+            let debug = app_core::session_debug::sample(sessions, &rows, rss, &map, inspect);
+            Ok(ReplyData::Subagents { agents: map, debug })
         }
         Req::Activity { sessions, previous } => {
             // The files live in GOKO_HOME and the codex home; reading them
@@ -961,17 +966,17 @@ fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
 }
 
 /// The process table: `pid`, `ppid` and the command of every process.
-fn process_table() -> Vec<app_core::subagents::ProcessRow> {
+fn process_table() -> (Vec<app_core::subagents::ProcessRow>, HashMap<u32, u64>) {
     let Ok(output) = std::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,ppid=,command="])
+        .args(["-axww", "-o", "pid=,ppid=,rss=,command="])
         .output()
     else {
-        return Vec::new();
+        return Default::default();
     };
     if !output.status.success() {
-        return Vec::new();
+        return Default::default();
     }
-    app_core::subagents::parse_ps(&String::from_utf8_lossy(&output.stdout))
+    app_core::session_debug::parse_processes(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The shell a `shell` session runs: `$SHELL`, else `/bin/zsh` — the same
