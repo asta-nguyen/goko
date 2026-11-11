@@ -8,6 +8,7 @@ pub mod backend;
 pub mod blame;
 pub mod changes;
 pub mod code;
+pub mod comment;
 pub mod commit;
 pub mod commit_detail;
 pub mod draft;

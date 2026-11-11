@@ -31,6 +31,7 @@ use rune::{
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 
+use crate::editor::comment;
 use crate::editor::find::FindState;
 use crate::editor::go_to_definition as gtd;
 use crate::editor::indent::{self, IndentUnit, UnitChoice};
@@ -854,6 +855,20 @@ fn field_key<S: 'static>(
         }
         return true;
     }
+    if ev.is_command('/') {
+        let code = get_mut(st);
+        let style = comment::style_for(&code.path);
+        let (a, b) = code.edit.range();
+        if let (false, Some(style)) = (code.read_only, style)
+            && let Some(e) = comment::plan_toggle(&code.edit.text, a, b, style)
+        {
+            code.edit.set_selection(e.start, e.end);
+            code.edit.insert(&e.text);
+            code.edit.set_selection(e.anchor, e.focus);
+            notify_changed(st, tx, get_mut, on_changed);
+        }
+        return true;
+    }
     if ev.key == Key::Tab {
         let code = get_mut(st);
         let (a, b) = code.edit.range();
@@ -1601,6 +1616,52 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.state.code.edit.preedit.is_none());
         assert_eq!(rt.state.code.edit.text, text, "cancel kept committed text");
+    }
+
+    fn cmd_slash(rt: &mut Runtime<EditS>) {
+        rt.key(KeyEvent {
+            key: Key::Command('/'),
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.0);
+    }
+
+    #[test]
+    fn cmd_slash_toggles_a_comment_as_one_undo_step() {
+        let mut rt = edit_runtime(false);
+        rt.state.code.path = "a.rs".into();
+        rt.frame(0.0);
+        cmd_slash(&mut rt);
+        assert_eq!(rt.state.code.edit.text, "one\n// two");
+        assert_eq!(rt.state.changed, 1, "on_changed fired");
+        cmd_slash(&mut rt);
+        assert_eq!(rt.state.code.edit.text, "one\ntwo", "toggled back off");
+        rt.key(KeyEvent {
+            key: Key::Command('z'),
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.code.edit.text, "one\n// two", "undo is one step");
+    }
+
+    #[test]
+    fn cmd_slash_does_nothing_in_read_only_or_commentless_files() {
+        let mut rt = edit_runtime(true);
+        rt.state.code.path = "a.rs".into();
+        rt.frame(0.0);
+        cmd_slash(&mut rt);
+        assert_eq!(rt.state.code.edit.text, "one\ntwo", "read-only");
+        let mut rt = edit_runtime(false);
+        rt.state.code.path = "a.json".into();
+        rt.frame(0.0);
+        cmd_slash(&mut rt);
+        assert_eq!(rt.state.code.edit.text, "one\ntwo", "JSON has no comments");
     }
 
     #[test]
