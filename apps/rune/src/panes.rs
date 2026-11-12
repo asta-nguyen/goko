@@ -437,6 +437,7 @@ impl State {
         for att in self.attachments.values_mut() {
             if att.term.session == session {
                 att.term.scroll_to_bottom();
+                att.term.typed();
             }
         }
         self.write_terminal(session, bytes);
@@ -1145,6 +1146,10 @@ impl State {
                 continue;
             }
             att.term.feed();
+            // A flood is parsed a turn at a time: ask for the next one.
+            if att.term.more() {
+                tx.wake_after(std::time::Duration::from_millis(1));
+            }
             // The program's queries (where is the cursor, what are you) are
             // answered by the terminal, hidden panes included.
             let answered = att.term.take_replies();

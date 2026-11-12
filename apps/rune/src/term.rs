@@ -124,6 +124,15 @@ const QUIET: Duration = Duration::from_millis(16);
 /// The longest a repaint may be held back, so a program that never stops
 /// writing still shows its output.
 const MAX_HOLD: Duration = Duration::from_millis(200);
+/// The most one `feed` parses of live output before it yields to input and
+/// painting; the rest waits for the next turn.
+const OUTPUT_TURN: Duration = Duration::from_millis(6);
+/// The turn that takes a fresh attachment's first paint or replay, kept
+/// together so it is drawn whole.
+const FIRST_TURN: Duration = Duration::from_millis(250);
+/// How long after a keystroke the echo is drawn at once, not held back for
+/// the output to settle.
+const TYPING: Duration = Duration::from_millis(200);
 
 /// The live terminal of the attached session: the grid, the ANSI parser and
 /// the daemon's output stream.
@@ -167,6 +176,10 @@ pub struct Terminal {
     /// nothing new waits to be drawn, so the first draw and a resize are
     /// never held back.
     burst: Option<Instant>,
+    /// The last turn ran out of time with output possibly still waiting.
+    more: bool,
+    /// When the user last typed into this terminal.
+    typed: Option<Instant>,
     /// Wheel points not yet worth a whole line: a trackpad sends many
     /// small deltas.
     scroll_rem: f32,
@@ -200,6 +213,8 @@ impl Terminal {
             rendered: false,
             last: Instant::now(),
             burst: None,
+            more: false,
+            typed: None,
             scroll_rem: 0.0,
         }
     }
@@ -317,10 +332,29 @@ impl Terminal {
         }
         reply
     }
-    /// Feed the bytes the daemon sent. Returns whether the grid changed.
+    /// Feed the bytes the daemon sent, for at most one turn: a flood is
+    /// parsed over several frames, so input and painting are never starved
+    /// (`more` says some may be left). Returns whether the grid changed.
     pub fn feed(&mut self) -> bool {
         let mut changed = false;
-        while let Ok(chunk) = self.chunks.try_recv() {
+        let deadline = Instant::now()
+            + if self.paint_seen {
+                OUTPUT_TURN
+            } else {
+                FIRST_TURN
+            };
+        self.more = false;
+        let mut taken = 0;
+        loop {
+            // A turn always takes one chunk, so it makes progress.
+            if taken > 0 && Instant::now() >= deadline {
+                self.more = true;
+                break;
+            }
+            let Ok(chunk) = self.chunks.try_recv() else {
+                break;
+            };
+            taken += 1;
             if chunk.seq == PAINT_SEQ {
                 // The daemon's first paint rebuilds the screen and is not
                 // part of the stream: `next_seq` stays where it was, and the
@@ -362,6 +396,17 @@ impl Terminal {
         changed
     }
 
+    /// The last `feed` stopped on its time budget: more output may be
+    /// waiting, and the next turn should come soon.
+    pub fn more(&self) -> bool {
+        self.more
+    }
+
+    /// The user typed into this terminal: its echo is drawn at once.
+    pub fn typed(&mut self) {
+        self.typed = Some(Instant::now());
+    }
+
     /// The answers to the program's queries since the last call, to write to
     /// the PTY. Empty on a stream that did not start with a paint.
     pub fn take_replies(&mut self) -> Vec<u8> {
@@ -374,6 +419,9 @@ impl Terminal {
     /// burst is `MAX_HOLD` old. `None` means "repaint now".
     pub fn hold(&self) -> Option<Duration> {
         if !self.dirty || !self.rendered {
+            return None;
+        }
+        if self.typed.is_some_and(|at| at.elapsed() < TYPING) {
             return None;
         }
         let quiet = QUIET.saturating_sub(self.last.elapsed());
@@ -1433,6 +1481,56 @@ mod tests {
         .unwrap();
         assert!(term.feed());
         assert_eq!(first_line(&mut term, &ink()), "hello");
+    }
+
+    #[test]
+    fn a_flood_is_parsed_in_turns_and_none_of_it_is_lost() {
+        let (mut term, tx) = terminal();
+        // After the first paint, a turn is the short live one.
+        tx.send(Output {
+            seq: PAINT_SEQ,
+            data: Vec::new(),
+        })
+        .unwrap();
+        term.feed();
+        let line = format!("{}\r\n", "0123456789".repeat(100)).into_bytes();
+        let mut seq = 0;
+        for _ in 0..2000 {
+            tx.send(Output {
+                seq,
+                data: line.clone(),
+            })
+            .unwrap();
+            seq += line.len() as u64;
+        }
+        assert!(term.feed());
+        assert!(term.more(), "one turn leaves the rest for the next");
+        assert!(term.next_seq < seq);
+        while term.more() {
+            term.feed();
+        }
+        assert_eq!(term.next_seq, seq);
+    }
+
+    #[test]
+    fn a_keystrokes_echo_is_not_held_back_for_the_output_to_settle() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: b"a\r\n".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        settled_lines(&mut term, &ink());
+        tx.send(Output {
+            seq: 3,
+            data: b"b\r\n".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert!(term.hold().is_some(), "new output waits to settle");
+        term.typed();
+        assert!(term.hold().is_none(), "the echo of a keystroke does not");
     }
 
     #[test]
