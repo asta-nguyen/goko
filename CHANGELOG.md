@@ -12,6 +12,8 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Added
 
+- Goko's interlocking G logo in the README, macOS app bundles, and Linux
+  launcher, with editable vector source and ready-to-build icon exports.
 - The editor header shows the current Git branch in every section, including
   detached HEAD, with background refresh after external branch changes and
   explicit loading/error states.

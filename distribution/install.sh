@@ -83,13 +83,15 @@ else
   rm -rf "$home"
   mv "$home.new" "$home"
   ln -sfn "$home/goko-rune" "$bin/goko"
+  icon=utilities-terminal
+  [ ! -f "$home/icon.png" ] || icon="$home/icon.png"
   cat > "$data/applications/goko.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Goko
 Comment=Run interactive command-line agents by project
 Exec=$bin/goko
-Icon=utilities-terminal
+Icon=$icon
 Terminal=false
 Categories=Development;
 StartupWMClass=goko-rune

@@ -24,6 +24,7 @@ cargo build --workspace --release
 rm -rf dist
 mkdir -p dist/goko
 cp target/release/goko-rune target/release/gokod dist/goko/
+cp apps/rune/assets/icon.png dist/goko/icon.png
 
 FILE="Goko-$VERSION-$TARGET.tar.gz"
 tar -czf "dist/$FILE" -C dist goko

@@ -5,6 +5,7 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 
 ## Pages
 
+- [App icons](domains/app-icons.md) — Goko icon assets, macOS bundles, and Linux launcher packaging
 - [Architecture overview](architecture/overview.md) — process topology, domains, and cross-domain dependencies
 - [Desktop Editor](architecture/editor.md) — CodeMirror editing, Vim mode, Git content search, result navigation, and staging, commit, push, and ACP commit messages
 - [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, and ACP agents
@@ -16,6 +17,7 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 
 | Prefix | Domain |
 |---|---|
+| ICO | App icons |
 | EDT | Desktop Editor |
 | RNC | Rune chrome |
 | RNE | Rune editor |

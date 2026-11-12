@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="apps/rune/assets/icon.svg" width="128" height="128" alt="Goko logo" />
+</p>
+
 # Goko
 
 Goko is a desktop app for macOS and Linux (Windows is not supported yet) for
@@ -62,6 +66,10 @@ cargo build --workspace --release  # release
 
 Binaries land in `target/{debug,release}/`: `goko-rune` (the app) and `gokod`
 (the daemon).
+
+The macOS bundle and Linux release archive include the Goko app icon. Its vector
+source is [icon.svg](apps/rune/assets/icon.svg); see the
+[asset notes](apps/rune/assets/README.md) to regenerate the PNG and macOS icon.
 
 ## Run locally
 
