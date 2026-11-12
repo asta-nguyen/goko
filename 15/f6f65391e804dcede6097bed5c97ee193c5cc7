@@ -1,0 +1,37 @@
+apps/rune/src/term.rs
+  s_5e68543e940f95::t_af10e8a3df3df8 216-217
+  s_5e68543e940f95::t_f08918b3885207 335-337,340-357
+  s_5e68543e940f95::t_e9fe9546534003 399-407
+  s_5e68543e940f95::t_5d74105e6144cb 408,426,1486-1534
+  s_5e68543e940f95::t_181760399d6d39 127-135
+  s_5e68543e940f95::t_7afd2b2430d135 424
+  s_5e68543e940f95::t_5c1b826ef3aee1 179-182
+  s_6da733894ee960::t_d98b55e84f542e 409,425,1535
+apps/rune/src/panes.rs
+  s_5e68543e940f95::t_d4572b388b3cec 440
+  s_5e68543e940f95::t_d86460b8d03225 1149-1152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "15f6f65391e804dcede6097bed5c97ee193c5cc7",
+  "prompts": {},
+  "sessions": {
+    "s_5e68543e940f95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d16b1d3-a917-4fd7-9bd6-f5381b7a5ec1",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_6da733894ee960": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "77315a26-0e32-4bf5-b21b-7bf2f115a382",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
