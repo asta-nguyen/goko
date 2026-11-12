@@ -617,7 +617,10 @@ impl<S: 'static> Code<S> {
                 scroll_pos.set(at.offset);
                 scroll_size.set(at.viewport);
             });
-        let mut wrap = col();
+        // Fill blank space while retaining the scroll extent of longer documents.
+        let mut wrap = col()
+            .h_full()
+            .min_h(code.line_count() as f32 * CODE_STYLE.line_px());
         if let Some(guides) = guides_el(code, ink) {
             wrap = wrap.child(guides);
         }
@@ -802,6 +805,7 @@ impl<S: 'static> Code<S> {
         let on_changed_key = self.on_changed.clone();
         let on_save = self.on_save.clone();
         text_input(&code.edit, CODE_STYLE)
+            .grow(1.0)
             .color(ink.text)
             .caret(ink.text, ink.accent.alpha(0.3))
             .key(FIELD_KEY)
@@ -1748,6 +1752,64 @@ mod tests {
             (800.0, 600.0),
             Env::new(true, 2.0),
         )
+    }
+
+    #[test]
+    fn edit_surface_fills_blank_space_without_clipping_long_documents() {
+        for contents in ["one".to_string(), "line\n".repeat(200)] {
+            let mut rt = Runtime::new(
+                EditS {
+                    code: CodeState::new("a.rs", &contents),
+                    changed: 0,
+                },
+                edit_view,
+                (800.0, 600.0),
+                Env::new(true, 2.0),
+            );
+            rt.frame(0.0);
+            let field = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(FIELD_KEY))
+                .unwrap();
+            let viewport = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(SCROLL_KEY))
+                .unwrap();
+            assert!(
+                field.rect[3] >= viewport.rect[3],
+                "field covers the viewport: {:?} vs {:?}",
+                field.rect,
+                viewport.rect
+            );
+            if contents.len() > 10 {
+                assert!(
+                    field.rect[3] >= 200.0 * CODE_STYLE.line_px(),
+                    "long document keeps content height: {:?}",
+                    field.rect
+                );
+                rt.wheel(viewport.rect[0] + 50.0, viewport.rect[1] + 100.0, -300.0);
+                for _ in 0..20 {
+                    rt.frame(1.0 / 60.0);
+                }
+                assert!(
+                    rt.state.code.scroll_pos.get()[1] > 0.0,
+                    "long text still scrolls"
+                );
+            } else {
+                let x = viewport.rect[0] + 40.0;
+                let y = viewport.rect[1] + viewport.rect[3] / 2.0;
+                rt.pointer_down(x, y);
+                rt.pointer_up(x, y);
+                rt.key(KeyEvent {
+                    key: Key::Text("!".into()),
+                    mods: Mods::default(),
+                });
+                rt.frame(0.0);
+                assert_eq!(rt.state.code.edit.text, "one!");
+            }
+        }
     }
 
     #[test]

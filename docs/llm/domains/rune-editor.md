@@ -836,6 +836,13 @@ documented in `quit_guard.rs` rather than silently claimed.
 
 ## Tests
 
+- Empty-file regression in `files.rs` applies create and file-load replies before
+  clicking the first line or blank editor body and typing on the first open.
+  `code.rs` checks short files accept blank-space clicks and long documents keep
+  their content height and vertical scrolling; the input fills unused viewport
+  space while its wrapper retains at least one code line per document line.
+
+
 - `branch.rs` covers named/unborn branches, external checkout, detached HEAD,
   invalid Git metadata, paced active-only polling, one outstanding request,
   queue refusal, and hiding foreign/failed cached values. `backend.rs` covers

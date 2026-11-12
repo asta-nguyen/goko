@@ -1295,6 +1295,78 @@ mod tests {
         assert!(ls.iter().any(|l| l == "top.txt"), "{ls:?}");
     }
 
+    #[test]
+    fn newly_opened_empty_file_accepts_typing_on_first_line_and_blank_body() {
+        for blank_body in [false, true] {
+            let mut s = scene();
+            let (backend, jobs) = crate::editor::backend::channel_backend();
+            s.editor.backend = backend;
+            let mut rt = Runtime::new(s, files_only, (1100.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            rt.update(|s, _| {
+                s.editor.apply_reply(crate::editor::backend::Reply {
+                    req: Req::CreateEntry {
+                        dir: "".into(),
+                        name: "new.rs".into(),
+                        folder: false,
+                    },
+                    generation: 0,
+                    checkout_key: s.editor.checkout_key.clone(),
+                    result: Ok(crate::editor::backend::ReplyData::Created("new.rs".into())),
+                })
+            });
+            let read = jobs
+                .try_iter()
+                .find(|j| matches!(&j.req, Req::File { path, .. } if path == "new.rs"))
+                .unwrap();
+            rt.update(|s, _| {
+                s.editor.apply_reply(crate::editor::backend::Reply {
+                    req: read.req,
+                    generation: read.generation,
+                    checkout_key: read.checkout_key,
+                    result: Ok(crate::editor::backend::ReplyData::File(
+                        app_core::git_view::GitViewFile {
+                            path: "new.rs".into(),
+                            kind: "text",
+                            text: Some(String::new()),
+                            truncated: false,
+                            size: 0,
+                        },
+                    )),
+                })
+            });
+            for _ in 0..20 {
+                rt.frame(1.0 / 60.0);
+            }
+            let viewport = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(crate::editor::code::SCROLL_KEY))
+                .unwrap();
+            let field = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(crate::editor::code::FIELD_KEY))
+                .unwrap();
+            assert!(rt.state.editor.doc.as_ref().unwrap().editable());
+            assert!(!rt.state.editor.doc.as_ref().unwrap().code.read_only);
+            let y = if blank_body {
+                viewport.rect[1] + viewport.rect[3] / 2.0
+            } else {
+                field.rect[1] + 8.0
+            };
+            click(&mut rt, viewport.rect[0] + 40.0, y);
+            type_text(&mut rt, "hello");
+            assert_eq!(
+                rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+                "hello",
+                "blank_body={blank_body}, empty field bounds {:?}, viewport {:?}",
+                field.rect,
+                viewport.rect
+            );
+        }
+    }
+
     /// The content-search field is editable too: typing records the query
     /// and arms the debounce (`search.pending`), proving `on_edit` works.
     #[test]

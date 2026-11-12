@@ -18,6 +18,11 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 - Inline merge conflict resolution with Accept Current, Incoming, or Both,
   undo, conflict navigation, and guarded per-file Mark Resolved saving/staging.
 
+### Fixed
+
+- Empty and short editor files accept clicks throughout the code pane, so
+  newly created files can be edited immediately without reopening them.
+
 ## [0.1.1] - 2026-11-12
 
 ### Added
