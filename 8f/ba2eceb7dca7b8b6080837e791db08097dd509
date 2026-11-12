@@ -1,0 +1,34 @@
+CHANGELOG.md
+  s_f4146776e6553f::t_8c106cffc0921e 21-25
+docs/llm/domains/rune-editor.md
+  s_f4146776e6553f::t_8c106cffc0921e 839-845
+apps/rune/src/editor/code.rs
+  s_f4146776e6553f::t_6edc456e1e2c4f 620-623
+  s_f4146776e6553f::t_edffdf11815ee4 808
+  s_f4146776e6553f::t_f4fda0301edef5 1760-1768,1770-1785,1787-1791,1793-1799,1805-1808
+  s_f4146776e6553f::t_d9af680967c4fe 1792
+  s_f4146776e6553f::t_bb08d1b709c0b3 1758-1759,1769,1786,1800-1804,1809-1814
+  s_f4146776e6553f::t_078ee4c78d0c9d 1757
+apps/rune/src/editor/files.rs
+  s_f4146776e6553f::t_f4fda0301edef5 1306-1337,1341-1350,1353-1357,1360-1366
+  s_f4146776e6553f::t_ef14b0003ebc76 1299-1301,1304,1351-1352,1358-1359,1367
+  s_f4146776e6553f::t_002811c199ed66 1302-1303,1305
+  s_f4146776e6553f::t_3e5272a7d05f2b 1338-1340
+  s_f4146776e6553f::t_3948c5e5174473 1298,1368-1369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8fba2eceb7dca7b8b6080837e791db08097dd509",
+  "prompts": {},
+  "sessions": {
+    "s_f4146776e6553f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1cd70-c12c-78f0-8f90-7e944c9adedb",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
