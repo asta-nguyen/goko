@@ -19,7 +19,7 @@ processes. Project and session metadata is stored separately in SQLite. See
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
 
-## Install (macOS Apple Silicon, Linux aarch64)
+## Install (macOS Apple Silicon, Linux x86_64 and aarch64)
 
 ```sh
 curl -fsSL https://github.com/asta-nguyen/goko/releases/latest/download/install.sh | sh
@@ -34,12 +34,10 @@ Privacy & Security.
 
 On Linux it puts `goko` in `~/.local/bin` (the app and `gokod` in
 `~/.local/share/goko`) and adds a launcher entry. It needs a desktop session, a
-working Vulkan or OpenGL driver and `libxkbcommon`. The Linux archive is built by
-hand and attached to the release, since the release workflow does not build it
-yet, and the installed app has not been run on a desktop.
+working Vulkan or OpenGL driver and `libxkbcommon`. The release workflow builds
+the Linux archives; the installed app has not been run on a desktop.
 
-Intel Macs and Linux x86_64 build from source (below). There is no Windows
-release.
+Intel Macs build from source (below). There is no Windows release.
 
 Goko → Settings → Updates shows the running version and tells you when a newer
 release is out (set `GOKO_NO_UPDATE_CHECK=1` to stop the automatic check). To

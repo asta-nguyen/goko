@@ -2,8 +2,9 @@
 
 The flow used for v0.1.1 (and v0.1.0): build on this Mac, publish with `gh`.
 Use it when the `release` workflow cannot get a macOS runner (it queued for 5+
-minutes on "capacity constraints" and was cancelled) or when Linux is needed,
-since the workflow only builds macOS. Replace `0.1.1` with the new version.
+minutes on "capacity constraints" and was cancelled). The workflow builds macOS
+and Linux (x86_64, aarch64); by hand only this Mac and an arm64 container are
+available. Replace `0.1.1` with the new version.
 
 ## 1. Prepare
 
@@ -93,5 +94,5 @@ app itself was not run on a Linux desktop.
 
 - macOS is signed ad hoc, not notarized; Linux has no signature.
 - Hand-built archives do not reproduce CI's: their sha256 differs from a CI build.
-- To move Linux into CI, uncomment its two lines in the `release.yml` matrix and
-  run the workflow by hand first (it keeps archives as artifacts, no publish).
+- Before the first tag that relies on Linux in CI, run the workflow by hand (it
+  keeps archives as artifacts, no publish) and check all three archives.

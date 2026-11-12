@@ -1,5 +1,6 @@
-# Builds Goko for macOS (Apple Silicon) and, for a tag vX.Y.Z, publishes the
-# archive as a GitHub release together with latest.json and install.sh. A manual run builds the same archives and keeps
+# Builds Goko for macOS (Apple Silicon) and Linux (x86_64, aarch64) and, for a
+# tag vX.Y.Z, publishes the archives as a GitHub release together with
+# latest.json and install.sh. A manual run builds the same archives and keeps
 # them as workflow artifacts only.
 name: release
 
@@ -18,11 +19,9 @@ jobs:
       matrix:
         include:
           - { os: macos-15, script: package-macos.sh }
-          # Linux is packaged by package-linux.sh and installed by install.sh, but
-          # not built here until a CI run has proven it. Enable by uncommenting;
           # Linux builds on 22.04 so the binaries run on older glibc too.
-          # - { os: ubuntu-22.04, script: package-linux.sh }
-          # - { os: ubuntu-22.04-arm, script: package-linux.sh }
+          - { os: ubuntu-22.04, script: package-linux.sh }
+          - { os: ubuntu-22.04-arm, script: package-linux.sh }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
