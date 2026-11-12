@@ -1,0 +1,80 @@
+docs/agent-devkit/changes/2026-11-12-done-sound/delta.md
+  s_d4f42cedfca56a::t_a0e9055f805407 1-38
+crates/daemon/Cargo.toml
+  s_d4f42cedfca56a::t_a0e9055f805407 3
+apps/rune/src/daemon/tests.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 490-496
+crates/protocol/src/session.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 48-56
+apps/rune/src/panes.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 123-124,132-140,458-492,494-499,502,1158,1213-1216,1222-1225,1239-1244,1542-1545,1725,1777-1781,1812-1867,1869-1897,1920-1932,1995-1998,2488
+apps/rune/src/editor/history.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 615,626
+crates/daemon/tests/session_ipc.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 46-52
+crates/daemon/src/session.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 4,237-254
+  s_d4f42cedfca56a::t_f1b76ba5674da3 255-257
+docs/llm/domains/rune-chrome.md
+  s_d4f42cedfca56a::t_a0e9055f805407 20-43,68,87-110,814-861,1140-1144,1259
+docs/agent-devkit/INDEX.md
+  s_d4f42cedfca56a::t_a0e9055f805407 25-26
+apps/rune/src/data.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 90-91
+apps/rune/src/theme.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 6,414-433,438-439,446,452,457
+apps/rune/src/sidebar.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 138-141,211-214,755-758,811-814,839,847,1207-1210,1282-1283,1287,1309-1319,1510-1511,1579-1580,1582-1583,1586,1590,1601,1668,1672-1680,1697,1720-1721,1739-1743,1837-1838,1890-1899,1984,1994-2001,2043-2279
+  s_d4f42cedfca56a::t_634464879f4f9e 2280
+crates/rune-kit/src/combobox.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 242
+apps/rune/src/settings.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 589-603,618-619
+  s_d4f42cedfca56a::t_304c675f250b19 620
+apps/rune/src/sound.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 1-218
+apps/rune/src/editor/backend.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 2870
+apps/rune/src/term.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 16,107-108,110-124,130-140,289-342,442,463,492-499,894-907,1159,1258,1260,1335-1342,1346-1355,1359-1365,1902-1964,2019-2053
+  s_d4f42cedfca56a::t_6fcd383d71b026 2054
+apps/rune/src/chrome.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 76,148,150,416,418,538,540,576-579,626,630,679,792,859,894,903,910-914
+apps/rune/src/daemon.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 92-97,352-355
+  s_d4f42cedfca56a::t_a0eca26a2b38e5 356-357
+apps/rune/src/editor/files.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 361,368,1023
+apps/rune/src/sessions.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 343,350,357-359,374-375,380-385,395-398,487-505,855,884-928,935-936,941-943,1330-1408,1565-1575
+  s_d4f42cedfca56a::t_fb9f61407f615f 1576
+crates/daemon/src/pty.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 12,110-111,116,274,370-375,670-674
+  s_d4f42cedfca56a::t_44aab0b9d54bea 675-676
+apps/rune/src/update.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 21,28
+crates/daemon/src/server.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 330
+apps/rune/src/main.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 16,63-70,127,139-144,202-208,281-282,304-306,319-321,334,336-337,645-655,787-793,1239-1245,1270-1271,1397-1405,1409-1420,1457-1473,1475,1487-1494,1498,1523,1529-1592,1656-1660,1685-1686,1884,4414-4428,4607-4809,5214-5267,5351-5371,5478,5511,5652-5717,5775-5942,6005,6051
+crates/protocol/src/message.rs
+  s_d4f42cedfca56a::t_a0e9055f805407 44-47,279
+Cargo.lock
+  s_d4f42cedfca56a::t_30209c4ffa38ba 759
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "944dc756a06821cdc948f0a943d95df52d7e968e",
+  "prompts": {},
+  "sessions": {
+    "s_d4f42cedfca56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a54abe40-f52c-4629-bb8f-ae56c1d97d83",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
