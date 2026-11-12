@@ -10,8 +10,29 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-12
+
 ### Added
 
+- Terminal selection while a program reports the mouse: Shift+drag selects and
+  copies even when Claude Code, Codex or vim has mouse tracking on, and a
+  program's OSC 52 copy from an on-screen pane goes to the system clipboard. A
+  "Copied to clipboard" toast confirms a selection copy, Cmd+C, an OSC 52 copy
+  and a copied breadcrumb or file path.
+- Clickable URLs and `file:line` paths in terminal panes: a URL opens in the
+  browser, a file in the Editor at its line.
+- Keyboard: ⌥1–⌥9 pick a visible tab, ⌥←/⌥→ cycle tabs and ⌥↑/⌥↓ step through
+  sidebar rows.
+- A sound when a session finishes or ends while the window is unfocused: "Blow"
+  on macOS, a synthesized tone elsewhere. `goko.sound_done` turns it off (on by
+  default); sessions already finished at launch do not chime.
+- The focused terminal's Git branch, or Detached with the short commit id,
+  beside the header path; hidden outside a repository.
+- An editor change gutter: thin bars beside the line numbers for the lines the
+  working tree added, modified or deleted against HEAD, hidden while the draft
+  is dirty and read again after the save.
+- `session.output` in the daemon protocol (`gokod` 0.1.4): each session's PTY
+  output offset and last output time.
 - Goko's interlocking G logo in the README, macOS app bundles, and Linux
   launcher, with editable vector source and ready-to-build icon exports.
 - The editor header shows the current Git branch in every section, including
@@ -20,10 +41,38 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 - Inline merge conflict resolution with Accept Current, Incoming, or Both,
   undo, conflict navigation, and guarded per-file Mark Resolved saving/staging.
 
+### Changed
+
+- A session found by its process tree, without a hook integration, spins only
+  while it prints output and settles to idle after 2 s of silence. With a
+  `gokod` older than 0.1.4 it keeps spinning as before until the daemon is
+  restarted.
+- The `release` workflow builds the Linux archives (x86_64 and aarch64) beside
+  macOS, so a tag publishes all three from CI.
+- Every working spinner is rune-kit's activity spinner, in phase on the wall
+  clock and driven by the renderer, so a working session no longer rebuilds the
+  view every frame; a waiting dot blinks on a renderer-owned loop.
+
 ### Fixed
 
 - Empty and short editor files accept clicks throughout the code pane, so
   newly created files can be edited immediately without reopening them.
+- The editor's blame column stays mounted while the draft is dirty, so the code
+  area no longer reflows on the first keystroke, and it formats only the caret
+  line.
+- A flood of terminal output is parsed in 6 ms turns instead of all at once, so
+  it no longer holds up typing and painting; a keystroke's echo is drawn at
+  once.
+
+### Known issues
+
+- `an_open_span_never_shows_its_markers` in `rune-kit` still fails under
+  `cargo test --workspace` (the `markdown` feature): streamed Markdown shows
+  the alt text of an image that is still being typed (`![a`) inside its
+  paragraph. Fix the stream parser in `crates/rune-kit/src/markdown/stream.rs`
+  or the test's expectation.
+- `cargo clippy --workspace -- -D warnings` fails on macOS on two unfulfilled
+  `#[expect(dead_code)]` lint expectations in `editor/quit_guard.rs`.
 
 ## [0.1.1] - 2026-11-12
 
