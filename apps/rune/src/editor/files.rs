@@ -618,7 +618,7 @@ fn tree_get_mut(s: &mut State) -> &mut TreeModel<FileNode<FileMark>> {
 /// Open `path` in the editor pane. Same-file requests only queue a reveal —
 /// no reload. Everything routes through the draft guard first.
 pub fn open_doc(s: &mut State, path: &str, line: Option<u64>, tx: &mut Tx) {
-    if crate::editor::media::opens_externally(path) {
+    if crate::editor::media::opens_externally(path) && changed_layer(s, path) != Some("conflict") {
         if let Some(checkout) = &s.editor.checkout {
             crate::panes::open_url(&checkout.join(path).to_string_lossy());
         }
@@ -700,6 +700,39 @@ pub fn save_active_doc(s: &mut State) {
         return;
     }
     navigation::enqueue_save(s);
+}
+
+/// Save first, then stage only this file after the worker rechecks its contents.
+fn mark_resolved(s: &mut State) {
+    let Some(doc) = s.editor.doc.as_ref() else {
+        return;
+    };
+    if changed_layer(s, &doc.path) != Some("conflict")
+        || doc.validate_save().is_some()
+        || s.editor.changes.busy.is_some()
+        || crate::editor::conflict::has_markers(&doc.code.edit.text)
+    {
+        return;
+    }
+    if doc.dirty() {
+        save_active_doc(s);
+        if let Some(doc) = s.editor.doc.as_mut() {
+            doc.resolve_after_save = doc.saving;
+        }
+    } else {
+        stage_resolved_doc(&mut s.editor);
+    }
+}
+
+pub fn stage_resolved_doc(ed: &mut crate::editor::state::EditorState) {
+    let Some(doc) = ed.doc.as_ref() else {
+        return;
+    };
+    let req = Req::StageResolved {
+        path: doc.path.clone(),
+        expected: doc.original.clone(),
+    };
+    crate::editor::changes::write_paths(ed, "resolve", req);
 }
 
 /// The open file's path bar: name, dirty state, markdown preview toggle,
@@ -799,6 +832,16 @@ fn doc_bar(s: &State, ink: &Ink) -> El {
         );
     }
     if let Some(layer) = changed_layer(s, &doc.path) {
+        if layer == "conflict" {
+            let can_resolve = doc.validate_save().is_none()
+                && s.editor.changes.busy.is_none()
+                && !crate::editor::conflict::has_markers(&doc.code.edit.text);
+            bar = bar.child(
+                theme::btn_sm("Mark Resolved", None, true, ink)
+                    .disabled(!can_resolve)
+                    .on_press(|st: &mut State| mark_resolved(st)),
+            );
+        }
         let path = doc.path.clone();
         bar = bar.child(theme::btn_sm("Show changes", None, true, ink).on_press_tx(
             move |st: &mut State, tx: &mut Tx| {
@@ -850,6 +893,25 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
                 .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
                 .child(theme::txt(&reason, T11M_LH, ink.warning)),
         );
+    }
+    if changed_layer(s, &doc.path) == Some("conflict") {
+        let message = if !doc.editable() {
+            Some(
+                "Inline resolution requires an existing, complete UTF-8 text file. Resolve binary or deletion conflicts with Git.",
+            )
+        } else if crate::editor::conflict::has_unparsed_markers(
+            &doc.code.edit.text,
+            &doc.code.conflicts,
+        ) {
+            Some(
+                "Incomplete or unsupported conflict markers: edit them manually before marking resolved.",
+            )
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            pane = pane.child(theme::txt(message, T12, ink.warning).px(10.0).py(6.0));
+        }
     }
     if let Some(err) = &doc.save_error {
         pane = pane.child(
@@ -1391,6 +1453,57 @@ mod tests {
             untracked: vec![status("new.txt")],
             ahead: None,
         }
+    }
+
+    #[test]
+    fn media_conflict_uses_guarded_file_load_instead_of_external_open() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let mut data = changes_data();
+        data.conflicts.push(status("asset.pdf"));
+        s.editor.changes.data = Some(data);
+        s.editor.changes.checkout = s.editor.checkout_key.clone();
+        let mut rt = Runtime::new(s, files_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.update(|s, tx| crate::editor::changes::activate_entry(s, "conflict", "asset.pdf", tx));
+        let queued: Vec<_> = jobs.try_iter().collect();
+        assert!(
+            queued
+                .iter()
+                .any(|j| matches!(&j.req, Req::File { path, .. } if path == "asset.pdf"))
+        );
+    }
+
+    #[test]
+    fn mark_resolved_requires_marker_free_editable_conflict_and_saves_before_stage() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_text_doc(
+            &mut s,
+            "src/a.rs",
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n",
+        );
+        let mut data = changes_data();
+        data.conflicts.push(status("src/a.rs"));
+        s.editor.changes.data = Some(data);
+        s.editor.changes.checkout = s.editor.checkout_key.clone();
+        mark_resolved(&mut s);
+        assert!(jobs.try_recv().is_err(), "markers block resolution");
+        let doc = s.editor.doc.as_mut().unwrap();
+        doc.code.edit.set_selection(0, doc.code.edit.text.len());
+        doc.code.edit.insert("resolved\n");
+        doc.code.text_edited();
+        mark_resolved(&mut s);
+        let job = jobs.try_recv().unwrap();
+        assert!(matches!(job.req, Req::SaveFile { text, .. } if text == "resolved\n"));
+        assert!(s.editor.doc.as_ref().unwrap().resolve_after_save);
+        assert!(jobs.try_recv().is_err(), "stage waits for save reply");
+        mark_resolved(&mut s);
+        assert!(
+            jobs.try_recv().is_err(),
+            "second press while saving ignored"
+        );
     }
 
     /// `layerFor` parity: conflict > staged > unstaged > untracked, exact

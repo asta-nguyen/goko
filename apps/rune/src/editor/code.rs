@@ -33,6 +33,7 @@ use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
 
 use crate::editor::comment;
+use crate::editor::conflict::{self, Choice, Conflict};
 use crate::editor::find::FindState;
 use crate::editor::go_to_definition as gtd;
 use crate::editor::indent::{self, IndentUnit, UnitChoice};
@@ -84,6 +85,8 @@ pub struct CodeState {
     /// Bumped by [`Self::load`] and [`Self::text_edited`]; syntax results apply
     /// only while `result.revision == revision`.
     pub revision: u64,
+    /// Parsed once per edit; ranges always belong to the current buffer.
+    pub conflicts: Vec<Conflict>,
     /// Latest worker highlight output; the view ignores stale revisions.
     pub syntax: Option<HighlightResult>,
     /// Per-line blame for the open file — who last touched each line.
@@ -128,6 +131,7 @@ impl CodeState {
             path: String::new(),
             read_only: false,
             revision: 0,
+            conflicts: Vec::new(),
             syntax: None,
             blame: None,
             blame_text: String::new(),
@@ -158,6 +162,7 @@ impl CodeState {
         self.edit.replace_text(text);
         self.edit.set_caret(0);
         self.revision += 1;
+        self.conflicts = conflict::parse(&self.edit.text);
         self.find.refresh(&self.edit.text);
         self.sync_gutter();
         self.resolve_indent();
@@ -182,6 +187,7 @@ impl CodeState {
     pub fn text_edited(&mut self) {
         self.edit.mark_edited();
         self.revision += 1;
+        self.conflicts = conflict::parse(&self.edit.text);
         self.sync_gutter();
         self.find.refresh(&self.edit.text);
     }
@@ -446,6 +452,9 @@ impl<S: 'static> Code<S> {
     pub fn build(self, s: &S, ink: &Ink, k: &Kit) -> El {
         let code = (self.get)(s);
         let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
+        if !code.conflicts.is_empty() {
+            root = root.child(self.conflict_bar(code, ink));
+        }
         if code.find.open {
             root = root.child(self.find_bar(s, ink));
         }
@@ -616,7 +625,83 @@ impl<S: 'static> Code<S> {
         if let Some(overlay) = self.go_to_overlay(code, ink) {
             wrap = wrap.child(overlay);
         }
+        for block in &code.conflicts {
+            let mut actions = row()
+                .absolute(0.0, block.start_line as f32 * CODE_STYLE.line_px())
+                .h(CODE_STYLE.line_px())
+                .gap(4.0)
+                .fill(ink.panel);
+            for (label, choice) in [
+                ("Accept Current", Choice::Current),
+                ("Accept Incoming", Choice::Incoming),
+                ("Accept Both", Choice::Both),
+            ] {
+                let block = block.clone();
+                let revision = code.revision;
+                let get_mut = self.get_mut;
+                let changed = self.on_changed.clone();
+                actions = actions.child(
+                    theme::btn_sm(label, None, false, ink)
+                        .key(format!("conflict-{}-{choice:?}", block.range.start))
+                        .h(CODE_STYLE.line_px())
+                        .disabled(code.read_only)
+                        .on_press_tx(move |st: &mut S, tx| {
+                            let code = get_mut(st);
+                            if code.read_only || code.revision != revision {
+                                return;
+                            }
+                            let replacement = block.replacement(&code.edit.text, choice);
+                            code.edit.set_selection(block.range.start, block.range.end);
+                            code.edit.insert(&replacement);
+                            notify_changed(st, tx, get_mut, &changed);
+                            get_mut(st).edit.focused = true;
+                        }),
+                );
+            }
+            wrap = wrap.child(actions);
+        }
         scroll.child(wrap).scroll_bar(k)
+    }
+
+    fn conflict_bar(&self, code: &CodeState, ink: &Ink) -> El {
+        let mut bar = row()
+            .w_full()
+            .min_h(30.0)
+            .px(8.0)
+            .gap(6.0)
+            .items_center()
+            .flex_wrap()
+            .fill(ink.panel);
+        bar = bar.child(theme::txt(
+            &format!("{} conflicts · Current / Incoming", code.conflicts.len()),
+            T12,
+            ink.warning,
+        ));
+        for (label, previous) in [("Previous conflict", true), ("Next conflict", false)] {
+            let get_mut = self.get_mut;
+            bar = bar.child(theme::btn_sm(label, None, false, ink).on_press_tx(
+                move |st: &mut S, tx| {
+                    let code = get_mut(st);
+                    let caret = code.edit.focus;
+                    let block = if previous {
+                        code.conflicts
+                            .iter()
+                            .rev()
+                            .find(|c| c.range.end <= caret)
+                            .or_else(|| code.conflicts.last())
+                    } else {
+                        code.conflicts
+                            .iter()
+                            .find(|c| c.range.start > caret)
+                            .or_else(|| code.conflicts.first())
+                    };
+                    if let Some(block) = block {
+                        code.reveal(block.start_line as u32 + 1, tx);
+                    }
+                },
+            ));
+        }
+        bar
     }
 
     /// Slim footer strip carrying the blame toggle and the indent-unit chip.
@@ -690,7 +775,18 @@ impl<S: 'static> Code<S> {
     fn field(&self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let spans = self.syntax_spans(code, ink);
-        let highlights = self.find_highlights(code, ink);
+        let mut highlights = Vec::new();
+        for block in &code.conflicts {
+            highlights.push(TextHighlight::new(
+                block.range.start..block.current.end,
+                ink.success.alpha(0.16),
+            ));
+            highlights.push(TextHighlight::new(
+                block.incoming.start..block.range.end,
+                ink.accent.alpha(0.16),
+            ));
+        }
+        highlights.extend(self.find_highlights(code, ink));
         if code.read_only {
             return text(code.edit.text.as_str())
                 .font(CODE_STYLE)
@@ -1438,6 +1534,103 @@ mod tests {
             .into_iter()
             .filter(|e| e.path.contains("#link-") && !e.exiting)
             .collect()
+    }
+
+    #[test]
+    fn conflict_navigation_wraps_and_previous_leaves_the_current_block() {
+        let block = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n";
+        let mut rt = Runtime::new(
+            OverlayS {
+                code: CodeState::new("a.rs", format!("prefix\n{block}between\n{block}")),
+                hits: Vec::new(),
+            },
+            overlay_view,
+            (900.0, 600.0),
+            Env::new(true, 2.0),
+        );
+        rt.frame(0.0);
+        let click = |rt: &mut Runtime<OverlayS>, label: &str| {
+            let e = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.label.as_deref() == Some(label) && !e.exiting)
+                .unwrap();
+            let [x, y, w, h] = e.rect;
+            rt.pointer_down(x + w / 2.0, y + h / 2.0);
+            rt.pointer_up(x + w / 2.0, y + h / 2.0);
+            rt.frame(0.0);
+        };
+        click(&mut rt, "Next conflict");
+        let first = rt.state.code.edit.focus;
+        click(&mut rt, "Next conflict");
+        let second = rt.state.code.edit.focus;
+        assert!(second > first);
+        click(&mut rt, "Previous conflict");
+        assert_eq!(rt.state.code.edit.focus, first);
+        click(&mut rt, "Previous conflict");
+        assert_eq!(rt.state.code.edit.focus, second);
+        click(&mut rt, "Next conflict");
+        assert_eq!(rt.state.code.edit.focus, first);
+    }
+
+    #[test]
+    fn inline_conflict_accept_is_one_undoable_edit_and_rejects_read_only() {
+        let original =
+            "before\n<<<<<<< HEAD\nours\n||||||| base\nold\n=======\ntheirs\n>>>>>>> side\nafter\n";
+        for (choice, expected) in [
+            (Choice::Current, "ours\n"),
+            (Choice::Incoming, "theirs\n"),
+            (Choice::Both, "ours\ntheirs\n"),
+        ] {
+            let mut rt = Runtime::new(
+                OverlayS {
+                    code: CodeState::new("a.rs", original),
+                    hits: Vec::new(),
+                },
+                overlay_view,
+                (700.0, 500.0),
+                Env::new(true, 2.0),
+            );
+            rt.frame(0.0);
+            let key = format!("conflict-7-{choice:?}");
+            let button = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(&key))
+                .unwrap();
+            let [x, y, w, h] = button.rect;
+            rt.pointer_move(x + w / 2.0, y + h / 2.0);
+            rt.pointer_down(x + w / 2.0, y + h / 2.0);
+            rt.pointer_up(x + w / 2.0, y + h / 2.0);
+            rt.frame(0.0);
+            assert_eq!(
+                rt.state.code.edit.text,
+                format!("before\n{expected}after\n")
+            );
+            assert!(rt.state.code.conflicts.is_empty());
+            rt.key(KeyEvent {
+                key: Key::Command('z'),
+                mods: Mods {
+                    cmd: true,
+                    ..Mods::default()
+                },
+            });
+            rt.frame(0.0);
+            assert_eq!(rt.state.code.edit.text, original);
+            assert_eq!(rt.state.code.conflicts.len(), 1);
+            rt.update(|s, _| s.code.read_only = true);
+            rt.frame(0.0);
+            let button = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(&key) && !e.exiting)
+                .unwrap();
+            let [x, y, w, h] = button.rect;
+            rt.pointer_down(x + w / 2.0, y + h / 2.0);
+            rt.pointer_up(x + w / 2.0, y + h / 2.0);
+            rt.frame(0.0);
+            assert_eq!(rt.state.code.edit.text, original);
+        }
     }
 
     #[test]

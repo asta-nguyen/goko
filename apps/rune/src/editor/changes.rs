@@ -3,8 +3,8 @@
 //! changed-file filter, and the shared patch pane (`patch::view`).
 //!
 //! Mirrors the desktop `EditorChanges.tsx`: groups keep main's order
-//! (conflicts → staged → unstaged → untracked), a row click only selects the
-//! diff (action buttons are siblings, never nested inside the select row),
+//! (conflicts → staged → unstaged → untracked); conflict rows open the editor,
+//! other rows select a diff (action buttons are siblings of the select row),
 //! "Stage all" scopes to that group's paths while "Unstage all" sends
 //! `paths: None`, and discard is a named one-file confirmation.
 
@@ -200,6 +200,15 @@ fn ensure_selection_inner(ed: &mut EditorState) {
     ed.changes.layer = None;
     ed.changes.patch_path = None;
     ed.changes.patch = None;
+}
+
+/// Shared pointer/keyboard activation keeps conflict files on the guarded edit path.
+pub fn activate_entry(s: &mut State, layer: &str, path: &str, tx: &mut Tx) {
+    if layer == "conflict" {
+        crate::editor::files::open_doc(s, path, None, tx);
+    } else {
+        select_entry(&mut s.editor, layer, path);
+    }
 }
 
 /// Point the patch pane at `(layer, path)` and enqueue its diff.
@@ -723,8 +732,8 @@ fn entry_row(
                         .border(1.0, ink.border)
                         .child(theme::txt(status_label(entry.status), T11M_LH, ink.muted)),
                 )
-                .on_press_tx(move |st: &mut State, _tx: &mut Tx| {
-                    select_entry(&mut st.editor, layer, &sel_path);
+                .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                    activate_entry(st, layer, &sel_path, tx);
                 }),
         );
     let row_icon = |icon: &'static Icon, verb: &str, path: &str| {

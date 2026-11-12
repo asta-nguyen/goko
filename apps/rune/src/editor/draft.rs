@@ -110,6 +110,8 @@ pub struct OpenDoc {
     pub size: u64,
     /// Save in flight; navigation waits on it rather than racing it.
     pub saving: bool,
+    /// Explicit Mark Resolved waits for a successful save before staging.
+    pub resolve_after_save: bool,
     /// Last save failure text (disk conflict, IO, cap…).
     pub save_error: Option<String>,
     /// Pending 1-based line reveal from a search result / open request.
@@ -142,6 +144,7 @@ impl OpenDoc {
             truncated,
             size: file.size,
             saving: false,
+            resolve_after_save: false,
             save_error: None,
             reveal_line: None,
             markdown_preview: false,

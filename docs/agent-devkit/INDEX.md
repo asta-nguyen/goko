@@ -2,6 +2,10 @@
 
 ## Changes
 
+- [Current branch in the editor header](changes/editor-current-branch/delta.md)
+
+- [Inline editor conflict resolution](changes/editor-inline-conflicts/delta.md)
+
 - [Release: a prebuilt app for macOS and Linux, installed with a script](changes/macos-release/design.md) ([tasks](changes/macos-release/tasks.md))
 - [Daemon-owned terminal state: first paint on attach](changes/daemon-terminal-state/design.md) ([tasks](changes/daemon-terminal-state/tasks.md), [delta](changes/daemon-terminal-state/delta.md))
 - [Tab IDs, agent IDs, and RAM debug information](changes/tab-debug-info/delta.md)

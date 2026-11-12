@@ -313,6 +313,18 @@ impl EditorState {
                 // flag re-arms on the next poll, bounded by user activity.
                 self.history.layout_save_pending = false;
             }
+            (Req::CurrentBranch, result) => {
+                self.branch.checkout = current.clone();
+                self.branch.pending = false;
+                match result {
+                    Ok(ReplyData::CurrentBranch(data)) => {
+                        self.branch.data = Some(data);
+                        self.branch.error = None;
+                    }
+                    Err(error) => self.branch.error = Some(error),
+                    _ => {}
+                }
+            }
             (Req::Changes, Ok(ReplyData::Changes(data))) => {
                 self.changes.data = Some(data);
                 self.changes.checkout = current.clone();
@@ -571,12 +583,24 @@ impl EditorState {
             (Req::CreateEntry { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
             (Req::TrashPath { path }, Ok(ReplyData::Ok)) => self.finish_trash(path),
             (Req::TrashPath { .. }, Err(e)) => self.notice = Some(err_notice(&e)),
-            (Req::Stage { .. } | Req::Unstage { .. } | Req::Discard { .. }, Ok(ReplyData::Ok)) => {
+            (
+                Req::StageResolved { .. }
+                | Req::Stage { .. }
+                | Req::Unstage { .. }
+                | Req::Discard { .. },
+                Ok(ReplyData::Ok),
+            ) => {
                 self.changes.busy = None;
                 self.changes.error = None;
                 self.after_write("changes");
             }
-            (Req::Stage { .. } | Req::Unstage { .. } | Req::Discard { .. }, Err(e)) => {
+            (
+                Req::StageResolved { .. }
+                | Req::Stage { .. }
+                | Req::Unstage { .. }
+                | Req::Discard { .. },
+                Err(e),
+            ) => {
                 self.changes.busy = None;
                 self.changes.error = Some(e.clone());
                 self.notice = Some(err_notice(&e));
@@ -620,9 +644,14 @@ impl EditorState {
 
     fn finish_save(&mut self, path: String, result: Result<GitViewFile, String>) {
         let resume = self.save_resume.take();
+        let resolve = self
+            .doc
+            .as_ref()
+            .is_some_and(|d| d.path == path && d.resolve_after_save);
         if self.doc.as_ref().is_some_and(|d| d.path == path) {
             let doc = self.doc.as_mut().unwrap();
             doc.saving = false;
+            doc.resolve_after_save = false;
             match &result {
                 Ok(file) => {
                     doc.mark_saved(file);
@@ -642,6 +671,9 @@ impl EditorState {
             // A landed save lets the LSP mirror emit its didSave — only
             // when the saved path is still the mirrored document.
             self.lsp_note_saved(&path);
+            if resolve {
+                crate::editor::files::stage_resolved_doc(self);
+            }
             // The saved file is what Git blames, so the annotations are
             // re-read once the draft matches the disk again.
             crate::editor::blame::sync_visibility(self);

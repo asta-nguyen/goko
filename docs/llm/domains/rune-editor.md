@@ -177,6 +177,30 @@ The system SHALL keep a filename filter on the file tree at all times and, in Co
 
 Evidence: `apps/rune/src/editor/search.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/navigation.rs`, `crates/app-core/src/git_view.rs`
 
+### RNE-current-branch
+
+The system SHALL show the current checkout's branch in the shared editor header across all sections, showing Detached with the short commit ID when detached, refreshing in the background while the editor is active, and showing loading or unavailable states instead of another checkout's branch or a failed cached value without changing Git state or document drafts.
+
+#### Scenario: Branch stays visible
+
+- GIVEN a checkout with a named branch is selected
+- WHEN the user opens Files, Changes, History, Stashes, or Servers
+- THEN the shared header displays that branch, truncating long names with the full name available on hover
+
+#### Scenario: External switch or detached HEAD
+
+- GIVEN the editor is active
+- WHEN Git changes the checkout branch or detaches HEAD externally
+- THEN a background worker refresh updates the header within the next three-second polling interval plus worker time, and detached HEAD includes its short commit ID
+
+#### Scenario: Loading or failure
+
+- GIVEN a checkout changes or its Git metadata cannot be read
+- WHEN the header renders before a successful read
+- THEN it shows loading or an unavailable state and does not present stale metadata as current
+
+Evidence: `apps/rune/src/editor/branch.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/main.rs`
+
 ### RNE-draft-guard
 
 The system SHALL route every navigation that would leave a dirty draft — opening another file, switching checkout or project, switching section or view, closing the window, and quitting — through a Save/Discard/Cancel guard, resuming the pending navigation only after a successful save, reverting on Discard, and preserving both editor and draft on Cancel or failed save.
@@ -371,6 +395,30 @@ The system SHALL show, next to the open file's code, one annotation per line nam
 
 Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
 
+### RNE-inline-conflicts
+
+The system SHALL offer inline Current, Incoming, and Both conflict resolution with undo, conflict navigation, and explicit Mark Resolved that saves and stages only the selected editable text file after all conflict markers are removed, preserving draft and disk-change guards and never committing automatically.
+
+#### Scenario: Resolve a text conflict
+
+- GIVEN an editable UTF-8 file in Conflicts
+- WHEN the user opens it and accepts Current, Incoming, or Both for a block
+- THEN the editor removes that block's markers, Both keeps Current before Incoming, and the edit can be undone or changed manually
+
+#### Scenario: Finish resolving
+
+- GIVEN the selected conflicted file has no remaining conflict markers
+- WHEN the user presses Mark Resolved
+- THEN the file is saved through the expected-text guard and only that file is staged; a save or stage failure is reported without committing
+
+#### Scenario: Unsupported or incomplete conflict
+
+- GIVEN a binary, missing, non-editable, or malformed conflict file
+- WHEN the file is opened
+- THEN the editor explains the limitation and does not offer unsafe automatic resolution or staging
+
+Evidence: `apps/rune/src/editor/conflict.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/backend.rs`
+
 ### RNE-keyboard
 
 The system SHALL handle the editor's global chords — `⌘S` save, contextual `⌘F` find and `⇧⌘F` content search, `⌘P` quick-open — from anywhere in the Editor view, offering `1`–`4` section switching (Files/Changes/History/Stashes; Servers has no digit) plus `j`/`k` highlight-cursor movement with `Enter` activation only while a checkout is selected, no editable field holds focus or an IME composition, and no modal surface owns input.
@@ -559,6 +607,41 @@ Evidence: `apps/rune/src/editor/syntax.rs`, `apps/rune/src/editor/highlight.rs`,
 
 ## Flow
 
+The shared editor header places a Git branch badge beside Project and Checkout
+in all five sections. A named branch shows its name (including before the first
+commit); a detached checkout shows `Detached · <short HEAD>`. Long names truncate
+with the full value in the tooltip and accessibility label. The path yields
+space and the header wraps at narrow widths. The badge is informational.
+
+`branch::poll` issues `Req::CurrentBranch` immediately on entering the editor
+and then at three-second intervals while it is active, allowing only one probe
+in flight. The serialized worker validates project/checkout, runs `symbolic-ref`
+(one metadata call for a named branch), and reads the short HEAD only for Git's
+expected detached exit. Replies use the existing checkout/generation guards.
+A committed checkout switch resets branch state; another checkout's cached data
+is never shown. No probe runs while the editor is hidden; returning requests a
+fresh probe. Pending reads retain the last result with a checking tooltip, while
+initial loading and failed/unqueued reads show loading or unavailable states.
+Git failures are retried by the same interval without changing documents.
+
+
+Conflict rows activate the guarded Files editor from either pointer or keyboard.
+Each complete marker block has Current (green) and Incoming (accent) highlights
+and Accept Current / Accept Incoming / Accept Both controls. Both concatenates
+Current then Incoming; each acceptance is one undoable native edit. Previous and
+Next conflict wrap through blocks. Standard, diff3/zdiff3, custom marker widths,
+CRLF, and a closing marker at EOF are supported; malformed/nested blocks require
+manual editing. Binary and missing conflicts remain inside Rune with a limitation
+message, including media types normally opened externally.
+
+Mark Resolved is offered only for the open conflicted file, disabled until the
+editable buffer is marker-free and no save/Git write is running. A dirty file
+first uses the existing expected-original save. Only a successful save queues
+`StageResolved`; the worker rereads the file, checks exact saved contents and
+remaining markers, and stages that one literal path. Changes then refreshes;
+no commit is created. A clean resolved file goes straight to that worker check.
+
+
 `main.rs` mounts `editor::workspace::workspace` as the Editor view's content
 while keeping the tab strip; the session controls strip stays terminal-only.
 Editor selection happens in two places — the workspace's project and checkout
@@ -625,6 +708,12 @@ will need.
 
 ## State changes
 
+Conflict ranges are cached in `CodeState` and rebuilt on load/edit/undo;
+`OpenDoc::resolve_after_save` records an explicit pending resolution and is
+cleared on either save outcome. A stage failure keeps the successfully saved
+baseline, reports the Git error, and permits retrying Mark Resolved.
+
+
 In-memory: `EditorState` holds the registered-project list
 (`projects`/`projects_loading`/`projects_error`), per-project
 `sidebar_worktrees` entries, the picker's `worktrees` list, project/checkout
@@ -658,6 +747,10 @@ spawn configured server processes per checkout. None of these touch daemon
 session state — the daemon's session lifecycle is not involved in the editor.
 
 ## Side effects
+
+- Current-branch probes read only Git metadata. They never switch branches,
+  stage/commit, reload a file, or replace an unsaved editor draft.
+
 
 - Project metadata runs on the same worker lane as project-scoped jobs:
   `Req::Projects` lists the `goko.db` projects table, `Req::AddProject`
@@ -743,6 +836,23 @@ documented in `quit_guard.rs` rather than silently claimed.
 
 ## Tests
 
+- `branch.rs` covers named/unborn branches, external checkout, detached HEAD,
+  invalid Git metadata, paced active-only polling, one outstanding request,
+  queue refusal, and hiding foreign/failed cached values. `backend.rs` covers
+  branch-reply checkout/generation guards; `workspace.rs` verifies the long-name
+  branch header remains inside a 480 px editor pane across all five sections.
+
+
+- `conflict.rs` tests marker widths, diff3/base exclusion, CRLF, UTF-8, empty
+  sides, EOF, nested/incomplete blocks, and malformed fragments beside valid
+  blocks. `code.rs` runtime tests exercise Accept choices, undo, read-only guards,
+  and previous/next wrapping. `files.rs` tests save-before-stage, repeat presses,
+  marker guards, and media-conflict routing. `backend.rs` tests real Git unmerged
+  entries, disk mismatch, per-file staging, unchanged HEAD, and save/stage failure
+  handling. A native app check on a temporary repository observed Accept Both
+  followed by Mark Resolved saving the result and clearing the unmerged entry.
+
+
 - `apps/rune` carries extensive inline `#[test]`/`#[tokio::test]` cases across
   `src/` — the count grows with each slice, so `cargo test -p goko-rune` is
   the current total. `src/editor/` covers worker queue/generation/stale-reply
@@ -803,7 +913,9 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/editor/quit_guard.rs`
 - `apps/rune/src/editor/files.rs`
 - `apps/rune/src/editor/code.rs`
+- `apps/rune/src/editor/conflict.rs`
 - `apps/rune/src/editor/blame.rs`
+- `apps/rune/src/editor/branch.rs`
 - `apps/rune/src/editor/indent.rs`
 - `apps/rune/src/editor/syntax.rs`
 - `apps/rune/src/editor/highlight.rs`

@@ -1268,6 +1268,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         editor::navigation::navigate(s, pending, tx);
         changed = true;
     }
+    changed |= editor::branch::poll(&mut s.editor, s.view == View::Editor, now, tx);
     editor::highlight::poll(&mut s.editor, tx);
     // The inline-blame column's relative ages roll over once a minute.
     changed |= editor::blame::poll(&mut s.editor);

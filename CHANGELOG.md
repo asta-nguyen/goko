@@ -10,6 +10,14 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+### Added
+
+- The editor header shows the current Git branch in every section, including
+  detached HEAD, with background refresh after external branch changes and
+  explicit loading/error states.
+- Inline merge conflict resolution with Accept Current, Incoming, or Both,
+  undo, conflict navigation, and guarded per-file Mark Resolved saving/staging.
+
 ## [0.1.1] - 2026-11-12
 
 ### Added

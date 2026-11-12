@@ -211,6 +211,7 @@ pub enum Req {
     },
     // reads (all take the job's checkout)
     Changes,
+    CurrentBranch,
     /// `layer` is a git_view layer (`staged`, `unstaged`, `untracked`,
     /// `conflict`, `commit`); `commit` carries the sha for `layer == "commit"`
     /// (history detail), `path` narrows file layers.
@@ -310,6 +311,10 @@ pub enum Req {
         path: String,
         new_name: String,
     },
+    StageResolved {
+        path: String,
+        expected: String,
+    },
     Stage {
         paths: Option<Vec<String>>,
     },
@@ -373,6 +378,7 @@ pub enum ReplyData {
         debug: app_core::session_debug::Snapshot,
     },
     Changes(GitViewChanges),
+    CurrentBranch(crate::editor::branch::Branch),
     Diff(GitViewDiff),
     History(GitViewHistory),
     Branches(Vec<GitViewBranch>),
@@ -571,6 +577,7 @@ fn is_mutating(req: &Req) -> bool {
             | Req::RenamePath { .. }
             | Req::TrashPath { .. }
             | Req::CreateEntry { .. }
+            | Req::StageResolved { .. }
             | Req::Stage { .. }
             | Req::Unstage { .. }
             | Req::Discard { .. }
@@ -1073,6 +1080,18 @@ fn usage_snapshot(
     })
 }
 
+/// Recheck the saved snapshot on the worker before resolving the index entry.
+fn stage_resolved(checkout: &Path, path: &str, expected: &str) -> Result<(), String> {
+    let file = git_view::file(checkout, path).map_err(|e| e.to_string())?;
+    if file.kind != "text" || file.truncated || file.text.as_deref() != Some(expected) {
+        return Err("the file changed on disk; reload it before marking resolved".into());
+    }
+    if crate::editor::conflict::has_markers(expected) {
+        return Err("resolve all conflict markers before staging".into());
+    }
+    git_write::stage(checkout, Some(&[path.to_string()])).map_err(|e| e.to_string())
+}
+
 /// Resolve the job's checkout identity against the registered project list
 /// immediately before the Git call: `projects::git_checkout` re-checks the
 /// project exists, canonicalizes the path (root or listed worktree) and
@@ -1089,6 +1108,7 @@ fn run_checkout(
     })?;
     let checkout = &checkout;
     match req {
+        Req::CurrentBranch => crate::editor::branch::read(checkout).map(ReplyData::CurrentBranch),
         Req::Changes => git_view::changes(checkout)
             .map(ReplyData::Changes)
             .map_err(|e| e.to_string()),
@@ -1150,6 +1170,9 @@ fn run_checkout(
         Req::RenamePath { path, new_name } => git_view::rename_path(checkout, path, new_name)
             .map(ReplyData::Renamed)
             .map_err(|e| e.to_string()),
+        Req::StageResolved { path, expected } => {
+            stage_resolved(checkout, path, expected).map(|_| ReplyData::Ok)
+        }
         Req::Stage { paths } => git_write::stage(checkout, paths.as_deref())
             .map(|_| ReplyData::Ok)
             .map_err(|e| e.to_string()),
@@ -1694,6 +1717,7 @@ fn expanded_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Ve
 fn kind_key(req: &Req) -> &'static str {
     match req {
         Req::Changes => "changes",
+        Req::CurrentBranch => "currentbranch",
         Req::Diff {
             commit: Some(_), ..
         } => "commitdiff",
@@ -1776,6 +1800,161 @@ mod tests {
             checkout_key: key,
             result,
         }
+    }
+
+    #[test]
+    fn stage_resolved_checks_disk_and_markers_and_only_stages_one_path() {
+        use app_core::test_support::TempDir;
+        use std::fs;
+        use std::process::Command;
+        let temp = TempDir::new("resolve");
+        let root = temp.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{:?}: {:?}", args, out);
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "Tester"]);
+        git(&["config", "user.email", "test@example.com"]);
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "side"]);
+        fs::write(root.join("a.txt"), "theirs\n").unwrap();
+        git(&["commit", "-qam", "side"]);
+        git(&["checkout", "-q", "main"]);
+        fs::write(root.join("a.txt"), "ours\n").unwrap();
+        git(&["commit", "-qam", "ours"]);
+        assert!(
+            !Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["merge", "side"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let marked = fs::read_to_string(root.join("a.txt")).unwrap();
+        assert!(
+            stage_resolved(&root, "a.txt", &marked)
+                .unwrap_err()
+                .contains("markers")
+        );
+        assert!(
+            stage_resolved(&root, "a.txt", "resolved\n")
+                .unwrap_err()
+                .contains("changed on disk")
+        );
+        assert!(!git(&["ls-files", "-u"]).is_empty());
+        fs::write(root.join("a.txt"), "ours\ntheirs\n").unwrap();
+        fs::write(root.join("other.txt"), "leave unstaged\n").unwrap();
+        let head = git(&["rev-parse", "HEAD"]);
+        stage_resolved(&root, "a.txt", "ours\ntheirs\n").unwrap();
+        assert!(git(&["ls-files", "-u"]).is_empty());
+        assert_eq!(git(&["diff", "--cached", "--name-only"]), "a.txt\n");
+        assert_eq!(git(&["rev-parse", "HEAD"]), head);
+        assert!(stage_resolved(&root, "../outside", "").is_err());
+    }
+
+    #[test]
+    fn resolve_after_save_only_runs_after_success_and_keeps_saved_baseline_on_stage_error() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        let mut doc = OpenDoc::new("a.txt", &text_file("original"));
+        doc.code.edit.set_selection(0, doc.code.edit.text.len());
+        doc.code.edit.insert("resolved");
+        doc.saving = true;
+        doc.resolve_after_save = true;
+        e.doc = Some(doc);
+        let req = Req::SaveFile {
+            path: "a.txt".into(),
+            expected: "original".into(),
+            text: "resolved".into(),
+        };
+        e.apply_reply(reply(
+            req.clone(),
+            0,
+            e.checkout_key.clone(),
+            Err("disk changed".into()),
+        ));
+        assert!(!e.doc.as_ref().unwrap().resolve_after_save);
+        assert!(jobs.try_recv().is_err());
+        e.doc.as_mut().unwrap().resolve_after_save = true;
+        e.apply_reply(reply(
+            req,
+            0,
+            e.checkout_key.clone(),
+            Ok(ReplyData::Saved(text_file("resolved"))),
+        ));
+        let queued: Vec<_> = jobs.try_iter().collect();
+        assert!(queued.iter().any(|j| matches!(&j.req, Req::StageResolved { path, expected } if path == "a.txt" && expected == "resolved")));
+        e.apply_reply(reply(
+            Req::StageResolved {
+                path: "a.txt".into(),
+                expected: "resolved".into(),
+            },
+            0,
+            e.checkout_key.clone(),
+            Err("index locked".into()),
+        ));
+        assert_eq!(e.doc.as_ref().unwrap().original, "resolved");
+        assert!(!e.doc.as_ref().unwrap().dirty());
+        assert_eq!(e.changes.error.as_deref(), Some("index locked"));
+        assert!(e.changes.busy.is_none());
+    }
+
+    #[test]
+    fn current_branch_replies_obey_checkout_and_generation_guards() {
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone();
+        let data = crate::editor::branch::Branch {
+            name: Some("feature/current".into()),
+            head: "12345678".into(),
+        };
+        e.req_gens.insert("currentbranch", 2);
+        e.apply_reply(reply(
+            Req::CurrentBranch,
+            1,
+            key.clone(),
+            Ok(ReplyData::CurrentBranch(data.clone())),
+        ));
+        assert!(e.branch.data.is_none());
+        e.apply_reply(reply(
+            Req::CurrentBranch,
+            2,
+            Some("other-checkout".into()),
+            Ok(ReplyData::CurrentBranch(data.clone())),
+        ));
+        assert!(e.branch.data.is_none());
+        e.branch.pending = true;
+        e.apply_reply(reply(
+            Req::CurrentBranch,
+            2,
+            key.clone(),
+            Ok(ReplyData::CurrentBranch(data.clone())),
+        ));
+        assert_eq!(e.branch.data, Some(data));
+        assert_eq!(e.branch.checkout, key);
+        assert!(!e.branch.pending);
+        e.req_gens.insert("currentbranch", 3);
+        e.apply_reply(reply(
+            Req::CurrentBranch,
+            3,
+            key,
+            Err("Git unavailable".into()),
+        ));
+        assert_eq!(e.branch.error.as_deref(), Some("Git unavailable"));
+        assert!(!e.branch.pending);
     }
 
     #[test]

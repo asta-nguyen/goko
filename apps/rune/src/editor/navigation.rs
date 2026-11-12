@@ -319,6 +319,7 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     s.editor.files.model_checkout = None;
     s.editor.files.paths.clear();
     s.editor.changes = crate::editor::state::ChangesState::empty();
+    s.editor.branch = Default::default();
     s.editor.history.commits.clear();
     s.editor.history.graph = None;
     s.editor.history.next_skip = None;
@@ -402,6 +403,7 @@ fn clear_checkout(s: &mut State) {
     s.editor.files.model_checkout = None;
     s.editor.files.paths.clear();
     s.editor.changes = crate::editor::state::ChangesState::empty();
+    s.editor.branch = Default::default();
     s.editor.history.commits.clear();
     s.editor.history.graph = None;
     s.editor.history.next_skip = None;

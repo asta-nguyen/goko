@@ -547,7 +547,7 @@ fn nav_activate(s: &mut State, tx: &mut Tx) -> bool {
             files::open_doc(s, &path, Some(line), tx);
         }
         NavItem::Change { layer, path } => {
-            changes::select_entry(&mut s.editor, layer, &path);
+            changes::activate_entry(s, layer, &path, tx);
         }
         NavItem::History(id) => {
             if id == UNCOMMITTED_ID {

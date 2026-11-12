@@ -362,6 +362,7 @@ pub struct EditorState {
     pub notice: Option<Notice>,
     pub files: FilesState,
     pub changes: ChangesState,
+    pub branch: crate::editor::branch::BranchState,
     pub history: HistoryState,
     pub stashes: StashesState,
     pub commit: CommitState,
@@ -487,6 +488,7 @@ impl EditorState {
                 reveal: None,
                 menu: None,
             },
+            branch: Default::default(),
             changes: ChangesState {
                 data: None,
                 checkout: None,

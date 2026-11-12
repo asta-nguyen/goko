@@ -149,7 +149,8 @@ pub fn refresh_active(s: &mut State) {
 fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
     let mut bar = row()
         .w_full()
-        .h(36.0)
+        .min_h(36.0)
+        .flex_wrap()
         .px(12.0)
         .gap(8.0)
         .items_center()
@@ -201,7 +202,10 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         .help(project_help)
         .build(k, layer)
         .shrink()
-        .min_w(120.0),
+        .w(90.0)
+        .grow(1.0)
+        .max_w(200.0)
+        .min_w(90.0),
     );
 
     // Checkout select: project root + listed worktrees of the selected
@@ -262,12 +266,20 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
         .help(checkout_help)
         .build(k, layer)
         .shrink()
-        .min_w(140.0),
+        .w(90.0)
+        .grow(1.0)
+        .max_w(240.0)
+        .min_w(90.0),
     );
 
     if let Some(co) = &s.editor.checkout {
+        bar = bar.child(crate::editor::branch::view(&s.editor, ink));
         bar = bar.child(
             row()
+                .w(0.0)
+                .grow(1.0)
+                .min_w(0.0)
+                .shrink()
                 .gap(6.0)
                 .items_center()
                 .px(8.0)
@@ -277,11 +289,11 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
                 .border(1.0, ink.border)
                 .help(co.display().to_string())
                 .child(theme::ic(&theme::FOLDER, 12.0, ink.muted))
-                .child(theme::txt(
-                    &co.display().to_string(),
-                    theme::T11M,
-                    ink.muted,
-                )),
+                .child(
+                    theme::txt(&co.display().to_string(), theme::T11M, ink.muted)
+                        .min_w(0.0)
+                        .truncate_middle(),
+                ),
         );
     }
 
@@ -575,6 +587,52 @@ mod tests {
         WorktreeList {
             repo: true,
             worktrees,
+        }
+    }
+
+    #[test]
+    fn current_branch_header_survives_every_section_and_narrow_layout() {
+        use rune::{Env, Runtime};
+        let root = format!("/repo/{}", "long-directory/".repeat(12));
+        let branch_name = format!("feature/{}", "long-branch-name-".repeat(12));
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Editor;
+        s.editor.projects = vec![project("p", "A project", &root)];
+        s.editor.project_id = Some("p".into());
+        s.editor.checkout = Some(PathBuf::from(&root));
+        s.editor.checkout_key = Some("current".into());
+        s.editor.branch.checkout = Some("current".into());
+        s.editor.branch.data = Some(crate::editor::branch::Branch {
+            name: Some(branch_name.clone()),
+            head: "12345678".into(),
+        });
+        let mut rt = Runtime::new(
+            s,
+            |s, _| workspace(s, &Ink::new(), &s.editor.kit),
+            (480.0, 700.0),
+            Env::new(true, 2.0),
+        );
+        for section in [
+            Section::Files,
+            Section::Changes,
+            Section::History,
+            Section::Stashes,
+            Section::Servers,
+        ] {
+            rt.update(|s, _| s.editor.section = section);
+            rt.frame(0.0);
+            let header = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("editor-current-branch") && !e.exiting)
+                .unwrap();
+            assert_eq!(header.label, Some(format!("Current branch: {branch_name}")));
+            assert!(header.rect[2] >= 176.0 && header.rect[2] <= 240.0);
+            assert!(
+                header.rect[0] >= 0.0 && header.rect[0] + header.rect[2] <= 480.1,
+                "{section:?}: {:?}",
+                header.rect
+            );
         }
     }
 
