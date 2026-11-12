@@ -69,6 +69,26 @@ The system SHALL run every Git, filesystem, storage, and highlighting job on a s
 
 Evidence: `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/highlight.rs`, `crates/app-core/src/projects.rs`
 
+### RNE-change-gutter
+
+The system SHALL mark, beside the line numbers of the open file, the lines the working tree changed against `HEAD` — a green bar for added lines, a blue bar for modified lines and a red tick where lines were removed — read through `git diff -U0 HEAD` on the worker lane, hidden while the buffer holds unsaved edits and re-read after the file opens, reloads or saves.
+
+#### Scenario: Changed lines are marked
+
+- GIVEN a tracked file with uncommitted changes (staged or not) is open and clean
+- WHEN the read lands
+- THEN each added, modified or deleted span is drawn in the gutter at its lines, and an untracked file shows no marks
+
+#### Scenario: A dirty draft hides the bars
+
+- GIVEN the bars are shown
+- WHEN the user edits the buffer
+- THEN the bars disappear because they describe the file on disk, and return after the save lands
+
+Known gap: a commit, stage or discard made from the Changes section does not re-read the open file's bars until it is reopened, reloaded or saved.
+
+Evidence: `apps/rune/src/editor/line_changes.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `crates/app-core/src/git_view.rs`
+
 ### RNE-changes-git-writes
 
 The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts and per-layer diffs, staging, unstaging, discarding, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing or prompting for credentials.

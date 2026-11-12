@@ -501,6 +501,12 @@ impl EditorState {
             (Req::Blame { path }, Err(e)) => {
                 crate::editor::blame::apply_error(self, path, &e);
             }
+            (Req::LineChanges { path }, Ok(ReplyData::LineChanges(changes))) => {
+                crate::editor::line_changes::apply(self, path, changes);
+            }
+            (Req::LineChanges { path }, Err(_)) => {
+                crate::editor::line_changes::apply_error(self, path);
+            }
             (Req::File { .. }, Err(e)) => {
                 self.doc_load = None;
                 self.notice = Some(err_notice(&e));
@@ -678,6 +684,8 @@ impl EditorState {
             // re-read once the draft matches the disk again.
             crate::editor::blame::sync_visibility(self);
             crate::editor::blame::request(self);
+            crate::editor::line_changes::sync_visibility(self);
+            crate::editor::line_changes::request(self);
         }
         match result {
             Ok(_) => {

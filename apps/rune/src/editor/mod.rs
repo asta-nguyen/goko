@@ -23,6 +23,7 @@ pub mod history_graph;
 pub mod history_layout;
 pub mod indent;
 pub mod keyboard;
+pub mod line_changes;
 pub mod lsp;
 pub mod media;
 pub mod navigation;

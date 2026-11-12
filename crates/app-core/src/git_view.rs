@@ -190,6 +190,18 @@ pub struct GitViewBlame {
     pub lines: Vec<GitViewBlameLine>,
 }
 
+/// One changed span of a file's working tree against `HEAD`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitViewLineChange {
+    /// 1-based first line of the span in the working-tree file. For a
+    /// `deleted` span, the line the removed text used to sit above.
+    pub start: u64,
+    /// Lines in the span; `0` for a `deleted` span.
+    pub count: u64,
+    /// `added`, `modified`, or `deleted`.
+    pub kind: &'static str,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GitViewStash {
     /// `stash@{N}` position.
@@ -1157,6 +1169,68 @@ pub fn blame(checkout: &Path, path: &str) -> Result<GitViewBlame, BridgeError> {
         path: rel_text,
         lines: parse_blame_porcelain(&out),
     })
+}
+
+/// Which lines of a file the working tree changed against `HEAD`, for the
+/// editor's change gutter. An untracked file has no baseline and reports none.
+pub fn line_changes(checkout: &Path, path: &str) -> Result<Vec<GitViewLineChange>, BridgeError> {
+    let rel = relative_path(path)?;
+    let rel_text = rel.to_string_lossy().into_owned();
+    let (out, truncated) = worktrees::git_bounded(
+        checkout,
+        &[
+            "diff",
+            "-U0",
+            "--no-color",
+            "--no-ext-diff",
+            "HEAD",
+            "--",
+            &rel_text,
+        ],
+        CAP,
+    )?;
+    if truncated {
+        return Err(invalid("the file's changes are too large to mark"));
+    }
+    Ok(parse_line_changes(&lossy(&out)))
+}
+
+/// Parse the `@@ -old[,n] +new[,n] @@` headers of a zero-context diff.
+fn parse_line_changes(patch: &str) -> Vec<GitViewLineChange> {
+    // `a` or `a,n`; a missing count means 1.
+    fn range(text: &str) -> Option<(u64, u64)> {
+        let (start, count) = text.split_once(',').unwrap_or((text, "1"));
+        Some((start.parse().ok()?, count.parse().ok()?))
+    }
+    patch
+        .lines()
+        .filter_map(|line| {
+            let (old, rest) = line.strip_prefix("@@ -")?.split_once(" +")?;
+            let new = rest.split(" @@").next()?;
+            let (_, old_count) = range(old)?;
+            let (start, count) = range(new)?;
+            Some(if count == 0 {
+                // Removed lines: `start` is the line before them.
+                GitViewLineChange {
+                    start: start + 1,
+                    count: 0,
+                    kind: "deleted",
+                }
+            } else if old_count == 0 {
+                GitViewLineChange {
+                    start,
+                    count,
+                    kind: "added",
+                }
+            } else {
+                GitViewLineChange {
+                    start,
+                    count,
+                    kind: "modified",
+                }
+            })
+        })
+        .collect()
 }
 
 /// Parse `git blame --porcelain` output into per-line entries.
@@ -2350,6 +2424,42 @@ mod tests {
         // A path outside the checkout never reaches Git.
         assert!(blame(&root, "../escape.txt").is_err());
         assert!(blame(&root, "missing.txt").is_err());
+    }
+
+    #[test]
+    fn line_changes_classify_added_modified_and_deleted_spans() {
+        let (_t, root) = repository("line-changes");
+        fs::write(root.join("tracked.txt"), "a\nb\nc\nd\ne\nf\n").unwrap();
+        git_ok(&root, &["add", "tracked.txt"]);
+        git_ok(&root, &["commit", "-qm", "base"]);
+        // Modify b, delete d, add a line after f.
+        fs::write(root.join("tracked.txt"), "a\nB\nc\ne\nf\nnew\n").unwrap();
+        let spans: Vec<_> = line_changes(&root, "tracked.txt")
+            .unwrap()
+            .iter()
+            .map(|c| (c.start, c.count, c.kind))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![(2, 1, "modified"), (4, 0, "deleted"), (6, 1, "added")]
+        );
+        // Staged changes still count: the baseline is HEAD, not the index.
+        git_ok(&root, &["add", "tracked.txt"]);
+        assert_eq!(line_changes(&root, "tracked.txt").unwrap().len(), 3);
+        // An untracked file has no baseline, and an escaping path never runs.
+        fs::write(root.join("new.txt"), "x\n").unwrap();
+        assert!(line_changes(&root, "new.txt").unwrap().is_empty());
+        assert!(line_changes(&root, "../escape.txt").is_err());
+    }
+
+    #[test]
+    fn a_deletion_at_the_top_marks_line_one() {
+        let spans = parse_line_changes("@@ -1,2 +0,0 @@\n-a\n-b\n");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(
+            (spans[0].start, spans[0].count, spans[0].kind),
+            (1, 0, "deleted")
+        );
     }
 
     #[test]

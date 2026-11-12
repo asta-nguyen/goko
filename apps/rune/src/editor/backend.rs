@@ -275,6 +275,11 @@ pub enum Req {
     Blame {
         path: String,
     },
+    /// Which lines of the open file the working tree changed against `HEAD`,
+    /// for the change gutter. Keyed to its path like `Blame`.
+    LineChanges {
+        path: String,
+    },
     /// External open-file/line request: validated against the registered
     /// project+checkout on the worker (no UI-thread storage reads), then
     /// applied once as checkout switch + doc open.
@@ -391,6 +396,8 @@ pub enum ReplyData {
     StashDiff(GitViewDiff),
     /// Per-line blame for the file the request named.
     Blame(app_core::git_view::GitViewBlame),
+    /// Changed-line spans for the file the request named.
+    LineChanges(Vec<app_core::git_view::GitViewLineChange>),
     ExternalOpen {
         checkout: PathBuf,
         path: String,
@@ -1148,6 +1155,9 @@ fn run_checkout(
         Req::Blame { path } => git_view::blame(checkout, path)
             .map(ReplyData::Blame)
             .map_err(|e| e.to_string()),
+        Req::LineChanges { path } => git_view::line_changes(checkout, path)
+            .map(ReplyData::LineChanges)
+            .map_err(|e| e.to_string()),
         Req::SaveFile {
             path,
             expected,
@@ -1406,6 +1416,8 @@ impl EditorState {
         // now that the document is open.
         crate::editor::blame::sync_visibility(self);
         crate::editor::blame::request(self);
+        crate::editor::line_changes::sync_visibility(self);
+        crate::editor::line_changes::request(self);
     }
 
     /// `Req::ReloadFile` reply — the guard dialog's "Reload from disk":
@@ -1444,6 +1456,8 @@ impl EditorState {
         // The reloaded file changed on disk: its blame must be re-read.
         crate::editor::blame::sync_visibility(self);
         crate::editor::blame::request(self);
+        crate::editor::line_changes::sync_visibility(self);
+        crate::editor::line_changes::request(self);
     }
 
     /// Kick the reads the active section needs. Called on section activation,
@@ -1734,6 +1748,7 @@ fn kind_key(req: &Req) -> &'static str {
         Req::Stashes => "stashes",
         Req::StashDiff { .. } => "stashdiff",
         Req::Blame { .. } => "blame",
+        Req::LineChanges { .. } => "linechanges",
         Req::ExternalOpen { .. } => "externalopen",
         _ => "other",
     }

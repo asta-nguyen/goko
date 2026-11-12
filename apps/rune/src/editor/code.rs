@@ -32,6 +32,8 @@ use rune::{
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
 
+use app_core::git_view::GitViewLineChange;
+
 use crate::editor::blame;
 use crate::editor::comment;
 use crate::editor::conflict::{self, Choice, Conflict};
@@ -104,6 +106,11 @@ pub struct CodeState {
     pub blame_enabled: bool,
     /// Why the last blame read failed — shown as the column's error line.
     pub blame_error: Option<String>,
+    /// Lines the working tree changed against `HEAD`; empty until the first
+    /// read lands.
+    pub line_changes: Vec<GitViewLineChange>,
+    /// Whether the change bars are drawn — they hide while the draft is dirty.
+    pub changes_visible: bool,
     /// Find panel state.
     pub find: FindState,
     /// Platform go-to modifier (⌘ on macOS, Ctrl elsewhere) as last reported
@@ -137,6 +144,8 @@ impl CodeState {
             blame_visible: false,
             blame_enabled: true,
             blame_error: None,
+            line_changes: Vec::new(),
+            changes_visible: false,
             find: FindState::new(),
             go_to_mod: false,
             gutter_shift: Live::new([0.0, 0.0]),
@@ -1037,12 +1046,58 @@ fn guides_el(code: &CodeState, ink: &Ink) -> Option<El> {
     )
 }
 
+/// Change bars beside the line numbers: a bar per added (green) or modified
+/// (blue) span and a short red tick where lines were removed, in the same
+/// document coordinates the numbers use.
+fn change_bars_el(code: &CodeState, ink: &Ink, width: f32) -> Option<El> {
+    if !code.changes_visible || code.line_changes.is_empty() {
+        return None;
+    }
+    let line_px = CODE_STYLE.line_px();
+    let x = width - 4.0;
+    let mut shape = Shape::new();
+    for change in &code.line_changes {
+        let top = (change.start.saturating_sub(1)) as f32 * line_px;
+        shape = match change.kind {
+            "deleted" => shape.line(
+                [x - 3.0, top],
+                [x + 3.0, top],
+                2.0,
+                LineCap::Butt,
+                ink.danger,
+            ),
+            kind => {
+                let color = if kind == "added" {
+                    ink.success
+                } else {
+                    ink.accent
+                };
+                shape.line(
+                    [x, top],
+                    [x, top + change.count as f32 * line_px],
+                    3.0,
+                    LineCap::Butt,
+                    color,
+                )
+            }
+        };
+    }
+    Some(
+        canvas(shape)
+            .absolute(0.0, 0.0)
+            .size(width, code.line_count() as f32 * line_px)
+            .live_offset(&code.gutter_shift)
+            .a11y_hidden(),
+    )
+}
+
 /// Line-number gutter: one right-aligned numbers text shifted by the live
 /// scroll offset, clipped to the gutter box.
 fn gutter_el(code: &CodeState, ink: &Ink) -> El {
     let shift = code.gutter_shift.clone();
-    col()
-        .w(code.gutter_width())
+    let width = code.gutter_width();
+    let mut gutter = col()
+        .w(width)
         .h_full()
         .fill(ink.panel)
         .border_sides([0.0, 1.0, 0.0, 0.0], ink.border)
@@ -1054,7 +1109,11 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
                 .pl(10.0)
                 .pr(10.0)
                 .live_offset(&shift),
-        )
+        );
+    if let Some(bars) = change_bars_el(code, ink, width) {
+        gutter = gutter.child(bars);
+    }
+    gutter
 }
 
 /// Inline-blame column: the caret line's annotation, shifted by the same live

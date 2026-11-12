@@ -972,6 +972,7 @@ fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
             // The blame annotations describe the file on disk — a dirty
             // buffer hides the column until the save lands.
             crate::editor::blame::sync_visibility(&mut st.editor);
+            crate::editor::line_changes::sync_visibility(&mut st.editor);
             tx.wake_after(std::time::Duration::from_millis(150));
         })
         .on_save(|st: &mut State, _tx: &mut Tx| {
