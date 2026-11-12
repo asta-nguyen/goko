@@ -18,12 +18,14 @@ pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 pub const INSTALL_COMMAND: &str =
     "curl -fsSL https://github.com/asta-nguyen/goko/releases/latest/download/install.sh | sh";
 
+#[cfg(not(test))]
 const RELEASES: &str = "https://github.com/asta-nguyen/goko/releases/latest/download";
 
 /// How often a running app looks again.
 #[cfg(not(test))]
 const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
+#[cfg(not(test))]
 pub fn manifest_url() -> String {
     let base = std::env::var("GOKO_RELEASES_URL").unwrap_or_else(|_| RELEASES.to_string());
     format!("{}/latest.json", base.trim_end_matches('/'))

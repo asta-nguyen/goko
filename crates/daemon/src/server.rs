@@ -327,6 +327,7 @@ impl Client<'_> {
                 Err(error) => Err(error),
             },
             Request::SessionList { .. } => Ok(json!({ "sessions": sessions.list() })),
+            Request::SessionOutput { .. } => Ok(json!({ "sessions": sessions.output() })),
             Request::SessionGet { session_id, .. } => sessions
                 .get(session_id)
                 .map(|info| json!(info))

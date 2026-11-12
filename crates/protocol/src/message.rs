@@ -41,6 +41,10 @@ pub enum Request {
     },
     #[serde(rename = "session.list")]
     SessionList { id: u64 },
+    /// Each live session's output progress ([`crate::session::SessionOutput`]),
+    /// answered as `{ "sessions": [...] }`.
+    #[serde(rename = "session.output")]
+    SessionOutput { id: u64 },
     #[serde(rename = "session.get")]
     SessionGet { id: u64, session_id: SessionId },
     #[serde(rename = "session.stop")]
@@ -272,6 +276,7 @@ mod tests {
                 session_id,
                 upto_seq: 512,
             },
+            Request::SessionOutput { id: 15 },
         ];
 
         for request in requests {

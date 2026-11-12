@@ -17,6 +17,30 @@ real project, Git, file, and ACP work through `app-core`.
 
 ## Requirements
 
+### RNC-alt-shortcuts
+
+The system SHALL bind `⌥1`–`⌥9` to the Nth visible tab, `⌥←`/`⌥→` to the previous/next visible tab wrapping around, and `⌥↑`/`⌥↓` to walk the sidebar's actionable rows in render order — projects and their root checkouts, session rows, worktree groups and worktree checkouts, and Unassigned — highlighting the landed row and running the same action its press runs, in the Terminal view only and under the same owned-input rules as the `⌘` shortcuts, leaving the chord to the terminal when its target does not exist.
+
+#### Scenario: switch tab by number
+
+- GIVEN two open tabs in the Terminal view
+- WHEN `⌥2` is pressed
+- THEN the second tab is active, and `⌥9` does nothing
+
+#### Scenario: walk the sidebar rows
+
+- GIVEN a project with sessions and worktrees plus a second project
+- WHEN `⌥↓` is pressed repeatedly
+- THEN the cursor highlights each row in turn — project, sessions, the worktree group toggle, worktree checkouts — and landing on a row performs its click action (checkout selection through the draft guard, session focus, group toggle)
+
+#### Scenario: nothing to cycle
+
+- GIVEN a single open tab and an empty sidebar
+- WHEN `⌥←` or `⌥↓` is pressed
+- THEN no tab switch or row action happens and the chord reaches the shell
+
+Evidence: `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/panes.rs`
+
 ### RNC-app-shortcuts
 
 The system SHALL bind `⌘T` to a new shell tab, `⌘1`–`⌘9` to the Nth visible tab in the Terminal view, and `⌘,` to the Settings toggle through the draft guard, ignoring them while the sidebar prompt, a removal confirmation, a sidebar or editor menu or picker, the draft guard, quick-open, or a terminal input-method composition owns input and for any chord that adds Shift or Option, leaving `⌘W` as window close.
@@ -41,7 +65,7 @@ The system SHALL render the controls strip only in the Terminal view while a
 daemon session is selected — the Editor view has no session pane, matching
 App.tsx — showing the project/agent/title breadcrumb resolved from the real
 `SessionInfo` and its stored `SessionMeta`, a state badge with a tone dot
-(spinning accent ring while the session works), the elapsed time, and
+(rune-kit's activity spinner in the accent while the session works), the elapsed time, and
 Stop/Close pane buttons that issue `session.stop`/`session.delete` to the
 daemon; Stop is dimmed when the state is not controllable or the daemon is
 disconnected.
@@ -59,6 +83,30 @@ disconnected.
 - THEN the controls strip renders nothing
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/main.rs`
+
+### RNC-done-sound
+
+The system SHALL play a notification sound when a session's activity becomes done or the session ends (exited or failed), but only while the app window is unfocused and the `goko.sound_done` setting is enabled; the sound is the system "Blow" (`Blow.aiff`, or `Breeze.aiff` where Apple renamed it) through `afplay` on macOS, a synthesized tone through the first available player elsewhere, and silence when no player exists.
+
+#### Scenario: agent turn finishes while unfocused
+
+- GIVEN the app window is unfocused and the sound setting is on
+- WHEN a running session's activity transitions to done
+- THEN the done sound plays once
+
+#### Scenario: focused window stays silent
+
+- GIVEN the app window is focused
+- WHEN a session's activity becomes done or the session ends
+- THEN no sound plays
+
+#### Scenario: setting disabled
+
+- GIVEN `goko.sound_done` is off
+- WHEN a session's activity becomes done or the session ends while unfocused
+- THEN no sound plays
+
+Evidence: `apps/rune/src/sound.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/settings.rs`
 
 ### RNC-empty-terminal-actions
 
@@ -739,6 +787,54 @@ suppressed.
 
 Evidence: `crates/daemon/src/terminal.rs`, `crates/daemon/src/pty.rs`, `crates/daemon/src/server.rs`, `crates/daemon/tests/paint.rs`, `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/panes.rs`, `crates/protocol/src/frame.rs`, `crates/protocol/src/message.rs`
 
+### RNC-terminal-links
+
+The system SHALL mark http(s) URLs and file paths with line suffixes in terminal rows as links, opening a URL in the browser and a file inside the session's project checkout in the Editor at its line on a click — a press that begins and ends on the same link — while a drag that starts on a link and ends elsewhere still selects text, a repeated click on the same link within 700 ms opens once, and links take no keyboard focus.
+
+#### Scenario: click a file link
+
+- GIVEN a terminal row showing `src/main.rs:10`
+- WHEN the user clicks the path
+- THEN the file opens in the Editor at line 10, or a notice reports it cannot be opened
+
+#### Scenario: drag across a link
+
+- GIVEN a terminal row showing a URL
+- WHEN the user drags from the link to another row and releases
+- THEN the rows are selected and nothing opens
+
+Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`
+
+### RNC-terminal-selection
+
+The system SHALL let terminal rows be selected by dragging — while the running program reports mouse capture a plain drag goes to the program and a Shift-held drag selects — copy the selection on release without requiring Cmd+C, trim each row's grid padding, still honor Cmd+C through the same transform, and put a program's own OSC 52 clipboard copy on the clipboard when it comes from a pane on screen and not from a replay.
+
+#### Scenario: drag and release
+
+- GIVEN terminal rows on screen
+- WHEN the user drags across them and releases the press
+- THEN the selection is on the clipboard with no grid padding, once per finished drag
+
+#### Scenario: mid-drag frames
+
+- GIVEN a selection drag in progress
+- WHEN frames pass before the press releases
+- THEN nothing is copied yet
+
+#### Scenario: a program that captures the mouse
+
+- GIVEN a pane whose program turned on mouse reporting, as Claude Code and Codex do
+- WHEN the user drags across rows with Shift held and releases
+- THEN the rows are selected and copied, while the same drag without Shift is reported to the program and selects nothing
+
+#### Scenario: the program copies
+
+- GIVEN a pane on screen whose program sends an OSC 52 clipboard copy
+- WHEN the terminal parses it from live output
+- THEN that text is on the clipboard, while a primary-selection copy, a hidden pane's copy, or one in replayed output is dropped
+
+Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/term.rs`, `apps/rune/src/main.rs`
+
 ### RNC-terminal-wheel
 
 The system SHALL route terminal wheel input according to the program's mouse and
@@ -1015,6 +1111,11 @@ Claude transcript and Codex rollout filenames can identify their owning
 process's conversation. The diagnostics read no conversation bodies and write
 only the clipboard when the user selects a copy action.
 
+The done sound spawns one detached audio player per chime — `afplay` on
+macOS, else the first of `paplay`/`aplay`/`ffplay`/`mpv` that starts — and
+writes a small synthesized WAV under the temp dir on non-macOS plays; it
+fires at most once per second and only while the window is unfocused.
+
 ## Authorization & constraints
 
 None for the chrome — a local prototype shell with no access checks or
@@ -1127,6 +1228,7 @@ attributed tools without charging the shared server.
 - `apps/rune/src/sessions.rs`
 - `apps/rune/src/settings.rs`
 - `apps/rune/src/sidebar.rs`
+- `apps/rune/src/sound.rs`
 - `apps/rune/src/tab_debug.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/theme.rs`

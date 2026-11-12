@@ -358,12 +358,14 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                 MenuItem::new("Copy Path").on_select_tx(move |st: &mut State, tx: &mut Tx| {
                     st.editor.files.menu = None;
                     tx.copy(full.clone());
+                    st.notice = Some("Copied to clipboard".into());
                 }),
             )
             .item(MenuItem::new("Copy Relative Path").on_select_tx(
                 move |st: &mut State, tx: &mut Tx| {
                     st.editor.files.menu = None;
                     tx.copy(relative.clone());
+                    st.notice = Some("Copied to clipboard".into());
                 },
             ))
             .item(
@@ -955,6 +957,7 @@ fn markdown_surface(s: &State, k: &Kit) -> El {
         .map(|d| d.code.edit.text.clone())
         .unwrap_or_default();
     rune_kit::markdown::Markdown::new(text)
+        .on_link(|_s: &mut State, url: &str| crate::panes::open_url(url))
         .build(k)
         .scroll(rune::ScrollSpec {
             stick_bottom: false,

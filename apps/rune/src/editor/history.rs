@@ -612,6 +612,7 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
                         {
                             let t = c.id.clone();
                             tx.copy(t);
+                            st.notice = Some("Copied to clipboard".into());
                         }
                     },
                 ))
@@ -622,6 +623,7 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
                         {
                             let t = c.subject.clone();
                             tx.copy(t);
+                            st.notice = Some("Copied to clipboard".into());
                         }
                     },
                 ))

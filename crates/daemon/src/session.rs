@@ -1,7 +1,7 @@
 //! In-memory sessions: a validated state machine around each `PtyProcess`.
 
 use crate::pty::{validate_size, PtyProcess, SpawnSpec};
-use protocol::session::{SessionId, SessionInfo, SessionState};
+use protocol::session::{SessionId, SessionInfo, SessionOutput, SessionState};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -231,6 +231,27 @@ impl SessionManager {
                     refresh_cwd(session, pty);
                 }
                 lock(&session.info).clone()
+            })
+            .collect()
+    }
+
+    /// Output statistics for all live sessions.
+    pub fn output(&self) -> Vec<SessionOutput> {
+        let sessions = lock(&self.sessions).clone();
+        sessions
+            .iter()
+            .map(|session| {
+                let session_id = lock(&session.info).id;
+                let (output_seq, last_output_at) = session
+                    .pty
+                    .get()
+                    .map(|pty| pty.output_info())
+                    .unwrap_or((0, None));
+                SessionOutput {
+                    session_id,
+                    output_seq,
+                    last_output_at,
+                }
             })
             .collect()
     }

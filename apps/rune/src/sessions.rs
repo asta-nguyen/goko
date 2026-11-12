@@ -340,17 +340,22 @@ impl State {
                 exit_code,
             } => {
                 let key = data::SessionInfo::key(session_id);
+                let mut just_ended = false;
                 if let Some(view) = self
                     .data
                     .sessions
                     .iter_mut()
                     .find(|view| view.info.id == key)
                 {
+                    just_ended = !view.ended();
                     view.info.state = data::SessionState::Exited;
                     view.info.exit_code = exit_code;
                     if view.info.ended_at.is_none() {
                         view.info.ended_at = Some(self.now_ms);
                     }
+                }
+                if just_ended {
+                    self.note_done_sound();
                 }
             }
             Event::TerminalLagged { session_id } => {
@@ -366,12 +371,18 @@ impl State {
         self.adopt_unassigned_session(&key, &mut info);
         let view = self.view_for(info);
         let stopping = view.info.state == data::SessionState::Stopping;
-        let was_stopping = self
+        let ended = view.ended();
+        let (was_stopping, was_ended) = self
             .data
             .sessions
             .iter()
             .find(|slot| slot.info.id == key)
-            .is_some_and(|slot| slot.info.state == data::SessionState::Stopping);
+            .map_or((false, false), |slot| {
+                (
+                    slot.info.state == data::SessionState::Stopping,
+                    slot.ended(),
+                )
+            });
         match self
             .data
             .sessions
@@ -380,6 +391,10 @@ impl State {
         {
             Some(slot) => *slot = view,
             None => self.data.sessions.push(view),
+        }
+        // A row that just reached an ended state chimes while unfocused.
+        if ended && !was_ended {
+            self.note_done_sound();
         }
         // The force kill is offered once the session has been stopping for
         // a while.
@@ -469,6 +484,25 @@ impl State {
             }
         }
         self.pending = waiting;
+        if let Some(rx) = &self.pending_output {
+            match rx.try_recv() {
+                Ok(Ok(list)) => {
+                    for out in list.sessions {
+                        let key = data::SessionInfo::key(out.session_id);
+                        self.note_session_output(&key, out.output_seq, out.last_output_at);
+                    }
+                    self.pending_output = None;
+                    changed = true;
+                }
+                Ok(Err(_)) => {
+                    self.pending_output = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.pending_output = None;
+                }
+            }
+        }
         changed
     }
 
@@ -818,6 +852,7 @@ impl State {
     /// doing. The files are read on the worker; the UI only keeps the
     /// answer.
     pub fn poll_activity(&mut self, now: f64) -> bool {
+        self.poll_output(now);
         if self.activity_at.is_some_and(|at| now - at < 1.0) {
             return false;
         }
@@ -846,17 +881,66 @@ impl State {
         )
     }
 
+    /// Poll the daemon for live output activity across all sessions.
+    pub fn poll_output(&mut self, now: f64) -> bool {
+        if !self.daemon.supports_session_output() {
+            return false;
+        }
+        if self.pending_output.is_some() {
+            return false;
+        }
+        if self.output_polled_at.is_some_and(|at| now - at < 0.5) {
+            return false;
+        }
+        self.output_polled_at = Some(now);
+        self.pending_output = self
+            .daemon
+            .call_json::<crate::daemon::SessionOutputList>(|id| Request::SessionOutput { id });
+        self.pending_output.is_some()
+    }
+
+    /// Update session output stats from daemon readings.
+    pub fn note_session_output(&mut self, key: &str, output_seq: u64, last_output_at: Option<i64>) {
+        let (prev_seq, prev_last_at, prev_rec) = self.session_output.get(key).copied().unwrap_or((
+            output_seq,
+            last_output_at,
+            self.now_ms,
+        ));
+        let rec = if prev_seq != output_seq || prev_last_at != last_output_at {
+            self.now_ms
+        } else {
+            prev_rec
+        };
+        self.session_output
+            .insert(key.to_string(), (output_seq, last_output_at, rec));
+    }
+
+    /// Whether output tracking sees this session as quiet (no output for >= 2 seconds).
+    pub fn is_output_quiet(&self, key: &str) -> bool {
+        let Some(&(_seq, last_at, rec)) = self.session_output.get(key) else {
+            return false;
+        };
+        if let Some(last) = last_at {
+            return self.now_ms.saturating_sub(last) >= 2000;
+        }
+        (self.now_ms - rec) >= 2000
+    }
+
     /// What the session's child process is doing.
     pub fn session_activity(&self, key: &str) -> Option<app_core::activity::Activity> {
         self.activity.get(key).copied()
     }
 
     /// The activity the dot shows: a running sub-agent means the session
-    /// is working — unless the agent is waiting for the user.
+    /// is working — unless the agent is waiting for the user or sitting idle
+    /// with no recent output.
     pub fn session_shown_activity(&self, key: &str) -> Option<app_core::activity::Activity> {
         let activity = self.session_activity(key);
         let has_subagents = !self.session_subagents(key).is_empty();
         if has_subagents && activity != Some(app_core::activity::Activity::Waiting) {
+            if self.is_output_quiet(key) {
+                return None;
+            }
             return Some(app_core::activity::Activity::Working);
         }
         activity
@@ -1244,6 +1328,85 @@ mod tests {
     }
 
     #[test]
+    fn the_done_sound_waits_for_an_unfocused_window() {
+        let mut s = state();
+        s.window_focused = true;
+        s.note_done_sound();
+        assert_eq!(crate::sound::test_plays(), 0);
+        s.window_focused = false;
+        s.note_done_sound();
+        assert_eq!(crate::sound::test_plays(), 1);
+    }
+
+    #[test]
+    fn the_done_sound_respects_the_setting_and_debounces() {
+        let mut s = state();
+        s.window_focused = false;
+        s.sound_done = false;
+        s.now_ms = 2_000;
+        s.note_done_sound();
+        assert_eq!(crate::sound::test_plays(), 0);
+        s.sound_done = true;
+        s.note_done_sound();
+        assert_eq!(crate::sound::test_plays(), 1);
+        // Inside the debounce window a second finish stays silent.
+        s.now_ms = 2_500;
+        s.note_done_sound();
+        assert_eq!(crate::sound::test_plays(), 1);
+        s.now_ms = 3_001;
+        s.note_done_sound();
+        assert_eq!(crate::sound::test_plays(), 2);
+    }
+
+    #[test]
+    fn an_exit_chimes_the_done_sound_once() {
+        let mut s = state();
+        s.window_focused = false;
+        let info = daemon_session(DaemonState::Running);
+        s.apply_daemon_event(UiEvent::Event(Event::SessionUpdated {
+            session: info.clone(),
+        }));
+        assert_eq!(crate::sound::test_plays(), 0);
+        s.apply_daemon_event(UiEvent::Event(Event::SessionExited {
+            session_id: info.id,
+            exit_code: Some(0),
+        }));
+        assert_eq!(crate::sound::test_plays(), 1);
+        // A repeated exit event for the same row stays silent.
+        s.now_ms += 2_000;
+        s.apply_daemon_event(UiEvent::Event(Event::SessionExited {
+            session_id: info.id,
+            exit_code: Some(0),
+        }));
+        assert_eq!(crate::sound::test_plays(), 1);
+    }
+
+    #[test]
+    fn a_session_update_into_an_ended_state_chimes_once() {
+        let mut s = state();
+        s.window_focused = false;
+        let mut info = daemon_session(DaemonState::Running);
+        s.upsert_session(info.clone());
+        info.state = DaemonState::Failed;
+        s.upsert_session(info.clone());
+        assert_eq!(crate::sound::test_plays(), 1);
+        // Past the debounce, an already-ended row still does not chime.
+        s.now_ms += 2_000;
+        s.upsert_session(info);
+        assert_eq!(crate::sound::test_plays(), 1);
+    }
+
+    #[test]
+    fn the_bulk_session_list_never_chimes() {
+        let mut s = state();
+        s.window_focused = false;
+        // A session already ended when the list syncs is not a finish the
+        // user just watched happen.
+        s.apply_daemon_event(UiEvent::Sessions(vec![daemon_session(DaemonState::Exited)]));
+        assert_eq!(crate::sound::test_plays(), 0);
+    }
+
+    #[test]
     fn the_connection_flag_follows_the_daemon() {
         let mut s = state();
         assert!(!s.data.connected);
@@ -1398,6 +1561,18 @@ mod tests {
         assert_eq!(
             s.session_shown_activity(&key),
             Some(app_core::activity::Activity::Waiting)
+        );
+
+        // When the agent goes quiet (no terminal output recently), the spinner stops.
+        s.activity.remove(&key);
+        s.note_session_output(&key, 100, Some(s.now_ms - 5000));
+        assert_eq!(s.session_shown_activity(&key), None);
+
+        // When fresh output arrives, it spins again.
+        s.note_session_output(&key, 200, Some(s.now_ms));
+        assert_eq!(
+            s.session_shown_activity(&key),
+            Some(app_core::activity::Activity::Working)
         );
     }
 

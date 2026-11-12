@@ -239,6 +239,7 @@ impl<S: 'static> Combobox<S> {
                 .label(name.clone())
                 .appearance(SelectAppearance::Field)
                 .width(self.width)
+                .open(self.state.open && !self.disabled)
                 .disabled(self.disabled)
                 .trigger(k),
         };

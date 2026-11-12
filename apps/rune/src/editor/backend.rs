@@ -2673,7 +2673,7 @@ mod tests {
         e.checkout_key = Some(key.clone());
         let waker: rune::Waker = std::sync::Arc::new(|| {});
         e.media_host = Some((rune::ImageCache::new(waker.clone()), waker));
-        let mut run = |e: &mut EditorState, job: Job| {
+        let run = |e: &mut EditorState, job: Job| {
             let reply = run_job(&storage, &job);
             assert!(reply.result.is_ok(), "{:?} -> {:?}", job.req, reply.result);
             e.apply_reply(reply);

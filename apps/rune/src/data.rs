@@ -87,8 +87,8 @@ impl SessionState {
         }
     }
 
-    /// `StateDot`: the tone dot the row carries. A working session draws a
-    /// spinning accent ring over it instead (see `theme::spinner`).
+    /// `StateDot`: the tone dot the row carries. A working session draws
+    /// rune-kit's activity spinner instead (see `theme::working_spinner`).
     pub fn dot_color(self, ink: &Ink) -> Color {
         self.badge_tone(ink)
     }

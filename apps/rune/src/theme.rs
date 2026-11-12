@@ -3,7 +3,7 @@
 //! + agent-logo icon bodies, and the small builders shared by the
 //!   chrome regions. Ported from the verified rune-spike `fidelity.rs`.
 
-use rune::{Color, El, Icon, Live, Spring, TextStyle, el, icon, row, text};
+use rune::{Color, El, Icon, Spring, TextStyle, el, icon, row, text};
 
 pub fn c(hex: &str) -> Color {
     rune::color::hex(hex).expect("palette hex")
@@ -320,13 +320,6 @@ stroke_icon!(
     "<path d=\"M12 9v4\"/>",
     "<path d=\"M12 17h.01\"/>"
 );
-// The spinner a working session shows instead of the plain state dot
-// (lucide "loader-circle"): one open arc, turned by the app's clock.
-stroke_icon!(
-    LOADER,
-    "loader-circle",
-    "<path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/>"
-);
 // The Files toolbar's icons (lucide file-plus, refresh-cw, chevrons-down-up;
 // folder-plus is above).
 stroke_icon!(
@@ -418,34 +411,50 @@ pub fn ic(i: &'static Icon, size: f32, color: Color) -> El {
     icon(i, size).color(color)
 }
 
+/// rune-kit's activity spinner in the accent: every one on screen sweeps
+/// on the wall clock's shared phase, holds still under Reduce Motion, and
+/// animates without app frames. Decorative, like the dots it stands in
+/// for — the row's text carries the state.
+pub fn working_spinner(size: f32, ink: &Ink, k: &rune_kit::Kit) -> El {
+    rune_kit::Spinner::new()
+        .size(size)
+        .color(ink.accent)
+        .build(k)
+        .a11y_hidden()
+}
+
+/// Whether a live session's child is working — the one state drawn as a
+/// spinner.
+pub fn is_working(
+    state: crate::data::SessionState,
+    activity: Option<app_core::activity::Activity>,
+) -> bool {
+    !state.ended() && activity == Some(app_core::activity::Activity::Working)
+}
+
 /// The state dot a session row carries, told by the child process's
 /// activity:
 ///
-/// - a working child shows the loading ring (the loader arc, turned by
-///   `angle`; under Reduce Motion it stands still),
-/// - a waiting child blinks amber (the pulse drives its opacity),
+/// - a working child shows rune-kit's activity spinner ([`working_spinner`]),
+/// - a waiting child blinks amber on a renderer-owned opacity loop,
 /// - a finished child — and a session with nothing running — shows a
 ///   green dot.
 pub fn state_dot(
     state: crate::data::SessionState,
     activity: Option<app_core::activity::Activity>,
-    angle: f32,
-    pulse: &Live<f32>,
     ink: &Ink,
+    k: &rune_kit::Kit,
 ) -> El {
     if state.ended() {
         return el().size(6.0, 6.0).radius(3.0).fill(state.dot_color(ink));
     }
     match activity {
-        Some(app_core::activity::Activity::Working) => el()
-            .size(10.0, 10.0)
-            .center()
-            .child(ic(&LOADER, 10.0, ink.accent).icon_rotation(angle)),
+        Some(app_core::activity::Activity::Working) => working_spinner(12.0, ink, k),
         Some(app_core::activity::Activity::Waiting) => el()
             .size(6.0, 6.0)
             .radius(3.0)
             .fill(ink.warning)
-            .live_opacity(pulse),
+            .looping(rune::LoopSpec::opacity(2.1, 0.0, 0.35, 1.0)),
         _ => el().size(6.0, 6.0).radius(3.0).fill(ink.success),
     }
 }

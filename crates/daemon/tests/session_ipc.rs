@@ -43,6 +43,13 @@ async fn create_list_get_and_stop_work_over_the_socket() {
 
     let listed = client.request(json!({"type": "session.list"})).await;
     assert_eq!(listed["result"]["sessions"], json!([session]));
+    let output = client.request(json!({"type": "session.output"})).await;
+    let list = output["result"]["sessions"]
+        .as_array()
+        .expect("array of sessions");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["session_id"], session["id"]);
+    assert!(list[0]["output_seq"].as_u64().is_some());
     let fetched = client
         .request(json!({"type": "session.get", "session_id": session["id"]}))
         .await;
