@@ -1,0 +1,41 @@
+docs/llm/domains/app-icons.md
+  s_acb4e3cca2a12b::t_388a192b12553f 1-84
+apps/rune/assets/generate-macos.sh
+  s_acb4e3cca2a12b::t_4399fcdfac659c 1-27
+distribution/install.sh
+  s_acb4e3cca2a12b::t_4399fcdfac659c 86-87,94
+CHANGELOG.md
+  s_acb4e3cca2a12b::t_5b6f0595f5d1eb 15-16
+README.md
+  s_acb4e3cca2a12b::t_4399fcdfac659c 1-4,70-72
+  s_acb4e3cca2a12b::t_98cc203a3438d4 73
+docs/llm/INDEX.md
+  s_acb4e3cca2a12b::t_388a192b12553f 8,20
+distribution/test-icons.py
+  s_acb4e3cca2a12b::t_629904fdd2e90e 1-2,4-60
+  s_acb4e3cca2a12b::t_388a192b12553f 3
+apps/rune/assets/README.md
+  s_acb4e3cca2a12b::t_4399fcdfac659c 1-18
+apps/rune/package-linux.sh
+  s_acb4e3cca2a12b::t_4399fcdfac659c 27
+apps/rune/assets/icon.svg
+  s_acb4e3cca2a12b::t_d0a001e96ab8ae 1-6
+apps/rune/bundle-macos.sh
+  s_acb4e3cca2a12b::t_4399fcdfac659c 14-15,32-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "45a6b7db3d95c27d97cc9045a217e7ebe753290a",
+  "prompts": {},
+  "sessions": {
+    "s_acb4e3cca2a12b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1d038-fb2b-77b2-844d-7d9af568548e",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
