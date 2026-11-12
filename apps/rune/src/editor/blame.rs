@@ -3,11 +3,12 @@
 //! The blame read is a per-file Git query, so it lives on the same worker
 //! lane as every other checkout read ([`crate::editor::backend::Req::Blame`]).
 //! The result is stored on the open document's [`CodeState`] and drawn as a
-//! column beside the code, one annotation per line.
+//! column beside the code, annotating the caret's line.
 //!
 //! A dirty buffer breaks the mapping: Git blames the file *on disk*, so a
-//! line added in the buffer would shift every later line. The column is
-//! therefore hidden while the draft is dirty and re-read after the save.
+//! line added in the buffer would shift every later line. The annotation is
+//! therefore blanked while the draft is dirty (the column stays, so the code
+//! does not reflow) and re-read after the save.
 
 use app_core::git_view::GitViewBlame;
 
@@ -45,7 +46,7 @@ impl Blame {
 }
 
 /// The current wall clock, in milliseconds since the epoch.
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     crate::data::now_ms().max(0) as u64
 }
 
@@ -108,23 +109,12 @@ pub fn label(line: &BlameLine, now_ms: u64) -> String {
     format!("{} · {}", line.author, age(line.time, now_ms))
 }
 
-/// The rendered column: one annotation per line of the document, in line
-/// order, so each row lines up with its code line.
-pub fn render(blame: &Blame, lines: usize, now_ms: u64) -> String {
-    let mut out = String::new();
-    for number in 1..=lines {
-        if number > 1 {
-            out.push('\n');
-        }
-        if let Some(line) = blame.line(number as u64) {
-            out.push_str(&label(line, now_ms));
-        } else {
-            // A line Git did not attribute (a skipped chunk) still needs a
-            // row, or the annotations below it would drift up a line.
-            out.push('-');
-        }
-    }
-    out
+/// The annotation for a 1-based line number. A line Git did not attribute
+/// (a skipped chunk, or the empty line after a final newline) reads `-`.
+pub fn line_label(blame: &Blame, number: u64, now_ms: u64) -> String {
+    blame
+        .line(number)
+        .map_or_else(|| "-".to_string(), |line| label(line, now_ms))
 }
 
 /// Ask the worker for the open document's blame.
@@ -163,13 +153,9 @@ pub fn apply(ed: &mut EditorState, path: &str, view: GitViewBlame) {
     if doc.path != path {
         return;
     }
-    let blame = from_view(view);
-    let lines = doc.code.line_count();
-    let now = now_ms();
-    doc.code.blame_text = render(&blame, lines, now);
-    doc.code.blame_bucket = now / 60_000;
+    doc.code.blame_bucket = now_ms() / 60_000;
     doc.code.blame_error = None;
-    doc.code.blame = Some(blame);
+    doc.code.blame = Some(from_view(view));
 }
 
 /// A failed blame read leaves the previous annotations in place — they still
@@ -184,12 +170,11 @@ pub fn apply_error(ed: &mut EditorState, path: &str, error: &str) {
     }
 }
 
-/// Refresh the rendered column: the relative age of a commit rolls over
-/// while the document stays open, so the text is rebuilt once a minute.
-/// Returns `true` when the rendered text changed.
+/// The relative age of a commit rolls over while the document stays open, so
+/// the caret line is redrawn once a minute. Returns `true` when that redraw is
+/// due and the annotation is showing.
 pub fn poll(ed: &mut EditorState) -> bool {
-    let now = now_ms();
-    let bucket = now / 60_000;
+    let bucket = now_ms() / 60_000;
     let Some(doc) = ed.doc.as_mut() else {
         return false;
     };
@@ -197,20 +182,11 @@ pub fn poll(ed: &mut EditorState) -> bool {
         return false;
     }
     doc.code.blame_bucket = bucket;
-    let Some(blame) = doc.code.blame.clone() else {
-        return false;
-    };
-    let lines = doc.code.line_count();
-    let text = render(&blame, lines, now);
-    if text == doc.code.blame_text {
-        return false;
-    }
-    doc.code.blame_text = text;
-    true
+    doc.code.blame_visible && doc.code.blame.is_some()
 }
 
-/// Mirror the toggle and the draft's state into the column's visibility: the
-/// annotations describe the file on disk, so a dirty buffer hides them.
+/// Mirror the toggle and the draft's state into whether the annotation is
+/// drawn: it describes the file on disk, so a dirty buffer blanks it.
 pub fn sync_visibility(ed: &mut EditorState) {
     let enabled = ed.blame_enabled;
     let Some(doc) = ed.doc.as_mut() else {
@@ -326,14 +302,26 @@ mod tests {
     }
 
     #[test]
-    fn the_column_renders_one_row_per_line() {
+    fn a_line_label_falls_back_to_a_dash() {
         let blame = from_view(view(&[(1, "Alice", 0)]));
-        let text = render(&blame, 3, 60_000);
-        let rows: Vec<&str> = text.split('\n').collect();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], "Alice · 1m");
-        assert_eq!(rows[1], "-");
-        assert_eq!(rows[2], "-");
+        assert_eq!(line_label(&blame, 1, 60_000), "Alice · 1m");
+        // A skipped chunk and a line past the end both read `-`.
+        assert_eq!(line_label(&from_view(view(&[(2, "Bob", 0)])), 1, 0), "-");
+        assert_eq!(line_label(&blame, 9, 60_000), "-");
+    }
+
+    #[test]
+    fn the_age_redraw_is_due_once_a_minute_and_only_while_showing() {
+        let mut e = state_with_doc();
+        apply(&mut e, "a.rs", view(&[(1, "Alice", 10)]));
+        sync_visibility(&mut e);
+        assert!(!poll(&mut e), "same minute as the read");
+        e.doc.as_mut().unwrap().code.blame_bucket -= 1;
+        assert!(poll(&mut e), "a minute later the age is redrawn");
+        e.doc.as_mut().unwrap().code.blame_bucket -= 1;
+        e.doc.as_mut().unwrap().code.edit.insert("x");
+        sync_visibility(&mut e);
+        assert!(!poll(&mut e), "a blank annotation needs no redraw");
     }
 
     #[test]

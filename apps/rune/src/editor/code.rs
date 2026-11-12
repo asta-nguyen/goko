@@ -32,6 +32,7 @@ use rune::{
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
 
+use crate::editor::blame;
 use crate::editor::comment;
 use crate::editor::conflict::{self, Choice, Conflict};
 use crate::editor::find::FindState;
@@ -92,13 +93,11 @@ pub struct CodeState {
     /// Per-line blame for the open file — who last touched each line.
     /// `None` until the first read lands.
     pub blame: Option<crate::editor::blame::Blame>,
-    /// The blame annotations, one per line, rendered as the column's text.
-    /// Rebuilt when the blame changes and when the relative age rolls over.
-    pub blame_text: String,
-    /// The minute the rendered [`Self::blame_text`] was built for.
+    /// The minute the caret line's relative age was last drawn for.
     pub blame_bucket: u64,
-    /// Whether the inline blame column is shown for this document. The toggle
-    /// is global; the column additionally hides while the draft is dirty.
+    /// Whether the annotations are drawn for this document. The toggle is
+    /// global; they additionally blank while the draft is dirty, but the
+    /// column stays mounted so the code does not reflow.
     pub blame_visible: bool,
     /// Whether the inline blame column is switched on at all (mirrored from
     /// the editor's persisted setting).
@@ -134,7 +133,6 @@ impl CodeState {
             conflicts: Vec::new(),
             syntax: None,
             blame: None,
-            blame_text: String::new(),
             blame_bucket: 0,
             blame_visible: false,
             blame_enabled: true,
@@ -371,11 +369,6 @@ impl CodeState {
         &self.gutter_text
     }
 
-    /// The rendered blame column: one annotation per document line.
-    pub fn blame_text(&self) -> &str {
-        &self.blame_text
-    }
-
     pub fn gutter_width(&self) -> f32 {
         let digits = self.gutter_lines.max(1).to_string().len();
         20.0 + digits as f32 * 8.0
@@ -471,8 +464,9 @@ impl<S: 'static> Code<S> {
             .child(gutter_el(code, ink))
             .child(self.surface(s, ink, k));
         // The blame column is a sibling of the scroll surface: it scrolls
-        // with the code, one annotation per line.
-        if code.blame_visible {
+        // with the code. It stays mounted while the draft is dirty (blank),
+        // or the code area would jump by the column's width on the first key.
+        if code.blame_enabled {
             surface = surface.child(blame_el(code, ink));
         }
         root.child(surface).child(self.footer(s, ink))
@@ -1063,34 +1057,33 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
         )
 }
 
-/// Inline-blame column: one annotation per code line, shifted by the same
-/// live scroll offset the gutter uses so every row lines up with its line.
+/// Inline-blame column: the caret line's annotation, shifted by the same live
+/// scroll offset the gutter uses so it lines up with its line. It is placed by
+/// line height, not by padding the text with blank rows, so building it costs
+/// the same on a 10-line and a 10 000-line file.
 fn blame_el(code: &CodeState, ink: &Ink) -> El {
     let shift = code.gutter_shift.clone();
-    // Only the caret's line is annotated; the other rows stay blank so the
-    // text still lines up with the code.
     let bytes = code.edit.text.as_bytes();
     let active = bytes[..code.edit.focus.min(bytes.len())]
         .iter()
         .filter(|b| **b == b'\n')
         .count();
-    let active_only = code
-        .blame_text()
-        .split('\n')
-        .enumerate()
-        .map(|(i, l)| if i == active { l } else { "" })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let label = match code.blame.as_ref().filter(|_| code.blame_visible) {
+        Some(blame) => blame::line_label(blame, active as u64 + 1, blame::now_ms()),
+        None => String::new(),
+    };
     col()
         .w(BLAME_WIDTH)
         .h_full()
         .fill(ink.bg)
         .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
         .clip_rounded(0.0)
+        .label("Blame annotations")
         .child(
-            text(active_only)
+            text(label)
                 .font(CODE_STYLE)
                 .color(ink.muted)
+                .pt(active as f32 * CODE_STYLE.line_px())
                 .pl(10.0)
                 .pr(10.0)
                 .live_offset(&shift),

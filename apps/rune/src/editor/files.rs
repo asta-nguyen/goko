@@ -1641,17 +1641,51 @@ mod tests {
         assert!(s.editor.notice.is_some(), "refusal surfaces a notice");
     }
 
-    /// The inline-blame column and its toggle chip are part of the code
-    /// surface: the annotations sit beside the code, one row per line.
-    #[test]
-    fn the_blame_column_renders_beside_the_code() {
+    fn blamed_scene() -> State {
         let mut s = scene();
         open_text_doc(&mut s, "src/a.rs", "fn main() {}\nfn two() {}\n");
-        {
-            let doc = s.editor.doc.as_mut().unwrap();
-            doc.code.blame_visible = true;
-            doc.code.blame_text = "Alice · 1m\nBob · 2m".into();
-        }
+        let doc = s.editor.doc.as_mut().unwrap();
+        doc.code.blame_visible = true;
+        doc.code.blame = Some(crate::editor::blame::Blame {
+            lines: ["Alice", "Bob"]
+                .map(|author| crate::editor::blame::BlameLine {
+                    author: author.into(),
+                    time: crate::editor::blame::now_ms(),
+                    uncommitted: false,
+                })
+                .into(),
+        });
+        s
+    }
+
+    /// A dirty draft blanks the annotation but keeps the column mounted, so
+    /// the code area does not jump by the column's width on the first key.
+    #[test]
+    fn a_dirty_draft_blanks_the_blame_column_without_removing_it() {
+        let mut s = blamed_scene();
+        s.editor.doc.as_mut().unwrap().code.blame_visible = false;
+        let mut rt = Runtime::new(s, files_only, (1200.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let els = rt.elements();
+        assert!(
+            els.iter()
+                .any(|e| e.label.as_deref() == Some("Blame annotations")),
+            "the blame column was unmounted"
+        );
+        assert!(
+            !els.iter()
+                .filter_map(|e| e.text.as_deref())
+                .any(|t| t.contains("Alice")),
+            "a dirty draft must not show the stale annotation"
+        );
+    }
+
+    /// The inline-blame column and its toggle chip are part of the code
+    /// surface: the caret's line is annotated beside the code.
+    #[test]
+    fn the_blame_column_renders_beside_the_code() {
+        let s = blamed_scene();
         let mut rt = Runtime::new(s, files_only, (1200.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
 
@@ -1670,7 +1704,7 @@ mod tests {
         assert!(ls.contains(&"Blame"), "the blame chip is missing: {ls:?}");
         let texts: Vec<&str> = els.iter().filter_map(|e| e.text.as_deref()).collect();
         assert!(
-            texts.iter().any(|t| t.contains("Alice · 1m")),
+            texts.iter().any(|t| t.contains("Alice")),
             "the blame column is missing: {texts:?}"
         );
     }
