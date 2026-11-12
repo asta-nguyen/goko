@@ -21,18 +21,12 @@ mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use rune::{AppSpec, Cx, El, Tx, col, row};
 
 use crate::data::Data;
 use crate::editor::backend;
 use crate::theme::Ink;
-
-/// The system's Reduce Motion setting, mirrored by the view — the only
-/// place that can read it. Under it the spinner stands still and no frame
-/// is asked for.
-static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
 
 /// How long a notice toast stays open after its text was last set, seconds.
 const NOTICE_LIFETIME: f64 = 8.0;
@@ -311,23 +305,6 @@ impl State {
             att.term.refresh_theme();
             att.lines = att.term.lines(&ink).to_vec();
         }
-    }
-
-    /// The spinner's angle: the app clock's phase, or a still ring under
-    /// Reduce Motion.
-    pub fn spinner_angle(&self) -> f32 {
-        if REDUCED_MOTION.load(Ordering::Relaxed) {
-            return 0.0;
-        }
-        (self.clock as f32 * 2.4) % std::f32::consts::TAU
-    }
-
-    /// `true` while a session works — its dot spins.
-    pub fn spinning(&self) -> bool {
-        self.data
-            .sessions
-            .iter()
-            .any(|view| view.info.state.working())
     }
 
     /// Save the sidebar's width, so it survives the next launch. The write
@@ -1017,9 +994,6 @@ pub(crate) fn test_handle() -> rune::AppHandle<State> {
 /// Editor/Terminal keep the tab strip + controls and swap only the content.
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let ink = &s.ink;
-    // The view is the only place that can read the system's Reduce Motion
-    // setting; the poll needs it to know whether to keep frames coming.
-    REDUCED_MOTION.store(cx.system_reduced_motion(), Ordering::Relaxed);
     let workspace = if s.view == View::Settings {
         col()
             .grow(1.0)
@@ -1316,12 +1290,6 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     tx.wake_after(std::time::Duration::from_secs(5));
     changed |= settings::poll_appearance(s);
     settings::sync_acp_drafts(s);
-    // A working session's dot spins: ask for the next frame so the ring
-    // keeps turning. Reduce Motion stops the animation entirely.
-    if s.spinning() && !REDUCED_MOTION.load(Ordering::Relaxed) {
-        tx.wake_after(std::time::Duration::from_millis(33));
-        changed = true;
-    }
     if let Some(doc) = s.editor.doc.as_mut()
         && let Some(line) = doc.reveal_line.take()
     {
@@ -4884,6 +4852,34 @@ mod view_tests {
         assert!(!s.poll_usage(1.0), "inside the 5 s window");
         assert!(!s.poll_usage(4.9));
         assert!(s.poll_usage(5.1), "the cadence allows the next read");
+    }
+
+    /// A running session's dot spins on the renderer's own clock: the poll
+    /// must not ask for a frame (or report a change) every tick for it.
+    #[test]
+    fn a_running_session_does_not_keep_the_poll_redrawing() {
+        let mut s = State::new(test_handle());
+        s.data.sessions.push(data::SessionView::new(
+            protocol::session::SessionInfo {
+                id: protocol::session::SessionId::new(),
+                title: "shell".into(),
+                argv: vec!["/bin/zsh".into()],
+                cwd: "/work/repo".into(),
+                state: protocol::session::SessionState::Running,
+                pid: None,
+                exit_code: None,
+                error: None,
+                started_at: 1_700_000_000_000,
+                ended_at: None,
+            },
+            None,
+        ));
+        assert!(s.data.sessions[0].info.state.working());
+        poll(&mut s, 0.0, &mut Tx::default());
+        for tick in 1..=5 {
+            let mut tx = Tx::default();
+            assert!(!poll(&mut s, tick as f64 * 0.033, &mut tx), "tick {tick}");
+        }
     }
 
     #[test]

@@ -835,7 +835,6 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .child(theme::state_dot(
             info.state,
             s.session_shown_activity(&sv.info.id),
-            s.spinner_angle(),
             &s.pulse,
             ink,
         ))

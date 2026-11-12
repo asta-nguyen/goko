@@ -1593,7 +1593,6 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
         sv,
         ink,
         badge_bg,
-        s.spinner_angle(),
         s.session_shown_activity(&sv.info.id),
         &s.pulse,
     ));
@@ -1661,7 +1660,6 @@ fn agent_badge(
     s: &SessionView,
     ink: &Ink,
     row_bg: Color,
-    angle: f32,
     activity: Option<app_core::activity::Activity>,
     pulse: &rune::Live<f32>,
 ) -> El {
@@ -1681,7 +1679,7 @@ fn agent_badge(
                     el().absolute(0.0, 0.0)
                         .size(10.0, 10.0)
                         .center()
-                        .child(theme::state_dot(s.info.state, activity, angle, pulse, ink)),
+                        .child(theme::state_dot(s.info.state, activity, pulse, ink)),
                 ),
         )
 }
