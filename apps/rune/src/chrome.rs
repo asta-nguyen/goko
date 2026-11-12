@@ -422,6 +422,16 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
             )
     });
 
+    let path_el = path_el.map(|path| {
+        row()
+            .min_w(0.0)
+            .shrink()
+            .gap(8.0)
+            .items_center()
+            .child(path)
+            .children(crate::terminal_branch::view(s, ink))
+    });
+
     let band = row()
         .key("header")
         .w_full()

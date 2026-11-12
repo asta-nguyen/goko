@@ -2,6 +2,8 @@
 
 ## Changes
 
+- [Current branch in Terminal](changes/terminal-current-branch/delta.md)
+
 - [Current branch in the editor header](changes/editor-current-branch/delta.md)
 
 - [Inline editor conflict resolution](changes/editor-inline-conflicts/delta.md)

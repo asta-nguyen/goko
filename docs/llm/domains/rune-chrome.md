@@ -739,6 +739,30 @@ suppressed.
 
 Evidence: `crates/daemon/src/terminal.rs`, `crates/daemon/src/pty.rs`, `crates/daemon/src/server.rs`, `crates/daemon/tests/paint.rs`, `apps/rune/src/term.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/panes.rs`, `crates/protocol/src/frame.rs`, `crates/protocol/src/message.rs`
 
+### RNC-terminal-current-branch
+
+The system SHALL display the focused Terminal pane’s current Git branch beside the header path, read off the UI thread and refreshed on pane/cwd changes and every three seconds while Terminal is active, hiding stale or failed results and paths outside Git repositories.
+
+#### Scenario: focused pane changes
+
+- GIVEN terminal panes have different working directories
+- WHEN focus or cwd changes
+- THEN the badge uses only the focused pane’s cwd and never displays the previous target’s branch
+
+#### Scenario: Git identity changes
+
+- GIVEN Terminal is active in a Git repository
+- WHEN Git switches branch or detaches HEAD
+- THEN the next refresh displays the branch name or Detached with the short commit ID
+
+#### Scenario: unavailable identity
+
+- GIVEN the focused cwd is outside a Git repository or its Git read fails
+- WHEN the read completes
+- THEN no branch badge is displayed
+
+Evidence: `apps/rune/src/terminal_branch.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`
+
 ### RNC-terminal-wheel
 
 The system SHALL route terminal wheel input according to the program's mouse and
@@ -918,6 +942,8 @@ Evidence: `apps/rune/src/editor/worktree_form.rs`, `apps/rune/src/main.rs`, `app
 
 
 ## Flow
+
+Terminal branch identity follows the focused pane’s session cwd, without falling back to the editor checkout. One background Git read runs at a time; results for a previous target are discarded. The header badge hides on target changes and failed reads. A three-second timer refreshes while Terminal is active; pending reads are checked every 50 ms.
 
 `main.rs`'s `view` composes `chrome::header` full-width, then a row of
 `sidebar::sidebar`, `sidebar::separator`, and a workspace column. When
@@ -1110,6 +1136,8 @@ attributed tools without charging the shared server.
 - [Rune editor](rune-editor.md)
 
 ## Sources
+
+- `apps/rune/src/terminal_branch.rs`
 
 - `apps/rune/src/chrome.rs`
 - `apps/rune/src/daemon.rs`

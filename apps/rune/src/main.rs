@@ -15,6 +15,7 @@ mod settings;
 mod sidebar;
 mod tab_debug;
 mod term;
+mod terminal_branch;
 mod theme;
 mod trace;
 mod update;
@@ -42,6 +43,7 @@ pub enum View {
 }
 
 pub struct State {
+    terminal_branch: terminal_branch::BranchState,
     ink: Ink,
     data: Data,
     /// The child process's activity, keyed by session id: what the
@@ -220,6 +222,7 @@ impl State {
         #[cfg(not(test))]
         update::spawn(handle.clone());
         State {
+            terminal_branch: Default::default(),
             ink,
             data: Data::default(),
             expanded: HashMap::new(),
@@ -1242,6 +1245,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         editor::navigation::navigate(s, pending, tx);
         changed = true;
     }
+    changed |= terminal_branch::poll(s, now, tx);
     changed |= editor::branch::poll(&mut s.editor, s.view == View::Editor, now, tx);
     editor::highlight::poll(&mut s.editor, tx);
     // The inline-blame column's relative ages roll over once a minute.
