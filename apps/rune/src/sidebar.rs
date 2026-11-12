@@ -135,7 +135,10 @@ fn action_button(
         .focusable(true)
         .tab_index(-1)
         .child(theme::ic(icon, 12.0, ink.muted).group_color(ink.text))
-        .on_press(action)
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            action(s);
+            crate::yield_focus(s, tx);
+        })
 }
 
 /// The suffix that makes a repeated name distinct in its accessible label:
@@ -205,7 +208,10 @@ fn session_action_button(
         .focusable(true)
         .tab_index(-1)
         .child(theme::ic(icon, 12.0, ink.muted).group_color(hover_color))
-        .on_press(action)
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            action(s);
+            crate::yield_focus(s, tx);
+        })
 }
 
 /// The actions a session row offers: stop it and close its pane.
@@ -746,7 +752,10 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                     .disabled(!crate::project_map::available(s))
                     .hover(ink.text.alpha(0.08))
                     .press(ink.text.alpha(0.12))
-                    .on_press_tx(crate::project_map::open)
+                    .on_press_tx(|s: &mut State, tx: &mut Tx| {
+                        crate::project_map::open(s, tx);
+                        crate::yield_focus(s, tx);
+                    })
                     .child(theme::ic(&theme::FOLDER_TREE, 14.0, ink.muted)),
             ),
     );
@@ -799,7 +808,10 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                                         theme::ic(&theme::FOLDER_PLUS, 12.0, ink.muted)
                                             .group_color(ink.text),
                                     )
-                                    .on_press_tx(choose_project),
+                                    .on_press_tx(|s: &mut State, tx: &mut Tx| {
+                                        choose_project(s, tx);
+                                        crate::yield_focus(s, tx);
+                                    }),
                             )
                             .child(
                                 el().key("sidebar-projects-new-session")
@@ -824,7 +836,7 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                                         theme::ic(&theme::PLUS, 12.0, ink.muted)
                                             .group_color(ink.text),
                                     )
-                                    .on_press(|s: &mut State| {
+                                    .on_press_tx(|s: &mut State, tx: &mut Tx| {
                                         let width = picker_width(s);
                                         open_new_session(
                                             s,
@@ -832,6 +844,7 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                                             None,
                                             width,
                                         );
+                                        crate::yield_focus(s, tx);
                                     }),
                             ),
                     ),
@@ -1191,7 +1204,10 @@ fn small_button(label: &str, tone: Color, ink: &Ink, action: impl Fn(&mut State)
         .hover(ink.text.alpha(0.10))
         .press(ink.text.alpha(0.16))
         .child(theme::txt(label, T11M, tone).group_color(ink.white))
-        .on_press(action)
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            action(s);
+            crate::yield_focus(s, tx);
+        })
 }
 
 /// ResizableSplit separator: an 8 px zone with a 1 px border line centred,
@@ -1202,7 +1218,6 @@ pub fn separator(_s: &State, ink: &Ink) -> El {
         .h_full()
         .role("separator")
         .label("Resize sidebar")
-        .focusable(true)
         .child(el().absolute(3.5, 0.0).w(1.0).h_full().fill(ink.border))
         .on_drag(|s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
             match d.phase {
@@ -1263,24 +1278,13 @@ fn project_node(
 
     // rootSessions: checkout-filtered for git projects with a root entry,
     // otherwise every session the project owns.
-    let root_sessions: Vec<&SessionView> = if is_git && root.is_some() {
-        data::sessions_for_checkout(worktrees, sessions, root_path)
-    } else {
-        sessions.to_vec()
-    };
     // otherSessions: git projects only — sessions whose cwd matches no checkout.
-    let other_sessions: Vec<&SessionView> = if is_git {
-        sessions
-            .iter()
-            .copied()
-            .filter(|sv| data::checkout_for_cwd(worktrees, &sv.info.cwd).is_none())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let (root_sessions, other_sessions) =
+        project_session_split(is_git, root, root_path, worktrees, sessions);
 
     let workspace_id = data::checkout_key(pid, &project.project.root);
     let active = s.active_workspace.as_deref() == Some(workspace_id.as_str());
+    let cursor = s.sidebar_cursor.as_deref() == Some(format!("sidebar-project:{pid}").as_str());
     let branch_el = branch_subtitle(is_git, root, ink);
 
     // Row: `flex items-center gap-1 rounded-md px-1 py-0.5` (gap 2, px 4, h 24).
@@ -1302,10 +1306,17 @@ fn project_node(
         // its own handler and captures its own presses.
         .press(press_wash(ink))
         .child(
-            row_layer(row_fill(ink, active), row_h)
-                // A row's new-session picker drops from the whole row.
-                .key(format!("sidebar-row:{pid}"))
-                .child(active_edge(ink, active)),
+            row_layer(
+                if cursor {
+                    ink.accent.alpha(0.10)
+                } else {
+                    row_fill(ink, active)
+                },
+                row_h,
+            )
+            // A row's new-session picker drops from the whole row.
+            .key(format!("sidebar-row:{pid}"))
+            .child(active_edge(ink, active)),
         );
 
     // Chevron button 20×20; expanded chevron-down, collapsed chevron-right.
@@ -1496,6 +1507,8 @@ fn session_items(
 fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, indent: bool) -> El {
     let info = &sv.info;
     let selected = s.selected_session.as_deref() == Some(info.id.as_str());
+    let cursor =
+        s.sidebar_cursor.as_deref() == Some(format!("sidebar-session:{}", info.id).as_str());
     let ended = sv.ended();
     let title = sv.title();
     // Sessions titled alike number their accessible names apart, across the
@@ -1563,25 +1576,18 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
         b.px(8.0)
     };
     // bg-accent/10 + text-accent on the row; the fill is always present (alpha 0 when
-    // not selected) so selecting is a colour transition, not a fill appearing.
+    // not selected) so selecting is a colour transition, not a fill appearing. The
+    // ⌥ cursor shares the selected wash — it marks the row the keyboard is on.
     b = b.child(row_layer(
-        ink.accent.alpha(if selected { 0.10 } else { 0.0 }),
+        ink.accent
+            .alpha(if selected || cursor { 0.10 } else { 0.0 }),
         ROW_H,
     ));
+    b = b.key(format!("sidebar-session:{}", info.id));
     let sid = info.id.clone();
     let wid = workspace_id.to_string();
     b = b.on_press_tx(move |s: &mut State, tx: &mut Tx| {
-        s.selected_session = Some(sid.clone());
-        s.active_workspace = Some(wid.clone());
-        // Activating a session activates its workspace tab, opening one when
-        // the session isn't open yet — like TerminalWorkspace's focus path.
-        s.focus_session_tab(&sid);
-        // And shows it: from the Editor or Settings the click leaves for the
-        // Terminal. The tab is chosen first so a draft guard's resume (Save /
-        // Discard) lands on this session; Cancel keeps the Editor.
-        if s.view != crate::View::Terminal {
-            navigation::navigate(s, PendingNav::SetView(crate::View::Terminal), tx);
-        }
+        activate_session(s, &sid, &wid, tx);
     });
 
     let badge_bg = if selected {
@@ -1592,9 +1598,9 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
     b = b.child(agent_badge(
         sv,
         ink,
+        &s.editor.kit,
         badge_bg,
         s.session_shown_activity(&sv.info.id),
-        &s.pulse,
     ));
     // The label cell takes every point the badge and the action cell leave:
     // its texts truncate inside it instead of pushing the actions off the
@@ -1659,10 +1665,19 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
 fn agent_badge(
     s: &SessionView,
     ink: &Ink,
+    k: &rune_kit::Kit,
     row_bg: Color,
     activity: Option<app_core::activity::Activity>,
-    pulse: &rune::Live<f32>,
 ) -> El {
+    // Working takes the whole cell: rune-kit's spinner at the icon's size,
+    // where a corner overlay was too small to tell apart from a still dot.
+    // The `↳ agent` meta beside the name still says which agent it is.
+    if theme::is_working(s.info.state, activity) {
+        return el()
+            .size(16.0, 16.0)
+            .center()
+            .child(theme::working_spinner(16.0, ink, k));
+    }
     let (glyph, color) = theme::agent_glyph(s.agent_id(), ink);
     el().size(16.0, 16.0)
         .child(theme::ic(glyph, 16.0, color))
@@ -1679,7 +1694,7 @@ fn agent_badge(
                     el().absolute(0.0, 0.0)
                         .size(10.0, 10.0)
                         .center()
-                        .child(theme::state_dot(s.info.state, activity, pulse, ink)),
+                        .child(theme::state_dot(s.info.state, activity, ink, k)),
                 ),
         )
 }
@@ -1702,6 +1717,8 @@ fn worktree_group(
         return None;
     }
     let group_open = s.worktree_groups.get(project_id).copied().unwrap_or(true);
+    let cursor =
+        s.sidebar_cursor.as_deref() == Some(format!("sidebar-wtgroup:{project_id}").as_str());
     // Outer ul metrics; the whole header row is one toggle button.
     let mut outer = col()
         .ml(GUIDE)
@@ -1719,6 +1736,11 @@ fn worktree_group(
             .radius(6.0)
             .hover_group()
             .press(press_wash(ink))
+            .key(format!("sidebar-wtgroup:{project_id}"))
+            .child(row_layer(
+                ink.accent.alpha(if cursor { 0.10 } else { 0.0 }),
+                ROW_H,
+            ))
             .label(format!(
                 "{} worktrees of {}{}",
                 if group_open { "Collapse" } else { "Expand" },
@@ -1812,6 +1834,8 @@ fn worktree_node(
     let accessible = format!("{}{}", wt.name, ordinal_suffix(earlier));
     let workspace_id = data::checkout_key(project_id, &wt.path);
     let active = s.active_workspace.as_deref() == Some(workspace_id.as_str());
+    let cursor = s.sidebar_cursor.as_deref()
+        == Some(format!("sidebar-worktree:{project_id}:{index}").as_str());
     let branch_label = wt
         .branch
         .clone()
@@ -1863,9 +1887,16 @@ fn worktree_node(
         .press(press_wash(ink))
         .label(accessible.clone())
         .child(
-            row_layer(row_fill(ink, active), ROW_H)
-                .key(format!("sidebar-row:{}", wt.path))
-                .child(active_edge(ink, active)),
+            row_layer(
+                if cursor {
+                    ink.accent.alpha(0.10)
+                } else {
+                    row_fill(ink, active)
+                },
+                ROW_H,
+            )
+            .key(format!("sidebar-row:{}", wt.path))
+            .child(active_edge(ink, active)),
         )
         .child(
             chevron(wt_open, &accessible, ink).on_press(move |s: &mut State| {
@@ -1950,6 +1981,7 @@ fn other_sessions_group(s: &State, ink: &Ink, sessions: &[&SessionView], workspa
 /// muted) with a flex-1 "Unassigned" button + Count > SessionItems indent=false.
 fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
     let unassigned_active = s.active_workspace.as_deref() == Some(data::UNASSIGNED_WORKSPACE);
+    let cursor = s.sidebar_cursor.as_deref() == Some("sidebar-unassigned");
     let label = row()
         .grow(1.0)
         .h(ROW_H)
@@ -1959,7 +1991,14 @@ fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
         .hover_group()
         .press(press_wash(ink))
         .label("Unassigned")
-        .child(row_layer(row_fill(ink, unassigned_active), ROW_H))
+        .child(row_layer(
+            if cursor {
+                ink.accent.alpha(0.10)
+            } else {
+                row_fill(ink, unassigned_active)
+            },
+            ROW_H,
+        ))
         .child(
             theme::txt(
                 "Unassigned",
@@ -1999,6 +2038,244 @@ fn unassigned_node(s: &State, ink: &Ink, sessions: &[&SessionView]) -> El {
             data::UNASSIGNED_WORKSPACE,
             false,
         ))
+}
+
+// ---------------------------------------------------------------------------
+// The ⌥↑/⌥↓ row walk — the same rows, in the same order, doing what their
+// press does
+// ---------------------------------------------------------------------------
+
+/// A row the keyboard walk can land on.
+#[derive(Clone, Debug)]
+pub struct SidebarRow {
+    /// The element key the row renders under — the cursor's identity and
+    /// the scroll-into-view target.
+    pub key: String,
+    pub target: SidebarTarget,
+}
+
+/// What landing on a row does — the same thing its press does.
+#[derive(Clone, Debug)]
+pub enum SidebarTarget {
+    /// A project root or linked-worktree checkout: the draft-guarded
+    /// `SelectCheckout` the row's own press issues.
+    Checkout {
+        project_id: String,
+        checkout: PathBuf,
+    },
+    /// A session row: select it, focus its tab, show the Terminal.
+    Session {
+        session_id: String,
+        workspace_id: String,
+    },
+    /// The "N worktrees" group header: its expand/collapse toggle.
+    WorktreeGroup { project_id: String },
+    /// The Unassigned header: marks its workspace active.
+    Unassigned,
+}
+
+fn session_row_entry(sv: &SessionView, workspace_id: &str) -> SidebarRow {
+    SidebarRow {
+        key: format!("sidebar-session:{}", sv.info.id),
+        target: SidebarTarget::Session {
+            session_id: sv.info.id.clone(),
+            workspace_id: workspace_id.to_string(),
+        },
+    }
+}
+
+/// The sessions under a project's root checkout vs its "Other sessions"
+/// group — shared by the render and the ⌥ row walk so the two can never
+/// disagree about which rows exist or their order.
+fn project_session_split<'a>(
+    is_git: bool,
+    root: Option<&WorktreeInfo>,
+    root_path: &str,
+    worktrees: &[WorktreeInfo],
+    sessions: &[&'a SessionView],
+) -> (Vec<&'a SessionView>, Vec<&'a SessionView>) {
+    // rootSessions: checkout-filtered for git projects with a root entry,
+    // otherwise every session the project owns.
+    let root_sessions = if is_git && root.is_some() {
+        data::sessions_for_checkout(worktrees, sessions, root_path)
+    } else {
+        sessions.to_vec()
+    };
+    // otherSessions: git projects only — sessions whose cwd matches no checkout.
+    let other_sessions = if is_git {
+        sessions
+            .iter()
+            .copied()
+            .filter(|sv| data::checkout_for_cwd(worktrees, &sv.info.cwd).is_none())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (root_sessions, other_sessions)
+}
+
+/// Every actionable sidebar row in render order — the ⌥↑/⌥↓ walk's list.
+/// Mirrors `sidebar`'s own partitioning and expand state; rows that are
+/// not pressable (the "Other sessions" caption, error lines) are skipped.
+pub fn rows(s: &State) -> Vec<SidebarRow> {
+    let mut rows = Vec::new();
+    let known: HashSet<&str> = s
+        .editor
+        .projects
+        .iter()
+        .map(|p| p.project.id.as_str())
+        .collect();
+    let (by_project, unassigned) = data::partition(&s.data, &known);
+    let selected = s.workspace_id();
+    let empty: &[&SessionView] = &[];
+    for project in s
+        .editor
+        .projects
+        .iter()
+        .filter(|p| p.project.workspace_id == selected)
+    {
+        let pid = project.project.id.as_str();
+        rows.push(SidebarRow {
+            key: format!("sidebar-project:{pid}"),
+            target: SidebarTarget::Checkout {
+                project_id: pid.to_string(),
+                checkout: PathBuf::from(&project.project.root),
+            },
+        });
+        if !s.expanded.get(pid).copied().unwrap_or(true) {
+            continue;
+        }
+        let sessions = by_project.get(pid).map_or(empty, Vec::as_slice);
+        let wt_list = s
+            .editor
+            .sidebar_worktrees
+            .get(pid)
+            .and_then(|e| e.list.as_ref());
+        let is_git = wt_list.is_some_and(|w| w.repo);
+        let worktrees: &[WorktreeInfo] = wt_list.map_or(&[], |w| w.worktrees.as_slice());
+        let root = worktrees.iter().find(|w| w.is_root);
+        let root_path = root.map_or(project.project.root.as_str(), |r| r.path.as_str());
+        let workspace_id = data::checkout_key(pid, &project.project.root);
+        let (root_sessions, other_sessions) =
+            project_session_split(is_git, root, root_path, worktrees, sessions);
+        for sv in &root_sessions {
+            rows.push(session_row_entry(sv, &workspace_id));
+        }
+        let linked: Vec<&WorktreeInfo> = worktrees.iter().filter(|w| !w.is_root).collect();
+        if !linked.is_empty() {
+            rows.push(SidebarRow {
+                key: format!("sidebar-wtgroup:{pid}"),
+                target: SidebarTarget::WorktreeGroup {
+                    project_id: pid.to_string(),
+                },
+            });
+            if s.worktree_groups.get(pid).copied().unwrap_or(true) {
+                for (index, wt) in linked.iter().enumerate() {
+                    rows.push(SidebarRow {
+                        key: format!("sidebar-worktree:{pid}:{index}"),
+                        target: SidebarTarget::Checkout {
+                            project_id: pid.to_string(),
+                            checkout: PathBuf::from(&wt.path),
+                        },
+                    });
+                    if s.worktrees_open
+                        .get(wt.path.as_str())
+                        .copied()
+                        .unwrap_or(true)
+                    {
+                        for sv in &data::sessions_for_checkout(worktrees, sessions, &wt.path) {
+                            rows.push(session_row_entry(sv, &data::checkout_key(pid, &wt.path)));
+                        }
+                    }
+                }
+            }
+        }
+        for sv in &other_sessions {
+            rows.push(session_row_entry(sv, &workspace_id));
+        }
+    }
+    // The Unassigned group renders only while no project is active — the
+    // same gate `sidebar` applies.
+    let loose: Vec<&SessionView> = unassigned
+        .iter()
+        .copied()
+        .filter(|sv| s.loose_in_selected_workspace(sv))
+        .collect();
+    if s.active_project_in_view().is_none() && !loose.is_empty() {
+        rows.push(SidebarRow {
+            key: "sidebar-unassigned".to_string(),
+            target: SidebarTarget::Unassigned,
+        });
+        for sv in &loose {
+            rows.push(session_row_entry(sv, data::UNASSIGNED_WORKSPACE));
+        }
+    }
+    rows
+}
+
+/// One ⌥↑/⌥↓ press: move the cursor to the next/previous row and run its
+/// action — the row's own press, keyboard-style. `false` when the sidebar
+/// has no actionable rows, leaving the chord to the terminal.
+pub fn step(s: &mut State, down: bool, tx: &mut Tx) -> bool {
+    let rows = rows(s);
+    if rows.is_empty() {
+        return false;
+    }
+    let at = s
+        .sidebar_cursor
+        .as_deref()
+        .and_then(|key| rows.iter().position(|row| row.key == key));
+    let next = match (at, down) {
+        (Some(p), true) => (p + 1) % rows.len(),
+        (Some(p), false) => (p + rows.len() - 1) % rows.len(),
+        (None, true) => 0,
+        (None, false) => rows.len() - 1,
+    };
+    let row = rows[next].clone();
+    s.sidebar_cursor = Some(row.key.clone());
+    tx.scroll_into_view_in(PROJECTS_SCROLL_KEY, row.key.clone());
+    activate(s, row.target, tx);
+    true
+}
+
+/// The row's own press, without the pointer.
+fn activate(s: &mut State, target: SidebarTarget, tx: &mut Tx) {
+    match target {
+        SidebarTarget::Checkout {
+            project_id,
+            checkout,
+        } => navigation::navigate(
+            s,
+            PendingNav::SelectCheckout {
+                project_id,
+                checkout,
+            },
+            tx,
+        ),
+        SidebarTarget::Session {
+            session_id,
+            workspace_id,
+        } => activate_session(s, &session_id, &workspace_id, tx),
+        SidebarTarget::WorktreeGroup { project_id } => {
+            let open = s.worktree_groups.get(&project_id).copied().unwrap_or(true);
+            s.worktree_groups.insert(project_id, !open);
+        }
+        SidebarTarget::Unassigned => {
+            s.active_workspace = Some(data::UNASSIGNED_WORKSPACE.to_string());
+        }
+    }
+}
+
+/// A session row's press: select it, focus its workspace tab (opening one
+/// when the session isn't placed yet) and show the Terminal — shared by
+/// the pointer and the ⌥↑/⌥↓ walk.
+pub fn activate_session(s: &mut State, session_id: &str, workspace_id: &str, tx: &mut Tx) {
+    s.selected_session = Some(session_id.to_string());
+    s.active_workspace = Some(workspace_id.to_string());
+    s.focus_session_tab(session_id);
+    if s.view != crate::View::Terminal {
+        navigation::navigate(s, PendingNav::SetView(crate::View::Terminal), tx);
+    }
 }
 
 #[cfg(test)]

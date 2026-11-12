@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
 use protocol::frame::PAINT_SEQ;
@@ -104,15 +104,40 @@ impl Dimensions for Size {
 /// The answers the parser writes for the program's queries (cursor position,
 /// device attributes, status): the terminal is the one that must reply, or a
 /// program that asks, like Codex asking where the cursor is, waits for nothing.
+/// Also the program's own clipboard writes (OSC 52): Claude Code and Codex
+/// capture the mouse, select inside their UI and copy that way.
 #[derive(Clone, Default)]
-struct Replies(Arc<Mutex<Vec<u8>>>);
+struct Replies {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    /// The latest OSC 52 copy not yet put on the clipboard; a newer one
+    /// replaces it.
+    copy: Arc<Mutex<Option<String>>>,
+}
+
+impl Replies {
+    /// Drop what a replay produced: answers and copies the program
+    /// already had.
+    fn discard(&self) {
+        self.bytes.lock().unwrap().clear();
+        self.copy.lock().unwrap().take();
+    }
+}
 
 impl EventListener for Replies {
     fn send_event(&self, event: Event) {
         // ponytail: colour and text-area-size queries are not answered yet;
         // they need the theme and the cell size the parser does not hold.
-        if let Event::PtyWrite(text) = event {
-            self.0.lock().unwrap().extend_from_slice(text.as_bytes());
+        match event {
+            Event::PtyWrite(text) => self
+                .bytes
+                .lock()
+                .unwrap()
+                .extend_from_slice(text.as_bytes()),
+            // Only the clipboard: rune has no primary selection to write.
+            Event::ClipboardStore(ClipboardType::Clipboard, text) => {
+                *self.copy.lock().unwrap() = Some(text);
+            }
+            _ => {}
         }
     }
 }
@@ -261,6 +286,60 @@ impl Terminal {
         None
     }
 
+    /// Whether the program asked for mouse press and drag reports
+    /// (?1000–?1003). While it has, the pane forwards pointer gestures and
+    /// rune's local text selection stands down — the `on_drag` target
+    /// suppresses it, which is what a real terminal does too.
+    pub fn wants_mouse(&self) -> bool {
+        self.term.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// Whether it asked for every-motion reports including hover (?1003).
+    pub fn wants_hover(&self) -> bool {
+        self.term.mode().contains(TermMode::MOUSE_MOTION)
+    }
+
+    /// The report bytes for `kind` over cell `(row, column)`, or `None`
+    /// when the program didn't ask for that kind of event. `mods` is the
+    /// xterm modifier bits: 4 Shift, 8 Alt, 16 Ctrl.
+    pub fn mouse(&self, kind: MouseKind, cell: (usize, usize), mods: u8) -> Option<Vec<u8>> {
+        let mode = *self.term.mode();
+        let (cb, release) = match kind {
+            MouseKind::Press(b) if mode.intersects(TermMode::MOUSE_MODE) => (b + mods, false),
+            MouseKind::Release(b) if mode.intersects(TermMode::MOUSE_MODE) => (b + mods, true),
+            MouseKind::Motion(b)
+                if mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) =>
+            {
+                (32 + b + mods, false)
+            }
+            MouseKind::Hover if mode.contains(TermMode::MOUSE_MOTION) => (35 + mods, false),
+            _ => return None,
+        };
+        let (row, column) = (cell.0 + 1, cell.1 + 1);
+        if mode.contains(TermMode::SGR_MOUSE) {
+            // SGR marks a release with `m` and the button's own code.
+            let last = if release { 'm' } else { 'M' };
+            return Some(format!("\x1b[<{cb};{column};{row}{last}").into_bytes());
+        }
+        // The legacy encoding has no release marker: button code 3.
+        let code = if release { 3 + mods } else { cb };
+        let mut report = vec![0x1b, b'[', b'M', 32 + code];
+        for position in [column, row] {
+            let value = 32 + position;
+            if mode.contains(TermMode::UTF8_MOUSE) && value >= 128 {
+                let mut utf8 = [0; 4];
+                report.extend(
+                    char::from_u32(value as u32)?
+                        .encode_utf8(&mut utf8)
+                        .as_bytes(),
+                );
+            } else {
+                report.push(u8::try_from(value).ok()?);
+            }
+        }
+        Some(report)
+    }
+
     /// Whole lines the wheel points add up to; a part of a line waits.
     fn take_lines(&mut self, dy: f32, line_h: f32) -> i32 {
         self.scroll_rem += dy / line_h.max(1.0);
@@ -360,7 +439,7 @@ impl Terminal {
                 // part of the stream: `next_seq` stays where it was, and the
                 // first live chunk, ahead of it, is parsed whole.
                 self.parser.advance(&mut self.term, &chunk.data);
-                self.replies.0.lock().unwrap().clear();
+                self.replies.discard();
                 self.paint_seen = true;
                 self.last = Instant::now();
                 changed = true;
@@ -381,7 +460,7 @@ impl Terminal {
             }
             self.parser.advance(&mut self.term, data);
             if !self.paint_seen {
-                self.replies.0.lock().unwrap().clear();
+                self.replies.discard();
             }
             self.next_seq = end;
             self.last = Instant::now();
@@ -410,7 +489,14 @@ impl Terminal {
     /// The answers to the program's queries since the last call, to write to
     /// the PTY. Empty on a stream that did not start with a paint.
     pub fn take_replies(&mut self) -> Vec<u8> {
-        std::mem::take(&mut *self.replies.0.lock().unwrap())
+        std::mem::take(&mut *self.replies.bytes.lock().unwrap())
+    }
+
+    /// The text the program copied (OSC 52) since the last call, for the
+    /// clipboard. Like replies, never from a stream that did not start
+    /// with a paint: a replay's old copies stay off the clipboard.
+    pub fn take_copy(&mut self) -> Option<String> {
+        self.replies.copy.lock().unwrap().take()
     }
 
     /// How long the repaint may be held back: the output has to settle
@@ -805,6 +891,20 @@ fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
 /// flood the PTY.
 const MAX_WHEEL_LINES: u32 = 100;
 
+/// What the pointer did over a pane cell, for a program in mouse-report
+/// mode. Button numbers are xterm's: 0 left, 1 middle, 2 right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKind {
+    /// A button went down.
+    Press(u8),
+    /// A button came up.
+    Release(u8),
+    /// The pointer moved with `u8` held — a drag.
+    Motion(u8),
+    /// The pointer moved with no button held — any-motion mode only.
+    Hover,
+}
+
 /// One wheel report for the cell `(row, column)`, in the encoding the program
 /// chose: SGR, or the legacy one (UTF-8 when requested). `None` when the cell
 /// is past what the legacy encoding can address.
@@ -1056,7 +1156,7 @@ fn term_line_el(
     ink: &Ink,
     cell_w: f32,
     line_h: f32,
-    links: Vec<(std::ops::Range<usize>, String)>,
+    links: &[(std::ops::Range<usize>, String)],
 ) -> El {
     let mut content = String::new();
     let mut spans = Vec::with_capacity(line.runs.len());
@@ -1155,9 +1255,9 @@ fn term_line_el(
     let mut el = el;
     for (range, id) in links {
         el = el.link(
-            Link::new(range, id)
+            Link::new(range.clone(), id.clone())
                 .hover(LinkPaint::new().underline(ink.accent))
-                .help("Cmd-click to open"),
+                .help("Click to open"),
         );
     }
     // A grid row is exactly one cell line, whatever the font says.
@@ -1232,18 +1332,37 @@ pub fn cell_metrics() -> (f32, f32) {
 
 /// A pane's rendered rows as elements: the mono cell metrics every pane
 /// shares, so each split's backgrounds and cursor line up with the cells
-/// its grid was sized to.
-pub fn term_lines_el(lines: &[TermLine], ink: &Ink, session: &str) -> Vec<El> {
+/// its grid was sized to. `links` is the attachment's cached
+/// [`row_links`] output — recomputed only when the rows change, not per
+/// frame.
+pub fn term_lines_el(
+    lines: &[TermLine],
+    links: &[Vec<(std::ops::Range<usize>, String)>],
+    ink: &Ink,
+) -> Vec<El> {
     let (cell_w, line_h) = cell_metrics();
     lines
         .iter()
-        .zip(row_links(lines, session))
-        .map(|(l, links)| term_line_el(l, ink, cell_w, line_h, links))
+        .enumerate()
+        .map(|(i, l)| {
+            term_line_el(
+                l,
+                ink,
+                cell_w,
+                line_h,
+                links.get(i).map_or(&[][..], Vec::as_slice),
+            )
+        })
         .collect()
 }
 
-/// Each row's links as (byte range in the row, link id).
-fn row_links(lines: &[TermLine], session: &str) -> Vec<Vec<(std::ops::Range<usize>, String)>> {
+/// Each row's links as (byte range in the row, link id), cached beside the
+/// rendered rows: the scan joins wrapped rows and regexes every byte, so it
+/// runs on content change — never per frame.
+pub(crate) fn row_links(
+    lines: &[TermLine],
+    session: &str,
+) -> Vec<Vec<(std::ops::Range<usize>, String)>> {
     let mut links: Vec<Vec<(std::ops::Range<usize>, String)>> = vec![Vec::new(); lines.len()];
     // Links are found over a whole wrapped text — a URL the terminal broke
     // across rows is one link — then handed back to each row it touches.
@@ -1781,6 +1900,69 @@ mod tests {
     }
 
     #[test]
+    fn the_mouse_reports_presses_and_releases_in_sgr() {
+        let term = terminal_with("\x1b[?1000h\x1b[?1006h");
+        assert!(term.wants_mouse() && !term.wants_hover());
+        // Left press and release at row 3, column 6.
+        assert_eq!(
+            term.mouse(MouseKind::Press(0), (2, 5), 0),
+            Some(b"\x1b[<0;6;3M".to_vec())
+        );
+        assert_eq!(
+            term.mouse(MouseKind::Release(0), (2, 5), 0),
+            Some(b"\x1b[<0;6;3m".to_vec())
+        );
+        // With Ctrl held the modifier bits join the button code.
+        assert_eq!(
+            term.mouse(MouseKind::Press(0), (2, 5), 16),
+            Some(b"\x1b[<16;6;3M".to_vec())
+        );
+        // Click-only mode takes no drag or hover reports.
+        assert_eq!(term.mouse(MouseKind::Motion(0), (2, 5), 0), None);
+        assert_eq!(term.mouse(MouseKind::Hover, (2, 5), 0), None);
+    }
+
+    #[test]
+    fn drag_and_hover_follow_the_tracking_mode() {
+        // ?1002: presses plus drag motion, no hover.
+        let drag = terminal_with("\x1b[?1002h\x1b[?1006h");
+        assert!(drag.wants_mouse() && !drag.wants_hover());
+        assert_eq!(
+            drag.mouse(MouseKind::Motion(0), (2, 5), 0),
+            Some(b"\x1b[<32;6;3M".to_vec())
+        );
+        assert_eq!(drag.mouse(MouseKind::Hover, (2, 5), 0), None);
+        // ?1003: hover too, under the no-button code 35.
+        let any = terminal_with("\x1b[?1003h\x1b[?1006h");
+        assert!(any.wants_mouse() && any.wants_hover());
+        assert_eq!(
+            any.mouse(MouseKind::Hover, (2, 5), 0),
+            Some(b"\x1b[<35;6;3M".to_vec())
+        );
+        assert_eq!(
+            any.mouse(MouseKind::Motion(1), (2, 5), 0),
+            Some(b"\x1b[<33;6;3M".to_vec())
+        );
+    }
+
+    #[test]
+    fn the_legacy_mouse_encoding_marks_releases_with_button_three() {
+        let term = terminal_with("\x1b[?1000h");
+        assert_eq!(
+            term.mouse(MouseKind::Press(0), (0, 0), 0),
+            Some(vec![0x1b, b'[', b'M', 32, 33, 33])
+        );
+        assert_eq!(
+            term.mouse(MouseKind::Release(0), (0, 0), 0),
+            Some(vec![0x1b, b'[', b'M', 35, 33, 33])
+        );
+        // No reporting mode: nothing is encoded.
+        let plain = terminal_with("");
+        assert!(!plain.wants_mouse());
+        assert_eq!(plain.mouse(MouseKind::Press(0), (0, 0), 0), None);
+    }
+
+    #[test]
     fn the_alternate_screen_scrolls_with_arrow_keys() {
         let mut term = terminal_with("\x1b[?1049h");
         assert_eq!(
@@ -1832,6 +2014,42 @@ mod tests {
         .unwrap();
         replayed.feed();
         assert!(replayed.take_replies().is_empty());
+    }
+
+    #[test]
+    fn a_program_copy_reaches_the_clipboard_once_and_never_from_a_replay() {
+        // OSC 52 with "copied" in base64 — what Claude Code and Codex send
+        // for their own in-app selection while they hold the mouse.
+        let copy = b"\x1b]52;c;Y29waWVk\x07".to_vec();
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: PAINT_SEQ,
+            data: b"\x1bc".to_vec(),
+        })
+        .unwrap();
+        tx.send(Output {
+            seq: 0,
+            data: copy.clone(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.take_copy().as_deref(), Some("copied"));
+        assert_eq!(term.take_copy(), None, "taken once");
+
+        // A primary-selection copy has nowhere to go.
+        tx.send(Output {
+            seq: copy.len() as u64,
+            data: b"\x1b]52;p;Y29waWVk\x07".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.take_copy(), None);
+
+        // A raw replay carries copies the user already made.
+        let (mut replayed, tx) = terminal();
+        tx.send(Output { seq: 0, data: copy }).unwrap();
+        replayed.feed();
+        assert_eq!(replayed.take_copy(), None);
     }
 
     #[test]

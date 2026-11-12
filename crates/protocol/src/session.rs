@@ -45,6 +45,15 @@ pub enum SessionState {
     Unknown,
 }
 
+/// Output metrics for a live session: total output bytes produced so far,
+/// and the unix epoch millisecond timestamp of the most recent output.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SessionOutput {
+    pub session_id: SessionId,
+    pub output_seq: u64,
+    pub last_output_at: Option<i64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionInfo {
     pub id: SessionId,

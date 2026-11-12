@@ -120,11 +120,22 @@ pub enum Placement {
 pub struct Attachment {
     pub term: term::Terminal,
     pub lines: Vec<term::TermLine>,
+    /// The rows' links, recomputed with `lines` — `pane_cell` draws both.
+    pub links: Vec<Vec<(std::ops::Range<usize>, String)>>,
     /// The grid size measured from the pane's rect.
     pub cols: usize,
     pub rows: usize,
     /// The size the daemon's PTY was last told about.
     pub pty: (usize, usize),
+}
+
+impl Attachment {
+    /// Swap in freshly rendered rows and their links — the pair `pane_cell`
+    /// draws, kept consistent by construction.
+    pub fn set_lines(&mut self, lines: &[term::TermLine], session: &str) {
+        self.lines = lines.to_vec();
+        self.links = term::row_links(&self.lines, session);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,12 +455,51 @@ impl State {
         true
     }
 
-    /// A Cmd-click on a terminal link: a URL opens in the browser, a file in
-    /// the Editor at its line. A plain click is left to selecting and focus.
+    /// A pointer event over pane `key`'s cell — press, drag motion, hover
+    /// or release — as the mouse-report bytes the program asked for. `x`,
+    /// `y` are the pane's own layout points; the cell clamps to the grid.
+    /// Nothing is sent while the program has no reporting mode on.
+    pub fn pane_mouse(
+        &mut self,
+        key: &str,
+        kind: term::MouseKind,
+        x: f32,
+        y: f32,
+        cell_w: f32,
+        line_h: f32,
+    ) {
+        let Some(att) = self.attachments.get(key) else {
+            return;
+        };
+        let column = ((x - PANE_PAD) / cell_w).max(0.0) as usize;
+        let row = ((y - PANE_PAD) / line_h).max(0.0) as usize;
+        let cell = (
+            row.min(att.rows.saturating_sub(1)),
+            column.min(att.cols.saturating_sub(1)),
+        );
+        // xterm's modifier bits: 4 Shift, 8 Alt, 16 Ctrl.
+        let mods = self.editor.modifiers;
+        let m = (mods.shift as u8) << 2 | (mods.alt as u8) << 3 | (mods.ctrl as u8) << 4;
+        let Some(bytes) = att.term.mouse(kind, cell, m) else {
+            return;
+        };
+        let session = att.term.session;
+        self.write_terminal(session, &bytes);
+    }
+
+    /// A click on a terminal link: a URL opens in the browser, a file in
+    /// the Editor at its line. Rune only reports the link when the press
+    /// began and ended on it, so a drag that selects still selects.
     pub fn open_terminal_link(&mut self, id: &str, tx: &mut Tx) {
-        if !self.editor.modifiers.cmd {
+        // A double-click reports the link twice; one open per moment is plenty.
+        if self
+            .last_link_open
+            .as_ref()
+            .is_some_and(|(last, at)| last == id && at.elapsed() < Duration::from_millis(700))
+        {
             return;
         }
+        self.last_link_open = Some((id.to_string(), std::time::Instant::now()));
         let mut parts = id.split('\t');
         match (parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some("u"), Some(url), ..) => open_url(url),
@@ -1105,6 +1155,7 @@ impl State {
                 Attachment {
                     term: terminal,
                     lines: Vec::new(),
+                    links: Vec::new(),
                     cols,
                     rows,
                     pty: (0, 0),
@@ -1159,10 +1210,18 @@ impl State {
             if flow && att.term.unacked() > 0 {
                 acks.push((att.term.session, att.term.next_seq));
             }
+            // The program's own copy (OSC 52). Taken from every pane so a
+            // stale one never lands later, but only a pane on screen — one
+            // the user can be selecting in — may set the clipboard.
+            let copy = att.term.take_copy();
             // A hidden pane only keeps its grid current: it is laid out
             // and drawn when it comes back.
             if !shown.contains(key) {
                 continue;
+            }
+            if let Some(text) = copy {
+                tx.copy(text);
+                self.notice = Some("Copied to clipboard".into());
             }
             // Fit the grid to the measured pane before drawing.
             if att.term.size() != (att.cols, att.rows) {
@@ -1177,9 +1236,12 @@ impl State {
                 att.pty = (att.cols, att.rows);
                 resizes.push((att.term.session, att.cols as u16, att.rows as u16));
             }
-            let lines = att.term.lines(&ink).to_vec();
-            if att.lines != lines {
-                att.lines = lines;
+            // Compare slices: `lines()` hands back the grid's cache, so an
+            // unchanged screen costs no copy at all.
+            let lines = att.term.lines(&ink);
+            if att.lines.as_slice() != lines {
+                let lines = lines.to_vec();
+                att.set_lines(&lines, key);
                 changed = true;
             }
         }
@@ -1477,7 +1539,10 @@ fn start_button(
             .motion(theme::STATE_SPRING)
             .focusable(true)
             .focus_ring(2.0, 1.0, ink.accent)
-            .on_press(action);
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+                action(s);
+                crate::yield_focus(s, tx);
+            });
     } else {
         b = b
             .opacity(0.4)
@@ -1657,7 +1722,7 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let lines: Vec<El> = s
         .attachments
         .get(&key)
-        .map(|att| term::term_lines_el(&att.lines, ink, &key))
+        .map(|att| term::term_lines_el(&att.lines, &att.links, ink))
         .unwrap_or_default()
         .into_iter()
         .map(|line| {
@@ -1709,7 +1774,11 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
             let bytes = att
                 .term
                 .wheel(e.dy * speed, line_h, cell, e.mods.shift, mods);
-            att.lines = att.term.lines(&ink).to_vec();
+            let lines = att.term.lines(&ink);
+            if att.lines.as_slice() != lines {
+                let lines = lines.to_vec();
+                att.set_lines(&lines, &wheel_key);
+            }
             let session = att.term.session;
             if let Some(bytes) = bytes {
                 s.write_terminal(session, &bytes);
@@ -1740,28 +1809,92 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 s.resize_attachment(&pane_key);
                 tx.wake_after(Duration::from_millis(16));
             }
-        })
-        .child(
-            col()
-                .w_full()
-                .h_full()
-                .min_h(0.0)
-                .min_w(0.0)
-                .padding(PANE_PAD)
-                .shrink()
-                .selection_group(true)
-                // Rows are padded to the grid width; copy without the padding.
-                .selection_copy(|sel| {
-                    let rows: Vec<&str> = sel
-                        .texts()
-                        .iter()
-                        .filter(|t| t.is_selected())
-                        .map(|t| t.text().trim_end())
-                        .collect();
-                    Some(rows.join("\n").trim_end().to_string())
-                })
-                .children(lines),
+        });
+    // A program in mouse-report mode owns the pointer: presses, drags and
+    // hovers become reports, and attaching `on_drag` makes rune stand its
+    // text selection down — what a real terminal does while an app
+    // captures the mouse. With no mode the pane keeps selection and the
+    // handlers stay off entirely. Holding Shift takes the pointer back for
+    // selection, as Ghostty, kitty and Alacritty do: Claude Code and Codex
+    // both capture the mouse, so without it their panes could not select.
+    let (mouse, hover) = s
+        .attachments
+        .get(&key)
+        .filter(|_| !s.editor.modifiers.shift)
+        .map(|att| (att.term.wants_mouse(), att.term.wants_hover()))
+        .unwrap_or_default();
+    if mouse {
+        let (drag_key, sec_key) = (key.clone(), key.clone());
+        cell = cell
+            .pointer_buttons([rune::PointerButton::Middle])
+            .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+                let button = match tx.button() {
+                    rune::PointerButton::Primary => 0,
+                    rune::PointerButton::Middle => 1,
+                    _ => return,
+                };
+                let kind = match d.phase {
+                    rune::Phase::Down => term::MouseKind::Press(button),
+                    rune::Phase::Move => term::MouseKind::Motion(button),
+                    rune::Phase::Up => term::MouseKind::Release(button),
+                };
+                s.pane_mouse(&drag_key, kind, d.x, d.y, cell_w, line_h);
+            })
+            .on_secondary_press_local(move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+                s.pane_mouse(
+                    &sec_key,
+                    term::MouseKind::Press(2),
+                    e.x,
+                    e.y,
+                    cell_w,
+                    line_h,
+                );
+                s.pane_mouse(
+                    &sec_key,
+                    term::MouseKind::Release(2),
+                    e.x,
+                    e.y,
+                    cell_w,
+                    line_h,
+                );
+            });
+    }
+    if hover {
+        let hov_key = key.clone();
+        cell = cell.on_pointer_move_local(
+            move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+                s.pane_mouse(&hov_key, term::MouseKind::Hover, e.x, e.y, cell_w, line_h);
+            },
         );
+    }
+    cell = cell.child(
+        col()
+            .w_full()
+            .h_full()
+            .min_h(0.0)
+            .min_w(0.0)
+            .padding(PANE_PAD)
+            .shrink()
+            .selection_group(true)
+            // Rows are padded to the grid width; copy without the padding.
+            .selection_copy(pane_selection_text)
+            // A finished drag (and any other selection) copies at once —
+            // `dragging` stays true until the press releases.
+            .on_selection_change(|s: &mut State, change, tx| {
+                if change.dragging() {
+                    return;
+                }
+                let Some(sel) = change.selection() else {
+                    return;
+                };
+                let text = pane_selection_text(sel).unwrap_or_else(|| sel.text().to_string());
+                if !text.is_empty() {
+                    tx.copy(text);
+                    s.notice = Some("Copied to clipboard".into());
+                }
+            })
+            .children(lines),
+    );
     // The input method follows the focused, live pane's cursor: the
     // marked text is drawn there and the candidate window opens beside it.
     if focused
@@ -1782,6 +1915,19 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
         cell = cell.child(closing_badge(s, ink, pane, &key));
     }
     cell
+}
+
+/// What a pane selection puts on the clipboard: each selected row trimmed
+/// of the grid's trailing padding, joined with newlines. Shared by Cmd+C
+/// (`selection_copy`) and the copy-on-release in `on_selection_change`.
+fn pane_selection_text(sel: &rune::TextSelection) -> Option<String> {
+    let rows: Vec<&str> = sel
+        .texts()
+        .iter()
+        .filter(|t| t.is_selected())
+        .map(|t| t.text().trim_end())
+        .collect();
+    Some(rows.join("\n").trim_end().to_string())
 }
 
 /// The marked text an input method is composing, over the cursor's cell.
@@ -1846,7 +1992,10 @@ fn badge_button(label: &str, tone: Color, ink: &Ink, f: impl Fn(&mut State) + 's
         .focus_ring(2.0, 1.0, ink.accent)
         .hover(tone.alpha(0.12))
         .child(theme::txt(label, theme::T11M, tone))
-        .on_press(move |s: &mut State| f(s))
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            f(s);
+            crate::yield_focus(s, tx);
+        })
 }
 
 /// Open `url` with the platform's opener, without waiting for it.
@@ -2336,6 +2485,7 @@ mod tests {
             Attachment {
                 term: terminal,
                 lines: Vec::new(),
+                links: Vec::new(),
                 cols: term::TERM_COLS,
                 rows: term::TERM_ROWS,
                 pty: (0, 0),

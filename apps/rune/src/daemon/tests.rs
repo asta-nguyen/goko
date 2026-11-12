@@ -487,6 +487,13 @@ fn the_flow_control_flag_follows_the_daemon_version() {
     assert!(!version_at_least("0.1.2-rc.1", (0, 1, 2)));
 }
 
+#[test]
+fn the_session_output_flag_follows_the_daemon_version() {
+    assert!(!version_at_least("0.1.3", (0, 1, 4)));
+    assert!(version_at_least("0.1.4", (0, 1, 4)));
+    assert!(version_at_least("0.2.0", (0, 1, 4)));
+}
+
 /// The `gokod` binary beside the test executable, when the workspace built
 /// it. `None` when only this package was built.
 fn gokod_binary() -> Option<PathBuf> {

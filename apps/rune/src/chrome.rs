@@ -73,6 +73,7 @@ fn settings_button(open: bool, ink: &Ink) -> El {
                 View::Settings
             };
             navigation::navigate(s, PendingNav::SetView(target), tx);
+            crate::yield_focus(s, tx);
         })
 }
 
@@ -144,8 +145,9 @@ fn usage_chip_for(
             .role("button")
             .focusable(true)
             .expanded(s.usage_menu.as_deref() == Some(agent.as_str()))
-            .on_press(move |s: &mut State| {
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
                 s.usage_menu = Some(agent.clone());
+                crate::yield_focus(s, tx);
             });
     }
     Some(chip)
@@ -411,8 +413,9 @@ pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
             .role("button")
             .label(format!("Path: {path}"))
             .help(format!("{path} (click to copy)"))
-            .on_press_tx(move |_st: &mut State, tx: &mut Tx| {
+            .on_press_tx(move |st: &mut State, tx: &mut Tx| {
                 tx.copy(path_copy.clone());
+                st.notice = Some("Copied to clipboard".into());
             })
             .child(theme::ic(&theme::FOLDER, 14.0, ink.muted))
             .child(
@@ -532,8 +535,9 @@ fn new_tab_menu(ink: &Ink) -> El {
         .child(theme::ic(&theme::CHEVRON_DOWN, 14.0, ink.text))
         // The same new-session picker as the sidebar's `+`, dropping from
         // this caret: it starts where the app is looking, as New tab does.
-        .on_press(|s: &mut State| {
+        .on_press_tx(|s: &mut State, tx: &mut Tx| {
             sidebar::open_new_session(s, "new-tab-menu".to_string(), None, 300.0);
+            crate::yield_focus(s, tx);
         })
 }
 
@@ -569,7 +573,10 @@ fn split_button(
             .help(label.to_string())
             .focusable(true)
             .focus_ring(2.0, 1.0, ink.accent)
-            .on_press(move |s: &mut State| s.split_active(direction));
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+                s.split_active(direction);
+                crate::yield_focus(s, tx);
+            });
     } else {
         b = b.opacity(0.4).disabled(true).help(format!(
             "{label} — connect the daemon and focus a terminal pane"
@@ -616,10 +623,11 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             .help("Close tab".to_string())
             .focusable(true)
             .tab_index(-1)
-            .on_press(move |s: &mut State| {
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
                 // Every pane in the tab enters the close lifecycle; the
                 // tab itself drops when its last pane leaves.
                 s.begin_close_tab(index);
+                crate::yield_focus(s, tx);
             });
     }
 
@@ -668,6 +676,7 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             if s.view != View::Terminal {
                 navigation::navigate(s, PendingNav::SetView(View::Terminal), tx);
             }
+            crate::yield_focus(s, tx);
         })
 }
 
@@ -780,6 +789,7 @@ fn switch_item(
     // Editor view with unsaved work raises Save/Discard/Cancel first.
     .on_press_tx(move |s: &mut State, tx: &mut Tx| {
         navigation::navigate(s, PendingNav::SetView(target), tx);
+        crate::yield_focus(s, tx);
     })
 }
 
@@ -845,8 +855,8 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         .child(theme::state_dot(
             info.state,
             s.session_shown_activity(&sv.info.id),
-            &s.pulse,
             ink,
+            &s.editor.kit,
         ))
         .child(theme::txt(
             info.state.label(),
@@ -881,7 +891,7 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
     if !live || !s.data.connected {
         stop = stop.opacity(0.5);
     }
-    let stop = stop.on_press(move |s: &mut State| {
+    let stop = stop.on_press_tx(move |s: &mut State, tx: &mut Tx| {
         let Some(id) = s.selected_session.clone() else {
             return;
         };
@@ -890,15 +900,18 @@ pub fn controls_bar(s: &State, ink: &Ink) -> El {
         {
             s.stop_session(&id, force);
         }
+        crate::yield_focus(s, tx);
     });
 
     // Close pane closes the focused pane: its session is stopped (force),
     // deleted once it exits, and the split collapses around it — the
     // desktop's pane close. The daemon drives the lifecycle; a failure
     // stays on the pane until Retry.
-    let close = theme::btn_sm("Close pane", None, false, ink).on_press(|s: &mut State| {
-        s.close_focused_pane();
-    });
+    let close =
+        theme::btn_sm("Close pane", None, false, ink).on_press_tx(|s: &mut State, tx: &mut Tx| {
+            s.close_focused_pane();
+            crate::yield_focus(s, tx);
+        });
 
     row()
         .key("controls-bar")

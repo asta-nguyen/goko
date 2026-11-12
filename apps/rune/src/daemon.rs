@@ -89,6 +89,12 @@ pub struct SessionList {
     pub sessions: Vec<SessionInfo>,
 }
 
+/// The daemon's `session.output` payload.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionOutputList {
+    pub sessions: Vec<protocol::session::SessionOutput>,
+}
+
 /// The daemon's `terminal.subscribe` payload.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct SubscribeReply {
@@ -341,6 +347,12 @@ impl Daemon {
     pub fn supports_paint(&self) -> bool {
         self.daemon_version()
             .is_some_and(|version| version_at_least(&version, (0, 1, 3)))
+    }
+
+    /// True when the daemon can report each session's output progress.
+    pub fn supports_session_output(&self) -> bool {
+        self.daemon_version()
+            .is_some_and(|version| version_at_least(&version, (0, 1, 4)))
     }
 
     fn send(&self, cmd: Cmd) -> bool {

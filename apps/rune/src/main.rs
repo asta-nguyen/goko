@@ -13,6 +13,7 @@ mod project_map;
 mod sessions;
 mod settings;
 mod sidebar;
+mod sound;
 mod tab_debug;
 mod term;
 mod terminal_branch;
@@ -59,8 +60,14 @@ pub struct State {
     subagents_at: Option<f64>,
     /// When the activity was last read; the reader polls once a second.
     activity_at: Option<f64>,
-    /// The pulse of a waiting child's dot.
-    pulse: rune::Live<f32>,
+    /// When session output was last polled from the daemon.
+    output_polled_at: Option<f64>,
+    /// In-flight `session.output` request.
+    pending_output: Option<
+        std::sync::mpsc::Receiver<Result<daemon::SessionOutputList, app_core::error::BridgeError>>,
+    >,
+    /// Session key → (output_seq, last_output_at_ms, recorded_at_ms).
+    session_output: HashMap<String, (u64, Option<i64>, i64)>,
     /// Project id → expanded; absent means expanded (ProjectTree default).
     expanded: HashMap<String, bool>,
     selected_session: Option<String>,
@@ -117,7 +124,7 @@ pub struct State {
     auto_project_roots: HashSet<String>,
     /// The wall clock in epoch milliseconds — the elapsed counter's source.
     now_ms: i64,
-    /// The app's clock in seconds — the spinner's phase.
+    /// The app's clock in seconds — the pollers' pacing.
     clock: f64,
     /// A notice from the last failed daemon call.
     notice: Option<String>,
@@ -129,6 +136,12 @@ pub struct State {
     sidebar_width: f32,
     /// The open sidebar menu: the row it belongs to and what it offers.
     sidebar_menu: Option<(sidebar::RowTarget, sidebar::MenuKind)>,
+    /// The ⌥↑/⌥↓ cursor: the element key of the sidebar row the keyboard is
+    /// on — `sidebar::rows` rebuilds the list each press and re-anchors by it.
+    pub sidebar_cursor: Option<String>,
+    /// The last terminal link opened and when — a double-click's repeat is
+    /// swallowed so one gesture opens once.
+    last_link_open: Option<(String, std::time::Instant)>,
     /// The sidebar's workspace selector (rune-kit's searchable select).
     pub workspace_picker: rune_kit::ComboboxState,
     /// The one new-session picker (shell, agent or command to start) and
@@ -186,6 +199,13 @@ pub struct State {
     os_dark: bool,
     /// Scroll speed multiplier for terminal and editor/diff scrolling.
     pub scroll_speed: f32,
+    /// Whether the OS reports the window focused; done sounds stay silent
+    /// while it is.
+    window_focused: bool,
+    /// The `goko.sound_done` setting: a sound when a session finishes.
+    sound_done: bool,
+    /// When the done sound last played, in epoch ms — the debounce.
+    sound_last_ms: i64,
 }
 
 /// `AppSpec::init` is a plain `fn() -> S`, so the `AppHandle` the editor's
@@ -258,6 +278,8 @@ impl State {
             notice_seen: None,
             sidebar_width: sidebar::DEFAULT_SIDEBAR_W,
             sidebar_menu: None,
+            sidebar_cursor: None,
+            last_link_open: None,
             workspace_picker: rune_kit::ComboboxState::default(),
             new_session_picker: rune_kit::ComboboxState::default(),
             new_session_from: None,
@@ -279,12 +301,14 @@ impl State {
             auto_forced: HashSet::new(),
             activity: HashMap::new(),
             activity_at: None,
+            output_polled_at: None,
+            pending_output: None,
+            session_output: HashMap::new(),
             subagents: Default::default(),
             debug: Default::default(),
             debug_at: None,
             tab_menu: None,
             subagents_at: None,
-            pulse: rune::Live::new(1.0),
             usage_at: None,
             usage_menu: None,
             update: update::Status::default(),
@@ -292,6 +316,9 @@ impl State {
             theme_choice: theme::Theme::Dark,
             os_dark: true,
             scroll_speed: 1.0,
+            window_focused: true,
+            sound_done: true,
+            sound_last_ms: 0,
         }
     }
 
@@ -304,9 +331,10 @@ impl State {
         let ink = self.ink;
         // Every pane's terminal holds rows rendered in the old palette:
         // repaint them in the new one — parser, stream and PTY untouched.
-        for att in self.attachments.values_mut() {
+        for (key, att) in self.attachments.iter_mut() {
             att.term.refresh_theme();
-            att.lines = att.term.lines(&ink).to_vec();
+            let lines = att.term.lines(&ink).to_vec();
+            att.set_lines(&lines, key);
         }
     }
 
@@ -614,6 +642,17 @@ impl State {
             }
             backend::Req::Activity { .. } => {
                 if let Ok(backend::ReplyData::Activity(activity)) = &reply.result {
+                    // A session whose activity newly reads done chimes once —
+                    // the reply carries every session, so only a real flip
+                    // counts (the debounce collapses simultaneous ones). A
+                    // session seen for the first time is not a flip: the first
+                    // reply after launch would chime for work done long ago.
+                    if activity.iter().any(|(id, now)| {
+                        *now == app_core::activity::Activity::Done
+                            && self.activity.get(id).is_some_and(|was| was != now)
+                    }) {
+                        self.note_done_sound();
+                    }
                     self.activity = activity.clone();
                 }
                 return;
@@ -742,6 +781,13 @@ impl State {
                     && val <= 10.0
                 {
                     self.scroll_speed = val;
+                }
+                return;
+            }
+            backend::Req::GetSetting { key } if key == settings::SOUND_DONE_KEY => {
+                // Absent stays at the default; only an explicit "0" mutes.
+                if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result {
+                    self.sound_done = raw != "0";
                 }
                 return;
             }
@@ -1190,6 +1236,13 @@ fn setup(s: &mut State, waker: rune::Waker) {
             key: settings::SCROLL_SPEED_KEY.to_string(),
         }),
     );
+    // The done-sound toggle restores on the same settings lane.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: settings::SOUND_DONE_KEY.to_string(),
+        }),
+    );
 }
 
 /// `AppSpec::poll`: drain the daemon's events and the session replies it
@@ -1200,9 +1253,6 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     s.clock = now;
     s.now_ms = data::now_ms();
-    // The waiting child's dot blinks on the app's clock.
-    s.pulse
-        .set(0.35 + 0.65 * (0.5 + 0.5 * (now as f32 * 3.0).sin()));
     // The daemon's events: the session rows, the connection state and the
     // terminal's lag notices all land here.
     for event in s.daemon.take_events() {
@@ -1217,7 +1267,8 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // Every pane of the active tab holds its own terminal attachment;
     // panes that left the view detach.
     changed |= s.sync_terminals();
-    changed |= s.poll_terminals(tx);
+    let term_changed = s.poll_terminals(tx);
+    changed |= term_changed;
     crate::trace::trace(&s.terminal_trace());
     // A subscriber that fell behind takes a fresh subscription, which
     // replays the daemon's retained output.
@@ -1343,10 +1394,30 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     // App shortcuts come before the Terminal forwards keys to the shell.
-    if ev.mods.cmd && !ev.mods.ctrl && app_shortcut(s, ev, tx) {
+    if ev.mods.cmd && !ev.mods.ctrl {
+        if matches!(ev.key, rune::Key::Command('c')) {
+            s.notice = Some("Copied to clipboard".into());
+        }
+        if app_shortcut(s, ev, tx) {
+            return true;
+        }
+    }
+    if ev.mods.alt && alt_shortcut(s, ev, tx) {
         return true;
     }
     if s.view == View::Terminal {
+        // Rune focus left on chrome eats Space — a focused pressable fires
+        // on it — before the pane sees the key. Hand it back; the pane
+        // separator (`split:split-…`) keeps its arrow-key resize and a
+        // focused field keeps its keys.
+        if !shortcut_owned(s)
+            && !s.sidebar_text.focused
+            && tx
+                .focused()
+                .is_some_and(|key| !key.starts_with("split:split-"))
+        {
+            tx.blur();
+        }
         return terminal_key(s, ev, tx.key_base());
     }
     if s.view != View::Editor {
@@ -1383,13 +1454,25 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     }
 }
 
-/// The ⌘ shortcuts: `⌘T` a new shell tab, `⌘1`–`⌘9` the Nth tab, `⌘,` the
-/// Settings toggle. `⌘W` stays window close. Only plain ⌘ chords count: ⇧ and
-/// ⌥ chords belong to other commands. Returns `true` when one ran;
-/// none runs while a surface owns the keyboard.
-fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+/// A chrome press hands the keyboard back: rune focus left on a pressable
+/// eats Space — it re-fires `on_press` — before `on_key` sees it. No-op
+/// while a surface owns the keys, so pickers and menus keep their focus.
+pub(crate) fn yield_focus(s: &State, tx: &mut Tx) {
+    if s.tab_menu.is_none()
+        && s.usage_menu.is_none()
+        && !s.project_map.open
+        && s.sidebar_input.is_none()
+        && !shortcut_owned(s)
+    {
+        tx.blur();
+    }
+}
+
+/// True while a dialog, picker, menu, draft guard or composition owns the
+/// keyboard — app shortcuts wait for it.
+fn shortcut_owned(s: &State) -> bool {
     // The worktree form also holds `sidebar_input`, which `on_key` checked.
-    let owned = s.sidebar_confirm.is_some()
+    s.sidebar_confirm.is_some()
         || s.workspace_remove_confirm.is_some()
         || s.sidebar_menu.is_some()
         || s.sidebar_picker_open()
@@ -1401,11 +1484,18 @@ fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         || s.editor.commit.agent_picker.open
         || s.editor.history.row_menu.is_some()
         // A composition only owns the keys in the Terminal, where the IME types.
-        || (s.view == View::Terminal && !s.preedit.is_empty());
+        || (s.view == View::Terminal && !s.preedit.is_empty())
+}
+
+/// The ⌘ shortcuts: `⌘T` a new shell tab, `⌘1`–`⌘9` the Nth tab, `⌘,` the
+/// Settings toggle. `⌘W` stays window close. Only plain ⌘ chords count: ⇧ and
+/// ⌥ chords belong to other commands. Returns `true` when one ran;
+/// none runs while a surface owns the keyboard.
+fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     let rune::Key::Command(c) = ev.key else {
         return false;
     };
-    if owned || ev.mods.shift || ev.mods.alt {
+    if shortcut_owned(s) || ev.mods.shift || ev.mods.alt {
         return false;
     }
     match c {
@@ -1430,27 +1520,74 @@ fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
             if s.view == View::Settings {
                 return false;
             }
-            let Some(index) = s
-                .visible_tabs()
-                .nth(c as usize - '1' as usize)
-                .map(|(i, _)| i)
-            else {
-                return false;
-            };
-            // Activate before leaving the Editor, so a draft guard's resume
-            // lands on the chosen tab.
-            s.activate_tab(index);
-            if s.view == View::Editor {
-                editor::navigation::navigate(
-                    s,
-                    editor::navigation::PendingNav::SetView(View::Terminal),
-                    tx,
-                );
-            }
-            true
+            activate_visible_tab(s, c as usize - '1' as usize, tx)
         }
         _ => false,
     }
+}
+
+/// Activate the Nth visible tab (0-based `n`), leaving the Editor for the
+/// Terminal like every tab jump. `false` when there is no such tab.
+fn activate_visible_tab(s: &mut State, n: usize, tx: &mut Tx) -> bool {
+    let Some(index) = s.visible_tabs().nth(n).map(|(i, _)| i) else {
+        return false;
+    };
+    // Activate before leaving the Editor, so a draft guard's resume
+    // lands on the chosen tab.
+    s.activate_tab(index);
+    if s.view == View::Editor {
+        editor::navigation::navigate(
+            s,
+            editor::navigation::PendingNav::SetView(View::Terminal),
+            tx,
+        );
+    }
+    true
+}
+
+/// The ⌥ chords, herdr-style: `⌥1`–`⌥9` the Nth visible tab, `⌥←`/`⌥→`
+/// cycle tabs, `⌥↑`/`⌥↓` walk the sidebar rows — each press lands on a row
+/// and runs its action. Terminal view only — the Editor keeps `⌥←`/`⌥→`
+/// for word movement — and a chord falls through when its target does not
+/// exist, so a lone tab's `⌥←`/`⌥→` still reaches the shell as word motion.
+fn alt_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    if s.view != View::Terminal
+        || !ev.mods.alt
+        || ev.mods.cmd
+        || ev.mods.ctrl
+        || ev.mods.logo
+        || shortcut_owned(s)
+    {
+        return false;
+    }
+    match &ev.key {
+        // `key_base` names the key's digit even where ⌥ types another
+        // character (macOS ⌥2 is `™`).
+        rune::Key::Text(text) => match tx.key_base().or_else(|| text.chars().next()) {
+            Some(c @ '1'..='9') => activate_visible_tab(s, c as usize - '1' as usize, tx),
+            _ => false,
+        },
+        rune::Key::Left | rune::Key::Right => cycle_visible_tab(s, ev.key == rune::Key::Right),
+        rune::Key::Up | rune::Key::Down => sidebar::step(s, ev.key == rune::Key::Down, tx),
+        _ => false,
+    }
+}
+
+/// `⌥←`/`⌥→`: the previous/next visible tab, wrapping around.
+fn cycle_visible_tab(s: &mut State, forward: bool) -> bool {
+    let visible: Vec<usize> = s.visible_tabs().map(|(i, _)| i).collect();
+    if visible.len() < 2 {
+        return false;
+    }
+    let at = visible.iter().position(|i| *i == s.active_tab);
+    let next = match (at, forward) {
+        (Some(p), true) => visible[(p + 1) % visible.len()],
+        (Some(p), false) => visible[(p + visible.len() - 1) % visible.len()],
+        (None, true) => visible[0],
+        (None, false) => visible[visible.len() - 1],
+    };
+    s.activate_tab(next);
+    true
 }
 
 /// Modifier snapshot for the code owner's glyph-hit link overlays —
@@ -1516,6 +1653,11 @@ fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
     true
 }
 
+/// The window's focus flips: the done sound only plays while it is away.
+fn on_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
+    s.window_focused = focused;
+}
+
 fn main() {
     // A Dock/Finder launch gets launchd's bare PATH, so `claude`/`codex` would not
     // resolve; adopt the login shell's before any thread or the daemon starts.
@@ -1540,7 +1682,8 @@ fn main() {
     .on_close(on_close)
     .on_quit(on_quit)
     .on_modifiers(on_modifiers)
-    .on_ime(on_ime);
+    .on_ime(on_ime)
+    .on_focus(on_focus);
     APP_HANDLE
         .set(app.handle())
         .unwrap_or_else(|_| unreachable!("app handle registered once"));
@@ -1738,6 +1881,7 @@ mod view_tests {
             panes::Attachment {
                 term: terminal,
                 lines: Vec::new(),
+                links: Vec::new(),
                 cols: term::TERM_COLS,
                 rows: term::TERM_ROWS,
                 pty: (0, 0),
@@ -4267,6 +4411,21 @@ mod view_tests {
         rt.frame(1.0 / 60.0);
     }
 
+    fn alt_key(key: Key) -> KeyEvent {
+        KeyEvent {
+            key,
+            mods: Mods {
+                alt: true,
+                ..Mods::default()
+            },
+        }
+    }
+
+    fn press_alt(rt: &mut Runtime<State>, key: Key) {
+        rt.key(alt_key(key));
+        rt.frame(1.0 / 60.0);
+    }
+
     /// Two open tabs (one session each) in the Terminal view; the second is active.
     fn two_tab_scene() -> State {
         let mut s = State::new(test_handle());
@@ -4443,6 +4602,209 @@ mod view_tests {
 
         assert!(rt.state.pending.is_empty(), "⇧⌘T and ⌥⌘T start no shell");
         assert_eq!(rt.state.view, view_before, "⇧⌘, does not toggle Settings");
+    }
+
+    #[test]
+    fn alt_digits_activate_the_nth_tab_like_cmd_digits() {
+        let mut rt = key_runtime(two_tab_scene());
+        press_alt(&mut rt, Key::Text("1".into()));
+        assert_eq!(rt.state.active_tab, 0);
+        press_alt(&mut rt, Key::Text("2".into()));
+        assert_eq!(rt.state.active_tab, 1);
+        press_alt(&mut rt, Key::Text("9".into()));
+        assert_eq!(rt.state.active_tab, 1, "no ninth tab");
+        assert_eq!(rt.state.view, View::Terminal);
+    }
+
+    #[test]
+    fn alt_arrows_cycle_tabs_and_wrap_around() {
+        let mut rt = key_runtime(two_tab_scene());
+        // two_tab_scene leaves the second tab active.
+        press_alt(&mut rt, Key::Left);
+        assert_eq!(rt.state.active_tab, 0);
+        press_alt(&mut rt, Key::Left);
+        assert_eq!(rt.state.active_tab, 1, "wraps to the last tab");
+        press_alt(&mut rt, Key::Right);
+        assert_eq!(rt.state.active_tab, 0, "wraps to the first tab");
+        press_alt(&mut rt, Key::Right);
+        assert_eq!(rt.state.active_tab, 1);
+    }
+
+    #[test]
+    fn alt_arrows_with_a_single_tab_fall_through_to_the_shell() {
+        let mut s = start_scene();
+        let session = seed_session(&mut s, "one", "/tmp");
+        s.focus_session_tab(&session);
+        let mut rt = key_runtime(s);
+        rt.update(|s, tx| {
+            assert!(
+                !alt_shortcut(s, &alt_key(Key::Left), tx),
+                "one tab: nothing to cycle, word motion reaches the shell"
+            );
+            assert!(!alt_shortcut(s, &alt_key(Key::Right), tx));
+        });
+        assert_eq!(rt.state.active_tab, 0);
+    }
+
+    #[test]
+    fn alt_up_down_walks_the_sidebar_rows_in_render_order() {
+        let mut s = sidebar_scene();
+        s.view = View::Terminal;
+        let root_sess = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        let wt_sess = seed_session_in(&mut s, "/work/a/feat-a", Some("p1"));
+        let p2_sess = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        let loose = seed_session(&mut s, "loose", "/tmp");
+        let mut rt = key_runtime(s);
+
+        // The walk's list is the sidebar's own order: project, its root
+        // sessions, the worktree group and each worktree's sessions, then
+        // the next project — Unassigned last while no project is active.
+        let keys: Vec<String> = crate::sidebar::rows(&rt.state)
+            .iter()
+            .map(|row| row.key.clone())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "sidebar-project:p1".to_string(),
+                format!("sidebar-session:{root_sess}"),
+                "sidebar-wtgroup:p1".to_string(),
+                "sidebar-worktree:p1:0".to_string(),
+                format!("sidebar-session:{wt_sess}"),
+                "sidebar-worktree:p1:1".to_string(),
+                "sidebar-project:p2".to_string(),
+                format!("sidebar-session:{p2_sess}"),
+                "sidebar-wtgroup:p2".to_string(),
+                "sidebar-worktree:p2:0".to_string(),
+                "sidebar-unassigned".to_string(),
+                format!("sidebar-session:{loose}"),
+            ]
+        );
+
+        // First press lands on the first row: p1's project row selects its
+        // root checkout through the same guarded path a click takes — and
+        // activating a project hides the Unassigned group, so the list
+        // shrinks under the cursor.
+        press_alt(&mut rt, Key::Down);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some("sidebar-project:p1")
+        );
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p1"));
+        assert_eq!(rt.state.editor.checkout, Some(PathBuf::from("/work/a/web")));
+        assert_eq!(
+            crate::sidebar::rows(&rt.state).len(),
+            10,
+            "Unassigned is gone"
+        );
+
+        // Next is p1's root session: the row's own focus+show action.
+        press_alt(&mut rt, Key::Down);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some(format!("sidebar-session:{root_sess}").as_str())
+        );
+        assert_eq!(
+            rt.state.selected_session.as_deref(),
+            Some(root_sess.as_str())
+        );
+
+        // The worktree group header is a row too: landing on it toggles —
+        // closed, p1's worktree rows leave the list and the walk lands on
+        // p2's project row.
+        press_alt(&mut rt, Key::Down);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some("sidebar-wtgroup:p1")
+        );
+        assert_eq!(rt.state.worktree_groups.get("p1"), Some(&false));
+        press_alt(&mut rt, Key::Down);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some("sidebar-project:p2")
+        );
+        assert_eq!(rt.state.editor.project_id.as_deref(), Some("p2"));
+
+        // Back onto the header reopens the group; the next press enters
+        // feat-a's checkout row, then its session.
+        press_alt(&mut rt, Key::Up);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some("sidebar-wtgroup:p1")
+        );
+        assert_eq!(rt.state.worktree_groups.get("p1"), Some(&true));
+        press_alt(&mut rt, Key::Down);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some("sidebar-worktree:p1:0")
+        );
+        assert_eq!(
+            rt.state.editor.checkout,
+            Some(PathBuf::from("/work/a/feat-a"))
+        );
+        press_alt(&mut rt, Key::Down);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some(format!("sidebar-session:{wt_sess}").as_str())
+        );
+        assert_eq!(rt.state.selected_session.as_deref(), Some(wt_sess.as_str()));
+    }
+
+    #[test]
+    fn alt_up_from_nowhere_lands_on_the_last_row() {
+        let mut s = sidebar_scene();
+        s.view = View::Terminal;
+        let loose = seed_session(&mut s, "loose", "/tmp");
+        let mut rt = key_runtime(s);
+        // No project is active, so Unassigned and its session close the list.
+        press_alt(&mut rt, Key::Up);
+        assert_eq!(
+            rt.state.sidebar_cursor.as_deref(),
+            Some(format!("sidebar-session:{loose}").as_str())
+        );
+        assert_eq!(rt.state.selected_session.as_deref(), Some(loose.as_str()));
+        assert_eq!(
+            rt.state.active_workspace.as_deref(),
+            Some(crate::data::UNASSIGNED_WORKSPACE)
+        );
+    }
+
+    #[test]
+    fn alt_up_down_with_an_empty_sidebar_fall_through() {
+        let mut s = State::new(test_handle());
+        s.view = View::Terminal;
+        let mut rt = key_runtime(s);
+        rt.update(|s, tx| {
+            assert!(!alt_shortcut(s, &alt_key(Key::Down), tx));
+            assert!(!alt_shortcut(s, &alt_key(Key::Up), tx));
+        });
+        assert!(rt.state.sidebar_cursor.is_none());
+    }
+
+    #[test]
+    fn alt_chords_wait_behind_the_sidebar_menu() {
+        let mut s = two_tab_scene();
+        s.open_menu(
+            crate::sidebar::RowTarget::Project {
+                project_id: "p1".into(),
+            },
+            crate::sidebar::MenuKind::More,
+        );
+        let mut rt = key_runtime(s);
+        press_alt(&mut rt, Key::Right);
+        press_alt(&mut rt, Key::Text("1".into()));
+        assert_eq!(rt.state.active_tab, 1, "no tab switch under the menu");
+    }
+
+    #[test]
+    fn alt_arrows_in_the_editor_view_are_left_to_word_motion() {
+        let mut rt = key_runtime(two_tab_scene());
+        rt.update(|s, _| s.view = View::Editor);
+        rt.update(|s, tx| {
+            assert!(!alt_shortcut(s, &alt_key(Key::Left), tx));
+            assert!(!alt_shortcut(s, &alt_key(Key::Down), tx));
+        });
+        assert_eq!(rt.state.active_tab, 1);
     }
 
     #[test]
@@ -4850,6 +5212,60 @@ mod view_tests {
     }
 
     #[test]
+    fn the_done_sound_setting_restores_on_its_getsetting_reply() {
+        let mut s = State::new(test_handle());
+        assert!(s.sound_done, "absent means on");
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: settings::SOUND_DONE_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(Some("0".into()))),
+        ));
+        assert!(!s.sound_done);
+        // A missing row leaves the default alone.
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: settings::SOUND_DONE_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(None)),
+        ));
+        assert!(s.sound_done);
+    }
+
+    #[test]
+    fn an_activity_flip_to_done_chimes_once() {
+        let mut s = State::new(test_handle());
+        s.window_focused = false;
+        let reply_with = |activity: HashMap<String, app_core::activity::Activity>| {
+            reply(
+                Req::Activity {
+                    sessions: Vec::new(),
+                    previous: HashMap::new(),
+                },
+                Ok(ReplyData::Activity(activity)),
+            )
+        };
+        let mut activity = HashMap::new();
+        activity.insert("sess-1".to_string(), app_core::activity::Activity::Working);
+        s.apply_reply(reply_with(activity.clone()));
+        assert_eq!(crate::sound::test_plays(), 0, "working is not done");
+        activity.insert("sess-1".to_string(), app_core::activity::Activity::Done);
+        s.apply_reply(reply_with(activity.clone()));
+        assert_eq!(crate::sound::test_plays(), 1, "the flip chimes");
+        // Past the debounce, the same done state does not chime again.
+        s.now_ms += 2_000;
+        s.apply_reply(reply_with(activity));
+        assert_eq!(crate::sound::test_plays(), 1);
+        // Focused windows stay silent even on a fresh flip.
+        s.window_focused = true;
+        let mut next = HashMap::new();
+        next.insert("sess-2".to_string(), app_core::activity::Activity::Done);
+        s.apply_reply(reply_with(next));
+        assert_eq!(crate::sound::test_plays(), 1);
+    }
+
+    #[test]
     fn poll_usage_paces_the_worker_reads() {
         let mut s = State::new(test_handle());
         assert!(s.poll_usage(0.0), "the first read goes out");
@@ -4930,6 +5346,27 @@ mod view_tests {
             .filter(|element| element.label.as_deref() == Some("Sign in"))
             .count();
         assert_eq!(sign_ins, 1, "only the named account can sign in");
+    }
+
+    /// An open combobox reports `expanded` on its trigger — the chevron
+    /// and the a11y state come from the same flag.
+    #[test]
+    fn an_open_combobox_reports_expanded_on_its_trigger() {
+        let mut s = State::new(test_handle());
+        s.settings.section = crate::settings::Section::Editor;
+        let mut rt = Runtime::new(s, settings_view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let expanded = |rt: &Runtime<State>| {
+            els(rt)
+                .iter()
+                .find(|e| e.key.as_deref() == Some("settings-indent-value-trigger"))
+                .expect("the indent picker mounts")
+                .expanded
+        };
+        assert_eq!(expanded(&rt), Some(false), "closed reports collapsed");
+        click_key(&mut rt, "settings-indent-value-trigger");
+        assert!(rt.state.settings.indent_picker.open, "press opens the list");
+        assert_eq!(expanded(&rt), Some(true), "open reports expanded");
     }
 
     /// Settings → Updates names the running version, and offers the install
@@ -5038,7 +5475,7 @@ mod view_tests {
             .attachments
             .values()
             .next()
-            .map(|att| term::term_lines_el(&att.lines, &s.ink, ""))
+            .map(|att| term::term_lines_el(&att.lines, &att.links, &s.ink))
             .unwrap_or_default();
         col().w(220.0).min_h(0.0).children(rows)
     }
@@ -5071,7 +5508,7 @@ mod view_tests {
             lines.iter().any(|l| l.text().contains("W W")),
             "the styled rows fed the grid"
         );
-        s.attachments.get_mut(&key).unwrap().lines = lines;
+        s.attachments.get_mut(&key).unwrap().set_lines(&lines, &key);
 
         let mut rt = Runtime::new(s, narrow_term_view, (400.0, 300.0), Env::new(true, 2.0));
         rt.frame(0.0);
@@ -5213,6 +5650,72 @@ mod view_tests {
     }
 
     #[test]
+    fn a_working_session_row_shows_rune_kits_spinner_in_place_of_its_icon() {
+        let mut s = sidebar_scene();
+        let key = seed_session(&mut s, "agent", "/work/a/web");
+        s.focus_session_tab(&key);
+        s.activity
+            .insert(key.clone(), app_core::activity::Activity::Working);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let row = format!("sidebar-session:{key}");
+        // The radar's 25 dots (`d0`–`d24`) mount inside the session's row.
+        let dots = |rt: &Runtime<State>| {
+            els(rt)
+                .iter()
+                .filter(|e| {
+                    e.path.contains(&row) && e.key.as_deref().is_some_and(|k| k.starts_with('d'))
+                })
+                .count()
+        };
+        assert_eq!(dots(&rt), 25, "the working row draws the spinner");
+
+        // Done: the agent icon and its green dot come back.
+        rt.update(|s, _| {
+            s.activity
+                .insert(key.clone(), app_core::activity::Activity::Done);
+        });
+        // The spinner fades out through its exit presence first (~0.3 s).
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(dots(&rt), 0, "a finished row has no spinner");
+    }
+
+    #[test]
+    fn the_terminal_hands_keyboard_focus_back_from_chrome_rows() {
+        // Rune focus left on a pressable eats Space — it re-fires
+        // `on_press` — before `on_key` sees it. A chrome press yields the
+        // focus in the same frame, so the keystroke reaches the terminal.
+        let mut s = sidebar_scene();
+        let key = seed_session(&mut s, "agent", "/work/a/web");
+        s.focus_session_tab(&key);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        // Click the tab pill left of centre — on the title, away from the
+        // close X — the way a stray click lands focus on chrome.
+        let tab_key = format!("tab:tab-{key}");
+        let tab = els(&rt)
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(tab_key.as_str()))
+            .expect("the session's tab pill mounted");
+        let (x, y) = (tab.rect[0] + 24.0, tab.rect[1] + tab.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        let stuck: Vec<_> = els(&rt)
+            .iter()
+            .filter(|e| e.focused)
+            .map(|e| (e.key.clone(), e.role, e.path.clone()))
+            .collect();
+        assert!(stuck.is_empty(), "chrome kept rune focus: {stuck:?}");
+    }
+
+    #[test]
     fn dragging_across_terminal_rows_selects_them_and_cmd_c_copies() {
         let mut s = State::new(test_handle());
         let key = seed_session(&mut s, "claude", "/work/repo");
@@ -5268,6 +5771,174 @@ mod view_tests {
         assert!(
             copied.lines().all(|l| l == l.trim_end()),
             "no grid padding: {copied:?}"
+        );
+        assert_eq!(rt.state.notice.as_deref(), Some("Copied to clipboard"));
+    }
+
+    #[test]
+    fn a_finished_selection_copies_without_cmd_c() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..60).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let rows: Vec<[f32; 4]> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.text.as_deref().is_some_and(|t| t.starts_with("row")))
+            .map(|e| e.rect)
+            .collect();
+        let (first, last) = (rows[1], rows[rows.len() - 2]);
+        let (x0, y0) = (first[0] + 2.0, first[1] + first[3] / 2.0);
+        let (x1, y1) = (last[0] + 20.0, last[1] + last[3] / 2.0);
+        rt.pointer_down(x0, y0);
+        rt.pointer_move((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        rt.pointer_move(x1, y1);
+        // Mid-drag frames hear the change as `dragging`: nothing copies yet.
+        rt.frame(1.0 / 60.0);
+        assert!(
+            rt.copy_request.is_none(),
+            "a drag in progress must not copy"
+        );
+        rt.pointer_up(x1, y1);
+        rt.frame(1.0 / 60.0);
+        let copied = rt
+            .copy_request
+            .as_ref()
+            .map(|w| w.content().text().to_owned())
+            .unwrap_or_default();
+        assert!(copied.contains("row"), "release copied {copied:?}");
+        assert!(copied.contains('\n'), "several rows: {copied:?}");
+        assert!(
+            copied.lines().all(|l| l == l.trim_end()),
+            "no grid padding: {copied:?}"
+        );
+        assert_eq!(rt.state.notice.as_deref(), Some("Copied to clipboard"));
+    }
+
+    /// A pane whose program captures the mouse (`prefix` turns the mode on)
+    /// over 60 numbered rows, mounted with the poll running.
+    fn captured_pane_runtime(prefix: &str) -> Runtime<State> {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let rows: String = (0..60).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: format!("{prefix}{rows}").into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        rt
+    }
+
+    /// Drag from the second shown row to the second-to-last and release.
+    fn drag_across_rows(rt: &mut Runtime<State>) {
+        let rows: Vec<[f32; 4]> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.text.as_deref().is_some_and(|t| t.starts_with("row")))
+            .map(|e| e.rect)
+            .collect();
+        let (first, last) = (rows[1], rows[rows.len() - 2]);
+        let (x0, y0) = (first[0] + 2.0, first[1] + first[3] / 2.0);
+        let (x1, y1) = (last[0] + 20.0, last[1] + last[3] / 2.0);
+        rt.pointer_down(x0, y0);
+        rt.pointer_move((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        rt.pointer_move(x1, y1);
+        rt.frame(1.0 / 60.0);
+        rt.pointer_up(x1, y1);
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn shift_drag_selects_and_copies_while_the_program_captures_the_mouse() {
+        let mode = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+        // A plain drag belongs to the program: nothing is selected locally.
+        let mut rt = captured_pane_runtime(mode);
+        drag_across_rows(&mut rt);
+        assert!(rt.copy_request.is_none(), "a captured drag copied");
+
+        // Shift takes the pointer back: the drag selects and its release copies.
+        let mut rt = captured_pane_runtime(mode);
+        rt.update(|s, _| {
+            s.editor.set_modifiers(Mods {
+                shift: true,
+                ..Mods::default()
+            })
+        });
+        rt.frame(1.0 / 60.0);
+        drag_across_rows(&mut rt);
+        let copied = rt
+            .copy_request
+            .as_ref()
+            .map(|w| w.content().text().to_owned())
+            .unwrap_or_default();
+        assert!(
+            copied.contains("row") && copied.contains('\n'),
+            "shift-drag copied {copied:?}"
+        );
+    }
+
+    #[test]
+    fn a_program_copy_on_the_shown_pane_reaches_the_clipboard() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let terminal = term::Terminal::new(session, rx, ready_rx);
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        // The live stream starts with the daemon's paint; then the program
+        // copies its own selection with OSC 52 ("copied" in base64).
+        tx.send(daemon::Output {
+            seq: protocol::frame::PAINT_SEQ,
+            data: b"\x1bc".to_vec(),
+        })
+        .unwrap();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: b"\x1b]52;c;Y29waWVk\x07".to_vec(),
+        })
+        .unwrap();
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(
+            rt.copy_request
+                .as_ref()
+                .map(|w| w.content().text().to_owned())
+                .as_deref(),
+            Some("copied")
         );
     }
 
@@ -5331,7 +6002,7 @@ mod view_tests {
     }
 
     #[test]
-    fn a_terminal_link_opens_only_on_cmd_click_and_never_takes_tab() {
+    fn a_terminal_link_opens_on_click_and_never_takes_tab() {
         let mut s = State::new(test_handle());
         let key = seed_session(&mut s, "claude", "/work/repo");
         s.focus_session_tab(&key);
@@ -5374,21 +6045,10 @@ mod view_tests {
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(1.0 / 60.0);
-        assert_eq!(rt.state.notice, None, "a plain click does nothing");
-
-        rt.update(|s, _| {
-            s.editor.set_modifiers(Mods {
-                cmd: true,
-                ..Mods::default()
-            })
-        });
-        rt.pointer_down(x, y);
-        rt.pointer_up(x, y);
-        rt.frame(1.0 / 60.0);
         assert_eq!(
             rt.state.notice.as_deref(),
             Some("nope/zzz.rs: no such file"),
-            "Cmd-click resolved the file"
+            "a click resolved the file"
         );
     }
 

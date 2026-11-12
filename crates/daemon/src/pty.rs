@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
 
 const MAX_DIMENSION: u16 = 1000;
@@ -107,10 +107,13 @@ struct Shared {
     acknowledged: u64,
     /// Mirrors `acknowledged` so `stream_output` can wait for credit.
     acknowledged_watch: watch::Sender<u64>,
+    /// Unix epoch millisecond timestamp of the most recent output written to the buffer.
+    last_output_at: Option<i64>,
 }
 
 impl Shared {
     fn publish(&mut self, bytes: &[u8]) {
+        self.last_output_at = Some(now_ms());
         let seq = self.buffer.append(bytes);
         self.model.advance(bytes);
         if self.subscribers.is_empty() {
@@ -268,6 +271,7 @@ impl PtyProcess {
             closed: false,
             acknowledged: 0,
             acknowledged_watch: watch::channel(0).0,
+            last_output_at: None,
         }));
         let gate = Arc::new(Condvar::new());
         if let Err(error) = spawn_reader(reader, Arc::clone(&shared), Arc::clone(&gate)) {
@@ -361,6 +365,12 @@ impl PtyProcess {
     /// Return the current replay window as (oldest offset, bytes, next offset).
     pub fn buffer(&self) -> (u64, Vec<u8>, u64) {
         lock_unpoisoned(&self.shared).buffer.snapshot()
+    }
+
+    /// Return the current output sequence number and the last output timestamp in epoch ms.
+    pub fn output_info(&self) -> (u64, Option<i64>) {
+        let shared = lock_unpoisoned(&self.shared);
+        (shared.buffer.next_seq(), shared.last_output_at)
     }
 
     /// Attach a subscriber. The snapshot and the registration happen under the lock the
@@ -655,6 +665,13 @@ fn spawn_waiter(
         let _ = child.wait();
     }
     result
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

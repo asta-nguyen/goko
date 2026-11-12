@@ -586,6 +586,21 @@ fn editor_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
             .build(&s.editor.kit, layer),
             ink,
         ))
+        .child(field(
+            "Done Sound",
+            "Play a sound when a session finishes while Goko is in the background.",
+            rune_kit::Checkbox::new(s.sound_done)
+                .label("Play when a session finishes")
+                .on_toggle(|s: &mut State| {
+                    s.sound_done = !s.sound_done;
+                    s.account_job(Req::SetSetting {
+                        key: SOUND_DONE_KEY.to_string(),
+                        value: if s.sound_done { "1" } else { "0" }.to_string(),
+                    });
+                })
+                .build(&s.editor.kit),
+            ink,
+        ))
 }
 
 /// The indent picker's options: the labels UnitChoice parses back from.
@@ -599,6 +614,9 @@ const INDENT_OPTIONS: [(UnitChoice, &str); 5] = [
 
 /// The key under which scroll speed multiplier is stored.
 pub const SCROLL_SPEED_KEY: &str = "goko.scroll_speed";
+
+/// The key under which the done sound is stored; absent means on.
+pub const SOUND_DONE_KEY: &str = "goko.sound_done";
 
 /// Scroll speed multiplier options: (multiplier, label).
 pub const SCROLL_SPEED_OPTIONS: [(f32, &str); 6] = [
