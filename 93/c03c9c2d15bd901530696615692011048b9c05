@@ -1,0 +1,37 @@
+docs/agent-devkit/INDEX.md
+  s_1176d166858eee::t_b17c17de33f3cf 5-6
+docs/agent-devkit/changes/terminal-current-branch/handoff.md
+  s_1176d166858eee::t_b6e7038e895356 1-35
+docs/agent-devkit/changes/terminal-current-branch/delta.md
+  s_1176d166858eee::t_b17c17de33f3cf 1-38
+apps/rune/src/chrome.rs
+  s_1176d166858eee::t_02bd0f915c81d4 425-434
+apps/rune/src/main.rs
+  s_1176d166858eee::t_6c5caea5ebad66 18
+  s_1176d166858eee::t_02bd0f915c81d4 46,225,1248
+docs/llm/domains/rune-chrome.md
+  s_1176d166858eee::t_0c001cf660efa9 946-947,1140
+  s_1176d166858eee::t_84b08c520bb259 742-765
+  s_1176d166858eee::t_a2d3c8c53bd41f 1141
+apps/rune/src/terminal_branch.rs
+  s_1176d166858eee::t_6c5caea5ebad66 7-12,53-55,79-81,100-102,104-130,216-227,230-233
+  s_1176d166858eee::t_f11421406deda7 141-144,146-150,162-165,167-172,174-186,189-192,194-205
+  s_1176d166858eee::t_9a34eb8c5942b8 1-6,13-52,56-78,82-99,103,131-136,214-215,228-229,234-249
+  s_1176d166858eee::t_f8063597e91ad9 137-140,145,151-161,166,173,187-188,193,206-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "93c03c9c2d15bd901530696615692011048b9c05",
+  "prompts": {},
+  "sessions": {
+    "s_1176d166858eee": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1cf13-9fd1-7f53-ae17-746d50080741",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
