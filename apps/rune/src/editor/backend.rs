@@ -625,27 +625,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
     let storage = home::home_dir().ok().map(|home| Storage::open(&home));
     #[cfg(test)]
     let storage: Option<Storage> = None;
-    while let Ok(job) = rx.recv() {
-        if shutdown.load(Ordering::SeqCst) && !is_mutating(&job.req) {
-            // Shutdown drains the queue but never starts new reads — a
-            // 128-job backlog must not delay exit behind git calls. The
-            // reply still posts an Err so any still-mounted UI unwinds
-            // its loading flags deterministically.
-            let reply = Reply {
-                generation: job.generation,
-                req: job.req.clone(),
-                checkout_key: job.checkout_key.clone(),
-                result: Err("editor backend is shutting down".to_string()),
-            };
-            let h = handle.clone();
-            handle.update(move |s: &mut State, _tx| {
-                s.apply_reply(reply);
-                crate::editor::worktree_form::after_reply(s);
-                let _ = &h;
-            });
-            continue;
-        }
-        let reply = run_job(&storage, &job);
+    serve(rx, &storage, &shutdown, move |reply| {
         let h = handle.clone();
         handle.update(move |s: &mut State, _tx| {
             s.apply_reply(reply);
@@ -658,7 +638,186 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
             }
             let _ = &h;
         });
+    });
+}
+
+/// How often the worker looks for a finished detached job while it waits for
+/// the next queued one.
+const DETACHED_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Git writes that last as long as a network or a hook does: `git push` (up
+/// to its two-minute limit) and `git commit` (the repository's hooks). They
+/// run on a thread of their own so every other job keeps its turn.
+fn detachable(req: &Req) -> bool {
+    matches!(req, Req::Push | Req::Commit { .. })
+}
+
+/// Writes to a checkout's index and refs. They keep their queue order behind
+/// a detached one: a stage must not land in the middle of a commit, and Git
+/// would refuse it over `index.lock` anyway.
+fn is_git_write(req: &Req) -> bool {
+    matches!(
+        req,
+        Req::Stage { .. }
+            | Req::Unstage { .. }
+            | Req::Discard { .. }
+            | Req::StageResolved { .. }
+            | Req::Commit { .. }
+            | Req::Push
+    )
+}
+
+/// Run the queue in order and hand each reply to `post`.
+///
+/// Everything runs on this thread, one job at a time, except the
+/// [`detachable`] git writes. While one of those runs for a checkout, the
+/// later [`is_git_write`] jobs for the same checkout wait behind it in order;
+/// every other job (file opens and saves, highlighting, reads, the polls,
+/// other checkouts) carries on.
+///
+/// Once the queue closes, the detached jobs and the writes behind them still
+/// finish, as every accepted mutating job does.
+fn serve(
+    rx: std::sync::mpsc::Receiver<Job>,
+    storage: &Option<Storage>,
+    shutdown: &AtomicBool,
+    post: impl Fn(Reply) + Clone + Send + 'static,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<String>();
+    // Checkout key -> the git writes waiting behind its detached job.
+    let mut busy: HashMap<String, std::collections::VecDeque<Job>> = HashMap::new();
+    let mut detach = |job: Job| detach_job(job, storage, &done_tx, &post);
+    loop {
+        while let Ok(key) = done_rx.try_recv() {
+            release(&key, &mut busy, storage, &post, &mut detach);
+        }
+        let job = if busy.is_empty() {
+            match rx.recv() {
+                Ok(job) => job,
+                Err(_) => break,
+            }
+        } else {
+            match rx.recv_timeout(DETACHED_POLL) {
+                Ok(job) => job,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        };
+        if shutdown.load(Ordering::SeqCst) && !is_mutating(&job.req) {
+            // Shutdown drains the queue but never starts new reads — a
+            // 128-job backlog must not delay exit behind git calls. The
+            // reply still posts an Err so any still-mounted UI unwinds
+            // its loading flags deterministically.
+            post(Reply {
+                generation: job.generation,
+                req: job.req.clone(),
+                checkout_key: job.checkout_key.clone(),
+                result: Err("editor backend is shutting down".to_string()),
+            });
+            continue;
+        }
+        let key = job.checkout_key.clone().filter(|_| is_git_write(&job.req));
+        let Some(key) = key else {
+            post(run_job(storage, &job));
+            continue;
+        };
+        if let Some(waiting) = busy.get_mut(&key) {
+            waiting.push_back(job);
+        } else if detachable(&job.req) {
+            busy.insert(key.clone(), std::collections::VecDeque::new());
+            if !detach(job) {
+                release(&key, &mut busy, storage, &post, &mut detach);
+            }
+        } else {
+            post(run_job(storage, &job));
+        }
     }
+    while !busy.is_empty() {
+        let Ok(key) = done_rx.recv() else { break };
+        release(&key, &mut busy, storage, &post, &mut detach);
+    }
+}
+
+/// The detached job of `key` finished: run the writes that waited behind it,
+/// in order, until the queue is empty or one of them is detached in turn.
+fn release(
+    key: &str,
+    busy: &mut HashMap<String, std::collections::VecDeque<Job>>,
+    storage: &Option<Storage>,
+    post: &impl Fn(Reply),
+    detach: &mut impl FnMut(Job) -> bool,
+) {
+    loop {
+        let Some(next) = busy.get_mut(key).and_then(|waiting| waiting.pop_front()) else {
+            busy.remove(key);
+            return;
+        };
+        if !detachable(&next.req) {
+            post(run_job(storage, &next));
+        } else if detach(next) {
+            return;
+        }
+    }
+}
+
+/// Start a [`detachable`] job on its own thread. The checkout is validated
+/// here, on the worker and against its store, exactly as `run_checkout` does;
+/// only the git command itself runs detached. Returns `false` when nothing
+/// was started — the reply has been posted already.
+fn detach_job(
+    job: Job,
+    storage: &Option<Storage>,
+    done: &std::sync::mpsc::Sender<String>,
+    post: &(impl Fn(Reply) + Clone + Send + 'static),
+) -> bool {
+    let validated = match (&job.project_id, &job.checkout, &job.checkout_key) {
+        (Some(project_id), Some(checkout), Some(key)) => storage_req(storage, |store| {
+            projects::git_checkout(store, project_id, &checkout.display().to_string())
+        })
+        .map(|checkout| (checkout, key.clone())),
+        _ => Err("checkout job missing project or path identity".into()),
+    };
+    let (checkout, key) = match validated {
+        Ok(validated) => validated,
+        Err(error) => {
+            post(Reply {
+                generation: job.generation,
+                req: job.req.clone(),
+                checkout_key: job.checkout_key.clone(),
+                result: Err(error),
+            });
+            return false;
+        }
+    };
+    let (done, thread_post, thread_job) = (done.clone(), post.clone(), job.clone());
+    let spawned = std::thread::Builder::new()
+        .name("goko-editor-git".into())
+        .spawn(move || {
+            let job = thread_job;
+            let result = match &job.req {
+                Req::Push => git_write::push(&checkout)
+                    .map(ReplyData::Push)
+                    .map_err(|e| e.to_string()),
+                Req::Commit { message } => git_write::commit(&checkout, message)
+                    .map(ReplyData::Commit)
+                    .map_err(|e| e.to_string()),
+                _ => Err("not a detachable job".to_string()),
+            };
+            thread_post(Reply {
+                generation: job.generation,
+                req: job.req,
+                checkout_key: job.checkout_key,
+                result,
+            });
+            let _ = done.send(key);
+        });
+    if spawned.is_err() {
+        // No thread to spare: run it here, as it used to run.
+        post(run_job(storage, &job));
+        return false;
+    }
+    true
 }
 
 pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
@@ -3923,6 +4082,41 @@ mod tests {
             },
         ] {
             assert!(!is_mutating(&req), "{req:?} must be skippable on shutdown");
+        }
+    }
+
+    #[test]
+    fn git_writes_and_detachable_jobs_are_partitioned() {
+        assert!(detachable(&Req::Push));
+        assert!(detachable(&Req::Commit {
+            message: "msg".into(),
+        }));
+        assert!(!detachable(&Req::Changes));
+        assert!(!detachable(&Req::Stage { paths: None }));
+
+        for req in [
+            Req::Stage { paths: None },
+            Req::Unstage { paths: None },
+            Req::Discard {
+                layer: "unstaged".into(),
+                path: "a".into(),
+            },
+            Req::StageResolved {
+                path: "a".into(),
+                expected: "base".into(),
+            },
+            Req::Commit {
+                message: "m".into(),
+            },
+            Req::Push,
+        ] {
+            assert!(
+                is_git_write(&req),
+                "{req:?} must be recognized as a git write"
+            );
+        }
+        for req in [Req::Changes, Req::FileList, Req::Projects, Req::Workspaces] {
+            assert!(!is_git_write(&req), "{req:?} is not a git write");
         }
     }
 }
