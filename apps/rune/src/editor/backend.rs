@@ -955,9 +955,16 @@ fn add_codex_daemon_agents(
     }
     let pids: Vec<u32> = agents.iter().map(|row| row.pid).collect();
     let threads = thread_ids(&pids);
+    // Back to the day the oldest Codex session started: a session that has
+    // run for days still owns the rollout in its first day's directory.
+    let since = sessions
+        .iter()
+        .filter(|session| app_core::activity::is_codex(&session.argv))
+        .map(|session| session.started_at)
+        .min();
     let owners = app_core::subagents::thread_owners(
         sessions,
-        &app_core::activity::recent_rollouts(&codex_home),
+        &app_core::activity::rollouts_since(&codex_home, since),
     );
     app_core::subagents::attribute_codex(map, &agents, &threads, &owners);
 }

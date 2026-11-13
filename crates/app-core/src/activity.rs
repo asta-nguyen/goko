@@ -115,8 +115,21 @@ pub fn rollout_meta(path: &Path) -> Option<RolloutMeta> {
 /// `<codex_home>/sessions`, so a rollout that crossed midnight still shows
 /// up.
 pub fn recent_rollouts(codex_home: &Path) -> Vec<RolloutMeta> {
+    rollouts_since(codex_home, None)
+}
+
+/// The most day directories one scan reads, however old the session is.
+const MAX_ROLLOUT_DAYS: usize = 31;
+
+/// Rollout metas a session started at `since_ms` (unix milliseconds) can own:
+/// the two newest day directories, and every older one back to the day
+/// before that start. A session lives in the daemon across app restarts, so
+/// one started days ago still writes to the rollout in its own day's
+/// directory. The extra day covers a directory named by local time.
+pub fn rollouts_since(codex_home: &Path, since_ms: Option<i64>) -> Vec<RolloutMeta> {
+    let since_day = since_ms.map(|ms| ms.div_euclid(86_400_000) - 1);
     let mut days = Vec::new();
-    collect_recent_days(&codex_home.join("sessions"), &mut days);
+    collect_days(&codex_home.join("sessions"), since_day, &mut days);
     days.iter()
         .flat_map(|day| rollouts_in(day))
         .filter_map(|(path, _)| rollout_meta(&path))
@@ -212,8 +225,12 @@ pub fn compute_activity(
             codex.push(session.clone());
         }
     }
+    // The rollouts are read only for a Codex session, and back to the day the
+    // oldest one started.
+    let since = codex.iter().map(|session| session.started_at_ms).min();
     let matched = codex_home
-        .map(|home| match_codex_rollouts(&codex, &recent_rollouts(home)))
+        .filter(|_| !codex.is_empty())
+        .map(|home| match_codex_rollouts(&codex, &rollouts_since(home, since)))
         .unwrap_or_default();
     for session in codex {
         let read = matched
@@ -272,14 +289,28 @@ pub fn codex_home_from(codex_home: Option<&str>, home: Option<&str>) -> Option<P
 /// Rollouts live in `sessions/YYYY/MM/DD/`; only the two newest day
 /// directories are scanned.
 pub fn collect_recent_days(dir: &Path, days: &mut Vec<PathBuf>) {
-    if days.len() >= 2 {
-        return;
+    collect_days(dir, None, days);
+}
+
+/// Day directories with rollouts, newest first: the two newest, then older
+/// ones while their day is `since_day` (days since the unix epoch) or later,
+/// up to `MAX_ROLLOUT_DAYS`. Returns whether the walk may go on.
+fn collect_days(dir: &Path, since_day: Option<i64>, days: &mut Vec<PathBuf>) -> bool {
+    if days.len() >= 2 && since_day.is_none() {
+        return false;
     }
     if !rollouts_in(dir).is_empty() {
+        // Directories come newest first, so the first one too old ends the walk.
+        let wanted = days.len() < 2
+            || (days.len() < MAX_ROLLOUT_DAYS
+                && since_day.is_some_and(|since| day_of(dir).is_some_and(|day| day >= since)));
+        if !wanted {
+            return false;
+        }
         days.push(dir.to_owned());
     }
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return true;
     };
     let mut children: Vec<PathBuf> = entries
         .flatten()
@@ -287,12 +318,21 @@ pub fn collect_recent_days(dir: &Path, days: &mut Vec<PathBuf>) {
         .map(|entry| entry.path())
         .collect();
     children.sort_unstable_by(|left, right| right.cmp(left));
-    for child in children {
-        collect_recent_days(&child, days);
-        if days.len() >= 2 {
-            break;
-        }
-    }
+    children
+        .iter()
+        .all(|child| collect_days(child, since_day, days))
+}
+
+/// The day a `…/YYYY/MM/DD` directory names, in days since the unix epoch.
+fn day_of(dir: &Path) -> Option<i64> {
+    let mut parts = dir.components().rev().map(|part| {
+        part.as_os_str()
+            .to_str()
+            .and_then(|text| text.parse::<i64>().ok())
+    });
+    let (day, month, year) = (parts.next()??, parts.next()??, parts.next()??);
+    ((1..=12).contains(&month) && (1..=31).contains(&day))
+        .then(|| days_from_civil(year, month, day))
 }
 
 /// The rollout files in one directory, with their modification times.
@@ -401,7 +441,7 @@ pub fn activity_for(
             .or(previous);
     }
     if is_codex(&session.argv) {
-        let rollouts = recent_rollouts(codex_home?);
+        let rollouts = rollouts_since(codex_home?, Some(session.started_at_ms));
         let matched = match_codex_rollouts(std::slice::from_ref(session), &rollouts);
         return matched
             .get(&session.id)
@@ -586,6 +626,62 @@ mod tests {
         };
         let matched = match_codex_rollouts(&[session], &rollouts);
         assert_eq!(matched.get("s1"), Some(&path));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A session that started three days ago still owns the rollout in its
+    /// own day's directory, behind two newer days of other rollouts.
+    #[test]
+    fn an_old_session_finds_its_rollout_behind_newer_days() {
+        let dir = temp_dir("old-session");
+        let write = |day: &str, name: &str, cwd: &str| {
+            let folder = dir.join("sessions").join(day);
+            fs::create_dir_all(&folder).unwrap();
+            let meta = json!({
+                "type": "session_meta",
+                "payload": { "cwd": cwd, "timestamp": format!("{}T10:00:00.000Z", day.replace('/', "-")) }
+            });
+            let path = folder.join(name);
+            fs::write(&path, format!("{meta}\n")).unwrap();
+            path
+        };
+        let stale = write("2026/11/08", "rollout-0.jsonl", "/work/app");
+        let own = write("2026/11/10", "rollout-1.jsonl", "/work/app");
+        write("2026/11/12", "rollout-2.jsonl", "/work/other");
+        write("2026/11/13", "rollout-3.jsonl", "/work/other");
+
+        // The two newest days alone miss it.
+        assert!(recent_rollouts(&dir).iter().all(|meta| meta.path != own));
+
+        let started = timestamp_ms("2026-11-10T09:59:58.000Z").unwrap();
+        let found = rollouts_since(&dir, Some(started));
+        assert!(found.iter().any(|meta| meta.path == own));
+        assert!(
+            found.iter().all(|meta| meta.path != stale),
+            "days before the session started are not read"
+        );
+
+        let session = SessionActivity {
+            id: "s1".into(),
+            argv: vec!["/opt/codex".into()],
+            cwd: "/work/app".into(),
+            started_at_ms: started,
+            running: true,
+            interrupted: false,
+        };
+        let goko_home = dir.join("goko");
+        let activity = compute_activity(
+            std::slice::from_ref(&session),
+            &goko_home,
+            Some(&dir),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            match_codex_rollouts(&[session], &found).get("s1"),
+            Some(&own)
+        );
+        // The rollout holds no turn yet, so there is no activity to report.
+        assert!(activity.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
