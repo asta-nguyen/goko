@@ -1,8 +1,8 @@
-# Concept search: a ranked, indexed code search in the Files Search pane
+# Concept search: a ranked, indexed code search in the Files search box
 
 ## Goal
 
-The Files Search pane finds code only by literal text (`git grep`), so a query
+The Files search finds code only by literal text (`git grep`), so a query
 such as `reconnect backoff` finds nothing when the code says
 `reconnect_backoff_ms` or `ReconnectBackoff`. Add a **Concept** mode that ranks
 chunks of the checkout's text files by how well they match the query's words,
@@ -16,8 +16,11 @@ found by the very next query.
 
 In:
 
-- A `Content | Concept` mode switch inside the existing Search pane. `Content`
-  stays the default and behaves exactly as `RNE-content-search` describes.
+- A search box that is always visible in the Files toolbar, on its own row under
+  the file filter, with a `Text | Context` switch. `Text` (the literal `git grep`
+  search, called Content in the code) is the default and behaves as
+  `RNE-content-search` describes; `Context` (called Concept in the code) is the
+  new ranked search. The file filter keeps working as it does today.
 - A derived, per-checkout FTS5 index in `GOKO_HOME/search/`, built lazily on its
   own background thread, brought up to date with the working tree before every
   Concept query, and reconciled by a periodic full pass.
@@ -42,21 +45,38 @@ Out (each is a separate change or not planned):
 
 ## Behavior
 
-**Mode.** The Search pane shows a two-option switch, `Content` and `Concept`.
-The pane opens in `Content`; the chosen mode is not persisted across restarts.
-Concept uses the same query input, the same 250 ms debounce, and the same
-two-character minimum as Content (`MIN_QUERY` in `search.rs`). Switching mode, in
-either direction, clears the pane's results, error, and searching state and
-issues the existing input again for the new mode when it has at least
+**Search box and mode.** The Files toolbar always shows two inputs: the file
+filter, as today, and below it a search row holding the search box, a
+`Text | Context` switch, and the index status line. There is no button that must
+be pressed to reveal them. The switch is a radio group named `Search mode` with
+the options `Text` and `Context`, and the selected option is exposed to
+assistive tools. The box's placeholder is `Search text` in `Text` mode and
+`Search by context` in `Context` mode. The box opens in `Text`; the mode the user
+picks lasts for the rest of the app session, across checkout switches, and is not
+saved across restarts. Context uses the same 250 ms debounce and the same
+two-character minimum as Text (`MIN_QUERY` in `search.rs`).
+
+The aside shows either the file tree or the search results. It shows the results
+from the moment a query of at least `MIN_QUERY` characters is issued, or the
+go-to-definition fallback shows its results, and shows the tree again when the
+search box is cleared or shortened below `MIN_QUERY`, when the file filter is
+edited, or when the checkout changes. Editing the file filter shows the tree
+filtered by name and keeps the search text, mode, and results; editing the search
+box shows the results again. A late pass or sync result re-issues a query only
+while the results are showing, so it never pulls the aside away from a filtered
+tree.
+
+Switching mode, in either direction, clears the results, error, and searching
+state and issues the existing input again for the new mode when it has at least
 `MIN_QUERY` characters, so a reply still in flight for the other mode is dropped
-and never leaves `Searching…` on screen, and a switch never shows an empty pane
-for text that is still in the input. Every entry that is defined as content
-search shows the pane in `Content`: `⇧⌘F` (`RNE-keyboard`) switches a pane that
-is in `Concept` back to `Content` before it runs, and the go-to-definition
-fallback (`RNE-go-to-definition`) does the same only at the point where it shows
-the pane with its results, that is when no single declaration is found. A unique
-declaration (which opens the file), a stale reply, and a reply outside the Files
-section leave the pane untouched.
+and never leaves `Searching…` on screen, and a switch never shows an empty
+result list for text that is still in the box. Every entry that is defined as
+content search puts the box in `Text` mode: `⇧⌘F` (`RNE-keyboard`) focuses the
+search box, selects its text, and switches a box that is in `Context` back to
+`Text` before it runs, and the go-to-definition fallback (`RNE-go-to-definition`)
+does the same only at the point where it shows its results, that is when no
+single declaration is found. A unique declaration (which opens the file), a stale
+reply, and a reply outside the Files section leave the box as it is.
 
 **Indexed files.** The same set `git grep` searches, taken from the existing
 helpers instead of new rules: the listing is `git_view::file_list` (tracked
@@ -135,8 +155,8 @@ which is rank order of each file's best chunk. Selecting a row opens the file at
 - Index writes, passes and syncs alike, happen on one dedicated indexer thread,
   never on the editor backend worker, so the 128-job queue, saves, and Git reads
   are not delayed. The thread serves one job at a time, first come first served.
-- **First use.** Opening Concept mode for a checkout, or switching checkout with
-  the pane open in Concept, starts a **full pass** when none has finished for
+- **First use.** Switching the search box to `Context` for a checkout, or switching
+  checkout while the box is in `Context`, starts a **full pass** when none has finished for
   that checkout in this app session. A full pass lists the files, compares each
   file's `(size, mtime_ns)` with the stored values, re-chunks only new or
   changed files, drops the chunks and the `files` row of a file that was removed,
@@ -145,7 +165,7 @@ which is rank order of each file's best chunk. Selecting a row opens the file at
   and records every listed file so an unchanged skipped file is not read again.
   Content is committed in transactions of 100 files, so a stopped pass leaves a
   consistent index. While the pass runs, queries are answered immediately from
-  what is indexed so far and the pane shows `Indexing done/total files`; when the
+  what is indexed so far and the search row shows `Indexing done/total files`; when the
   pass finishes and the pane's query is unchanged, the query is issued again so
   results fill in.
 - **Sync before every query.** Once a full pass has finished successfully for the
@@ -221,11 +241,17 @@ which is rank order of each file's best chunk. Selecting a row opens the file at
   fewer than `MAX_INDEXED_FILES` files, and re-issues the query when done.
 - A chunk of only blank lines matched through its path: opens at the chunk's
   start line.
+- Editing the file filter while results are showing: the tree shows, filtered by
+  name; the search text, mode, and results are kept, and editing the search box
+  shows the results again. A pass or sync that finishes meanwhile does not bring
+  the results back.
+- Narrow window: the search row is its own row, so the filter row gains no width
+  pressure and the status text truncates instead of pushing controls off.
 - Mode switch while a search is in flight: the reply is dropped and `Searching…`
   is cleared; nothing is left spinning. A sync result that arrives after the mode,
   query, or checkout changed is ignored.
 - Index cannot be opened or is corrupt: a pass deletes the file and rebuilds once;
-  if that also fails, the pane shows `Concept search unavailable: <reason>` and
+  if that also fails, the pane shows `Context search unavailable: <reason>` and
   Content mode is unaffected. A query or sync that meets a corrupt file reports
   the same text for a query, does nothing for a sync, and never repairs it.
 - `git` missing, or the checkout is not a repository: a full pass fails with the
@@ -313,8 +339,11 @@ which is rank order of each file's best chunk. Selecting a row opens the file at
   `⇧⌘F` calls `force_content` first; the go-to-definition fallback calls it only
   in the branch that shows the pane, after the unique-declaration return and
   before it writes the query and results.
-- `apps/rune/src/editor/files.rs`: the mode switch and the status line in the
-  Search pane.
+- `apps/rune/src/editor/files.rs`: the always-visible search row (input, the
+  `Text | Context` radio group, and the status line) under the file filter, with
+  the `Search` toggle button and the separate mode row removed; the aside shows the
+  results or the tree as described under Behavior. `files.search.open` now means
+  "the aside shows the results" and is no longer set by a button.
 - No change to `gokod`, `crates/protocol`, `goko.db`, or any dependency.
 
 ## Verification
@@ -352,6 +381,12 @@ which is rank order of each file's best chunk. Selecting a row opens the file at
   collecting sink plus the function that applies an event to the state, because
   `AppHandle::update` only queues when no app loop runs; the thread wiring is
   checked in the real app.
+- The search row (`Runtime` harness in `files.rs`): the box and the `Search mode`
+  radio group are rendered with no prior action and no `Search` button exists;
+  `Text` is selected by default and `Context` changes the selection and the
+  placeholder; typing two characters arms the debounce in either mode; editing the
+  file filter shows the tree and keeps the search state, editing the search box
+  shows the results; a checkout switch keeps the chosen mode and shows the tree.
 - `cargo fmt --all -- --check`, `cargo clippy --workspace -- -D warnings`, and
   `cargo test --workspace`.
 - The real app, per `AGENTS.md`: build `target/Goko.app`, check with
