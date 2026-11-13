@@ -22,10 +22,9 @@
 - [Editor: stage, commit, push, and AI commit messages over ACP](changes/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/2026-11-06-editor-commit-acp/tasks.md))
 - [Agent activity: working, needs you, done](changes/2026-11-05-agent-activity/design.md) ([tasks](changes/2026-11-05-agent-activity/tasks.md))
 
-- [Done sound on session finish](changes/2026-11-12-done-sound/delta.md)
-
 ## Archived changes
 
+- [Done sound on session finish](changes/archive/2026-11-12-done-sound/delta.md)
 - [Rune UX improvements: first sessions, safety, shortcuts, accessibility](changes/archive/ux-improvements/design.md) ([tasks](changes/archive/ux-improvements/tasks.md), [delta](changes/archive/ux-improvements/delta.md))
 - [Multi-project workspaces](changes/archive/multi-project-workspaces/design.md) ([tasks](changes/archive/multi-project-workspaces/tasks.md), [delta](changes/archive/multi-project-workspaces/delta.md))
 - [Rune inline blame: per-line author and age beside the code](changes/archive/rune-inline-blame/delta.md)

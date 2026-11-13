@@ -1,6 +1,7 @@
 # Delta
 
 Approved: 2026-11-12 — play the macOS "Blow" sound when a session's activity becomes done or the session ends, only while the app window is unfocused, behind a `goko.sound_done` setting that defaults on
+Merged into docs/llm/: 2026-11-12
 
 ## ADDED Requirements
 
