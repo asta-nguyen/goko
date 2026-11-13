@@ -68,6 +68,55 @@ pub struct Notice {
     pub stale: bool,
 }
 
+/// How a changed-file list lays out its rows (the `View` context-menu
+/// choice on the Changes list and the History commit detail's list).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ListView {
+    /// Flat rows in the list's own order.
+    List,
+    /// Files nest under one folder row per directory, derived from each
+    /// entry's path.
+    #[default]
+    Tree,
+}
+
+/// How the Changes changed-file list groups its rows (the `Group By`
+/// context-menu choice).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ChangeGroup {
+    /// The canonical groups in desktop order: conflicts → staged →
+    /// unstaged → untracked.
+    None,
+    /// A `Tracked` group (staged, unstaged, conflicts) and an `Untracked`
+    /// group.
+    TrackedUntracked,
+    /// A `Staged` group (staged, conflicts) and an `Unstaged` group
+    /// (unstaged plus untracked); a path that is both staged and unstaged
+    /// appears in both.
+    #[default]
+    StagedUnstaged,
+}
+
+/// An open view menu on a changed-file list — its items write the shared
+/// view state, never a row. Opens at a secondary-press point, or anchored
+/// under the header's view button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ListMenu {
+    Point { x: f32, y: f32 },
+    Anchor,
+}
+
+impl ListMenu {
+    /// The window point a point-opened menu shows at; `None` when it is
+    /// anchored to an element instead.
+    pub fn point(&self) -> Option<(f32, f32)> {
+        match *self {
+            ListMenu::Point { x, y } => Some((x, y)),
+            ListMenu::Anchor => None,
+        }
+    }
+}
+
 /// How the Files tree treats a row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileMark {
@@ -203,7 +252,19 @@ impl ChangesState {
             collapsed: HashSet::new(),
             discard_prompt: None,
             busy: None,
+            group: ChangeGroup::default(),
+            menu: None,
         }
+    }
+
+    /// Checkout-switch reset: `group` is a session preference and stays
+    /// (the shared `EditorState::list_view` lives outside this struct);
+    /// everything per-checkout returns to empty.
+    pub fn reset(&mut self) {
+        *self = ChangesState {
+            group: self.group,
+            ..ChangesState::empty()
+        };
     }
 }
 
@@ -232,6 +293,11 @@ pub struct ChangesState {
     pub discard_prompt: Option<(String, String)>,
     /// Commit message draft TextEdit lives in CommitState.
     pub busy: Option<&'static str>,
+    /// `Group By` mode for the list — a session preference, so
+    /// [`ChangesState::reset`] keeps it across checkout switches.
+    pub group: ChangeGroup,
+    /// Open context menu on the list (secondary-press point).
+    pub menu: Option<ListMenu>,
 }
 
 /// A fetched unified diff plus its parsed rune-kit model inputs.
@@ -300,6 +366,10 @@ pub struct HistoryState {
     pub copied_hash: Option<(String, std::time::Instant)>,
     /// Precomputed/cached commit lane graph; recomputed only when commits change.
     pub graph: Option<std::sync::Arc<crate::editor::history_graph::GraphLayout>>,
+    /// Open context menu on the detail's changed-file list.
+    pub file_menu: Option<ListMenu>,
+    /// Collapsed directory paths in the detail's `Tree` view.
+    pub collapsed_dirs: HashSet<String>,
 }
 
 /// A secondary press on a commit row awaiting its menu choice.
@@ -406,6 +476,10 @@ pub struct EditorState {
 
     // -- sections ----------------------------------------------------------
     pub section: Section,
+    /// Shared changed-file layout (`List`/`Tree`) for the Changes list and
+    /// the History commit detail — one session preference for both sections,
+    /// not persisted and not reset by section or checkout switches.
+    pub list_view: ListView,
     /// Sections ever activated; their state (scroll, selection, caches) stays
     /// mounted so switching back is instant, like the desktop's visited set.
     pub visited: HashSet<Section>,
@@ -523,6 +597,7 @@ impl EditorState {
             checkout_key: None,
             pending_checkout: None,
             section: Section::Changes,
+            list_view: ListView::default(),
             visited: HashSet::from([Section::Changes]),
             notice: None,
             files: FilesState {
@@ -558,6 +633,8 @@ impl EditorState {
                 collapsed: HashSet::new(),
                 discard_prompt: None,
                 busy: None,
+                group: ChangeGroup::default(),
+                menu: None,
             },
             history: HistoryState {
                 commits: Vec::new(),
@@ -585,6 +662,8 @@ impl EditorState {
                 row_menu: None,
                 copied_hash: None,
                 graph: None,
+                file_menu: None,
+                collapsed_dirs: HashSet::new(),
             },
             stashes: StashesState {
                 stashes: Vec::new(),

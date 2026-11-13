@@ -151,6 +151,16 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
   searched again at most every 250 ms. Nothing is indexed and the daemon is not involved.
 - **Editor:** a native workspace (Files, Changes, History, Stashes, Servers) over
   registered projects and validated checkouts, backed by `app-core` and `goko.db`.
+  The changed-file lists in Changes and in a History commit detail open a context
+  menu on secondary press offering `View: List | Tree` — flat rows or files nested
+  under expandable directory rows — and the Changes list adds `Group By:
+  None | Tracked & Untracked | Staged & Unstaged`; the Changes header's view
+  button opens the same menu beside it. The List/Tree pick is one shared
+  `EditorState::list_view` for both sections (the Group By pick stays on the
+  Changes state), lives for the session only (no persistence, defaults `Tree`
+  and `Staged & Unstaged`), survives section and checkout switches, and never
+  changes row identity, filtering, or j/k navigation, which all follow the
+  rendered rows.
 - All Git, filesystem, storage, and highlight work runs on one worker thread behind a
   bounded queue (128 pending jobs), except Context search index passes and working-tree
   syncs, which run on a dedicated indexer thread outside that queue; replies carry a

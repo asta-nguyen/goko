@@ -318,7 +318,7 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     s.editor.save_resume = None;
     s.editor.files.model_checkout = None;
     s.editor.files.paths.clear();
-    s.editor.changes = crate::editor::state::ChangesState::empty();
+    s.editor.changes.reset();
     s.editor.branch = Default::default();
     s.editor.history.commits.clear();
     s.editor.history.graph = None;
@@ -326,6 +326,8 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     s.editor.history.selected = None;
     s.editor.history.detail = None;
     s.editor.history.checkout = None;
+    s.editor.history.file_menu = None;
+    s.editor.history.collapsed_dirs.clear();
     s.editor.stashes.stashes.clear();
     s.editor.stashes.selected = None;
     s.editor.stashes.detail = None;
@@ -402,7 +404,7 @@ fn clear_checkout(s: &mut State) {
     s.editor.save_resume = None;
     s.editor.files.model_checkout = None;
     s.editor.files.paths.clear();
-    s.editor.changes = crate::editor::state::ChangesState::empty();
+    s.editor.changes.reset();
     s.editor.branch = Default::default();
     s.editor.history.commits.clear();
     s.editor.history.graph = None;
@@ -410,6 +412,8 @@ fn clear_checkout(s: &mut State) {
     s.editor.history.selected = None;
     s.editor.history.detail = None;
     s.editor.history.checkout = None;
+    s.editor.history.file_menu = None;
+    s.editor.history.collapsed_dirs.clear();
     s.editor.stashes.stashes.clear();
     s.editor.stashes.selected = None;
     s.editor.stashes.detail = None;

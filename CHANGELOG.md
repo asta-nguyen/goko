@@ -27,6 +27,16 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   `GOKO_HOME/search/`. The `Search` toggle button and the separate mode row are
   gone; editing the file filter shows the file tree and editing the search box
   shows the results.
+- List/Tree view and grouping for changed files: right-clicking the Changes
+  file list, or pressing the view button beside the section's refresh, opens a
+  menu with `View: List | Tree` (a flat list, or files nested under expandable
+  directory rows) and `Group By: None | Tracked & Untracked | Staged &
+  Unstaged` (a path that is both staged and unstaged shows in both groups). The
+  History commit detail's changed-file list gets the same `List`/`Tree` choice
+  on secondary press. One shared choice serves both sections, the session
+  starts in `Tree` with `Staged & Unstaged`, and selection, patch loading,
+  staging, commit, the filters and keyboard navigation are unchanged in every
+  view (nothing is persisted).
 
 ## [0.1.2] - 2026-11-12
 

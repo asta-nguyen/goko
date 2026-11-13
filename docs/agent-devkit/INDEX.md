@@ -2,6 +2,7 @@
 
 ## Changes
 
+- [Changes and History: View (List/Tree) and Group By menu](changes/2026-11-13-7-changes-history-view/design.md) ([tasks](changes/2026-11-13-7-changes-history-view/tasks.md), [delta](changes/2026-11-13-7-changes-history-view/delta.md))
 - [Current branch in Terminal](changes/terminal-current-branch/delta.md)
 
 - [Current branch in the editor header](changes/editor-current-branch/delta.md)

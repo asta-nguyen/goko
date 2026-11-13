@@ -120,6 +120,48 @@ The system SHALL show the checkout's conflict, staged, unstaged, and untracked g
 
 Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
 
+### RNE-changes-view-layout
+
+The system SHALL let the Changes changed-file list and the History commit detail's changed-file list switch between a flat `List` and a directory `Tree` from their context menus — and, in Changes, from the header's view button — with one shared `List`/`Tree` choice that both sections read and both menus write (default `Tree`), and let the Changes list group its rows by `None`, `Tracked & Untracked`, or `Staged & Unstaged` (default `Staged & Unstaged`), keeping selection, patch loading, staging, commit, open-at-line, the filters, and keyboard navigation working in every view, with the choices kept for the app session and not persisted.
+
+#### Scenario: Tree and List
+
+- GIVEN the Changes list has a file under a directory
+- WHEN the user chooses `Tree` in the context menu
+- THEN a folder row holds the file and `List` returns the flat row
+
+#### Scenario: The header view button
+
+- GIVEN the Changes list is showing
+- WHEN the user presses the view button beside the section's refresh
+- THEN the same `View`/`Group By` menu opens beside the button and its choices apply
+
+#### Scenario: Group By
+
+- GIVEN a path is both staged and unstaged
+- WHEN the user chooses `Group By: Staged & Unstaged`
+- THEN a `Staged` group and an `Unstaged` group each show the path
+
+#### Scenario: History detail
+
+- GIVEN a commit detail is open in History
+- WHEN the user chooses `Tree`
+- THEN the commit's changed files nest under their directories
+
+#### Scenario: One shared choice
+
+- GIVEN the app is in the default `Tree`
+- WHEN the user picks `List` in the Changes list menu and opens a commit in History
+- THEN the History detail's changed files render flat, and picking `Tree` there turns the Changes list back to directory rows
+
+#### Scenario: The choice lasts the session
+
+- GIVEN the user picked `List` and `Group By: None`
+- WHEN the user switches section and checkout and back
+- THEN the choices hold until the app restarts
+
+Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit_detail.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/keyboard.rs`, `apps/rune/src/editor/navigation.rs`
+
 ### RNE-checkout-selection
 
 The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from terminal sessions.

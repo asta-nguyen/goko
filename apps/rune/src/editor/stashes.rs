@@ -7,7 +7,7 @@ use rune_kit::{Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::backend::Req;
-use crate::editor::commit_detail::changed_files;
+use crate::editor::commit_detail::{ChangedFileHost, changed_files};
 use crate::editor::history::{self, format_time, matches_query};
 use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
@@ -282,7 +282,7 @@ fn detail_pane(s: &State, ink: &Ink, _k: &Kit) -> El {
         if let Some(p) = &h.detail
             && !p.files.is_empty()
         {
-            col_el = col_el.child(changed_files(&p.files, ink));
+            col_el = col_el.child(changed_files(s, &p.files, ink, ChangedFileHost::Flat));
         }
         col_el.child(patch::view(s, Pane::Stashes).grow(1.0).min_h(0.0))
     } else if h.detail_loading {

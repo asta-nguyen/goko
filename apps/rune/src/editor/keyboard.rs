@@ -15,13 +15,13 @@
 use rune::edit::TextEdit;
 use rune::{Key, KeyEvent, Tx};
 
-use crate::editor::changes::{self, GROUPS};
+use crate::editor::changes::{self};
 use crate::editor::files;
 use crate::editor::history::{self, UNCOMMITTED_ID};
 use crate::editor::navigation::{self, PendingNav};
 use crate::editor::quick_open;
 use crate::editor::search;
-use crate::editor::state::Section;
+use crate::editor::state::{ListView, Section};
 use crate::{State, View};
 
 /// Keyboard-owned state on `EditorState`: the highlight-only list cursor.
@@ -373,20 +373,52 @@ fn nav_items(s: &State) -> Vec<NavItem> {
             };
             let filter = e.changes.filter.text.trim();
             let mut out = Vec::new();
-            for (key, layer) in GROUPS {
-                if e.changes.collapsed.contains(key) {
+            // Same groups, filter, view, and collapse rules the renderer
+            // uses, so j/k lands exactly on a mounted file row.
+            for g in changes::list_groups(data, e.changes.group) {
+                if e.changes.collapsed.contains(g.key) {
                     continue;
                 }
-                for entry in changes::group_entries(data, key) {
-                    if !filter.is_empty()
-                        && !changes::matches_filter(&changes::entry_name(entry), filter)
-                    {
-                        continue;
+                let entries: Vec<(&app_core::git_view::StatusEntry, &'static str, &'static str)> =
+                    g.entries
+                        .iter()
+                        .filter(|(en, _, _)| {
+                            filter.is_empty()
+                                || changes::matches_filter(&changes::entry_name(en), filter)
+                        })
+                        .copied()
+                        .collect();
+                match e.list_view {
+                    ListView::List => {
+                        for (entry, _, layer) in entries {
+                            out.push(NavItem::Change {
+                                layer,
+                                path: entry.path.clone(),
+                            });
+                        }
                     }
-                    out.push(NavItem::Change {
-                        layer,
-                        path: entry.path.clone(),
-                    });
+                    ListView::Tree => {
+                        let flat: Vec<(
+                            &app_core::git_view::StatusEntry,
+                            (&'static str, &'static str),
+                        )> = entries.iter().map(|&(en, k, l)| (en, (k, l))).collect();
+                        let rows = changes::tree_rows(&flat, |p| {
+                            e.changes.collapsed.contains(&changes::dir_key(p))
+                        });
+                        for row in rows {
+                            if let changes::TreeRow::File {
+                                entry,
+                                data: (_, layer),
+                                ..
+                            } = row
+                            {
+                                out.push(NavItem::Change {
+                                    layer,
+                                    path: entry.path.clone(),
+                                });
+                            }
+                        }
+                    }
                 }
             }
             out

@@ -9,7 +9,10 @@
 //! `paths: None`, and discard is a named one-file confirmation.
 
 use rune::{El, Icon, Tx, col, el, row};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ScrollBar};
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Menu, MenuItem,
+    ScrollBar, context_menu,
+};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -17,7 +20,7 @@ use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
 use crate::editor::pane_layout;
 use crate::editor::patch::{self, Pane};
-use crate::editor::state::EditorState;
+use crate::editor::state::{ChangeGroup, EditorState, ListMenu, ListView};
 use crate::theme::{self, Ink, T11M_LH, T12, T12M};
 
 // Row/header glyphs `theme` doesn't carry (lucide stroke bodies, same
@@ -37,6 +40,14 @@ static REFRESH_CW: Icon = Icon {
     view: 24.0,
     body: "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/></g>",
 };
+static LIST_TREE: Icon = Icon {
+    name: "list-tree",
+    view: 24.0,
+    body: "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 12h-8\"/><path d=\"M21 6H8\"/><path d=\"M21 18h-8\"/><path d=\"M3 6v4c0 1.1.9 2 2 2h3\"/><path d=\"M3 10v6c0 1.1.9 2 2 2h3\"/></g>",
+};
+
+/// Key of the header's view button; the anchored menu opens beside it.
+const VIEW_MENU_KEY: &str = "changes-view-menu";
 
 /// Spec entry point (`workspace.rs` dispatches `changes::view(s)`): renders
 /// only — every mutation happens in event handlers or through
@@ -44,7 +55,12 @@ static REFRESH_CW: Icon = Icon {
 /// when changes data lands (replies arrive outside the render pass).
 pub fn view(s: &State) -> El {
     let ink = Ink::new();
-    root_render(s, &ink, &s.editor.kit)
+    let mut layer = Vec::new();
+    let mut root = root_render(s, &ink, &s.editor.kit);
+    if let Some(menu) = list_menu(s, &mut layer) {
+        root = root.child(menu);
+    }
+    rune_kit::root(root, layer)
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +117,222 @@ pub fn status_label(status: &str) -> &'static str {
     }
 }
 
+/// Display label for a rendered group header (canonical key or `tracked`).
+pub fn group_label(key: &str) -> &'static str {
+    match key {
+        "conflicts" => "Conflicts",
+        "staged" => "Staged",
+        "unstaged" => "Unstaged",
+        "untracked" => "Untracked",
+        "tracked" => "Tracked",
+        _ => "Changed",
+    }
+}
+
+/// One group the list renders for the active `Group By` mode.
+pub(crate) struct RowGroup<'a> {
+    /// Collapse/identity key: a canonical group key or `tracked`.
+    pub key: &'static str,
+    pub label: &'static str,
+    /// `(entry, canonical group key, diff layer)` in display order — the
+    /// composite modes re-tag each entry with its own key/layer so row
+    /// actions, selection, and writes stay per-layer.
+    pub entries: Vec<(
+        &'a app_core::git_view::StatusEntry,
+        &'static str,
+        &'static str,
+    )>,
+}
+
+/// The groups the list renders for `mode`, in display order. `None` is the
+/// canonical four (today's order); the composite modes emit no data-empty
+/// group.
+pub(crate) fn list_groups(
+    data: &app_core::git_view::GitViewChanges,
+    mode: ChangeGroup,
+) -> Vec<RowGroup<'_>> {
+    fn tagged<'a>(
+        entries: &'a [app_core::git_view::StatusEntry],
+        key: &'static str,
+        layer: &'static str,
+    ) -> Vec<(
+        &'a app_core::git_view::StatusEntry,
+        &'static str,
+        &'static str,
+    )> {
+        entries.iter().map(|e| (e, key, layer)).collect()
+    }
+    match mode {
+        ChangeGroup::None => GROUPS
+            .iter()
+            .map(|(key, layer)| RowGroup {
+                key,
+                label: group_label(key),
+                entries: tagged(group_entries(data, key), key, layer),
+            })
+            .collect(),
+        ChangeGroup::TrackedUntracked => [
+            RowGroup {
+                key: "tracked",
+                label: "Tracked",
+                entries: [
+                    tagged(&data.staged, "staged", "staged"),
+                    tagged(&data.unstaged, "unstaged", "unstaged"),
+                    tagged(&data.conflicts, "conflicts", "conflict"),
+                ]
+                .concat(),
+            },
+            RowGroup {
+                key: "untracked",
+                label: "Untracked",
+                entries: tagged(&data.untracked, "untracked", "untracked"),
+            },
+        ]
+        .into_iter()
+        .filter(|g| !g.entries.is_empty())
+        .collect(),
+        ChangeGroup::StagedUnstaged => [
+            RowGroup {
+                key: "staged",
+                label: "Staged",
+                entries: [
+                    tagged(&data.staged, "staged", "staged"),
+                    tagged(&data.conflicts, "conflicts", "conflict"),
+                ]
+                .concat(),
+            },
+            RowGroup {
+                key: "unstaged",
+                label: "Unstaged",
+                entries: [
+                    tagged(&data.unstaged, "unstaged", "unstaged"),
+                    tagged(&data.untracked, "untracked", "untracked"),
+                ]
+                .concat(),
+            },
+        ]
+        .into_iter()
+        .filter(|g| !g.entries.is_empty())
+        .collect(),
+    }
+}
+
+/// Collapse key for a directory row in the Changes `Tree` view — the `dir:`
+/// prefix keeps it distinct from the group keys in `changes.collapsed`.
+pub(crate) fn dir_key(path: &str) -> String {
+    format!("dir:{path}")
+}
+
+/// Extra left padding per nesting level of a `Tree` row.
+pub(crate) const DIR_INDENT: f32 = 14.0;
+
+/// One row of a `Tree`-view changed-file list: a directory header, or a
+/// file nested `depth` directories deep carrying its caller's data.
+pub(crate) enum TreeRow<'a, T> {
+    /// `path` is the full directory path (its collapse key), `name` the
+    /// last segment.
+    Dir {
+        path: String,
+        name: String,
+        depth: usize,
+    },
+    File {
+        entry: &'a app_core::git_view::StatusEntry,
+        data: T,
+        depth: usize,
+    },
+}
+
+struct DirNode<'a, T> {
+    dirs: Vec<(String, DirNode<'a, T>)>,
+    files: Vec<(&'a app_core::git_view::StatusEntry, T)>,
+}
+
+fn tree_insert<'a, T: Copy>(
+    node: &mut DirNode<'a, T>,
+    segments: &[&str],
+    entry: &'a app_core::git_view::StatusEntry,
+    data: T,
+) {
+    let mut cur = node;
+    for seg in segments {
+        let pos = match cur.dirs.iter().position(|(n, _)| n == seg) {
+            Some(i) => i,
+            None => {
+                cur.dirs.push((
+                    (*seg).to_string(),
+                    DirNode {
+                        dirs: Vec::new(),
+                        files: Vec::new(),
+                    },
+                ));
+                cur.dirs.len() - 1
+            }
+        };
+        cur = &mut cur.dirs[pos].1;
+    }
+    cur.files.push((entry, data));
+}
+
+fn tree_emit<'n, 'a, T: Copy>(
+    node: &'n DirNode<'a, T>,
+    prefix: &str,
+    depth: usize,
+    is_dir_collapsed: &impl Fn(&str) -> bool,
+    out: &mut Vec<TreeRow<'a, T>>,
+) {
+    let mut dirs: Vec<&(String, DirNode<'a, T>)> = node.dirs.iter().collect();
+    dirs.sort_by(|a, b| rune_kit::natural_cmp(&a.0, &b.0));
+    let mut files = node.files.clone();
+    files.sort_by(|a, b| {
+        rune_kit::natural_cmp(
+            a.0.path.rsplit('/').next().unwrap_or(&a.0.path),
+            b.0.path.rsplit('/').next().unwrap_or(&b.0.path),
+        )
+    });
+    for (name, child) in dirs {
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        out.push(TreeRow::Dir {
+            path: path.clone(),
+            name: name.clone(),
+            depth,
+        });
+        if !is_dir_collapsed(&path) {
+            tree_emit(child, &path, depth + 1, is_dir_collapsed, out);
+        }
+    }
+    for (entry, data) in files {
+        out.push(TreeRow::File { entry, data, depth });
+    }
+}
+
+/// Nest `entries` under directories derived from `entry.path`: each level
+/// emits its subdirectories first (`natural_cmp`), then its files. A
+/// collapsed directory emits only its own row until expanded again —
+/// `is_dir_collapsed` receives the full dir path and the caller keys its
+/// own collapse set.
+pub(crate) fn tree_rows<'a, T: Copy>(
+    entries: &[(&'a app_core::git_view::StatusEntry, T)],
+    is_dir_collapsed: impl Fn(&str) -> bool,
+) -> Vec<TreeRow<'a, T>> {
+    let mut root = DirNode {
+        dirs: Vec::new(),
+        files: Vec::new(),
+    };
+    for &(entry, data) in entries {
+        let mut segs: Vec<&str> = entry.path.split('/').collect();
+        segs.pop(); // the last segment is the file name, not a directory
+        tree_insert(&mut root, &segs, entry, data);
+    }
+    let mut out = Vec::new();
+    tree_emit(&root, "", 0, &is_dir_collapsed, &mut out);
+    out
+}
+
 /// What a group-header action does, scoped exactly like the desktop:
 /// staged → unstage everything (`paths: None`), unstaged/untracked → stage
 /// every path in the group (unfiltered, like main's `groupEntries`),
@@ -112,15 +344,17 @@ pub enum GroupAction {
     None,
 }
 
-pub fn group_action(key: &str, entries: &[app_core::git_view::StatusEntry]) -> GroupAction {
-    if entries.is_empty() {
+pub fn group_action<'a>(
+    key: &str,
+    entries: impl IntoIterator<Item = &'a app_core::git_view::StatusEntry>,
+) -> GroupAction {
+    let paths: Vec<String> = entries.into_iter().map(|e| e.path.clone()).collect();
+    if paths.is_empty() {
         return GroupAction::None;
     }
     match key {
         "staged" => GroupAction::UnstageAll,
-        "unstaged" | "untracked" => {
-            GroupAction::StageAll(entries.iter().map(|e| e.path.clone()).collect())
-        }
+        "unstaged" | "untracked" => GroupAction::StageAll(paths),
         _ => GroupAction::None,
     }
 }
@@ -357,7 +591,9 @@ fn centered(ink: &Ink, label: &str) -> El {
     pane
 }
 
-/// Clean tree: desktop keeps Push reachable, so the commit panel stays.
+/// Clean tree: desktop keeps Push reachable, so the commit panel stays. The
+/// list menu still opens on a secondary press — the empty list is the one
+/// place the `View`/`Group By` choice survives a clean worktree.
 fn clean_view(s: &State, ink: &Ink) -> El {
     col()
         .grow(1.0)
@@ -370,6 +606,9 @@ fn clean_view(s: &State, ink: &Ink) -> El {
                 .items_center()
                 .justify_center()
                 .gap(8.0)
+                .on_secondary_press(|st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
+                    st.editor.changes.menu = Some(ListMenu::Point { x: p.x, y: p.y });
+                })
                 .child(theme::txt("✓", T12M, ink.success))
                 .child(theme::txt("Working tree clean", T12M, ink.text))
                 .child(theme::txt(
@@ -427,15 +666,32 @@ fn aside(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChange
             .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
             .child(theme::txt("CHANGED FILES", T11M_LH, ink.muted))
             .child(
-                IconButton::new(&REFRESH_CW)
-                    .variant(IconButtonVariant::GhostMuted)
-                    .control_size(ControlSize::Small)
-                    .label("Refresh changes")
-                    .help("Refresh changes")
-                    .on_press_tx(|st: &mut State, _tx: &mut Tx| {
-                        st.editor.refresh_active();
-                    })
-                    .build(k),
+                row()
+                    .gap(2.0)
+                    .items_center()
+                    .child(
+                        IconButton::new(&LIST_TREE)
+                            .variant(IconButtonVariant::GhostMuted)
+                            .control_size(ControlSize::Small)
+                            .label("View and group changed files")
+                            .help("View and group changed files")
+                            .on_press(|st: &mut State| {
+                                st.editor.changes.menu = Some(ListMenu::Anchor);
+                            })
+                            .build(k)
+                            .key(VIEW_MENU_KEY),
+                    )
+                    .child(
+                        IconButton::new(&REFRESH_CW)
+                            .variant(IconButtonVariant::GhostMuted)
+                            .control_size(ControlSize::Small)
+                            .label("Refresh changes")
+                            .help("Refresh changes")
+                            .on_press_tx(|st: &mut State, _tx: &mut Tx| {
+                                st.editor.refresh_active();
+                            })
+                            .build(k),
+                    ),
             ),
     );
     let filter_edit = &s.editor.changes.filter;
@@ -471,8 +727,8 @@ fn aside(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChange
     // No grow/min_h inside the scroll viewport: the column must size to its
     // rows or `scroll_overflow` measures zero and reveals can't scroll.
     let mut groups = col().w_full().px(6.0).py(6.0).gap(2.0);
-    for (key, layer) in GROUPS {
-        groups = groups.child(group_block(s, ink, k, data, key, layer, &filter));
+    for g in list_groups(data, s.editor.changes.group) {
+        groups = groups.child(group_block(s, ink, k, &g, &filter));
     }
     col_el = col_el.child(
         col()
@@ -480,6 +736,11 @@ fn aside(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChange
             .key(keyboard::nav_scroll_scope(
                 crate::editor::state::Section::Changes,
             ))
+            // The list's View/Group-By menu opens on a secondary press
+            // anywhere over the rows — it is list-level, not row-level.
+            .on_secondary_press(|st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
+                st.editor.changes.menu = Some(ListMenu::Point { x: p.x, y: p.y });
+            })
             .scroll(rune::ScrollSpec {
                 stick_bottom: false,
             })
@@ -498,28 +759,14 @@ fn aside(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChange
         ))
 }
 
-fn group_block(
-    s: &State,
-    ink: &Ink,
-    k: &Kit,
-    data: &app_core::git_view::GitViewChanges,
-    key: &'static str,
-    layer: &'static str,
-    filter: &str,
-) -> El {
-    let all = group_entries(data, key);
-    let entries: Vec<_> = all
+fn group_block(s: &State, ink: &Ink, k: &Kit, group: &RowGroup<'_>, filter: &str) -> El {
+    let entries: Vec<(&app_core::git_view::StatusEntry, &'static str, &'static str)> = group
+        .entries
         .iter()
-        .filter(|e| matches_filter(&entry_name(e), filter))
+        .filter(|(e, _, _)| matches_filter(&entry_name(e), filter))
+        .copied()
         .collect();
-    let label = match key {
-        "conflicts" => "Conflicts",
-        "staged" => "Staged",
-        "unstaged" => "Unstaged",
-        "untracked" => "Untracked",
-        _ => key,
-    };
-    let collapsed = s.editor.changes.collapsed.contains(key);
+    let collapsed = s.editor.changes.collapsed.contains(group.key);
     let mut block = col().w_full().gap(2.0);
 
     // Header row: the toggle (chevron + label + count) grows; the scoped
@@ -530,9 +777,16 @@ fn group_block(
         .px(2.0)
         .gap(2.0)
         .items_center()
-        .child(group_toggle(key, label, entries.len(), collapsed, ink));
-    match group_action(key, all) {
+        .child(group_toggle(
+            group.key,
+            group.label,
+            entries.len(),
+            collapsed,
+            ink,
+        ));
+    match group_action(group.key, entries.iter().map(|(e, _, _)| *e)) {
         GroupAction::StageAll(_) => {
+            let key = group.key;
             head = head.child(
                 Button::new("Stage all")
                     .variant(ButtonVariant::GhostMuted)
@@ -542,12 +796,19 @@ fn group_block(
                         if st.editor.changes.busy.is_some() {
                             return;
                         }
-                        // Recompute from live state — never the render-time list.
+                        // Recompute from live state — never the render-time
+                        // list; composite groups hold more than one layer.
                         let paths = st.editor.changes.data.as_ref().map(|d| {
-                            group_entries(d, key)
-                                .iter()
-                                .map(|e| e.path.clone())
-                                .collect::<Vec<_>>()
+                            list_groups(d, st.editor.changes.group)
+                                .into_iter()
+                                .find(|g| g.key == key)
+                                .map(|g| {
+                                    g.entries
+                                        .iter()
+                                        .map(|(e, _, _)| e.path.clone())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
                         });
                         if let Some(paths) = paths {
                             stage_paths(&mut st.editor, Some(paths));
@@ -575,57 +836,189 @@ fn group_block(
     }
     block = block.child(head);
 
-    if !collapsed {
-        if entries.is_empty() {
-            block = block.child(theme::txt("None", T12, ink.muted).px(12.0).py(2.0));
-        } else {
-            let total = entries.len();
-            let selected_path = s.editor.changes.selected.as_deref();
-            let selected_in_group = s.editor.changes.layer.as_deref() == Some(layer);
+    if collapsed {
+        return block;
+    }
+    if entries.is_empty() {
+        return block.child(theme::txt("None", T12, ink.muted).px(12.0).py(2.0));
+    }
 
-            let (visible_entries, truncated_count) = if total <= MAX_GROUP_RENDER {
-                (entries.as_slice(), 0)
-            } else {
-                (&entries[..MAX_GROUP_RENDER], total - MAX_GROUP_RENDER)
-            };
+    let total = entries.len();
+    // Past the render cap the selected and j/k-target rows still mount —
+    // appended flat in `List`, folded into the tree at their natural spot
+    // in `Tree`.
+    let mut render: Vec<(&app_core::git_view::StatusEntry, &'static str, &'static str)> =
+        entries.iter().take(MAX_GROUP_RENDER).copied().collect();
+    let mut extras: Vec<(&app_core::git_view::StatusEntry, &'static str, &'static str)> =
+        Vec::new();
+    if total > MAX_GROUP_RENDER {
+        if let (Some(sel), Some(lay)) = (
+            s.editor.changes.selected.as_deref(),
+            s.editor.changes.layer.as_deref(),
+        ) && let Some(pos) = entries
+            .iter()
+            .position(|(e, _, l)| e.path == sel && *l == lay)
+            && pos >= MAX_GROUP_RENDER
+        {
+            extras.push(entries[pos]);
+        }
+        if let Some(nav) = &s.editor.keyboard.nav
+            && nav.section == crate::editor::state::Section::Changes
+            && let Some(rest) = nav.key.strip_prefix("goko-nav-change:")
+            && let Some((nav_layer, nav_path)) = rest.split_once(':')
+            && let Some(pos) = entries
+                .iter()
+                .position(|(e, _, l)| e.path == nav_path && *l == nav_layer)
+            && pos >= MAX_GROUP_RENDER
+            && !extras.contains(&entries[pos])
+        {
+            extras.push(entries[pos]);
+        }
+    }
 
-            for entry in visible_entries {
-                block = block.child(entry_row(s, ink, k, key, layer, entry));
+    match s.editor.list_view {
+        ListView::List => {
+            for &(entry, key, layer) in render.iter().chain(extras.iter()) {
+                block = block.child(entry_row(s, ink, k, key, layer, entry, 0.0));
             }
-
-            if truncated_count > 0 {
-                // If the active selection is past MAX_GROUP_RENDER, mount it so it remains visible and interactive.
-                if selected_in_group
-                    && let Some(sel) = selected_path
-                    && let Some(pos) = entries.iter().position(|e| e.path == sel)
-                    && pos >= MAX_GROUP_RENDER
-                {
-                    block = block.child(entry_row(s, ink, k, key, layer, entries[pos]));
-                }
-
-                // If the keyboard navigation item is past MAX_GROUP_RENDER, mount it so j/k can scroll to it.
-                let prefix = format!("change:{layer}:");
-                if let Some(nav) = &s.editor.keyboard.nav
-                    && nav.section == crate::editor::state::Section::Changes
-                    && let Some(nav_path) = nav.key.strip_prefix(&prefix)
-                    && selected_path != Some(nav_path)
-                    && let Some(pos) = entries.iter().position(|e| e.path == nav_path)
-                    && pos >= MAX_GROUP_RENDER
-                {
-                    block = block.child(entry_row(s, ink, k, key, layer, entries[pos]));
-                }
-
-                block = block.child(row().w_full().px(10.0).py(4.0).items_center().child(
-                    theme::txt(
-                        &format!("+{truncated_count} more changed files (use filter to narrow)"),
-                        T11M_LH,
-                        ink.muted,
-                    ),
-                ));
+        }
+        ListView::Tree => {
+            render.extend(extras);
+            let flat: Vec<(
+                &app_core::git_view::StatusEntry,
+                (&'static str, &'static str),
+            )> = render.iter().map(|&(e, k, l)| (e, (k, l))).collect();
+            let rows = tree_rows(&flat, |p| s.editor.changes.collapsed.contains(&dir_key(p)));
+            for trow in rows {
+                block = block.child(match trow {
+                    TreeRow::Dir { path, name, depth } => {
+                        dir_row(s, ink, group.key, &path, &name, depth)
+                    }
+                    TreeRow::File {
+                        entry,
+                        data: (key, layer),
+                        depth,
+                    } => entry_row(s, ink, k, key, layer, entry, depth as f32 * DIR_INDENT),
+                });
             }
         }
     }
+
+    if total > MAX_GROUP_RENDER {
+        block = block.child(
+            row()
+                .w_full()
+                .px(10.0)
+                .py(4.0)
+                .items_center()
+                .child(theme::txt(
+                    &format!(
+                        "+{} more changed files (use filter to narrow)",
+                        total - MAX_GROUP_RENDER
+                    ),
+                    T11M_LH,
+                    ink.muted,
+                )),
+        );
+    }
     block
+}
+
+/// A directory header row in `Tree` view: chevron + folder icon + the dir's
+/// last segment. The whole row toggles `dir:{path}` in `changes.collapsed` —
+/// the same collapse model as the group headers, namespaced by `dir:`.
+fn dir_row(
+    s: &State,
+    ink: &Ink,
+    group_key: &'static str,
+    path: &str,
+    name: &str,
+    depth: usize,
+) -> El {
+    let key = dir_key(path);
+    let collapsed = s.editor.changes.collapsed.contains(&key);
+    el().key(format!("change-dir:{group_key}:{path}"))
+        .w_full()
+        .h(24.0)
+        .px(2.0)
+        .pl(4.0 + depth as f32 * DIR_INDENT)
+        .gap(4.0)
+        .items_center()
+        .radius(6.0)
+        .hover(ink.text.alpha(0.06))
+        .role("button")
+        .label(format!("{path} directory"))
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .child(theme::ic(
+            if collapsed {
+                &theme::CHEVRON_RIGHT
+            } else {
+                &theme::CHEVRON_DOWN
+            },
+            11.0,
+            ink.muted,
+        ))
+        .child(theme::ic(&theme::FOLDER, 12.0, ink.muted))
+        .child(
+            theme::txt(name, T12M, ink.text)
+                .min_w(0.0)
+                .truncate_middle()
+                .help_when_truncated(path.to_string()),
+        )
+        .on_press(move |st: &mut State| {
+            if !st.editor.changes.collapsed.remove(&key) {
+                st.editor.changes.collapsed.insert(key.clone());
+            }
+        })
+}
+
+/// The changed-file list's context menu (`View` + `Group By`), mounted as a
+/// kit layer while `changes.menu` is open — at the secondary-press point, or
+/// beside the header's view button when that opened it.
+fn list_menu(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    let m = s.editor.changes.menu.as_ref()?;
+    let menu = match m {
+        ListMenu::Point { x, y } => context_menu(
+            "changes-list",
+            el(),
+            Some(rune::PointerPress { x: *x, y: *y }),
+        ),
+        ListMenu::Anchor => Menu::new("changes-list").anchor(VIEW_MENU_KEY).open(true),
+    };
+    let view = s.editor.list_view;
+    let group = s.editor.changes.group;
+    let view_item = |label: &'static str, v: ListView| {
+        MenuItem::new(label)
+            .checked(view == v)
+            .on_select(move |st: &mut State| {
+                st.editor.list_view = v;
+                st.editor.changes.menu = None;
+            })
+    };
+    let group_item = |label: &'static str, g: ChangeGroup| {
+        MenuItem::new(label)
+            .checked(group == g)
+            .on_select(move |st: &mut State| {
+                st.editor.changes.group = g;
+                st.editor.changes.menu = None;
+            })
+    };
+    Some(
+        menu.group_label("View")
+            .item(view_item("List", ListView::List))
+            .item(view_item("Tree", ListView::Tree))
+            .separator()
+            .group_label("Group By")
+            .item(group_item("None", ChangeGroup::None))
+            .item(group_item(
+                "Tracked & Untracked",
+                ChangeGroup::TrackedUntracked,
+            ))
+            .item(group_item("Staged & Unstaged", ChangeGroup::StagedUnstaged))
+            .on_close(|st: &mut State| st.editor.changes.menu = None)
+            .build(&s.editor.kit, layer),
+    )
 }
 
 /// Chevron + label + count; the whole area toggles the group.
@@ -666,7 +1059,8 @@ fn group_toggle(key: &'static str, label: &str, count: usize, collapsed: bool, i
 /// One changed file: select button (file icon + path + status badge) plus
 /// sibling icon actions so a write never also selects the row. Mirrors the
 /// desktop row: the path truncates, the badge and actions never do, and the
-/// accessible name keeps the full `orig → path`.
+/// accessible name keeps the full `orig → path`. `indent` is the `Tree`
+/// view's extra left padding (0 in `List`).
 fn entry_row(
     s: &State,
     ink: &Ink,
@@ -674,6 +1068,7 @@ fn entry_row(
     key: &'static str,
     layer: &'static str,
     entry: &app_core::git_view::StatusEntry,
+    indent: f32,
 ) -> El {
     let path = entry.path.clone();
     let name = entry_name(entry);
@@ -692,6 +1087,7 @@ fn entry_row(
         .w_full()
         .h(24.0)
         .px(2.0)
+        .pl(2.0 + indent)
         .gap(2.0)
         .items_center()
         .child(
@@ -1328,6 +1724,9 @@ mod tests {
             .map(|i| entry(&format!("src/file-{i:03}.rs"), None, "modified"))
             .collect();
         s.editor.changes.data = Some(d);
+        // Pin the canonical flat layout: this test is about the cap.
+        s.editor.list_view = ListView::List;
+        s.editor.changes.group = ChangeGroup::None;
         // Select an entry past the MAX_GROUP_RENDER threshold.
         s.editor.changes.selected = Some(format!("src/file-{:03}.rs", total - 1));
         s.editor.changes.layer = Some("unstaged".into());
@@ -1354,5 +1753,491 @@ mod tests {
             .into_iter()
             .find(|e| e.text.as_deref() == Some(&note));
         assert!(note_el.is_some(), "truncation note mounted: {ls:?}");
+    }
+
+    // -- List/Tree view + Group By -------------------------------------------
+
+    #[test]
+    fn list_groups_none_keeps_canonical_order_and_layers() {
+        let d = changes();
+        let groups = list_groups(&d, ChangeGroup::None);
+        let keys: Vec<_> = groups.iter().map(|g| g.key).collect();
+        assert_eq!(keys, ["conflicts", "staged", "unstaged", "untracked"]);
+        assert_eq!(groups[1].label, "Staged");
+        // Canonical rows keep their own group key and diff layer.
+        assert_eq!(groups[1].entries[0].1, "staged");
+        assert_eq!(groups[1].entries[0].2, "staged");
+        assert_eq!(groups[3].entries[0].2, "untracked");
+    }
+
+    #[test]
+    fn list_groups_tracked_untracked_keeps_row_layers() {
+        let mut d = changes();
+        d.conflicts = vec![entry("c.rs", None, "unmerged")];
+        let groups = list_groups(&d, ChangeGroup::TrackedUntracked);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].key, "tracked");
+        assert_eq!(groups[0].label, "Tracked");
+        let members: Vec<(&str, &str, &str)> = groups[0]
+            .entries
+            .iter()
+            .map(|(e, k, l)| (e.path.as_str(), *k, *l))
+            .collect();
+        assert_eq!(
+            members,
+            [
+                ("src/a.rs", "staged", "staged"),
+                ("src/b.rs", "unstaged", "unstaged"),
+                ("c.rs", "conflicts", "conflict"),
+            ]
+        );
+        assert_eq!(groups[1].key, "untracked");
+        assert_eq!(groups[1].entries.len(), 1);
+    }
+
+    #[test]
+    fn list_groups_staged_unstaged_repeats_a_path_in_both() {
+        let mut d = changes();
+        d.staged.push(entry("dup.rs", None, "modified"));
+        d.unstaged.push(entry("dup.rs", None, "modified"));
+        let groups = list_groups(&d, ChangeGroup::StagedUnstaged);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].key, "staged");
+        assert_eq!(groups[1].key, "unstaged");
+        // `dup.rs` renders under both headers, each row keeping its layer.
+        assert!(
+            groups[0]
+                .entries
+                .iter()
+                .any(|(e, _, l)| e.path == "dup.rs" && *l == "staged")
+        );
+        assert!(
+            groups[1]
+                .entries
+                .iter()
+                .any(|(e, _, l)| e.path == "dup.rs" && *l == "unstaged")
+        );
+        // Untracked sits under Unstaged, still tagged for its own actions.
+        assert!(
+            groups[1]
+                .entries
+                .iter()
+                .any(|(e, k, l)| e.path == "new.txt" && *k == "untracked" && *l == "untracked")
+        );
+    }
+
+    #[test]
+    fn list_groups_skips_empty_groups_when_grouping() {
+        let mut d = changes();
+        d.untracked.clear();
+        let groups = list_groups(&d, ChangeGroup::TrackedUntracked);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].key, "tracked");
+        // `None` keeps the four canonical slots even when a slot is empty.
+        assert_eq!(list_groups(&d, ChangeGroup::None).len(), 4);
+    }
+
+    #[test]
+    fn tree_rows_nest_directories_before_files() {
+        let files = vec![
+            entry("src/a.rs", None, "modified"),
+            entry("src/sub/b.rs", None, "modified"),
+            entry("readme.md", None, "modified"),
+        ];
+        let refs: Vec<(&StatusEntry, ())> = files.iter().map(|e| (e, ())).collect();
+        let rows = tree_rows(&refs, |_| false);
+        let kinds: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                TreeRow::Dir { path, .. } => format!("d:{path}"),
+                TreeRow::File { entry, .. } => format!("f:{}", entry.path),
+            })
+            .collect();
+        // Each level emits its subdirs (natural order), then its files.
+        assert_eq!(
+            kinds,
+            [
+                "d:src",
+                "d:src/sub",
+                "f:src/sub/b.rs",
+                "f:src/a.rs",
+                "f:readme.md"
+            ]
+        );
+        let depths: Vec<usize> = rows
+            .iter()
+            .map(|r| match r {
+                TreeRow::Dir { depth, .. } | TreeRow::File { depth, .. } => *depth,
+            })
+            .collect();
+        assert_eq!(depths, [0, 1, 2, 1, 0]);
+    }
+
+    #[test]
+    fn tree_rows_skip_a_collapsed_directory() {
+        let files = vec![
+            entry("src/a.rs", None, "modified"),
+            entry("x.rs", None, "modified"),
+        ];
+        let refs: Vec<(&StatusEntry, ())> = files.iter().map(|e| (e, ())).collect();
+        let rows = tree_rows(&refs, |p| p == "src");
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(rows[0], TreeRow::Dir { .. }));
+        assert!(matches!(rows[1], TreeRow::File { .. }));
+    }
+
+    #[test]
+    fn changes_state_defaults_and_reset_keeps_layout() {
+        let mut c = crate::editor::state::ChangesState::empty();
+        assert_eq!(c.group, ChangeGroup::StagedUnstaged);
+        assert!(c.menu.is_none());
+
+        c.group = ChangeGroup::StagedUnstaged;
+        c.selected = Some("x".into());
+        c.collapsed.insert("dir:src".into());
+        c.reset();
+        assert_eq!(c.group, ChangeGroup::StagedUnstaged);
+        assert!(c.selected.is_none());
+        assert!(c.collapsed.is_empty());
+        // The List/Tree choice is shared (`EditorState::list_view`), so a
+        // checkout switch cannot reset it here.
+        assert_eq!(ListView::default(), ListView::Tree);
+    }
+
+    /// Right-click on the changed-file list opens its View/Group-By menu
+    /// with the active choices checked — the menu is list-level, so a press
+    /// over a file row still names the list.
+    #[test]
+    fn secondary_press_opens_the_list_menu() {
+        let (s, _home, _guard) = editor_scene();
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let row = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "button" && e.label.as_deref() == Some("src/staged-00.rs"))
+            .expect("staged row mounted");
+        let (x, y) = (
+            row.rect[0] + row.rect[2] / 2.0,
+            row.rect[1] + row.rect[3] / 2.0,
+        );
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+
+        let m = rt
+            .state
+            .editor
+            .changes
+            .menu
+            .as_ref()
+            .expect("secondary press opens the list menu");
+        assert_eq!(*m, ListMenu::Point { x, y });
+
+        rt.frame(1.0 / 60.0);
+        let item = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.role == "menuitemcheckbox" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("menu item {label:?} mounted"))
+        };
+        for l in [
+            "List",
+            "Tree",
+            "None",
+            "Tracked & Untracked",
+            "Staged & Unstaged",
+        ] {
+            item(&rt, l);
+        }
+        assert!(item(&rt, "Tree").item_selected, "Tree is the active view");
+        assert!(
+            item(&rt, "Staged & Unstaged").item_selected,
+            "Staged & Unstaged is the active grouping"
+        );
+        assert!(!item(&rt, "List").item_selected);
+    }
+
+    /// Picking a menu item writes the choice, closes the menu, and the new
+    /// layout renders — dir rows for `Tree`, composite headers for a group.
+    #[test]
+    fn menu_items_switch_view_and_group() {
+        let (mut s, _home, _guard) = editor_scene();
+        s.editor.changes.menu = Some(ListMenu::Point { x: 100.0, y: 100.0 });
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+
+        let pick = |rt: &mut Runtime<State>, label: &str| {
+            let it = rt
+                .elements()
+                .into_iter()
+                .find(|e| !e.exiting && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("menu item {label:?} mounted"));
+            click(
+                rt,
+                it.rect[0] + it.rect[2] / 2.0,
+                it.rect[1] + it.rect[3] / 2.0,
+            );
+        };
+        pick(&mut rt, "Tree");
+        assert_eq!(rt.state.editor.list_view, ListView::Tree);
+        assert!(rt.state.editor.changes.menu.is_none(), "picking closes");
+
+        rt.frame(1.0 / 60.0);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.label.as_deref() == Some("src directory")),
+            "src dir row mounts in Tree view"
+        );
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.label.as_deref() == Some("misc directory")),
+            "misc dir row mounts in Tree view"
+        );
+
+        rt.state.editor.changes.menu = Some(ListMenu::Point { x: 100.0, y: 100.0 });
+        rt.invalidate();
+        rt.frame(1.0 / 60.0);
+        pick(&mut rt, "Staged & Unstaged");
+        assert_eq!(rt.state.editor.changes.group, ChangeGroup::StagedUnstaged);
+
+        rt.frame(1.0 / 60.0);
+        // Assert on the group-toggle keys — the "Untracked" text would also
+        // match the untracked rows' status badges.
+        let keys: Vec<String> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| !e.exiting)
+            .filter_map(|e| e.key)
+            .collect();
+        assert!(keys.iter().any(|k| k == "group-toggle:staged"));
+        assert!(keys.iter().any(|k| k == "group-toggle:unstaged"));
+        assert!(
+            !keys
+                .iter()
+                .any(|k| k == "group-toggle:untracked" || k == "group-toggle:conflicts"),
+            "composite grouping renders only Staged and Unstaged headers"
+        );
+    }
+
+    /// In `Tree` view a directory row toggles its subtree in
+    /// `changes.collapsed` under the `dir:` key, leaving the group collapse
+    /// keys untouched.
+    #[test]
+    fn tree_view_dir_rows_expand_and_collapse() {
+        let (mut s, _home, _guard) = editor_scene();
+        s.editor.list_view = ListView::Tree;
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let ls = labels(&rt);
+        assert!(ls.iter().any(|l| l == "src/staged-00.rs"));
+
+        let dir = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("src directory"))
+            .expect("src dir row mounted");
+        click(&mut rt, dir.rect[0] + 40.0, dir.rect[1] + dir.rect[3] / 2.0);
+
+        assert!(
+            rt.state.editor.changes.collapsed.contains(&dir_key("src")),
+            "the dir row records its collapse"
+        );
+        rt.frame(1.0 / 60.0);
+        // Collapsed-away rows linger a few frames as exiting elements.
+        let ls: Vec<String> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| !e.exiting)
+            .filter_map(|e| e.label)
+            .collect();
+        assert!(
+            !ls.iter().any(|l| l == "src/staged-00.rs"),
+            "collapsed dir hides its files"
+        );
+    }
+
+    /// An empty list still opens the menu — the press lands on the scroll
+    /// area itself.
+    #[test]
+    fn the_list_menu_opens_on_an_empty_list() {
+        let (mut s, _home, _guard) = editor_scene();
+        s.editor.changes.data = Some(app_core::git_view::GitViewChanges {
+            branch: Some("main".into()),
+            head: "abc".into(),
+            conflicts: vec![],
+            staged: vec![],
+            unstaged: vec![],
+            untracked: vec![],
+            ahead: None,
+        });
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        // An all-empty worktree shows the clean pane in place of the list;
+        // the menu still opens on it.
+        let clean = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.text.as_deref() == Some("Working tree clean"))
+            .expect("clean pane mounted");
+        let (x, y) = (
+            clean.rect[0] + clean.rect[2] / 2.0,
+            clean.rect[1] + clean.rect[3] / 2.0,
+        );
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert!(
+            rt.state.editor.changes.menu.is_some(),
+            "menu opens with no rows"
+        );
+    }
+
+    /// A path staged AND unstaged appears in both composite groups; picking
+    /// each row selects its own layer.
+    #[test]
+    fn grouped_view_keeps_each_rows_layer() {
+        let (mut s, _home, _guard) = editor_scene();
+        let mut d = changes();
+        d.staged = vec![entry("dup.rs", None, "modified")];
+        d.unstaged = vec![entry("dup.rs", None, "modified")];
+        d.untracked = vec![];
+        s.editor.changes.data = Some(d);
+        s.editor.changes.group = ChangeGroup::StagedUnstaged;
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let rows: Vec<rune::runtime::ElementInfo> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| e.role == "button" && e.label.as_deref() == Some("dup.rs"))
+            .collect();
+        assert_eq!(rows.len(), 2, "dup.rs renders in both groups");
+
+        for r in rows {
+            click(
+                &mut rt,
+                r.rect[0] + r.rect[2] / 2.0,
+                r.rect[1] + r.rect[3] / 2.0,
+            );
+        }
+        // The second click lands on the Unstaged copy (the Staged header
+        // renders first), so the layer identifies which row won last.
+        assert_eq!(
+            rt.state.editor.changes.layer.as_deref(),
+            Some("unstaged"),
+            "each row selects its own layer"
+        );
+        assert_eq!(rt.state.editor.changes.selected.as_deref(), Some("dup.rs"));
+    }
+
+    /// The header's view button opens the same View/Group-By menu as the
+    /// secondary press, anchored under the button instead of at a point.
+    #[test]
+    fn the_view_button_opens_the_list_menu() {
+        let (s, _home, _guard) = editor_scene();
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let button = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("View and group changed files"))
+            .expect("view button mounted");
+        click(
+            &mut rt,
+            button.rect[0] + button.rect[2] / 2.0,
+            button.rect[1] + button.rect[3] / 2.0,
+        );
+        assert_eq!(
+            rt.state.editor.changes.menu,
+            Some(ListMenu::Anchor),
+            "the button opens the anchored menu"
+        );
+
+        rt.frame(1.0 / 60.0);
+        let item = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.role == "menuitemcheckbox" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("menu item {label:?} mounted"))
+        };
+        assert!(
+            item(&rt, "Tree").item_selected,
+            "Tree is checked by default"
+        );
+        assert!(
+            item(&rt, "Staged & Unstaged").item_selected,
+            "Staged & Unstaged is checked by default"
+        );
+
+        let list = item(&rt, "List");
+        click(
+            &mut rt,
+            list.rect[0] + list.rect[2] / 2.0,
+            list.rect[1] + list.rect[3] / 2.0,
+        );
+        assert_eq!(rt.state.editor.list_view, ListView::List);
+        assert_eq!(
+            rt.state.editor.changes.menu, None,
+            "a choice closes the menu"
+        );
+    }
+
+    /// Reopening from the button after a choice still names the active
+    /// options, and the group choice applies the same way.
+    #[test]
+    fn the_view_button_menu_applies_group_choices() {
+        let (s, _home, _guard) = editor_scene();
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let button = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("View and group changed files"))
+            .expect("view button mounted");
+        let (bx, by) = (
+            button.rect[0] + button.rect[2] / 2.0,
+            button.rect[1] + button.rect[3] / 2.0,
+        );
+        click(&mut rt, bx, by);
+        rt.frame(1.0 / 60.0);
+        let grouped = rt
+            .elements()
+            .into_iter()
+            .find(|e| {
+                e.role == "menuitemcheckbox" && e.label.as_deref() == Some("Staged & Unstaged")
+            })
+            .expect("group item mounted");
+        click(
+            &mut rt,
+            grouped.rect[0] + grouped.rect[2] / 2.0,
+            grouped.rect[1] + grouped.rect[3] / 2.0,
+        );
+        assert_eq!(
+            rt.state.editor.changes.group,
+            ChangeGroup::StagedUnstaged,
+            "the button's menu applies the group choice"
+        );
+        assert_eq!(rt.state.editor.changes.menu, None);
+
+        // Reopening marks the current group.
+        click(&mut rt, bx, by);
+        rt.frame(1.0 / 60.0);
+        let again = rt
+            .elements()
+            .into_iter()
+            .find(|e| {
+                e.role == "menuitemcheckbox" && e.label.as_deref() == Some("Staged & Unstaged")
+            })
+            .expect("group item mounted again");
+        assert!(again.item_selected, "the active group is checked");
     }
 }
