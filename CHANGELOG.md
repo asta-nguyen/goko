@@ -25,6 +25,8 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   input, and every 2 s otherwise, instead of five times a second: 20 idle sessions wake
   the daemon 11 times a second instead of 128. It also closes a connection that sends no
   hello within 3 s.
+- The bundled SQLite is 3.54.1 (`rusqlite` 0.42.0, was 0.40.2), which is past
+  RUSTSEC-2026-0459.
 
 ### Fixed
 
