@@ -154,28 +154,27 @@ async fn dropping_the_receiver_releases_the_reader() {
 /// flow subscriber is never dropped for the number of chunks it has queued.
 #[tokio::test(flavor = "multi_thread")]
 async fn small_chunks_pause_the_reader_instead_of_lagging_a_flow_subscriber() {
-    // One byte per write with a pause between, so every read is one chunk.
-    let process = PtyProcess::spawn(spec(&[
-        "sh",
-        "-c",
-        "while :; do printf x; sleep 0.002; done",
-    ]))
-    .expect("spawn the producer");
+    let process = PtyProcess::spawn(spec(&["cat"])).expect("spawn cat");
     let (snapshot, mut receiver) = process.subscribe_flow();
+    let published = || process.buffer().2 - snapshot.replay_from;
 
-    // Nothing is taken from the queue, so the reader has to stop on its own.
+    // The terminal echoes each byte typed, and waiting for that echo before
+    // the next one makes every read one chunk of one byte. Nothing takes the
+    // chunks from the queue, so the reader has to stop on its own.
     let mut paused = 0;
-    let mut quiet_since = Instant::now();
-    wait_until("the reader to pause", Duration::from_secs(4), || {
-        let published = process.buffer().2 - snapshot.replay_from;
-        if published != paused || published == 0 {
-            paused = published;
-            quiet_since = Instant::now();
+    loop {
+        process.write(b"x").expect("type a byte");
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while published() == paused && Instant::now() < deadline {
+            sleep(Duration::from_millis(1)).await;
         }
-        quiet_since.elapsed() >= Duration::from_millis(400)
-    })
-    .await;
-    assert!(paused < WINDOW, "the window, not the queue, stopped it");
+        if published() == paused {
+            break;
+        }
+        paused = published();
+        assert!(paused < 1024, "the reader never paused on the full queue");
+    }
+    assert!(paused > 0, "the echo never arrived");
 
     // Everything queued is output, in order and with no lag notice.
     let mut next_seq = snapshot.replay_from;
@@ -188,8 +187,9 @@ async fn small_chunks_pause_the_reader_instead_of_lagging_a_flow_subscriber() {
             other => panic!("the flow subscriber was dropped: {other:?}"),
         }
     }
+    // The byte typed while the reader was paused is still in the PTY.
     wait_until("the reader to resume", Duration::from_secs(2), || {
-        process.buffer().2 - snapshot.replay_from > paused
+        published() > paused
     })
     .await;
 
