@@ -1839,7 +1839,7 @@ mod tests {
 
     #[test]
     fn tree_rows_nest_directories_before_files() {
-        let files = vec![
+        let files = [
             entry("src/a.rs", None, "modified"),
             entry("src/sub/b.rs", None, "modified"),
             entry("readme.md", None, "modified"),
@@ -1875,7 +1875,7 @@ mod tests {
 
     #[test]
     fn tree_rows_skip_a_collapsed_directory() {
-        let files = vec![
+        let files = [
             entry("src/a.rs", None, "modified"),
             entry("x.rs", None, "modified"),
         ];

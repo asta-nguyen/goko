@@ -328,6 +328,7 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     s.editor.history.checkout = None;
     s.editor.history.file_menu = None;
     s.editor.history.collapsed_dirs.clear();
+    s.editor.history.body_expanded = None;
     s.editor.stashes.stashes.clear();
     s.editor.stashes.selected = None;
     s.editor.stashes.detail = None;
@@ -414,6 +415,7 @@ fn clear_checkout(s: &mut State) {
     s.editor.history.checkout = None;
     s.editor.history.file_menu = None;
     s.editor.history.collapsed_dirs.clear();
+    s.editor.history.body_expanded = None;
     s.editor.stashes.stashes.clear();
     s.editor.stashes.selected = None;
     s.editor.stashes.detail = None;

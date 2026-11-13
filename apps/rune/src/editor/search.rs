@@ -49,6 +49,7 @@ pub enum IndexEvent {
     },
 }
 
+#[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
 enum IndexJob {
     Pass { checkout: PathBuf, key: String },
     Sync { checkout: PathBuf, key: String },
@@ -99,7 +100,8 @@ impl Indexer {
         }
     }
 
-    /// A real thread over an explicit home (tests and the app alike).
+    /// A real thread over an explicit home.
+    #[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
     pub fn with_home(handle: AppHandle<State>, home: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -202,6 +204,7 @@ impl Indexer {
     }
 }
 
+#[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
 fn indexer_thread(
     rx: Receiver<IndexJob>,
     handle: AppHandle<State>,
@@ -239,6 +242,7 @@ fn indexer_thread(
     }
 }
 
+#[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
 fn event_sink(handle: AppHandle<State>) -> impl FnMut(IndexEvent) {
     move |event| {
         let handle = handle.clone();
@@ -691,14 +695,18 @@ mod tests {
 
     #[test]
     fn force_content_only_flips_a_concept_pane() {
-        let mut search = Search::default();
-        search.mode = SearchMode::Concept;
-        search.query = "needle".into();
+        let mut search = Search {
+            mode: SearchMode::Concept,
+            query: "needle".into(),
+            ..Search::default()
+        };
         force_content(&mut search);
         assert_eq!(search.mode, SearchMode::Content);
         assert!(search.query.is_empty());
-        let mut content = Search::default();
-        content.query = "keep".into();
+        let mut content = Search {
+            query: "keep".into(),
+            ..Search::default()
+        };
         force_content(&mut content);
         assert_eq!(content.query, "keep");
     }
@@ -1028,7 +1036,7 @@ mod tests {
                 truncated: false,
             },
         );
-        assert!(!s.editor.files.search.last_pass["other"].ok == false);
+        assert!(s.editor.files.search.last_pass["other"].ok);
     }
 
     #[test]
