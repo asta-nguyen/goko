@@ -103,7 +103,8 @@ registered-project and checkout validation (`projects`), bounded Git/file reads 
 (`git_view`, `git_write`), worktree discovery/create/remove/env-copy plus the shared Git
 runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `accounts`,
 `subagents`), the language-server hub (`lsp`), usage and activity readers (`usage`,
-`activity`), and `GOKO_HOME` resolution (`home`).
+`activity`), the derived Context search index (`code_index`), and `GOKO_HOME` resolution
+(`home`).
 
 - Every checkout path is revalidated against the registered project and canonicalized
   before use. File and tree paths must be relative and resolve inside the checkout after
@@ -112,7 +113,13 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
   cap, compare the opened contents before replacing the file atomically, preserve its
   permissions, and update only the working tree. Content search uses fixed-string
   smart-case `git grep`, includes non-ignored untracked text files, skips binary files, and
-  caps output, matches, and previews.
+  caps output, matches, and previews. Context search (`code_index`) keeps a derived
+  per-checkout SQLite FTS5 index under `GOKO_HOME/search/` (one file per canonical
+  checkout, mode `0600`): a full pass lists the checkout with `git_view::file_list`,
+  reads each file through `git_view::file`, chunks it, and records `(size, mtime_ns)`;
+  a sync re-evaluates only the paths `git_view::status` names (run with
+  `--no-optional-locks`, so it never takes `index.lock`), and a query opens the index
+  read-only. The index is derived data; deleting it only costs a rebuild.
 - Usage: Claude launches receive a UUIDv4 through `--session-id` and inline `--settings`;
   the injected statusline command saves Claude's JSON to
   `GOKO_HOME/usage/claude/<session-id>.json` and forwards it to the user's own
@@ -139,9 +146,23 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
 - **Editor:** a native workspace (Files, Changes, History, Stashes, Servers) over
   registered projects and validated checkouts, backed by `app-core` and `goko.db`.
 - All Git, filesystem, storage, and highlight work runs on one worker thread behind a
-  bounded queue (128 pending jobs); replies carry a checkout key (`project_id` + canonical
-  path) and a per-kind read generation, and stale results are dropped. Writes serialize on
-  the same lane.
+  bounded queue (128 pending jobs), except Context search index passes and working-tree
+  syncs, which run on a dedicated indexer thread outside that queue; replies carry a
+  checkout key (`project_id` + canonical path) and a per-kind read generation, and stale
+  results are dropped. Writes serialize on the same lane.
+- **Context search:** the Files toolbar always shows a search box, under the file filter,
+  with a `Text | Context` switch (the code names the modes `Content` and `Concept`; `Text`
+  is the literal `git grep` search and the default, and the pick lasts for the session).
+  `Context` ranks the checkout's text chunks from a derived SQLite FTS5 index in
+  `GOKO_HOME/search/`. The aside shows the results while a search is active and the file
+  tree when the file filter was edited last. A full
+  pass builds it on the indexer thread (one checkout at a time, first come first served)
+  and a sync before each query re-evaluates only the paths `git status` names, so a file
+  added or edited a moment ago is found by the next query. The query waits at most one
+  second for the sync; the first pass shows `Indexing done/total files`, and a failure
+  shows `Context search unavailable`. A file reverted to `HEAD`, a branch switch, a pull,
+  or a stash is not seen by a sync and is corrected by the next full pass (at most once
+  per ten seconds).
 - Editing uses rune-kit's native text surface with the shared 1 MiB file cap, atomic
   expected-original saves, syntax highlighting budgeted to 32 KiB / 8192 ranges,
   in-document find, and go-to-definition over the checkout's file list and content search.

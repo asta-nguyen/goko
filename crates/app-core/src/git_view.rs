@@ -21,7 +21,7 @@ const CAP: usize = 1024 * 1024;
 const BLAME_CAP: usize = 8 * 1024 * 1024;
 const SEARCH_OUTPUT_CAP: usize = 256 * 1024;
 const SEARCH_MATCH_CAP: usize = 500;
-const SEARCH_PREVIEW_CHARS: usize = 300;
+pub(crate) const SEARCH_PREVIEW_CHARS: usize = 300;
 static TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 /// Commits per History page.
 const HISTORY_PAGE: u64 = 100;
@@ -236,13 +236,27 @@ pub fn repo_checkout(checkout: &Path) -> Result<(), BridgeError> {
     Ok(())
 }
 
-/// `git status` grouped into conflicts / staged / unstaged / untracked.
+/// The one `git status` argument list: `--no-optional-locks` keeps a status
+/// read from taking `index.lock`, which a `git add` or `git commit` by the
+/// user or an agent in the same checkout may need.
+pub(crate) const STATUS_ARGS: [&str; 5] = [
+    "--no-optional-locks",
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
+];
+
+/// `git status` grouped into conflicts / staged / unstaged / untracked,
+/// without the branch, head, and ahead lookups `changes` adds.
+pub(crate) fn status(checkout: &Path) -> Result<GitViewChanges, BridgeError> {
+    let out = worktrees::git(checkout, &STATUS_ARGS)?;
+    Ok(parse_status(&out))
+}
+
+/// `git status` plus the branch, head, and ahead lookups.
 pub fn changes(checkout: &Path) -> Result<GitViewChanges, BridgeError> {
-    let out = worktrees::git(
-        checkout,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
-    let mut view = parse_status(&out);
+    let mut view = status(checkout)?;
     let branch = worktrees::run(
         checkout,
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -2663,5 +2677,35 @@ mod tests {
             );
         }
         assert_eq!(fs::read_to_string(root.join("src/a.rs")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn status_reads_without_taking_the_index_lock() {
+        assert_eq!(STATUS_ARGS[0], "--no-optional-locks");
+        let (_dir, root) = repository("git-view-status-lock");
+        let index = root.join(".git/index");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let tracked = root.join("tracked.txt");
+        let text = fs::read_to_string(&tracked).unwrap();
+        fs::write(&tracked, text).unwrap();
+        let before = fs::read(&index).unwrap();
+        status(&root).unwrap();
+        assert_eq!(
+            fs::read(&index).unwrap(),
+            before,
+            "status must not refresh the index"
+        );
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("status")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_ne!(
+            fs::read(&index).unwrap(),
+            before,
+            "a plain status refreshes the index"
+        );
     }
 }

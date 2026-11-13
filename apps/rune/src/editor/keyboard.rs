@@ -106,9 +106,7 @@ fn mounted_editables(s: &State) -> Vec<&TextEdit> {
     match e.section {
         Section::Files => {
             v.push(&e.files.filter);
-            if e.files.search.open {
-                v.push(&e.files.search_edit);
-            }
+            v.push(&e.files.search_edit);
             if let Some(d) = e.doc.as_ref().filter(|d| d.editable()) {
                 v.push(&d.code.edit);
                 if d.code.find.open {
@@ -136,9 +134,7 @@ fn mounted_editables_mut(s: &mut State) -> Vec<&mut TextEdit> {
     match e.section {
         Section::Files => {
             v.push(&mut e.files.filter);
-            if e.files.search.open {
-                v.push(&mut e.files.search_edit);
-            }
+            v.push(&mut e.files.search_edit);
             if let Some(d) = e.doc.as_mut().filter(|d| d.editable()) {
                 v.push(&mut d.code.edit);
                 if d.code.find.open {
@@ -225,14 +221,15 @@ fn find(s: &mut State, _tx: &mut Tx) -> bool {
     true
 }
 
-/// ⇧⌘F: open (or refocus) the Files content search — the existing
-/// `search_edit`/`Req::Search` path, no new backend surface. The section
-/// switch goes through the same guarded navigation the tabs use.
+/// ⇧⌘F: focus the Files search box (always visible) in Text mode with its text
+/// selected — the existing `search_edit`/`Req::Search` path, no new backend
+/// surface. The section switch goes through the same guarded navigation the
+/// tabs use; the results show once the re-armed query is issued.
 fn open_content_search(s: &mut State, tx: &mut Tx) {
     if !ready(s) {
         return;
     }
-    s.editor.files.search.open = true;
+    crate::editor::search::force_content(&mut s.editor.files.search);
     clear_edit_focuses(s);
     focus_text(&mut s.editor.files.search_edit);
     if s.editor.section != Section::Files {
@@ -951,5 +948,70 @@ mod tests {
             rt.state.editor.doc_load.is_some() || rt.state.editor.doc.is_some(),
             "enter queued the open through open_doc"
         );
+    }
+
+    #[test]
+    fn shift_cmd_f_focuses_the_always_visible_box_without_opening_results() {
+        let mut s = scene();
+        s.editor.files.search.open = false;
+        s.editor.files.search_edit.text = "needle".into();
+        let mut tx = Tx::default();
+        open_content_search(&mut s, &mut tx);
+        assert!(s.editor.files.search_edit.focused);
+        assert!(
+            !s.editor.files.filter.focused,
+            "the file filter gives up focus"
+        );
+        assert!(
+            !s.editor.files.search.open,
+            "the results show once the re-armed query is issued"
+        );
+        assert!(s.editor.files.search.pending.is_some());
+    }
+
+    #[test]
+    fn the_search_box_is_always_in_the_focus_list_but_rows_only_navigate_while_results_show() {
+        let mut s = scene();
+        s.editor.section = Section::Files;
+        s.editor.files.search.open = false;
+        let edit = &s.editor.files.search_edit as *const TextEdit;
+        assert!(
+            mounted_editables(&s)
+                .iter()
+                .any(|e| std::ptr::eq(*e as *const TextEdit, edit)),
+            "typing in the always-visible box counts as typing"
+        );
+        s.editor.files.search.results = Some(GitViewSearch {
+            matches: vec![GitViewSearchMatch {
+                path: "src/a.rs".into(),
+                line: 1,
+                text: "hit".into(),
+            }],
+            truncated: false,
+        });
+        assert!(
+            nav_items(&s)
+                .iter()
+                .all(|item| !matches!(item, NavItem::SearchMatch { .. })),
+            "stored results stay out of j/k while the tree shows"
+        );
+        s.editor.files.search.open = true;
+        assert_eq!(nav_items(&s).len(), 1);
+    }
+
+    #[test]
+    fn shift_cmd_f_forces_content_and_rearms() {
+        use crate::editor::state::search_state::SearchMode;
+        let mut s = scene();
+        s.editor.files.search.mode = SearchMode::Concept;
+        s.editor.files.search.query = "needle".into();
+        s.editor.files.search.searching = true;
+        s.editor.files.search_edit.text = "needle".into();
+        let mut tx = Tx::default();
+        open_content_search(&mut s, &mut tx);
+        assert_eq!(s.editor.files.search.mode, SearchMode::Content);
+        assert!(!s.editor.files.search.searching);
+        assert!(s.editor.files.search.results.is_none());
+        assert!(s.editor.files.search.pending.is_some());
     }
 }

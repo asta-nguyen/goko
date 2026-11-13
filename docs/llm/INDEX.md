@@ -11,7 +11,7 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 - [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, and ACP agents
 - [Desktop Theme](domains/desktop-theme.md) — dark and light palettes and theme preference behavior
 - [Rune chrome](domains/rune-chrome.md) — goko-rune header, workspace tab strip, and session controls strip on mock data
-- [Rune editor](domains/rune-editor.md) — native Files, Changes, History, Stashes, and Servers workspace over app-core with draft guards, worker isolation, and ACP commit messages
+- [Rune editor](domains/rune-editor.md) — native Files, Changes, History, Stashes, and Servers workspace over app-core with draft guards, worker isolation, ranked Context search, and ACP commit messages
 
 ## Requirement prefixes
 

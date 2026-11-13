@@ -1289,7 +1289,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     editor::quit_guard::poll_install();
     editor::navigation::reopen_if_cancelled(s);
-    changed |= editor::search::poll(s);
+    changed |= editor::search::poll(s, now, tx);
     if let Some(pending) = s.editor.pending_apply.take() {
         // Route through the guard: a save that landed clean applies
         // immediately; anything still dirty re-raises the dialog.
@@ -1369,6 +1369,7 @@ fn on_close(s: &mut State, tx: &mut Tx) {
 /// runtime thread after `hub.shutdown()`; `Daemon::shutdown` ends the
 /// supervisor and drops every pending reply.
 fn on_quit(s: &mut State, _tx: &mut Tx) {
+    s.editor.indexer.stop();
     s.editor.backend.shutdown();
     s.editor.acp.shutdown();
     s.editor.lsp.shutdown();

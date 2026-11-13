@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use app_core::git_view::{GitViewDiff, GitViewFile};
 
 use super::{Reply, ReplyData, Req, kind_key};
-use crate::editor::state::{EditorState, GoToStage, Notice, Patch, SidebarWorktrees};
+use crate::editor::state::{
+    EditorState, GoToStage, Notice, Patch, SidebarWorktrees, search_state::SearchMode,
+};
 
 impl EditorState {
     /// Apply one worker reply. Stale results — a different checkout than the
@@ -451,7 +453,16 @@ impl EditorState {
                 }
             }
             (Req::Search { query }, Ok(ReplyData::Search(result)))
-                if self.files.search.query == *query =>
+                if self.files.search.mode == SearchMode::Content
+                    && self.files.search.query == *query =>
+            {
+                self.files.search.results = Some(result);
+                self.files.search.searching = false;
+                self.files.search.error = None;
+            }
+            (Req::ConceptSearch { query }, Ok(ReplyData::Search(result)))
+                if self.files.search.mode == SearchMode::Concept
+                    && self.files.search.query == *query =>
             {
                 self.files.search.results = Some(result);
                 self.files.search.searching = false;
@@ -479,9 +490,23 @@ impl EditorState {
                 }
                 self.notice = Some(err_notice(&e));
             }
-            (Req::Search { .. }, Err(e)) => {
+            (Req::Search { query }, Err(e))
+                if self.files.search.mode == SearchMode::Content
+                    && self.files.search.query == *query =>
+            {
                 self.files.search.searching = false;
                 self.files.search.error = Some(e);
+            }
+            (Req::ConceptSearch { query }, Err(e))
+                if self.files.search.mode == SearchMode::Concept
+                    && self.files.search.query == *query =>
+            {
+                self.files.search.searching = false;
+                self.files.search.error = Some(if e == "No searchable words" {
+                    e
+                } else {
+                    format!("Context search unavailable: {e}")
+                });
             }
             (Req::File { path, token, line }, Ok(ReplyData::File(file)))
                 if self.doc_load == Some(*token) =>

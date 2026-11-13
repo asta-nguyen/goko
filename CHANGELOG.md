@@ -10,6 +10,19 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+### Added
+
+- Context search in the Files toolbar: the search box is always visible under the
+  file filter, with a `Text | Context` switch (`Text`, the literal search, is the
+  default and unchanged; the pick lasts for the session). `Context` ranks the
+  checkout's text chunks with a local SQLite FTS5 index (BM25), matching
+  `snake_case` and `camelCase` identifiers. A file added or edited a moment ago
+  is found by the next query: a working-tree sync before each query re-indexes
+  only the paths `git status` names. The index is derived data under
+  `GOKO_HOME/search/`. The `Search` toggle button and the separate mode row are
+  gone; editing the file filter shows the file tree and editing the search box
+  shows the results.
+
 ## [0.1.2] - 2026-11-12
 
 ### Added

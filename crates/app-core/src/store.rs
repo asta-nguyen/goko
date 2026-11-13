@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::fs::{DirBuilder, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -104,16 +104,27 @@ pub struct Store {
 
 /// Managed state: the store, or the open/migration error that stands in for it, so
 /// storage-backed commands reject `storage` while daemon-backed commands keep working.
-pub struct Storage(Result<Store, BridgeError>);
+pub struct Storage {
+    home: PathBuf,
+    store: Result<Store, BridgeError>,
+}
 
 impl Storage {
     pub fn open(home: &Path) -> Self {
-        Self(Store::open(home))
+        Self {
+            home: home.to_path_buf(),
+            store: Store::open(home),
+        }
+    }
+
+    /// The `GOKO_HOME` the store was opened with, for derived files beside it.
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// The store, or a clone of the error that kept it from opening.
     pub fn get(&self) -> Result<&Store, BridgeError> {
-        self.0.as_ref().map_err(Clone::clone)
+        self.store.as_ref().map_err(Clone::clone)
     }
 }
 

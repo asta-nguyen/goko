@@ -959,6 +959,7 @@ pub fn go_to_search_reply(
         return;
     }
     // Ambiguous or absent: surface the same result set in the search pane.
+    crate::editor::search::force_content(&mut s.files.search);
     s.files.search.open = true;
     s.files.search.query = name;
     s.files.search.results = Some(result);
@@ -2173,5 +2174,53 @@ mod tests {
                 .unwrap()
                 .contains("choice was not saved")
         );
+    }
+
+    #[test]
+    fn go_to_fallback_forces_content_but_a_unique_declaration_does_not() {
+        use crate::editor::state::search_state::SearchMode;
+        use crate::editor::state::{GoToPending, GoToStage};
+        use app_core::git_view::{GitViewSearch, GitViewSearchMatch};
+        let mut s = state();
+        s.editor.section = Section::Files;
+        s.editor.files.search.mode = SearchMode::Concept;
+        s.editor.go_to = Some(GoToPending {
+            from_path: "src/b.rs".into(),
+            stage: GoToStage::SearchName {
+                name: "needle".into(),
+            },
+        });
+        go_to_search_reply(
+            &mut s.editor,
+            "needle".into(),
+            GitViewSearch {
+                matches: Vec::new(),
+                truncated: false,
+            },
+        );
+        assert_eq!(s.editor.files.search.mode, SearchMode::Content);
+        assert!(s.editor.files.search.open);
+
+        s.editor.files.search.mode = SearchMode::Concept;
+        s.editor.go_to = Some(GoToPending {
+            from_path: "src/b.rs".into(),
+            stage: GoToStage::SearchName {
+                name: "needle".into(),
+            },
+        });
+        go_to_search_reply(
+            &mut s.editor,
+            "needle".into(),
+            GitViewSearch {
+                matches: vec![GitViewSearchMatch {
+                    path: "src/a.rs".into(),
+                    line: 1,
+                    text: "fn needle() {}".into(),
+                }],
+                truncated: false,
+            },
+        );
+        assert_eq!(s.editor.files.search.mode, SearchMode::Concept);
+        assert!(s.editor.pending_apply.is_some());
     }
 }

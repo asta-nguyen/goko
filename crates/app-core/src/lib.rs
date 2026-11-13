@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod acp;
 pub mod activity;
 pub mod agents;
+pub mod code_index;
 pub mod error;
 pub mod git_view;
 pub mod git_write;

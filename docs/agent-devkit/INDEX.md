@@ -24,6 +24,7 @@
 
 ## Archived changes
 
+- [Concept search: a ranked, indexed code search in the Files Search pane](changes/archive/2026-11-13-concept-search/design.md) ([tasks](changes/archive/2026-11-13-concept-search/tasks.md), [delta](changes/archive/2026-11-13-concept-search/delta.md))
 - [Done sound on session finish](changes/archive/2026-11-12-done-sound/delta.md)
 - [Rune UX improvements: first sessions, safety, shortcuts, accessibility](changes/archive/ux-improvements/design.md) ([tasks](changes/archive/ux-improvements/tasks.md), [delta](changes/archive/ux-improvements/delta.md))
 - [Multi-project workspaces](changes/archive/multi-project-workspaces/design.md) ([tasks](changes/archive/multi-project-workspaces/tasks.md), [delta](changes/archive/multi-project-workspaces/delta.md))

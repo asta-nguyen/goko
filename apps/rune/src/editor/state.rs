@@ -121,6 +121,47 @@ pub struct FileMenu {
 /// the last result set, both scoped to the checkout they were issued for.
 pub mod search_state {
     use app_core::git_view::GitViewSearch;
+    use std::collections::HashMap;
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum SearchMode {
+        #[default]
+        Content,
+        Concept,
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub enum IndexStatus {
+        #[default]
+        Idle,
+        Building {
+            done: usize,
+            total: usize,
+        },
+        Truncated,
+        Failed(String),
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct PassRecord {
+        pub checkout_key: String,
+        pub finished: f64,
+        pub ok: bool,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub enum SyncState {
+        #[default]
+        Idle,
+        Waiting {
+            query: String,
+            deadline: f64,
+        },
+        Expired {
+            query: String,
+        },
+    }
+
     #[derive(Default)]
     pub struct Search {
         /// Last query actually issued to the worker (staleness check).
@@ -131,7 +172,16 @@ pub mod search_state {
         pub checkout: Option<String>,
         pub searching: bool,
         pub error: Option<String>,
+        /// The Files aside shows the results instead of the tree. Set when a
+        /// query is issued (or the go-to-definition fallback shows its
+        /// results); cleared when the box is cleared or shortened, when the
+        /// file filter is edited, and on a checkout switch.
         pub open: bool,
+        pub mode: SearchMode,
+        pub index: IndexStatus,
+        /// One record per checkout key, so switching away and back keeps it.
+        pub last_pass: HashMap<String, PassRecord>,
+        pub sync: SyncState,
     }
 }
 
@@ -361,6 +411,8 @@ pub struct EditorState {
     pub visited: HashSet<Section>,
     pub notice: Option<Notice>,
     pub files: FilesState,
+    /// The Concept search indexer: one thread, passes and syncs.
+    pub indexer: crate::editor::search::Indexer,
     pub changes: ChangesState,
     pub branch: crate::editor::branch::BranchState,
     pub history: HistoryState,
@@ -448,6 +500,7 @@ pub struct EditorState {
 impl EditorState {
     pub fn new(kit: Kit, app: rune::AppHandle<State>) -> EditorState {
         let backend = Backend::new(app.clone());
+        let indexer = crate::editor::search::Indexer::new(app.clone());
         let acp = Acp::new(app.clone());
         let quit_dirty = Arc::new(AtomicBool::new(false));
         quit_guard::install(quit_dirty.clone(), app.clone());
@@ -488,6 +541,7 @@ impl EditorState {
                 reveal: None,
                 menu: None,
             },
+            indexer,
             branch: Default::default(),
             changes: ChangesState {
                 data: None,

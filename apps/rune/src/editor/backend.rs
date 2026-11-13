@@ -229,6 +229,11 @@ pub enum Req {
     Search {
         query: String,
     },
+    /// Ranked Concept search over the derived index — a separate kind so it
+    /// never supersedes (or is superseded by) Content search.
+    ConceptSearch {
+        query: String,
+    },
     /// Content search for go-to-definition name resolution — a separate
     /// request kind so it never supersedes (or is superseded by) the
     /// search pane's own queries.
@@ -1145,6 +1150,14 @@ fn run_checkout(
         Req::Search { query } | Req::GoToSearch { query } => git_view::search(checkout, query)
             .map(ReplyData::Search)
             .map_err(|e| e.to_string()),
+        Req::ConceptSearch { query } => {
+            let Some(storage) = storage.as_ref() else {
+                return Err("storage is unavailable".into());
+            };
+            app_core::code_index::search(storage.home(), checkout, query)
+                .map(ReplyData::Search)
+                .map_err(|e| e.to_string())
+        }
         Req::ConfigFiles { paths } => Ok(config_aliases(checkout, paths)),
         Req::Stashes => git_view::stashes(checkout)
             .map(ReplyData::Stashes)
@@ -1740,6 +1753,7 @@ fn kind_key(req: &Req) -> &'static str {
         Req::Branches => "branches",
         Req::FileList => "filelist",
         Req::Search { .. } => "search",
+        Req::ConceptSearch { .. } => "conceptsearch",
         Req::GoToSearch { .. } => "gotosarch",
         Req::ConfigFiles { .. } => "configfiles",
         Req::Highlight { .. } => "highlight",
@@ -3354,6 +3368,176 @@ mod tests {
         let dir = TempDir::new(name);
         let storage = Some(Storage::open(dir.path()));
         (dir, storage)
+    }
+
+    fn concept_repo(name: &str) -> (TempDir, PathBuf) {
+        let dir = TempDir::new(name);
+        let root = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {:?}", out);
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "Tester"]);
+        git(&["config", "user.email", "tester@example.com"]);
+        std::fs::write(root.join("a.txt"), "tracked needle\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        (dir, root)
+    }
+
+    fn concept_storage(name: &str) -> (TempDir, PathBuf, Option<Storage>, String) {
+        let (dir, root) = concept_repo(name);
+        let storage = Some(Storage::open(dir.path()));
+        let project = {
+            let store = storage.as_ref().unwrap().get().unwrap();
+            app_core::projects::add_project(
+                store,
+                root.to_str().unwrap(),
+                app_core::store::DEFAULT_WORKSPACE_ID,
+            )
+            .unwrap()
+        };
+        (dir, root, storage, project.project.id)
+    }
+
+    #[test]
+    fn concept_search_returns_index_matches() {
+        let (_dir, root, storage, project_id) = concept_storage("backend-concept");
+        app_core::code_index::refresh(storage.as_ref().unwrap().home(), &root, |_, _| true)
+            .unwrap();
+        let key = checkout_key(&project_id, &root);
+        let job = Job::read(
+            &project_id,
+            root.clone(),
+            key,
+            Req::ConceptSearch {
+                query: "needle".into(),
+            },
+        );
+        let reply = run_job(&storage, &job);
+        match reply.result {
+            Ok(ReplyData::Search(view)) => {
+                assert!(view.matches.iter().any(|m| m.path == "a.txt"));
+            }
+            other => panic!("expected Search, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concept_search_without_an_index_writes_nothing() {
+        let (_dir, root, storage, project_id) = concept_storage("backend-concept-empty");
+        let key = checkout_key(&project_id, &root);
+        let job = Job::read(
+            &project_id,
+            root.clone(),
+            key,
+            Req::ConceptSearch {
+                query: "needle".into(),
+            },
+        );
+        let reply = run_job(&storage, &job);
+        match reply.result {
+            Ok(ReplyData::Search(view)) => assert!(view.matches.is_empty()),
+            other => panic!("expected Search, got {other:?}"),
+        }
+        assert!(!storage.as_ref().unwrap().home().join("search").exists());
+    }
+
+    #[test]
+    fn concept_and_content_replies_are_dropped_in_the_other_mode() {
+        use crate::editor::state::search_state::SearchMode;
+        use app_core::git_view::{GitViewSearch, GitViewSearchMatch};
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone();
+        let view = || GitViewSearch {
+            matches: vec![GitViewSearchMatch {
+                path: "a.txt".into(),
+                line: 1,
+                text: "needle".into(),
+            }],
+            truncated: false,
+        };
+        e.files.search.mode = SearchMode::Content;
+        e.files.search.query = "needle".into();
+        e.apply_reply(reply(
+            Req::ConceptSearch {
+                query: "needle".into(),
+            },
+            0,
+            key.clone(),
+            Ok(ReplyData::Search(view())),
+        ));
+        assert!(e.files.search.results.is_none());
+        e.files.search.mode = SearchMode::Concept;
+        e.apply_reply(reply(
+            Req::Search {
+                query: "needle".into(),
+            },
+            0,
+            key.clone(),
+            Ok(ReplyData::Search(view())),
+        ));
+        assert!(e.files.search.results.is_none());
+        e.apply_reply(reply(
+            Req::ConceptSearch {
+                query: "needle".into(),
+            },
+            0,
+            key,
+            Ok(ReplyData::Search(view())),
+        ));
+        assert!(e.files.search.results.is_some());
+    }
+
+    #[test]
+    fn concept_search_errors_are_prefixed_except_no_words() {
+        use crate::editor::state::search_state::SearchMode;
+        let mut e = editor();
+        select(&mut e);
+        let key = e.checkout_key.clone();
+        e.files.search.mode = SearchMode::Concept;
+        e.files.search.query = "needle".into();
+        e.apply_reply(reply(
+            Req::ConceptSearch {
+                query: "needle".into(),
+            },
+            0,
+            key.clone(),
+            Err("boom".into()),
+        ));
+        assert_eq!(
+            e.files.search.error.as_deref(),
+            Some("Context search unavailable: boom")
+        );
+        e.files.search.query = "needle".into();
+        e.apply_reply(reply(
+            Req::ConceptSearch {
+                query: "needle".into(),
+            },
+            0,
+            key,
+            Err("No searchable words".into()),
+        ));
+        assert_eq!(e.files.search.error.as_deref(), Some("No searchable words"));
+    }
+
+    #[test]
+    fn concept_search_has_its_own_request_kind() {
+        assert_ne!(
+            kind_key(&Req::Search {
+                query: "needle".into()
+            }),
+            kind_key(&Req::ConceptSearch {
+                query: "needle".into()
+            })
+        );
     }
 
     fn accounts_of(reply: &Reply) -> &app_core::accounts::AccountsView {
