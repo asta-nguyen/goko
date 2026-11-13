@@ -1,6 +1,7 @@
 # Delta
 
 Approved: 2026-11-12 — inline conflict actions, undo, navigation, guarded save and explicit per-file stage
+Merged into docs/llm/: 2026-11-13
 
 ## ADDED Requirements
 

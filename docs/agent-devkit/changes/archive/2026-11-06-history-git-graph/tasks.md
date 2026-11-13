@@ -107,7 +107,7 @@ Result: `document-wiki` Task updates: delta merged into `docs/llm/architecture/e
 - `apps/desktop/src/components/ui/{dropdown-menu,select}.tsx` — the context menu is a new sibling wrapper; the branch dropdown is a native `<select>`, which jsdom tests handle directly.
 - `apps/desktop/src/features/editor/EditorStashes.tsx` — shares `ChangedFiles`; passes no counts.
 - `apps/desktop/src-tauri/src/worktrees.rs` — `git`/`git_bounded`/`run` helpers reused as they are.
-- `docs/agent-devkit/changes/2026-11-06-editor-commit-acp/{design,delta,tasks}.md` — overlap check; its delta adds only `EDT-stage-commit`.
+- `docs/agent-devkit/changes/archive/2026-11-06-editor-commit-acp/{design,delta,tasks}.md` — overlap check; its delta adds only `EDT-stage-commit`.
 
 ## Approval Gate
 

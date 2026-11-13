@@ -53,10 +53,10 @@ Show which registered projects belong to each workspace and let the user jump to
 
 ## Related context
 
-- [Rune chrome](../../../llm/domains/rune-chrome.md)
-- [Rune editor](../../../llm/domains/rune-editor.md)
+- [Rune chrome](../../../../llm/domains/rune-chrome.md)
+- [Rune editor](../../../../llm/domains/rune-editor.md)
 
 ## Previous work
 
-- [Multi-project workspaces](../archive/multi-project-workspaces/design.md) established persisted membership and workspace-only sidebar filtering.
-- [Rune UX improvements](../archive/ux-improvements/design.md) established modal shortcut ownership, hidden-workspace attention, and first-launch actions.
+- [Multi-project workspaces](../multi-project-workspaces/design.md) established persisted membership and workspace-only sidebar filtering.
+- [Rune UX improvements](../ux-improvements/design.md) established modal shortcut ownership, hidden-workspace attention, and first-launch actions.

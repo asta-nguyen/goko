@@ -1,5 +1,7 @@
 # Project Map delta
 
+Merged into docs/llm/: 2026-11-13
+
 ## ADDED Requirements
 
 ### RNC-project-map

@@ -1,6 +1,7 @@
 # Project terminal filter delta
 
 Approved: 2026-11-11 — user approved the bounded chat design with “implement đi”: show only the active project's sessions and terminal tabs, retain other projects' running sessions and restore their tabs on return.
+Merged into docs/llm/: 2026-11-13
 
 ## ADDED Requirements
 

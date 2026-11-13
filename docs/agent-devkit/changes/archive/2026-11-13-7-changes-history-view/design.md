@@ -96,5 +96,5 @@ section applies to the other; `ChangesState` gains `group: ChangeGroup` for the
 
 ## Related context
 
-- [Rune editor](../../../llm/domains/rune-editor.md): `RNE-changes-git-writes`
+- [Rune editor](../../../../llm/domains/rune-editor.md): `RNE-changes-git-writes`
   and the Changes/History sections this list sits in.

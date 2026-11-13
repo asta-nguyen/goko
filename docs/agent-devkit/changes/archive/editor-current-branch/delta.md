@@ -1,6 +1,7 @@
 # Delta
 
 Approved: 2026-11-12 — user approved the bounded branch-header design and requested implementation.
+Merged into docs/llm/: 2026-11-13
 
 ## ADDED Requirements
 

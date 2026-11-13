@@ -2,29 +2,25 @@
 
 ## Changes
 
-- [Changes and History: View (List/Tree) and Group By menu](changes/2026-11-13-7-changes-history-view/design.md) ([tasks](changes/2026-11-13-7-changes-history-view/tasks.md), [delta](changes/2026-11-13-7-changes-history-view/delta.md))
 - [Current branch in Terminal](changes/terminal-current-branch/delta.md)
 
-- [Current branch in the editor header](changes/editor-current-branch/delta.md)
-
-- [Inline editor conflict resolution](changes/editor-inline-conflicts/delta.md)
-
-- [Release: a prebuilt app for macOS and Linux, installed with a script](changes/macos-release/design.md) ([tasks](changes/macos-release/tasks.md))
 - [Daemon-owned terminal state: first paint on attach](changes/daemon-terminal-state/design.md) ([tasks](changes/daemon-terminal-state/tasks.md), [delta](changes/daemon-terminal-state/delta.md))
-- [Tab IDs, agent IDs, and RAM debug information](changes/tab-debug-info/delta.md)
-
-- [Project terminal filter](changes/project-terminal-filter/delta.md)
-
-- [Project Map](changes/project-map/design.md) ([tasks](changes/project-map/tasks.md), [delta](changes/project-map/delta.md))
 
 - [Native Rune language servers](changes/rune-native-lsp/design.md) ([tasks](changes/rune-native-lsp/tasks.md))
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))
-- [Editor: stage, commit, push, and AI commit messages over ACP](changes/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/2026-11-06-editor-commit-acp/tasks.md))
-- [Agent activity: working, needs you, done](changes/2026-11-05-agent-activity/design.md) ([tasks](changes/2026-11-05-agent-activity/tasks.md))
 
 ## Archived changes
 
+- [Project Map](changes/archive/project-map/design.md) ([tasks](changes/archive/project-map/tasks.md), [delta](changes/archive/project-map/delta.md))
+- [Project terminal filter](changes/archive/project-terminal-filter/delta.md)
+- [Current branch in the editor header](changes/archive/editor-current-branch/delta.md)
+- [Editor: stage, commit, push, and AI commit messages over ACP](changes/archive/2026-11-06-editor-commit-acp/design.md) ([tasks](changes/archive/2026-11-06-editor-commit-acp/tasks.md))
+- [Agent activity: working, needs you, done](changes/archive/2026-11-05-agent-activity/design.md) ([tasks](changes/archive/2026-11-05-agent-activity/tasks.md))
+- [Release: a prebuilt app for macOS and Linux, installed with a script](changes/archive/macos-release/design.md) ([tasks](changes/archive/macos-release/tasks.md))
+- [Inline editor conflict resolution](changes/archive/editor-inline-conflicts/delta.md)
+- [Tab IDs, agent IDs, and RAM debug information](changes/archive/tab-debug-info/delta.md)
+- [Changes and History: View (List/Tree) and Group By menu](changes/archive/2026-11-13-7-changes-history-view/design.md) ([tasks](changes/archive/2026-11-13-7-changes-history-view/tasks.md), [delta](changes/archive/2026-11-13-7-changes-history-view/delta.md))
 - [Concept search: a ranked, indexed code search in the Files search box](changes/archive/2026-11-13-concept-search/design.md) ([tasks](changes/archive/2026-11-13-concept-search/tasks.md), [delta](changes/archive/2026-11-13-concept-search/delta.md))
 - [Terminal find bar (⌘F) over the grid and scrollback](changes/archive/2026-11-13-terminal-find/delta.md)
 - [Done sound on session finish](changes/archive/2026-11-12-done-sound/delta.md)

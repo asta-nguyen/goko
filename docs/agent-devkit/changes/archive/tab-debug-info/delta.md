@@ -1,6 +1,7 @@
 # Delta
 
 Approved: 2026-11-11 — right-click tab copy actions for Goko and agent IDs, debug information, and approximate local process-tree RAM for every supported agent.
+Merged into docs/llm/: 2026-11-13
 
 ## Impact map
 
