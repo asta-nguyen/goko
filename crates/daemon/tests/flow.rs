@@ -98,7 +98,23 @@ async fn acking_releases_the_reader_with_no_gap() {
     .await;
 
     kill_and_reap(&process).await;
-    let end_seq = collector.await.expect("collector task");
+    // The reader is paused at a full window again, with the producer's last
+    // output still in the PTY. Keep acknowledging what was published so it
+    // drains that and the stream ends with `Closed` — not through the stall
+    // valve, whose `Lagged` would stop the collector before the last bytes.
+    let mut collector = collector;
+    let started = Instant::now();
+    let end_seq = loop {
+        process.ack(process.buffer().2);
+        tokio::select! {
+            end = &mut collector => break end.expect("collector task"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the stream ended through the stall valve, not on its own"
+    );
     assert_eq!(
         end_seq,
         process.buffer().2,

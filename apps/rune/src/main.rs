@@ -1273,7 +1273,9 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     changed |= s.sync_terminals();
     let term_changed = s.poll_terminals(tx);
     changed |= term_changed;
-    crate::trace::trace(&s.terminal_trace());
+    if crate::trace::enabled() {
+        crate::trace::trace(&s.terminal_trace());
+    }
     // A subscriber that fell behind takes a fresh subscription, which
     // replays the daemon's retained output.
     for session in std::mem::take(&mut s.terminal_lagged) {

@@ -874,7 +874,9 @@ impl State {
             return false;
         }
         let previous = self.activity.clone();
-        crate::trace::trace(&format!("activity read for {} sessions", sessions.len()));
+        if crate::trace::enabled() {
+            crate::trace::trace(&format!("activity read for {} sessions", sessions.len()));
+        }
         backend::enqueue(
             &mut self.editor.backend,
             Job::project(Req::Activity { sessions, previous }),

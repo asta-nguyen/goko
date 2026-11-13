@@ -10,6 +10,30 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+### Changed
+
+- A session's terminal keeps 5,000 lines of history (was 10,000), in the daemon and in
+  each pane alike, so a reattached pane shows the same history it had. That halves the
+  memory a long session holds (about 14 MB instead of 29 MB at 120 columns), and the
+  daemon hands freed memory back to the system when a session is deleted.
+- The daemon parses its copy of each session's terminal on a thread of its own, so
+  acknowledging, subscribing and `session.output` no longer wait for parsing, and a
+  flooding session streams about 15% faster.
+- The app acknowledges terminal output every 64 KiB it has parsed (and the rest once the
+  output pauses), instead of on every frame.
+
+### Fixed
+
+- A large paste into a program that was not reading its input (16 KiB or more into a
+  shell running a command) froze every terminal: the daemon answered nothing else on the
+  app's connection until the input was read, and never again if the program exited first.
+  Writes now wait on their own per-session queue, and one still waiting when the program
+  exits fails instead of hanging; `gokod` also no longer ignores SIGTERM while one waits.
+- A daemon subscribe that replaced an older stream could still send a frame of the old
+  stream after its response.
+- While markdown streams in, an image still arriving is held back until it is complete,
+  instead of showing its alt text as plain text and then replacing it.
+
 ## [0.1.3] - 2026-11-13
 
 ### Added

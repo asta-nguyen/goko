@@ -136,6 +136,66 @@ async fn invalid_requests_get_typed_errors() {
     );
 }
 
+/// Wait up to `limit` for the response to request `id`, skipping other frames.
+async fn response_to(client: &mut Client, id: u64, limit: Duration) -> Option<Value> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if let Some(Incoming::Control(value)) = client.next_within(Duration::from_millis(50)).await
+        {
+            if value["id"] == json!(id) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Input the child never reads fills the PTY's input queue and the write waits.
+/// That must not hold up the connection, and the write must end once the child
+/// is gone, leaving the connection usable.
+#[tokio::test]
+async fn unread_input_does_not_hold_up_the_connection() {
+    const WRITE_ID: u64 = 1_000_000;
+    let server = TestServer::start();
+    let mut client = server.authenticated().await;
+    let created = client.request(create(&["sleep", "30"])).await;
+    let id = created["result"]["id"].clone();
+    let pasted = "echo pasted line\n".repeat(4096);
+    client
+        .send(&json!({
+            "id": WRITE_ID,
+            "type": "terminal.write",
+            "session_id": id,
+            "data_b64": STANDARD.encode(&pasted),
+        }))
+        .await;
+    assert!(
+        response_to(&mut client, WRITE_ID, Duration::from_millis(300))
+            .await
+            .is_none(),
+        "70 KB of input to a child that never reads should still be waiting"
+    );
+
+    let started = Instant::now();
+    let health = client.request(json!({"type": "system.health"})).await;
+    assert_eq!(health["result"]["status"], "ok");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the health check waited for the write"
+    );
+
+    client
+        .request(json!({"type": "session.stop", "session_id": id, "force": true}))
+        .await;
+    let write = response_to(&mut client, WRITE_ID, Duration::from_secs(5))
+        .await
+        .expect("the write should end once the child is gone");
+    assert!(write.get("error").is_some(), "{write}");
+
+    let health = client.request(json!({"type": "system.health"})).await;
+    assert_eq!(health["result"]["status"], "ok");
+}
+
 #[tokio::test]
 async fn writing_to_an_exited_session_is_an_invalid_argument_with_a_message() {
     let server = TestServer::start();

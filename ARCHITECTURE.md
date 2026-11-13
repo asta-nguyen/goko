@@ -15,10 +15,11 @@ Rune app (apps/rune)                          gokod (crates/daemon)
 ```
 
 - **`gokod`** is a separate process that owns every PTY and child process. The app starts it
-  in a separate session; state is in memory only. Closing the main window or choosing Cmd-Q
-  sends the authenticated `system.shutdown` request, waits for the daemon lock to be
-  released, then exits. The daemon stops every live PTY process group. Force Quit and
-  crashes do not guarantee cleanup.
+  in a separate session; state is in memory only. Neither closing the main window nor Cmd-Q
+  stops it: closing the window leaves the app running (`keep_running`), and quitting ends
+  only the app's daemon client, so every session keeps running for the next launch to
+  attach to. The daemon stops its sessions when it gets SIGTERM, SIGINT, or the
+  authenticated `system.shutdown` request (see [Daemon lifecycle](#daemon-lifecycle)).
 - **The Rune app** (`apps/rune`, package `goko-rune`) is the only frontend. Its daemon
   client (`apps/rune/src/daemon.rs`) runs on its own Tokio runtime thread, speaks the
   `protocol` crate to `daemon.sock`, and spawns `gokod` when the socket is absent. The UI
@@ -206,9 +207,10 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
    any stale `daemon.sock`, and binds the socket with mode 0600.
 3. SIGTERM or SIGINT stops accepting, drops every connection, calls
    `SessionManager::shutdown()` (SIGTERM every session's process group, wait up to 2 s,
-   then SIGKILL), removes the socket file, and exits 0.
+   then SIGKILL), removes the socket file, and exits 0. Blocking work still running then
+   gets at most 2 s more (`Runtime::shutdown_timeout`), so nothing stuck keeps it alive.
 4. The authenticated `system.shutdown` request follows the same stop and session cleanup
-   path. The app waits for `daemon.lock` to be released before exiting; app data is kept.
+   path. The app does not send it; it is for tools and tests. App data is kept.
 
 The lock is released by the kernel when the process dies, so a crashed daemon never blocks
 the next one; the stale socket file is replaced on the next start.
@@ -235,6 +237,10 @@ are rejected before they are allocated.
   `session.list`, `session.get`, `session.stop`, `session.delete`, `terminal.write` (`data_b64`),
   `terminal.resize`, `terminal.subscribe` (`flow` opts into the output window), `terminal.ack`
   (`upto_seq`), `terminal.unsubscribe`.
+- Responses are matched by `id`, not by order. A `terminal.write` is answered once its
+  bytes reached the PTY: one session's writes go out and are answered in order on their
+  own task, so input a child is not reading never holds up later requests, and a write
+  still waiting when the child exits ends with an error.
 - Pushes: `session.updated` (full `SessionInfo`), `session.exited`, and `terminal.lagged`.
 - Session ids are UUID strings in JSON and 16 bytes in output frames. Timestamps are
   Unix epoch milliseconds (`i64`).
@@ -316,7 +322,16 @@ against the same window, so a 1 MiB history streams in about four window round t
 instead of one burst. If no ack moves the offset for 5 s the flow subscriber is dropped
 through the same `Lagged` path — a stuck client slows its own stream, never the session.
 The client answers that drop by waiting for the next ack before resubscribing, so a hung
-view cannot keep accumulating windows.
+view cannot keep accumulating windows. The app acknowledges every 64 KiB it has parsed,
+and the rest once the output has been quiet for 30 ms, not on every frame.
+
+The daemon also keeps each session's terminal (`terminal.rs`, an `alacritty_terminal` grid
+with `protocol::SCROLLBACK_LINES` of history, the same as the app's grids) for the first
+paint of a `paint: true` subscribe. It is parsed on its own thread (`gokod-pty-model`) fed
+in stream order, so neither the reader nor the subscribe/ack lock waits for parsing; a
+paint holds that lock and waits until the model has parsed up to its offset. The PTY
+master is non-blocking: the reader and a pending write wait in `select` (macOS `poll`
+does not work on PTYs), and a write gives up once the child has exited.
 
 ## Documented limit: raw replay
 
@@ -342,7 +357,8 @@ after 5 s without ack progress its subscription is dropped as `Lagged`.
 
 Observed against the real `gokod` (see the [agent-devkit change index](docs/agent-devkit/INDEX.md)):
 
-- **App quit:** close and Cmd-Q follow [Daemon lifecycle](#daemon-lifecycle).
+- **App quit:** closing the window keeps the app running and Cmd-Q leaves the daemon and
+  its sessions running (see [Process topology](#process-topology)).
 - **`kill -9` of the daemon:** the app reconnected to a fresh daemon with an empty session
   list, and the previous shell PID was absent. The first UI read already showed
   `Daemon connected`, so the disconnected banner was not captured. Reattaching to survivors
