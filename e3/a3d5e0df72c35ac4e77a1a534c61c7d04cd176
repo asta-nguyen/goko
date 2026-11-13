@@ -1,0 +1,40 @@
+docs/agent-devkit/changes/2026-11-13-7-changes-history-view/delta.md
+  s_5f5d0b83580d8d::t_45f0763831e4cd 1-29
+docs/agent-devkit/changes/archive/2026-11-13-concept-search/design.md
+  s_bfb310e70e9950::t_26ccec9ee12f85 244-249,254,342-346,384-389
+  s_bfb310e70e9950::t_a9f9f8bac9d8ca 1,5,19-23,48-70,72-79,158-159,168
+docs/agent-devkit/changes/2026-11-13-7-changes-history-view/design.md
+  s_5f5d0b83580d8d::t_d2739195428ed1 1-95
+docs/agent-devkit/INDEX.md
+  s_bfb310e70e9950::t_9a9f2071cec03d 27
+docs/agent-devkit/changes/2026-11-13-7-changes-history-view/tasks.md
+  s_5f5d0b83580d8d::t_656c38a3b89a47 1-65
+docs/agent-devkit/changes/archive/2026-11-13-concept-search/delta.md
+  s_bfb310e70e9950::t_63be804e1a7b52 13-17,19,22-29,32-33,40,44,46-47,49-50,52-53,91,113,119-228
+docs/agent-devkit/changes/archive/2026-11-13-concept-search/tasks.md
+  s_bfb310e70e9950::t_461a77b5466030 19-20,26,32,41,49,57,65,105-129,151-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e3a3d5e0df72c35ac4e77a1a534c61c7d04cd176",
+  "prompts": {},
+  "sessions": {
+    "s_5f5d0b83580d8d": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "confused-draw",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_bfb310e70e9950": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "076bc763-0f46-46dc-b7ed-83ee71658321",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
