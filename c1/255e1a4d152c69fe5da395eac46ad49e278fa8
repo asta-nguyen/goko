@@ -1,0 +1,41 @@
+docs/agent-devkit/changes/archive/editor-inline-conflicts/delta.md
+  s_878e180e5ebdb8::t_06f9ba19d9dc9e 4
+docs/agent-devkit/changes/archive/2026-11-06-editor-commit-acp/design.md
+  s_878e180e5ebdb8::t_6aebdd1968605c 1-175
+docs/agent-devkit/changes/archive/2026-11-06-history-git-graph/tasks.md
+  s_878e180e5ebdb8::t_71ab7a8a1328c1 110
+docs/agent-devkit/changes/archive/2026-11-13-7-changes-history-view/design.md
+  s_878e180e5ebdb8::t_06fb2bab2c265b 99
+docs/agent-devkit/changes/archive/project-map/design.md
+  s_878e180e5ebdb8::t_6d68ea04433bf0 1-62
+docs/agent-devkit/changes/archive/project-terminal-filter/delta.md
+  s_878e180e5ebdb8::t_7ec3d665feb623 4
+docs/agent-devkit/changes/archive/tab-debug-info/delta.md
+  s_878e180e5ebdb8::t_ee2f343e0af5b9 4
+docs/agent-devkit/changes/archive/2026-11-05-agent-activity/design.md
+  s_878e180e5ebdb8::t_6aebdd1968605c 1-95
+docs/agent-devkit/INDEX.md
+  s_878e180e5ebdb8::t_ab2f93dc58f26b 15-17
+  s_878e180e5ebdb8::t_dbf1a6e7c978dd 18-22
+  s_878e180e5ebdb8::t_ccb134c4ea1720 23
+docs/agent-devkit/changes/archive/project-map/delta.md
+  s_878e180e5ebdb8::t_b0a6c6f7076901 3-4
+docs/agent-devkit/changes/archive/editor-current-branch/delta.md
+  s_878e180e5ebdb8::t_c02ccc1055d64a 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c1255e1a4d152c69fe5da395eac46ad49e278fa8",
+  "prompts": {},
+  "sessions": {
+    "s_878e180e5ebdb8": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "distinct-gosling",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
