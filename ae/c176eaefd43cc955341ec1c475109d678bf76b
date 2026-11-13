@@ -1,0 +1,26 @@
+docs/agent-devkit/changes/archive/2026-11-13-concept-search/tasks.md
+  s_bfb310e70e9950::t_461a77b5466030 19-20,26,32,41,49,57,65,105-129,151-152
+docs/agent-devkit/changes/archive/2026-11-13-concept-search/delta.md
+  s_bfb310e70e9950::t_63be804e1a7b52 13-17,19,22-29,32-33,40,44,46-47,49-50,52-53,91,113,119-228
+docs/agent-devkit/INDEX.md
+  s_bfb310e70e9950::t_9a9f2071cec03d 27
+docs/agent-devkit/changes/archive/2026-11-13-concept-search/design.md
+  s_bfb310e70e9950::t_26ccec9ee12f85 244-249,254,342-346,384-389
+  s_bfb310e70e9950::t_a9f9f8bac9d8ca 1,5,19-23,48-70,72-79,158-159,168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aec176eaefd43cc955341ec1c475109d678bf76b",
+  "prompts": {},
+  "sessions": {
+    "s_bfb310e70e9950": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "076bc763-0f46-46dc-b7ed-83ee71658321",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
