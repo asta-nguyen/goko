@@ -1,0 +1,57 @@
+release.local.md
+  s_39b848282c7b3c::t_db8d84e43779b5 68-71
+apps/rune/src/update.rs
+  s_39b848282c7b3c::t_7ae59319130c0f 30,230-234,238-241,245-249,252-258,260-262,264-265,268,278-281,290-340
+  s_39b848282c7b3c::t_c0c4c7d48cab90 406,408-427,432-445,450-451,456-477,483-500,504-521,527-548,554-564
+  s_39b848282c7b3c::t_4b9f2fab6f401e 2-6,8-9
+  s_39b848282c7b3c::t_e46c5cad7da276 125-129,177-179,242-244,428-431,446-449,452-455,478-482,501-503,522-526,549-553
+  s_39b848282c7b3c::t_d728a9408f045d 31-34,37-78
+  s_39b848282c7b3c::t_8ad0d0db9fd55b 146,149-176,180-219
+  s_39b848282c7b3c::t_b67686c1682b79 118,120,123-124,130,133,135
+apps/rune/src/settings.rs
+  s_39b848282c7b3c::t_93a7e98ed92932 761
+  s_39b848282c7b3c::t_1e3873062ed61c 756
+  s_39b848282c7b3c::t_013d98b8f4920f 766-767
+  s_39b848282c7b3c::t_4d95ec0d81ec7c 753-755
+  s_39b848282c7b3c::t_de52793c0dcfe1 686-689,693-699,708-712,718-721,723-727,729-733
+  s_39b848282c7b3c::t_e46c5cad7da276 690-692
+  s_39b848282c7b3c::t_62712f69c21be6 745-746,751-752,757-760,762-765,768-770
+  s_39b848282c7b3c::t_319d1133cfae4f 722
+  s_39b848282c7b3c::t_5643f297083fbe 771-772
+docs/llm/domains/rune-chrome.md
+  s_39b848282c7b3c::t_6ea146e0c13d66 419-427
+distribution/install.sh
+  s_39b848282c7b3c::t_d6ac9bb05a26e0 64
+  s_39b848282c7b3c::t_15c95bfd759e5c 74-75
+  s_39b848282c7b3c::t_0ea3d9520e1450 9-10
+.github/workflows/release.yml
+  s_39b848282c7b3c::t_de5ed663908500 88-91
+AGENTS.md
+  s_39b848282c7b3c::t_7013675f1a00e5 20
+  s_39b848282c7b3c::t_58047d6ef8451f 25
+CHANGELOG.md
+  s_39b848282c7b3c::t_58e7a6697a976a 13-23
+apps/rune/src/main.rs
+  s_39b848282c7b3c::t_132eadeb586ada 5559-5562,5565-5568
+  s_39b848282c7b3c::t_6d958f7347ddfe 322
+  s_39b848282c7b3c::t_71a9d7de84861c 196-198
+  s_39b848282c7b3c::t_1e32ce712620f3 5529-5558,5563-5564,5569-5574
+README.md
+  s_39b848282c7b3c::t_97a33e29d9858c 43-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "59979ee3a8f08aa2336a183824fe203db47acb92",
+  "prompts": {},
+  "sessions": {
+    "s_39b848282c7b3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ac4921ce-eeb9-464e-a7fb-9555c8559474",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
