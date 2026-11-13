@@ -962,7 +962,21 @@ fn add_codex_daemon_agents(
     app_core::subagents::attribute_codex(map, &agents, &threads, &owners);
 }
 
+/// pid -> `CODEX_THREAD_ID`, read from the processes' environments. Linux
+/// serves each one as a file; `ps` there has no option that prints it the way
+/// macOS's `-E` does.
+#[cfg(target_os = "linux")]
+fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
+    pids.iter()
+        .filter_map(|pid| {
+            let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+            Some((*pid, app_core::subagents::thread_id_in_environ(&environ)?))
+        })
+        .collect()
+}
+
 /// pid -> `CODEX_THREAD_ID`, read from the processes' environments.
+#[cfg(not(target_os = "linux"))]
 fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
     if pids.is_empty() {
         return HashMap::new();
@@ -3404,6 +3418,30 @@ mod tests {
             .unwrap()
         };
         (dir, root, storage, project.project.id)
+    }
+
+    /// The lookup that `ps -E` cannot do on Linux: a live process's
+    /// `CODEX_THREAD_ID` comes back, and one without it is left out.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn thread_ids_reads_a_live_process_environment() {
+        let spawn = |thread: Option<&str>| {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("30").env_remove("CODEX_THREAD_ID");
+            if let Some(thread) = thread {
+                command.env("CODEX_THREAD_ID", thread);
+            }
+            command.spawn().expect("spawn sleep")
+        };
+        let mut with = spawn(Some("0199-thread"));
+        let mut without = spawn(None);
+        let ids = thread_ids(&[with.id(), without.id(), u32::MAX]);
+        let _ = with.kill();
+        let _ = without.kill();
+        let _ = with.wait();
+        let _ = without.wait();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.get(&with.id()).map(String::as_str), Some("0199-thread"));
     }
 
     #[test]
