@@ -25,6 +25,10 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   input, and every 2 s otherwise, instead of five times a second: 20 idle sessions wake
   the daemon 11 times a second instead of 128. It also closes a connection that sends no
   hello within 3 s.
+- History pages load about 8 times faster on a large repository after the first one
+  (git's own repository, 83,000 commits: 0.95 s a page before, 0.11 s after). A page that
+  takes over 0.3 s makes Goko write the repository's commit-graph in the background, the
+  cache `git gc` also writes, when it has none.
 - On Linux a new install keeps its data in `$XDG_STATE_HOME/goko`
   (`~/.local/state/goko`) instead of `~/Library/Application Support/Goko`. An install
   that already has the old folder keeps using it.

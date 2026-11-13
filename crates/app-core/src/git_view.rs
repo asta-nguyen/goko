@@ -3,16 +3,20 @@
 //! validated: registered project, root-or-listed-worktree path, real non-bare
 //! Git worktree root. Git calls use separate argv; file saves only replace a
 //! validated working-tree file and never mutate the index, refs, or stash.
+//! The one thing a read writes is Git's own commit-graph cache, for a
+//! repository whose history is slow to page without it (see `history`).
 
 use crate::error::{BridgeError, Code};
 use crate::worktrees;
 use protocol::message::ErrorCode;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Diffs, text reads, and file saves are capped at 1 MiB.
 const CAP: usize = 1024 * 1024;
@@ -25,6 +29,12 @@ pub(crate) const SEARCH_PREVIEW_CHARS: usize = 300;
 static TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 /// Commits per History page.
 const HISTORY_PAGE: u64 = 100;
+/// A History page slower than this makes Goko look for a commit-graph and
+/// write one when the repository has none.
+const SLOW_HISTORY_PAGE: Duration = Duration::from_millis(300);
+/// Repositories whose commit-graph is being written, or could not be: one
+/// attempt per repository per run.
+static COMMIT_GRAPH_TRIED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct StatusEntry {
@@ -452,6 +462,12 @@ fn commit_detail(checkout: &Path, oid: &str) -> Result<GitViewCommitDetail, Brid
 /// refs, and tags — never stash or other internal refs. `Some` must be a full
 /// `refs/heads/` or `refs/remotes/` ref that resolves to a commit, and walks
 /// only the commits reachable from it.
+///
+/// `--topo-order` makes Git walk every commit before it prints the first one
+/// unless the repository has a commit-graph, and it walks again for every
+/// page. A fresh clone has none, so a slow page starts writing one in the
+/// background (`git commit-graph write --reachable`, the file `git gc` also
+/// writes); later pages then cost about a tenth.
 pub fn history(
     checkout: &Path,
     skip: u64,
@@ -476,7 +492,11 @@ pub fn history(
         }
         None => args.extend(["--branches", "--tags", "--remotes"]),
     }
+    let started = Instant::now();
     let out = worktrees::git(checkout, &args)?;
+    if started.elapsed() >= SLOW_HISTORY_PAGE {
+        write_commit_graph_in_background(checkout);
+    }
     let head = worktrees::run(checkout, &["rev-parse", "HEAD"], None)?;
     let head_oid = if head.status.success() {
         trim_str(&head.stdout).to_owned()
@@ -514,6 +534,61 @@ pub fn history(
         None
     };
     Ok(GitViewHistory { commits, next_skip })
+}
+
+/// Start writing the repository's commit-graph on a thread of its own when
+/// it has none. Returns at once; a repository is tried once per run.
+fn write_commit_graph_in_background(checkout: &Path) {
+    let Some(common_dir) = commit_graph_missing(checkout) else {
+        return;
+    };
+    {
+        let mut tried = COMMIT_GRAPH_TRIED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !tried.get_or_insert_with(HashSet::new).insert(common_dir) {
+            return;
+        }
+    }
+    let checkout = checkout.to_owned();
+    let _ = std::thread::Builder::new()
+        .name("goko-commit-graph".to_owned())
+        .spawn(move || {
+            let _ = write_commit_graph(&checkout);
+        });
+}
+
+/// The repository's common Git directory when it has no commit-graph and
+/// does not turn the feature off; `None` when there is nothing to write.
+fn commit_graph_missing(checkout: &Path) -> Option<PathBuf> {
+    let out = worktrees::run(
+        checkout,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common_dir = PathBuf::from(trim_str(&out.stdout));
+    let info = common_dir.join("objects/info");
+    if info.join("commit-graph").exists() || info.join("commit-graphs").exists() {
+        return None;
+    }
+    let disabled = worktrees::run(
+        checkout,
+        &["config", "--type=bool", "--get", "core.commitGraph"],
+        None,
+    )
+    .is_ok_and(|out| trim_str(&out.stdout) == "false");
+    (!disabled).then_some(common_dir)
+}
+
+/// Write the commit-graph for every reachable commit. It is a cache beside
+/// the objects: no ref, index entry or object changes.
+fn write_commit_graph(checkout: &Path) -> bool {
+    worktrees::run(checkout, &["commit-graph", "write", "--reachable"], None)
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Local and remote-tracking branches for the History filter, in
@@ -1884,6 +1959,31 @@ mod tests {
         assert!(top.time > 0);
         let first = &page.commits[1];
         assert!(first.parents.is_empty() && !first.head);
+    }
+
+    #[test]
+    fn a_missing_commit_graph_is_written_once_and_changes_no_page() {
+        let (_t, root) = repository("commit-graph");
+        for i in 0..5 {
+            commit(&root, &format!("f{i}.txt"), "x\n");
+        }
+        let before = history(&root, 0, None).unwrap();
+        let graph = root.join(".git/objects/info/commit-graph");
+        assert!(!graph.exists(), "a quick page writes nothing");
+
+        let common_dir = commit_graph_missing(&root).expect("no commit-graph yet");
+        assert_eq!(common_dir, root.join(".git"));
+        assert!(write_commit_graph(&root));
+        assert!(graph.exists());
+        assert_eq!(commit_graph_missing(&root), None, "nothing left to write");
+        assert_eq!(history(&root, 0, None).unwrap(), before);
+    }
+
+    #[test]
+    fn a_repository_that_turns_the_commit_graph_off_is_left_alone() {
+        let (_t, root) = repository("commit-graph-off");
+        git_ok(&root, &["config", "core.commitGraph", "false"]);
+        assert_eq!(commit_graph_missing(&root), None);
     }
 
     #[test]
