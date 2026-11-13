@@ -1,0 +1,21 @@
+docs/agent-devkit/INDEX.md
+  s_9566820bbcd510::t_256364d3115e1f 27
+docs/agent-devkit/changes/archive/2026-11-12-done-sound/delta.md
+  s_9566820bbcd510::t_e1a63635ea710f 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "87245bde2a773a0e13f40152c6a01c9186d86433",
+  "prompts": {},
+  "sessions": {
+    "s_9566820bbcd510": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "stingy-cartwheel",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
