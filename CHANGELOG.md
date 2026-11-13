@@ -10,6 +10,8 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-13
+
 ### Added
 
 - Find in the terminal: `⌘F` opens a find bar over the focused pane that searches the
