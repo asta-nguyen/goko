@@ -1,0 +1,136 @@
+apps/rune/src/editor/commit_detail.rs
+  s_9cd7d933d3e0d7::t_7bde11046cb187 1120-1124,1126-1127,1140-1173,1176-1183,1185,1188-1192,1194-1228,1232-1265,1267-1302
+  s_9cd7d933d3e0d7::t_669bc241d81d94 1266
+  s_9cd7d933d3e0d7::t_8e330467f8b7be 339-347,350-351,353,358,361,368,373,379,381-383
+  s_9cd7d933d3e0d7::t_56e3be79ebca97 1128-1139
+  s_9cd7d933d3e0d7::t_7b35aade1e491f 1174-1175,1184,1186-1187
+  s_9cd7d933d3e0d7::t_0e9fbaee421b46 370-372,392-393,396
+  s_9cd7d933d3e0d7::t_02a63e4df861fb 268
+  s_9cd7d933d3e0d7::t_c8f4e553536941 1229-1231
+  s_9cd7d933d3e0d7::t_dba3330150b7fb 354-357,359,369,384-391,394-395,397-398,400-401,403-436,439-515,518
+  s_9cd7d933d3e0d7::t_f0971eb93b9db0 352,380,1125,1193
+  s_9cd7d933d3e0d7::t_5ec73a52653bed 265-267
+  s_9cd7d933d3e0d7::t_1329b44c18f19c 14,16-17
+apps/rune/src/editor/keyboard.rs
+  s_9cd7d933d3e0d7::t_f0971eb93b9db0 391
+  s_9cd7d933d3e0d7::t_0e9fbaee421b46 382-390
+  s_9cd7d933d3e0d7::t_f5fc1fd3df3178 18
+  s_9cd7d933d3e0d7::t_1139f188125fc0 24
+  s_9cd7d933d3e0d7::t_4e8de62a3898ef 376-379,392-420
+apps/rune/src/editor/history.rs
+  s_9cd7d933d3e0d7::t_25589000c7aa7e 639
+  s_9cd7d933d3e0d7::t_5132158b67742e 635-636,640-643,645-653
+  s_9cd7d933d3e0d7::t_54ca50c12adde7 28
+  s_9cd7d933d3e0d7::t_f0971eb93b9db0 637,644
+  s_9cd7d933d3e0d7::t_acdbcaba77e0d0 638,654-655
+docs/agent-devkit/changes/2026-11-13-7-changes-history-view/design.md
+  s_9cd7d933d3e0d7::t_2b1f8597e54166 19-21,53-56,79-80
+  s_9cd7d933d3e0d7::t_06f513295da2ee 17,32-35,75-76
+  s_5f5d0b83580d8d::t_d2739195428ed1 1-16,18,22-31,36-52,57-74,77-78,81-100
+CHANGELOG.md
+  s_9cd7d933d3e0d7::t_06f513295da2ee 31-35
+  s_9cd7d933d3e0d7::t_0d5de55242fa15 30
+  s_9cd7d933d3e0d7::t_eae5ea7a7d8741 36-39
+apps/rune/src/editor/navigation.rs
+  s_9cd7d933d3e0d7::t_44c5f6cabea9ac 321,329-330
+  s_9cd7d933d3e0d7::t_f34967a274bf10 407,415-416
+docs/agent-devkit/INDEX.md
+  s_9cd7d933d3e0d7::t_50d9017974cc3f 5
+docs/agent-devkit/changes/2026-11-13-7-changes-history-view/tasks.md
+  s_9cd7d933d3e0d7::t_8cf890427eb979 67
+  s_5f5d0b83580d8d::t_656c38a3b89a47 1-29,32-37,40-45,48-53,56-61,63-65
+  s_9cd7d933d3e0d7::t_e227eb6720483b 38-39
+  s_9cd7d933d3e0d7::t_81c7ad9901e48e 62,66
+  s_9cd7d933d3e0d7::t_43eb90d9bed2cf 46-47
+  s_9cd7d933d3e0d7::t_1eac5ebc2e953d 30-31
+  s_9cd7d933d3e0d7::t_4990779d9f07d7 54-55
+  s_9cd7d933d3e0d7::t_42b99020755144 68
+apps/rune/src/editor/changes.rs
+  s_9cd7d933d3e0d7::t_3e0cf020be060b 2052-2058
+  s_9cd7d933d3e0d7::t_49099a16adbdf6 2009-2018,2020-2023
+  s_9cd7d933d3e0d7::t_127f70892f84df 1757-1820,1827-1891,1893-1901,1905-1935,1937-1977,1983-1984,1986-2001,2004-2008,2019,2024-2032,2034-2047,2049-2050,2059-2081,2095-2123,2129-2138
+  s_9cd7d933d3e0d7::t_20125296469729 923,2139-2170,2179-2185,2191-2240,2242
+  s_9cd7d933d3e0d7::t_c041827669dac4 12,15,23
+  s_9cd7d933d3e0d7::t_be3eff5890fa9a 669-694
+  s_9cd7d933d3e0d7::t_d88508f87148fd 730-731,739-743
+  s_9cd7d933d3e0d7::t_d1fdd3da57aaed 1062-1063,1071
+  s_9cd7d933d3e0d7::t_6ce6d0ef1e89b2 43-50
+  s_9cd7d933d3e0d7::t_bb09592cdedc6e 2171-2178,2187-2190
+  s_9cd7d933d3e0d7::t_94d96a8a1db1b1 977-978,981-988,1008
+  s_9cd7d933d3e0d7::t_0e9fbaee421b46 140-144,158-162,234-238,609-611,780-786,887-891,908-922,930-937,1014-1017,1821-1826,1978-1982,2048,2124-2128
+  s_9cd7d933d3e0d7::t_1ec0b143971cc5 2003
+  s_9cd7d933d3e0d7::t_18c9fd6a575df9 1936
+  s_9cd7d933d3e0d7::t_b83c0b6b5eece9 120-139,145-157,163-233,239-335,347-352,357
+  s_9cd7d933d3e0d7::t_dd8487a9d5db9b 1090
+  s_9cd7d933d3e0d7::t_eff997b2726e25 13-14
+  s_bfb310e70e9950::t_3a4c73c9184222 1892
+  s_9cd7d933d3e0d7::t_eed3fb243b87ef 594-596
+  s_9cd7d933d3e0d7::t_ef19b83e5fa703 1902-1904
+  s_9cd7d933d3e0d7::t_e034161903221b 58-63
+  s_9cd7d933d3e0d7::t_d9388f7bf7e5c0 2085-2086,2089,2092-2094
+  s_9cd7d933d3e0d7::t_afedc794953ee8 762-764,766-767,769,787,789,799-800,802-811,839-844,846-877,880-882,884-886,892-902,906-907,927-929,938-976,979-980,990-994,996-1007,1009-1013,1018-1022
+  s_9cd7d933d3e0d7::t_d4e479283f5e06 2082-2084,2087-2088,2090-2091
+  s_9cd7d933d3e0d7::t_d34ca89e6d9616 2051
+  s_9cd7d933d3e0d7::t_e343ff60f065a0 879,989,995,1728,1985,2033,2186
+  s_9cd7d933d3e0d7::t_8619b279c2b397 1023,1727,1729,2002,2241
+apps/rune/src/editor/state.rs
+  s_9cd7d933d3e0d7::t_4764d80958459c 79,96
+  s_9cd7d933d3e0d7::t_cb54ddbd14bb22 255-256,259,263-267
+  s_9cd7d933d3e0d7::t_92df4e49531948 665-666
+  s_9cd7d933d3e0d7::t_644171cdf479d6 100
+  s_9cd7d933d3e0d7::t_477afe454b34c2 297-300
+  s_9cd7d933d3e0d7::t_bc4dd94aea5e69 369-372
+  s_9cd7d933d3e0d7::t_e19a4cd34e1185 260-262,296,479-482,600
+  s_9cd7d933d3e0d7::t_e64a7a1d03fc60 71-78,80-95,97-99,107-108
+  s_9cd7d933d3e0d7::t_d560b5a9693f15 101-106
+  s_9cd7d933d3e0d7::t_9f0682c5ed8a12 109-119,268
+  s_9cd7d933d3e0d7::t_d6a68a639880e0 636-637
+apps/rune/src/editor/stashes.rs
+  s_9cd7d933d3e0d7::t_338d3e0d8c6a6b 10
+  s_9cd7d933d3e0d7::t_84f70407650b04 285
+docs/agent-devkit/changes/2026-11-13-7-changes-history-view/delta.md
+  s_5f5d0b83580d8d::t_45f0763831e4cd 1-2,5-12,14-17,22-29,36,39
+  s_9cd7d933d3e0d7::t_a7b1de90a76bb2 38
+  s_9cd7d933d3e0d7::t_6b62fa76079602 13,18-21,30-35,37
+  s_9cd7d933d3e0d7::t_97636b7d9e02b8 3-4
+ARCHITECTURE.md
+  s_9cd7d933d3e0d7::t_02960ba58fb4ee 154-156,159-161
+  s_9cd7d933d3e0d7::t_06f513295da2ee 157-158
+  s_9cd7d933d3e0d7::t_498a1ab3c78c77 162-163
+docs/llm/domains/rune-editor.md
+  s_9cd7d933d3e0d7::t_2b1f8597e54166 125,151,153-159,161
+  s_9cd7d933d3e0d7::t_9bcf8eb0636f4f 123-124,126-131,138-150,152,160,162-164
+  s_9cd7d933d3e0d7::t_cbae494123c90c 132-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7796116ab874d8a9862ff65e5822a98c2c5a32b1",
+  "prompts": {},
+  "sessions": {
+    "s_5f5d0b83580d8d": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "confused-draw",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_9cd7d933d3e0d7": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "alert-wall",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_bfb310e70e9950": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "076bc763-0f46-46dc-b7ed-83ee71658321",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
