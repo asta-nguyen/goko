@@ -1,0 +1,73 @@
+apps/rune/src/main.rs
+  s_bfb310e70e9950::t_1691aa05a64184 1414-1417
+  s_bfb310e70e9950::t_1a6f70e5bb40bc 106-108
+  s_bfb310e70e9950::t_dcf5a2477a3f0d 4622-4627
+  s_bfb310e70e9950::t_aaf6a8cb8efa55 4540-4578
+  s_bfb310e70e9950::t_315ea6ce4c4d14 271
+  s_bfb310e70e9950::t_b9b2b791ced9d3 5595
+  s_bfb310e70e9950::t_9bfd10cb523666 1891
+  s_bfb310e70e9950::t_f7dff6567fdc5b 4539,4579-4620
+  s_bfb310e70e9950::t_2af1ac2e4aedeb 4621,4628-4652
+  s_bfb310e70e9950::t_e333c1cc50e0b4 1519
+apps/rune/src/panes.rs
+  s_bfb310e70e9950::t_2ecda7b04fb285 50-51
+  s_bfb310e70e9950::t_c8e1e1353b228d 200-203,206-208
+  s_bfb310e70e9950::t_4859f66c8471e8 1901
+  s_bfb310e70e9950::t_7480ab99e740bc 2126,2325-2327,2330-2380,2386,2392-2440
+  s_bfb310e70e9950::t_88bd436c35cbd9 2867
+  s_bfb310e70e9950::t_005cff12759c56 204-205
+  s_bfb310e70e9950::t_194bb3380b58fb 586-594
+  s_bfb310e70e9950::t_0ffa44793203cd 2092-2095,2100-2125,2127-2138,2153,2156-2158,2168,2171,2176,2181,2184
+  s_bfb310e70e9950::t_aaec6b3fcd0e1a 136-144,148-164,168-199,209-266
+  s_bfb310e70e9950::t_d4b8775ec461bd 1413-1422
+  s_bfb310e70e9950::t_59349b618c53a7 565-585,595-610
+  s_bfb310e70e9950::t_117649b93c9cea 1328-1329
+  s_bfb310e70e9950::t_d610bf664809c2 2139-2152,2154-2155,2159-2167,2169-2170,2172-2175,2177-2180,2182-2183,2328-2329,2381-2385,2387-2391
+  s_bfb310e70e9950::t_047919f1a790a1 13,21
+  s_bfb310e70e9950::t_df7acefdf972e3 47-49
+  s_9cd7d933d3e0d7::t_e26496f3ee7187 2185
+ARCHITECTURE.md
+  s_bfb310e70e9950::t_a23d674c5741c4 146-151
+docs/llm/domains/rune-chrome.md
+  s_bfb310e70e9950::t_19a34b611e35f3 1291
+  s_bfb310e70e9950::t_bad32ea1d09a7c 814-855
+CHANGELOG.md
+  s_bfb310e70e9950::t_de2c3afafa7e93 15-19
+apps/rune/src/term.rs
+  s_bfb310e70e9950::t_4cff8bc2e89faf 710,1337-1345,1640,1654,1670-1671,1688,1705,1721
+  s_bfb310e70e9950::t_7b81075cc8fdea 82-129
+  s_bfb310e70e9950::t_e940b6c64dfe36 9,16
+  s_bfb310e70e9950::t_46cd01416d1cc2 620,624-666,671-708
+  s_bfb310e70e9950::t_a79ebd7c51e983 297
+  s_bfb310e70e9950::t_ba0ec38631d4cd 1490,1494
+  s_bfb310e70e9950::t_d643b4b226a273 667-670
+  s_bfb310e70e9950::t_a4dc7ce68ad42f 261-263
+  s_bfb310e70e9950::t_162712546d4130 1508
+  s_bfb310e70e9950::t_da5568c457a12a 1303
+  s_bfb310e70e9950::t_fcaf44be5fe70e 525
+  s_bfb310e70e9950::t_27426344c600e7 709,1629-1639,1641-1653,1655-1669,1672-1687,1689-1704,1706-1720
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f46a9d630678ef3d8f090b495ebb820c144a1a4c",
+  "prompts": {},
+  "sessions": {
+    "s_9cd7d933d3e0d7": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "alert-wall",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_bfb310e70e9950": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "076bc763-0f46-46dc-b7ed-83ee71658321",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
