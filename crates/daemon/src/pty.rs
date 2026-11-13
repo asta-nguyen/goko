@@ -12,7 +12,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 const MAX_DIMENSION: u16 = 1000;
 const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
@@ -32,8 +32,10 @@ const QUEUE_RECHECK: Duration = Duration::from_millis(5);
 /// How often a write waiting for the child to take its input re-checks
 /// whether the child exited, so a write to a process that is gone ends.
 const WRITE_RECHECK: Duration = Duration::from_millis(100);
-/// Longest single wait of the reader for output; it only bounds the wait.
-const READ_WAIT: Duration = Duration::from_secs(1);
+/// Longest single wait of the reader for output. Output and the end of the
+/// PTY both end the wait at once; this only bounds it, and each expiry is a
+/// wakeup of an idle session, so it is long.
+const READ_WAIT: Duration = Duration::from_secs(10);
 /// Output chunks the terminal model may be behind the reader before the
 /// reader waits for it (at most 16 KiB each).
 const MODEL_QUEUE: usize = 64;
@@ -321,6 +323,8 @@ pub struct PtyProcess {
     /// Feeds the model thread. The reader and `resize` send while holding this
     /// lock, so the model sees output and resizes in stream order.
     feed: Arc<Mutex<SyncSender<ModelInput>>>,
+    /// Signalled when the process printed output or was sent input.
+    activity: Arc<Notify>,
     exit_state: watch::Receiver<ExitState>,
 }
 
@@ -402,11 +406,13 @@ impl PtyProcess {
             }
         };
         let feed = Arc::new(Mutex::new(feed));
+        let activity = Arc::new(Notify::new());
         if let Err(error) = spawn_reader(
             reader,
             Arc::clone(&shared),
             Arc::clone(&gate),
             Arc::clone(&feed),
+            Arc::clone(&activity),
         ) {
             let _ = signal_group(pid, libc::SIGKILL);
             let _ = child.wait();
@@ -431,8 +437,15 @@ impl PtyProcess {
             gate,
             model,
             feed,
+            activity,
             exit_state,
         })
+    }
+
+    /// Resolves once the process has printed output or been sent input since
+    /// the last time this resolved. An idle process never wakes the caller.
+    pub async fn activity(&self) {
+        self.activity.notified().await;
     }
 
     /// Write terminal input to the PTY. It blocks while the child is not
@@ -465,6 +478,7 @@ impl PtyProcess {
                 }
             }
         }
+        self.activity.notify_one();
         Ok(())
     }
 
@@ -754,6 +768,7 @@ fn spawn_reader(
     shared: Arc<Mutex<Shared>>,
     gate: Arc<Condvar>,
     feed: Arc<Mutex<SyncSender<ModelInput>>>,
+    activity: Arc<Notify>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("gokod-pty-reader".to_owned())
@@ -770,6 +785,8 @@ fn spawn_reader(
                         let (seq, bytes) = lock_unpoisoned(&shared).publish(&chunk[..count]);
                         let end = seq + count as u64;
                         let _ = feed.send(ModelInput::Output { end, bytes });
+                        drop(feed);
+                        activity.notify_one();
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

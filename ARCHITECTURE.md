@@ -227,7 +227,8 @@ are rejected before they are allocated.
 
 - The first frame from a client is a bare `Hello{protocol_version, token}`. The reply is
   `HelloOk{daemon_version}`. A wrong token, an unsupported version, or a first frame that
-  is not a hello gets an error and the connection is closed. Nothing is served before that.
+  is not a hello gets an error and the connection is closed. So does a connection that
+  sends no hello within 3 s. Nothing is served before that.
 - Requests are `{"type": "...", "id": N, ...}` with a `u64` `id` that clients start at 1.
   Responses are `{"id": N, "result": ...}` or `{"id": N, "error": {code, message, hint?}}`.
   Errors that cannot be tied to a request (bad hello, bad frame) use `id` 0 and close.
@@ -268,8 +269,10 @@ created | starting → failed
 - Every state change is broadcast as the full `SessionInfo` (capacity 64). A subscriber
   that falls behind is sent the current state of every session instead.
 - For a live session, `SessionInfo.cwd` is the process's current directory. `list` and `get`
-  refresh it before returning, and a 200 ms watcher emits `session.updated` only when it
-  changes. If the OS cannot provide an absolute UTF-8 path, the daemon reports an empty
+  refresh it before returning, and a watcher emits `session.updated` only when it
+  changes. The watcher reads the directory 200 ms after the process printed output or took
+  input (a shell changes directory by running a command, which prints the next prompt) and
+  every 2 s otherwise, so an idle session costs half a wakeup a second instead of five. If the OS cannot provide an absolute UTF-8 path, the daemon reports an empty
   string; it preserves the last known path once the session exits.
 - Exited and failed sessions stay listed until `session.delete` removes them. Deletion rejects
   live sessions, closes output subscribers, and drops the session's replay buffer; an absent

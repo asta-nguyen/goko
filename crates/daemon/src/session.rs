@@ -29,8 +29,13 @@ fn escalate_after_grace(pty: Arc<PtyProcess>) {
         }
     });
 }
-/// How often a live PTY process's working directory is refreshed.
+/// How soon after a PTY process printed output or took input its working
+/// directory is read again: a shell changes directory by running a command,
+/// which prints at least the next prompt.
 const CWD_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
+/// How often the working directory of a process that prints nothing is read,
+/// for a directory change that came with no output.
+const CWD_IDLE_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transition {
@@ -372,8 +377,15 @@ impl SessionManager {
 
 /// Record the exit. A process killed by a signal has no exit code.
 async fn watch_exit(session: Arc<Session>, pty: Arc<PtyProcess>) {
-    let mut interval = tokio::time::interval(CWD_REFRESH_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut idle = tokio::time::interval(CWD_IDLE_INTERVAL);
+    idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The directory is read `CWD_REFRESH_INTERVAL` after activity, so a flood
+    // of output reads it as often as the fixed timer used to and an idle
+    // session only on the slow tick. A new process counts as active: its
+    // command may change directory at once.
+    let settle = tokio::time::sleep(CWD_REFRESH_INTERVAL);
+    tokio::pin!(settle);
+    let mut settling = true;
     let exit_code = loop {
         tokio::select! {
             status = pty.wait_exit() => {
@@ -382,7 +394,17 @@ async fn watch_exit(session: Arc<Session>, pty: Arc<PtyProcess>) {
                     _ => None,
                 };
             }
-            _ = interval.tick() => refresh_cwd(&session, &pty),
+            _ = pty.activity(), if !settling => {
+                settling = true;
+                settle
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + CWD_REFRESH_INTERVAL);
+            }
+            _ = &mut settle, if settling => {
+                settling = false;
+                refresh_cwd(&session, &pty);
+            }
+            _ = idle.tick() => refresh_cwd(&session, &pty),
         }
     };
     let _ = session.apply(Transition::ProcessExited, |info| {

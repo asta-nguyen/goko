@@ -21,6 +21,10 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   flooding session streams about 15% faster.
 - The app acknowledges terminal output every 64 KiB it has parsed (and the rest once the
   output pauses), instead of on every frame.
+- `gokod` reads a session's working directory after the session printed output or took
+  input, and every 2 s otherwise, instead of five times a second: 20 idle sessions wake
+  the daemon 11 times a second instead of 128. It also closes a connection that sends no
+  hello within 3 s.
 
 ### Fixed
 

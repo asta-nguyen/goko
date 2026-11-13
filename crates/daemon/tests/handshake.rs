@@ -29,6 +29,23 @@ async fn wrong_token_gets_auth_failed_and_the_socket_closes() {
     assert!(client.recv().await.is_none(), "connection should be closed");
 }
 
+/// A client that connects and never says hello is told so and dropped,
+/// instead of holding its socket until it goes away on its own.
+#[tokio::test]
+async fn a_connection_without_a_hello_is_closed() {
+    let server = TestServer::start();
+    let mut client = server.connect().await;
+
+    let started = std::time::Instant::now();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(8), client.recv())
+        .await
+        .expect("the daemon gave up on the silent connection")
+        .expect("error response");
+    assert_eq!(reply["error"]["code"], "malformed");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+    assert!(client.recv().await.is_none(), "connection should be closed");
+}
+
 #[tokio::test]
 async fn wrong_version_gets_version_unsupported_and_the_socket_closes() {
     let server = TestServer::start();

@@ -56,6 +56,9 @@ use tracing::{debug, warn};
 const OUTGOING_QUEUE: usize = 64;
 /// Retained output goes out in frames of at most this many bytes.
 const SNAPSHOT_PIECE: usize = 64 * 1024;
+/// How long a new connection has to send its hello before it is closed, so a
+/// client that connects and says nothing does not hold a socket for good.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct State {
     token: Token,
@@ -153,7 +156,15 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
 }
 
 async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
-    let payload = match next_control(&mut stream).await? {
+    let first = match tokio::time::timeout(HELLO_TIMEOUT, next_control(&mut stream)).await {
+        Ok(first) => first?,
+        Err(_) => {
+            let message = format!("no hello within {} s", HELLO_TIMEOUT.as_secs());
+            let reply = error_response(0, ErrorCode::Malformed, message);
+            return send_final(&mut stream, Some(reply)).await;
+        }
+    };
+    let payload = match first {
         Next::Payload(payload) => payload,
         Next::Finished(reply) => return send_final(&mut stream, reply).await,
     };
