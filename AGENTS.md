@@ -17,12 +17,12 @@ The Rust protocol and daemon live in `crates/protocol/` and `crates/daemon/`, sh
 
 The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare binary opens **no window** — without a bundle, LaunchServices never activates the app, so its window is never ordered in. Run it through `apps/rune/run-macos.sh [release|debug]`, which builds the workspace, assembles `target/Goko.app` (the app plus `gokod` beside it, so the app can start the daemon) and launches it. The daemon client spawns `gokod` out of `GOKO_HOME` (`app_core::home::home_dir`), so a fresh home gets its own daemon.
 
-A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` builds macOS (Apple Silicon) with `apps/rune/package-macos.sh` and Linux (x86_64 on `ubuntu-22.04`, aarch64 on `ubuntu-22.04-arm`) with `apps/rune/package-linux.sh` (each a tar.gz and a `<target>.target.json` entry), merges the entries into `latest.json` with `jq`, and publishes them with `distribution/install.sh` as a GitHub release; users install with the `curl` command in the README. `bundle-macos.sh` is the one place the macOS bundle is assembled, shared with `run-macos.sh`. There is no Windows release (`gokod` uses Unix sockets).
+A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` builds macOS (Apple Silicon) with `apps/rune/package-macos.sh` and Linux (x86_64 on `ubuntu-22.04`, aarch64 on `ubuntu-22.04-arm`) with `apps/rune/package-linux.sh` (each a tar.gz and a `<target>.target.json` entry), merges the entries into `latest.json` with `jq` (with `notes`, the `CHANGELOG.md` entry for the tag, which Settings → Updates shows), and publishes them with `distribution/install.sh` as a GitHub release; users install with the `curl` command in the README. `bundle-macos.sh` is the one place the macOS bundle is assembled, shared with `run-macos.sh`. There is no Windows release (`gokod` uses Unix sockets).
 
 ### Cutting a release
 
 1. Bump `[workspace.package] version` in `Cargo.toml`; `cargo build` refreshes `Cargo.lock`. `gokod` has its own version in `crates/daemon/Cargo.toml`: bump it only when the app gates on a new daemon feature (`version_at_least` in `apps/rune/src/daemon.rs`).
-2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it.
+2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it. That entry is what users read as "What's new" when the app offers the update, so write it for them.
 3. `cargo fmt --all -- --check` and `cargo test --workspace` pass.
 4. Merge to `main`, then tag that commit `vX.Y.Z` and push the tag. The push is what builds and publishes, so do it last and only on purpose.
 5. When the `release` workflow finishes, check that the GitHub release has the tar.gz, `latest.json` and `install.sh`.

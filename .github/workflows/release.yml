@@ -85,7 +85,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           # One manifest for every platform; the version comes first, as install.sh reads it.
-          jq -cs --arg version "${TAG#v}" '{version: $version, targets: add}' dist/*.target.json > dist/latest.json
+          # `notes` is the CHANGELOG.md entry for this version, which the app shows
+          # in Settings → Updates (empty if the entry is missing).
+          notes="$(awk -v v="${TAG#v}" '/^## \[/ { on = index($0, "[" v "]") == 4; next } on' CHANGELOG.md)"
+          jq -cs --arg version "${TAG#v}" --arg notes "$notes" '{version: $version, targets: add, notes: $notes}' dist/*.target.json > dist/latest.json
           cat dist/latest.json
           gh release create "$TAG" dist/*.tar.gz dist/latest.json distribution/install.sh \
             --title "Goko ${TAG#v}" --generate-notes

@@ -193,6 +193,9 @@ pub struct State {
     usage_menu: Option<String>,
     /// What the check for a newer release found (Settings → Updates).
     update: update::Status,
+    /// Where "Update now" installs over this copy; `None` when this copy can
+    /// only be updated by hand (`update::install_dir`).
+    update_dir: Option<std::path::PathBuf>,
     /// The settings page's own state (section, forms, drafts).
     settings: settings::SettingsState,
     /// The appearance choice restored from `goko.theme`.
@@ -316,6 +319,7 @@ impl State {
             usage_at: None,
             usage_menu: None,
             update: update::Status::default(),
+            update_dir: update::install_dir(),
             settings: settings::SettingsState::default(),
             theme_choice: theme::Theme::Dark,
             os_dark: true,
@@ -5520,6 +5524,52 @@ mod view_tests {
             version && copy && said,
             "the new release comes with the command"
         );
+    }
+
+    /// Where this copy can be replaced, a found release offers "Update now" in
+    /// place of the command, and shows what changed in it.
+    #[test]
+    fn settings_updates_offers_update_now_and_the_release_notes() {
+        let page = |dir: Option<std::path::PathBuf>, status: update::Status| {
+            let mut s = State::new(test_handle());
+            s.settings.section = crate::settings::Section::Updates;
+            s.update = status;
+            s.update_dir = dir;
+            let mut rt = Runtime::new(s, settings_view, (1512.0, 814.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            let infos = els(&rt);
+            let has = |wanted: &str| {
+                infos.iter().any(|e| {
+                    e.label.as_deref() == Some(wanted) || e.text.as_deref() == Some(wanted)
+                })
+            };
+            (
+                has("Update now"),
+                has("Copy install command"),
+                has("What's new in Goko 9.9.9"),
+                has("• Find in the terminal"),
+            )
+        };
+        let release = || update::Release {
+            version: "9.9.9".into(),
+            notes: "### Added\n\n- Find in the `terminal`".into(),
+        };
+        let here = Some(std::env::temp_dir());
+        let (now, copy, heading, bullet) = page(here.clone(), update::Status::Available(release()));
+        assert!(
+            now && !copy,
+            "this copy can be replaced, so no command to paste"
+        );
+        assert!(heading && bullet, "the notes say what changed");
+        let (now, copy, ..) = page(None, update::Status::Available(release()));
+        assert!(
+            !now && copy,
+            "a copy that cannot be replaced gets the command"
+        );
+        let (now, _, heading, _) = page(here.clone(), update::Status::Installing(release()));
+        assert!(!now && heading, "no second install while one runs");
+        let (_, _, heading, _) = page(here, update::Status::Available("9.9.9".into()));
+        assert!(!heading, "a release without notes shows none");
     }
 
     // -- Terminal row geometry ------------------------------------------------

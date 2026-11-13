@@ -40,8 +40,11 @@ the Linux archives; the installed app has not been run on a desktop.
 Intel Macs build from source (below). There is no Windows release.
 
 Goko → Settings → Updates shows the running version and tells you when a newer
-release is out (set `GOKO_NO_UPDATE_CHECK=1` to stop the automatic check). To
-update, run the install command again and reopen Goko.
+release is out and what changed in it (set `GOKO_NO_UPDATE_CHECK=1` to stop the
+automatic check). **Update now** installs it over the copy that is running (also
+in `/Applications`); reopen Goko afterwards. A copy it cannot replace (built from
+source, or in a folder you cannot write to) offers the install command to run
+instead.
 
 ## Prerequisites
 

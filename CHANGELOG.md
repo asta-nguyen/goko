@@ -10,6 +10,17 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+### Added
+
+- Update now: Settings → Updates installs a newer release over the copy that is
+  running, so `/Applications/Goko.app` is replaced where it sits instead of a second
+  copy appearing in `~/Applications`; reopen Goko afterwards. A copy it cannot replace
+  (built from source, renamed, or in a folder you cannot write to) still offers the
+  install command to copy. `install.sh` takes `GOKO_APP_DIR` for the folder that holds
+  `Goko.app` on macOS (default `~/Applications`).
+- What's new: Settings → Updates shows what changed in the release it found, taken from
+  the release's changelog entry in `latest.json`.
+
 ## [0.1.3] - 2026-11-13
 
 ### Added
