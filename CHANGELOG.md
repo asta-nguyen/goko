@@ -31,6 +31,10 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   exits fails instead of hanging; `gokod` also no longer ignores SIGTERM while one waits.
 - A daemon subscribe that replaced an older stream could still send a frame of the old
   stream after its response.
+- A terminal whose program wrote output in many small pieces could be cut off and
+  repainted while the app was behind: the daemon dropped the stream once 256 pieces were
+  waiting, long before the 256 KiB it is meant to hold back at. It now pauses reading
+  instead.
 - While markdown streams in, an image still arriving is held back until it is complete,
   instead of showing its alt text as plain text and then replacing it.
 

@@ -26,6 +26,9 @@ pub(crate) const FLOW_WINDOW: u64 = 256 * 1024;
 const FLOW_STALL: Duration = Duration::from_secs(5);
 /// How often a paused reader re-checks the flow gate at the latest.
 const FLOW_RECHECK: Duration = Duration::from_millis(250);
+/// How often a reader paused on a flow subscriber's full queue looks again:
+/// nothing signals the gate when the consumer takes a chunk.
+const QUEUE_RECHECK: Duration = Duration::from_millis(5);
 /// How often a write waiting for the child to take its input re-checks
 /// whether the child exited, so a write to a process that is gone ends.
 const WRITE_RECHECK: Duration = Duration::from_millis(100);
@@ -150,15 +153,25 @@ impl Shared {
         (seq, bytes)
     }
 
-    /// Whether the reader must pause: a live flow subscriber exists and the
-    /// unacknowledged output has reached the window. A subscriber whose
-    /// receiver is gone does not count.
-    fn flow_blocked(&self) -> bool {
-        self.buffer.next_seq().saturating_sub(self.acknowledged) >= FLOW_WINDOW
-            && self
-                .subscribers
-                .iter()
-                .any(|subscriber| subscriber.flow && !subscriber.sender.is_closed())
+    /// Whether the reader must pause, as how soon to look again: a live flow
+    /// subscriber exists and either the unacknowledged output has reached the
+    /// window or that subscriber's queue has no room for another chunk. The
+    /// window counts bytes and the queue counts chunks, so small reads fill
+    /// the queue first; pausing there keeps `publish` from dropping a flow
+    /// subscriber as lagging. A subscriber whose receiver is gone does not
+    /// count.
+    fn flow_pause(&self) -> Option<Duration> {
+        let mut live = self
+            .subscribers
+            .iter()
+            .filter(|subscriber| subscriber.flow && !subscriber.sender.is_closed())
+            .peekable();
+        live.peek()?;
+        if self.buffer.next_seq().saturating_sub(self.acknowledged) >= FLOW_WINDOW {
+            return Some(FLOW_RECHECK);
+        }
+        live.any(|subscriber| subscriber.sender.capacity() <= 1)
+            .then_some(QUEUE_RECHECK)
     }
 
     /// Raise the acknowledged offset toward `upto_seq`, capped at the
@@ -834,8 +847,9 @@ fn wait_ready(fd: RawFd, ready: Ready, timeout: Duration) -> io::Result<()> {
 }
 
 /// Pause before the next read while a live flow subscriber has a full window
-/// of unacknowledged output. The `Shared` lock is not held across the wait and
-/// the state is re-checked at least every `FLOW_RECHECK`. When `FLOW_STALL`
+/// of unacknowledged output or a full queue. The `Shared` lock is not held
+/// across the wait and the state is re-checked at least every `FLOW_RECHECK`
+/// (`QUEUE_RECHECK` for a full queue). When `FLOW_STALL`
 /// passes without the acknowledged offset moving, the flow subscribers are
 /// dropped through the usual `Lagged` path and reading continues.
 fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
@@ -843,7 +857,7 @@ fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
     // (when the current wait began, acknowledged offset it began at); an ack
     // move restarts the stall clock.
     let mut waiting: Option<(Instant, u64)> = None;
-    while shared.flow_blocked() {
+    while let Some(recheck) = shared.flow_pause() {
         match waiting {
             Some((since, baseline)) if shared.acknowledged == baseline => {
                 if since.elapsed() >= FLOW_STALL {
@@ -854,7 +868,7 @@ fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
             _ => waiting = Some((Instant::now(), shared.acknowledged)),
         }
         let (guard, _) = gate
-            .wait_timeout(shared, FLOW_RECHECK)
+            .wait_timeout(shared, recheck)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared = guard;
     }

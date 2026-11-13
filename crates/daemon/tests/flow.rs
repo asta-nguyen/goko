@@ -149,6 +149,53 @@ async fn dropping_the_receiver_releases_the_reader() {
     kill_and_reap(&process).await;
 }
 
+/// (c2) Small reads fill a flow subscriber's queue long before the byte
+/// window does. The reader pauses there and resumes as the queue drains: a
+/// flow subscriber is never dropped for the number of chunks it has queued.
+#[tokio::test(flavor = "multi_thread")]
+async fn small_chunks_pause_the_reader_instead_of_lagging_a_flow_subscriber() {
+    // One byte per write with a pause between, so every read is one chunk.
+    let process = PtyProcess::spawn(spec(&[
+        "sh",
+        "-c",
+        "while :; do printf x; sleep 0.002; done",
+    ]))
+    .expect("spawn the producer");
+    let (snapshot, mut receiver) = process.subscribe_flow();
+
+    // Nothing is taken from the queue, so the reader has to stop on its own.
+    let mut paused = 0;
+    let mut quiet_since = Instant::now();
+    wait_until("the reader to pause", Duration::from_secs(4), || {
+        let published = process.buffer().2 - snapshot.replay_from;
+        if published != paused || published == 0 {
+            paused = published;
+            quiet_since = Instant::now();
+        }
+        quiet_since.elapsed() >= Duration::from_millis(400)
+    })
+    .await;
+    assert!(paused < WINDOW, "the window, not the queue, stopped it");
+
+    // Everything queued is output, in order and with no lag notice.
+    let mut next_seq = snapshot.replay_from;
+    while next_seq < snapshot.replay_from + paused {
+        match tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await {
+            Ok(Some(StreamItem::Chunk { seq, bytes })) => {
+                assert_eq!(seq, next_seq, "stream gap or overlap");
+                next_seq += bytes.len() as u64;
+            }
+            other => panic!("the flow subscriber was dropped: {other:?}"),
+        }
+    }
+    wait_until("the reader to resume", Duration::from_secs(2), || {
+        process.buffer().2 - snapshot.replay_from > paused
+    })
+    .await;
+
+    kill_and_reap(&process).await;
+}
+
 /// (d) With no ack for 5 s the flow stream yields `Lagged` and reading resumes.
 #[tokio::test(flavor = "multi_thread")]
 async fn five_seconds_without_ack_progress_sends_lagged() {

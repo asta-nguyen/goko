@@ -405,6 +405,9 @@ async fn finished_producer(
         pty.buffer().1.len() == MEBIBYTE
     })
     .await;
+    // The process has exited, but the reader may still be taking its last
+    // output from the PTY; a subscribe before that would see it arrive live.
+    wait_for_quiet(&pty).await;
     (id, pty)
 }
 

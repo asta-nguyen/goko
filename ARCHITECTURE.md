@@ -317,7 +317,10 @@ only ever does a non-blocking send and the PTY reader never waits for a client. 
 pauses once published output reaches the acknowledged offset plus the window (plus the one
 16 KiB read in flight) and resumes when `terminal.ack` moves the offset. `upto_seq` is
 an absolute end offset, not a delta; the session keeps the largest it has seen across
-resubscribes and caps a future value at the published end. Replayed snapshot bytes count
+resubscribes and caps a future value at the published end. The reader also pauses while
+a flow subscriber's queue has no room for another chunk: the window counts bytes and the
+queue counts chunks, so many small reads fill the queue first, and a flow subscriber is
+not dropped for that. Replayed snapshot bytes count
 against the same window, so a 1 MiB history streams in about four window round trips
 instead of one burst. If no ack moves the offset for 5 s the flow subscriber is dropped
 through the same `Lagged` path — a stuck client slows its own stream, never the session.
