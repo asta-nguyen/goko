@@ -12,9 +12,14 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `GOKO_HOME`, else `~/Library/Application Support/Goko`, created with mode 0700.
+    /// `GOKO_HOME`, else the platform's default folder (see [`dir_from`]),
+    /// created with mode 0700.
     pub fn resolve() -> io::Result<Self> {
-        Self::at(dir_from(env::var_os("GOKO_HOME"), env::var_os("HOME"))?)
+        Self::at(dir_from(
+            env::var_os("GOKO_HOME"),
+            env::var_os("HOME"),
+            env::var_os("XDG_STATE_HOME"),
+        )?)
     }
 
     /// Use `dir` as the support directory, creating it (and parents) with mode 0700.
@@ -53,22 +58,52 @@ pub(crate) fn remove_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
-fn dir_from(goko_home: Option<OsString>, home: Option<OsString>) -> io::Result<PathBuf> {
+/// The folder Goko first used on every platform, and still uses on macOS.
+const APPLICATION_SUPPORT: &str = "Library/Application Support/Goko";
+
+/// `GOKO_HOME`, else the platform's default folder (the same rule as
+/// `app_core::home`): `~/Library/Application Support/Goko` on macOS;
+/// elsewhere `$XDG_STATE_HOME/goko`, or `~/.local/state/goko` when that
+/// variable is unset or not absolute, unless the macOS-style folder already
+/// exists, which an older install keeps using.
+fn dir_from(
+    goko_home: Option<OsString>,
+    home: Option<OsString>,
+    xdg_state_home: Option<OsString>,
+) -> io::Result<PathBuf> {
     if let Some(dir) = goko_home.filter(|dir| !dir.is_empty()) {
         return Ok(dir.into());
     }
     let home = home.filter(|home| !home.is_empty()).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "neither GOKO_HOME nor HOME is set")
     })?;
-    Ok(PathBuf::from(home).join("Library/Application Support/Goko"))
+    Ok(default_dir(
+        Path::new(&home),
+        xdg_state_home,
+        cfg!(target_os = "macos"),
+    ))
+}
+
+fn default_dir(home: &Path, xdg_state_home: Option<OsString>, macos: bool) -> PathBuf {
+    let application_support = home.join(APPLICATION_SUPPORT);
+    if macos || application_support.is_dir() {
+        return application_support;
+    }
+    match xdg_state_home
+        .map(PathBuf::from)
+        .filter(|state| state.is_absolute())
+    {
+        Some(state) => state.join("goko"),
+        None => home.join(".local/state/goko"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dir_from, Paths};
+    use super::{default_dir, dir_from, Paths, APPLICATION_SUPPORT};
     use crate::test_support::TempDir;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn at_creates_a_0700_directory_and_names_the_four_files() {
@@ -90,23 +125,65 @@ mod tests {
 
     #[test]
     fn goko_home_wins_over_the_default_location() {
-        let dir = dir_from(Some("/tmp/goko-home".into()), Some("/Users/me".into())).unwrap();
+        let dir = dir_from(
+            Some("/tmp/goko-home".into()),
+            Some("/Users/me".into()),
+            None,
+        )
+        .unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/goko-home"));
     }
 
     #[test]
-    fn default_location_is_under_application_support() {
-        for goko_home in [None, Some("".into())] {
-            let dir = dir_from(goko_home, Some("/Users/me".into())).unwrap();
-            assert_eq!(
-                dir,
-                PathBuf::from("/Users/me/Library/Application Support/Goko")
-            );
-        }
+    fn macos_default_is_under_application_support() {
+        assert_eq!(
+            default_dir(Path::new("/Users/me"), Some("/elsewhere".into()), true),
+            PathBuf::from("/Users/me/Library/Application Support/Goko")
+        );
+    }
+
+    #[test]
+    fn other_platforms_default_to_the_xdg_state_folder() {
+        let home = Path::new("/home/goko-no-such-user");
+        assert_eq!(
+            default_dir(home, None, false),
+            PathBuf::from("/home/goko-no-such-user/.local/state/goko")
+        );
+        assert_eq!(
+            default_dir(home, Some("/var/state".into()), false),
+            PathBuf::from("/var/state/goko")
+        );
+        // The XDG spec says to ignore a relative path.
+        assert_eq!(
+            default_dir(home, Some("state".into()), false),
+            PathBuf::from("/home/goko-no-such-user/.local/state/goko")
+        );
+    }
+
+    #[test]
+    fn an_existing_application_support_folder_is_kept() {
+        let home = TempDir::new("paths-legacy");
+        let legacy = home.path().join(APPLICATION_SUPPORT);
+        std::fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(
+            default_dir(home.path(), Some("/var/state".into()), false),
+            legacy
+        );
+    }
+
+    #[test]
+    fn an_empty_goko_home_falls_back_to_the_default() {
+        let dir = dir_from(
+            Some("".into()),
+            Some("/home/goko-no-such-user".into()),
+            None,
+        )
+        .unwrap();
+        assert!(dir.starts_with("/home/goko-no-such-user"));
     }
 
     #[test]
     fn missing_goko_home_and_home_is_an_error() {
-        assert!(dir_from(None, None).is_err());
+        assert!(dir_from(None, None, None).is_err());
     }
 }

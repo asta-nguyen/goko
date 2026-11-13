@@ -27,7 +27,9 @@ Rune app (apps/rune)                          gokod (crates/daemon)
 - **`crates/app-core`** holds everything that is not UI and not PTY: the `goko.db` store,
   project and checkout validation, Git/file access, worktrees, agents/accounts/ACP,
   language servers, and usage/activity readers.
-- Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` (mode 0700),
+- Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` on macOS and
+  `$XDG_STATE_HOME/goko` (`~/.local/state/goko`) elsewhere, where an existing
+  `~/Library/Application Support/Goko` from an earlier version is kept (mode 0700),
   holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
   the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures, and
   `activity/claude/<session-id>` hook files holding `working`, `waiting`, or `done`

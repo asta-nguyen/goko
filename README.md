@@ -104,9 +104,10 @@ file, job objects) before it can run.
 
 ### Data and logs
 
-App data lives in `$GOKO_HOME`, default `~/Library/Application Support/Goko`
-(on every platform for now: the default is not yet per-OS, so set `GOKO_HOME` on
-Linux if you want an XDG path): `goko.db`, `daemon.sock`, `daemon.token`, `daemon.lock` and `daemon.log`.
+App data lives in `$GOKO_HOME`. The default is `~/Library/Application Support/Goko` on
+macOS and `$XDG_STATE_HOME/goko` (`~/.local/state/goko`) on Linux. A Linux install that
+already has `~/Library/Application Support/Goko` from an earlier version keeps using it.
+The folder holds `goko.db`, `daemon.sock`, `daemon.token`, `daemon.lock` and `daemon.log`.
 
 Keep development data separate from your normal data with a throwaway home:
 
