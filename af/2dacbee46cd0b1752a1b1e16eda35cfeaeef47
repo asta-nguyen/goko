@@ -1,0 +1,21 @@
+docs/agent-devkit/INDEX.md
+  s_bfb310e70e9950::t_6bd1dc8255e760 28
+docs/agent-devkit/changes/archive/2026-11-13-terminal-find/delta.md
+  s_bfb310e70e9950::t_65d0939b51b9e5 1-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "af2dacbee46cd0b1752a1b1e16eda35cfeaeef47",
+  "prompts": {},
+  "sessions": {
+    "s_bfb310e70e9950": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "076bc763-0f46-46dc-b7ed-83ee71658321",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
