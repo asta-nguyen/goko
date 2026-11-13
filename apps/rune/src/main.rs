@@ -103,6 +103,9 @@ pub struct State {
     /// Every visible pane's terminal, keyed by session id: grid, output
     /// stream and PTY size — the active tab's panes only.
     attachments: HashMap<String, panes::Attachment>,
+    /// What a find bar's query field edits when its pane's attachment is gone
+    /// before the field's event arrives; never shown.
+    find_idle: rune::edit::TextEdit,
     /// The last measured grid (cols, rows) of each session's pane. A pane's
     /// layout fires only when its rect changes, so an attachment made after
     /// that (tab switch, new session) starts from this, not the default.
@@ -265,6 +268,7 @@ impl State {
             daemon_reason: None,
             terminal_lagged: HashSet::new(),
             attachments: HashMap::new(),
+            find_idle: rune::edit::TextEdit::new(""),
             pane_grids: HashMap::new(),
             drop_pane: None,
             preedit: String::new(),
@@ -1407,6 +1411,10 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if s.view == View::Terminal {
+        // The find bar's query takes the typing while it is focused, not the shell.
+        if s.terminal_find_focused() {
+            return false;
+        }
         // Rune focus left on chrome eats Space — a focused pressable fires
         // on it — before the pane sees the key. Hand it back; the pane
         // separator (`split:split-…`) keeps its arrow-key resize and a
@@ -1508,6 +1516,7 @@ fn app_shortcut(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
             s.new_shell_tab();
             true
         }
+        'f' if s.view == View::Terminal => s.open_terminal_find(),
         ',' => {
             let target = if s.view == View::Settings {
                 View::Terminal
@@ -1879,14 +1888,7 @@ mod view_tests {
     fn attach(s: &mut State, key: &str, terminal: term::Terminal) {
         s.attachments.insert(
             key.to_string(),
-            panes::Attachment {
-                term: terminal,
-                lines: Vec::new(),
-                links: Vec::new(),
-                cols: term::TERM_COLS,
-                rows: term::TERM_ROWS,
-                pty: (0, 0),
-            },
+            panes::Attachment::new(terminal, term::TERM_COLS, term::TERM_ROWS),
         );
     }
 
@@ -4535,6 +4537,120 @@ mod view_tests {
     }
 
     #[test]
+    fn cmd_f_opens_the_terminals_find_bar_and_the_typing_stays_out_of_the_shell() {
+        let mut s = two_tab_scene();
+        let key = s.focused_session_key().expect("a focused pane");
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: b"build failed\r\n".to_vec(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let letter = KeyEvent {
+            key: Key::Text("a".into()),
+            mods: Mods::default(),
+        };
+        let mut rt = key_runtime(s);
+        rt.update(|s, tx| {
+            assert!(!s.terminal_find_focused());
+            assert!(
+                on_key(s, &cmd_key('f'), tx),
+                "⌘F belongs to the app in the Terminal view"
+            );
+            assert!(s.attachments[&key].find.open);
+            assert!(s.terminal_find_focused());
+            assert!(
+                !on_key(s, &letter, tx),
+                "the query takes the letter, the shell does not"
+            );
+            s.close_terminal_find(&key, tx);
+            assert!(!s.attachments[&key].find.open);
+            assert!(!s.terminal_find_focused());
+            assert!(on_key(s, &letter, tx), "the shell types again");
+        });
+    }
+
+    #[test]
+    fn the_find_bar_takes_the_typing_and_marks_the_matching_rows() {
+        let mut s = two_tab_scene();
+        let key = s.focused_session_key().expect("a focused pane");
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        tx.send(daemon::Output {
+            seq: 0,
+            data: b"compiling\r\nbuild failed\r\nretry the Build\r\n".to_vec(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let ink = s.ink;
+        let att = s.attachments.get_mut(&key).unwrap();
+        let lines = att.term.lines(&ink).to_vec();
+        att.set_lines(&lines, &key);
+        let mut rt = key_runtime(s);
+        rt.frame(0.0);
+        press_cmd(&mut rt, 'f');
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.role == "textbox" && e.label.as_deref() == Some("Find")),
+            "the bar is drawn over the pane"
+        );
+        for ch in "build".chars() {
+            rt.key(KeyEvent {
+                key: Key::Text(ch.to_string()),
+                mods: Mods::default(),
+            });
+        }
+        rt.frame(1.0 / 60.0);
+        let att = &rt.state.attachments[&key];
+        assert_eq!(att.find.query.text, "build", "typing edits the query");
+        assert_eq!(att.find.matches.len(), 2, "any case, both rows");
+        assert_eq!(att.marks.iter().map(Vec::len).sum::<usize>(), 2);
+        assert_eq!(att.find.count_label(), "1 of 2");
+    }
+
+    #[test]
+    fn coming_back_to_a_tab_never_leaves_the_find_bar_swallowing_the_typing() {
+        let mut s = State::new(test_handle());
+        s.view = View::Terminal;
+        let first = seed_session(&mut s, "one", "/tmp");
+        let second = seed_session(&mut s, "two", "/tmp");
+        s.focus_session_tab(&first);
+        s.focus_session_tab(&second);
+        let session = s.session_id(&second).unwrap();
+        let (_tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        attach(&mut s, &second, term::Terminal::new(session, rx, ready_rx));
+        let mut rt = key_runtime(s);
+        rt.frame(0.0);
+        press_cmd(&mut rt, 'f');
+        assert!(rt.state.terminal_find_focused());
+        rt.update(|s, _| s.focus_session_tab(&first));
+        rt.frame(1.0 / 60.0);
+        rt.update(|s, _| s.focus_session_tab(&second));
+        rt.frame(1.0 / 60.0);
+        let says_focused = rt.state.terminal_find_focused();
+        rt.key(KeyEvent {
+            key: Key::Text("a".into()),
+            mods: Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+        let typed = rt.state.attachments[&second].find.query.text == "a";
+        assert_eq!(
+            says_focused, typed,
+            "the bar holds the keyboard exactly when the field takes the letter"
+        );
+    }
+
+    #[test]
     fn shortcuts_wait_behind_the_pickers_and_the_sidebar_menu() {
         type Block = fn(&mut State);
         let blocks: [(&str, Block); 3] = [
@@ -5476,7 +5592,7 @@ mod view_tests {
             .attachments
             .values()
             .next()
-            .map(|att| term::term_lines_el(&att.lines, &att.links, &s.ink))
+            .map(|att| term::term_lines_el(&att.lines, &att.links, &att.marks, &s.ink))
             .unwrap_or_default();
         col().w(220.0).min_h(0.0).children(rows)
     }

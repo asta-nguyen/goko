@@ -811,6 +811,48 @@ The system SHALL display the focused Terminal pane’s current Git branch beside
 
 Evidence: `apps/rune/src/terminal_branch.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`
 
+### RNC-terminal-find
+
+The system SHALL open a find bar over the focused terminal pane on `⌘F` in the Terminal view, search that session's whole retained grid and scrollback with rows the terminal wrapped joined (case-insensitive unless `Aa` is on), mark every match on screen with the current match stronger, and step through the matches, wrapping around, with `Enter`/`⇧Enter` or Next/Prev while scrolling the pane to each, keeping the keyboard in the query field until `Escape` closes the bar and returns it to the shell.
+
+#### Scenario: find in scrollback
+
+- GIVEN a pane whose scrollback holds `build failed` above the visible rows
+- WHEN the user presses `⌘F` and types `build failed`
+- THEN the bar shows `1 of 1`, the pane scrolls to the match, and the match is highlighted
+
+#### Scenario: a match across a wrapped row
+
+- GIVEN a line the terminal wrapped onto two rows
+- WHEN the user searches for text that spans the break
+- THEN it counts as one match and both rows show the highlight
+
+#### Scenario: step and wrap
+
+- GIVEN a query with three matches and the third current
+- WHEN the user presses `Enter`
+- THEN the first match becomes current; `⇧Enter` from there returns to the third
+
+#### Scenario: keys stay out of the shell
+
+- GIVEN the find bar open with its query focused
+- WHEN the user types letters, then presses `Escape`
+- THEN the letters edit the query and nothing is written to the session; `Escape` closes the bar, and the next typing reaches the shell
+
+#### Scenario: no results
+
+- GIVEN the find bar open
+- WHEN the query matches nothing
+- THEN the bar shows `No results` and no row is highlighted
+
+#### Scenario: live output
+
+- GIVEN the find bar open on a session that keeps printing
+- WHEN new rows arrive that contain the query
+- THEN the count updates within a fraction of a second, the marks follow, and the pane does not scroll by itself
+
+Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/find.rs`
+
 ### RNC-terminal-links
 
 The system SHALL mark http(s) URLs and file paths with line suffixes in terminal rows as links, opening a URL in the browser and a file inside the session's project checkout in the Editor at its line on a click — a press that begins and ends on the same link — while a drag that starts on a link and ends elsewhere still selects text, a repeated click on the same link within 700 ms opens once, and links take no keyboard focus.
@@ -1246,6 +1288,7 @@ attributed tools without charging the shared server.
 - `apps/rune/src/editor/acp.rs`
 - `apps/rune/src/editor/backend.rs`
 - `apps/rune/src/editor/backend/apply.rs`
+- `apps/rune/src/editor/find.rs`
 - `apps/rune/src/editor/navigation.rs`
 - `apps/rune/src/editor/state.rs`
 - `apps/rune/src/editor/workspace.rs`

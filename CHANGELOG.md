@@ -12,6 +12,11 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Added
 
+- Find in the terminal: `⌘F` opens a find bar over the focused pane that searches the
+  pane's whole retained scrollback and screen (a match across a wrapped row counts),
+  highlights every match, and steps through them with `Enter`/`⇧Enter` or Prev/Next,
+  scrolling to each; `Aa` makes it case-sensitive and `Escape` closes it. Only what
+  the pane still holds (10,000 rows of history) is searched.
 - Context search in the Files toolbar: the search box is always visible under the
   file filter, with a `Text | Context` switch (`Text`, the literal search, is the
   default and unchanged; the pick lasts for the session). `Context` ranks the

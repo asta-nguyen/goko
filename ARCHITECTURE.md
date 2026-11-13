@@ -143,6 +143,12 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
   Cmd+C (grid padding trimmed). `http(s)` URLs and `path/file.ext[:line]` tokens in a row
   are links: Cmd-click opens a URL in the browser, or a file inside the session's project
   checkout in the Editor at its line (`PendingNav::ExternalOpen`).
+- **Terminal find:** Cmd+F opens a find bar over the focused pane (an overlay, so the
+  PTY keeps its size). It searches the text of every row the pane's `alacritty_terminal`
+  grid retains — scrollback included, wrapped rows joined — with the editor's `FindState`
+  (`editor/find.rs`); `term::Haystack` maps a match back to grid cells for the highlight
+  and for scrolling to it. Output that changes the grid (`Terminal::revision`) is
+  searched again at most every 250 ms. Nothing is indexed and the daemon is not involved.
 - **Editor:** a native workspace (Files, Changes, History, Stashes, Servers) over
   registered projects and validated checkouts, backed by `app-core` and `goko.db`.
 - All Git, filesystem, storage, and highlight work runs on one worker thread behind a

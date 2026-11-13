@@ -10,7 +10,7 @@
 //! on the pane until Retry, exactly like the desktop.
 
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use protocol::session::SessionId;
 use rune::{Color, El, Phase, TextStyle, Tx, col, el, row};
@@ -18,6 +18,7 @@ use rune::{Color, El, Phase, TextStyle, Tx, col, el, row};
 use crate::State;
 use crate::data::SessionState;
 use crate::editor::backend::{self, Job, Req};
+use crate::editor::find::FindState;
 use crate::sessions::{self, Pending, SessionLaunch};
 use crate::sidebar::{self, RowTarget};
 use crate::term;
@@ -43,6 +44,11 @@ const PANE_PAD: f32 = 8.0;
 /// 13 pt monospace on a 16 pt line — must match `term::TERM_FONT` so the
 /// measured grid still fits the pane.
 const PANE_FONT: TextStyle = TextStyle::new(13.0, 400.0).mono().lh(16.0);
+/// How often a session that keeps printing has its find matches searched
+/// again: the whole retained grid is read each time.
+const FIND_EVERY: Duration = Duration::from_millis(250);
+/// The find query's font, as the editor's find bar sets it.
+const FIND_FONT: TextStyle = TextStyle::new(12.0, 400.0).mono();
 
 /// Which way a split arranges its panes: `SideBySide` is a row (left |
 /// right), `Stacked` a column (top / bottom).
@@ -127,14 +133,137 @@ pub struct Attachment {
     pub rows: usize,
     /// The size the daemon's PTY was last told about.
     pub pty: (usize, usize),
+    /// The find bar (`⌘F`): query, matches into `found`, the current match.
+    pub find: FindState,
+    /// The text `find`'s matches index and the grid revision it was taken at.
+    found: Option<(term::Haystack, u64)>,
+    /// When `found` was taken: a session that keeps printing is searched again
+    /// at most every [`FIND_EVERY`].
+    found_at: Option<Instant>,
+    /// The find matches on each row, parallel to `lines`.
+    pub marks: Vec<Vec<term::Mark>>,
 }
 
 impl Attachment {
-    /// Swap in freshly rendered rows and their links — the pair `pane_cell`
-    /// draws, kept consistent by construction.
+    pub fn new(term: term::Terminal, cols: usize, rows: usize) -> Attachment {
+        Attachment {
+            term,
+            lines: Vec::new(),
+            links: Vec::new(),
+            cols,
+            rows,
+            pty: (0, 0),
+            find: FindState::new(),
+            found: None,
+            found_at: None,
+            marks: Vec::new(),
+        }
+    }
+
+    /// Swap in freshly rendered rows, their links and the find marks — what
+    /// `pane_cell` draws, kept consistent by construction.
     pub fn set_lines(&mut self, lines: &[term::TermLine], session: &str) {
         self.lines = lines.to_vec();
         self.links = term::row_links(&self.lines, session);
+        self.marks = self.marks_for_rows();
+    }
+
+    /// Whether `found` still describes the grid. Matches of an older grid
+    /// point at the wrong cells, so they are never drawn or followed.
+    fn fresh(&self) -> bool {
+        self.found
+            .as_ref()
+            .is_some_and(|(_, rev)| *rev == self.term.revision())
+    }
+
+    /// Search everything the grid retains for the query and redraw the marks.
+    pub fn search(&mut self) {
+        let hay = self.term.haystack();
+        self.find.refresh(&hay.text);
+        self.found = Some((hay, self.term.revision()));
+        self.found_at = Some(Instant::now());
+        self.marks = self.marks_for_rows();
+    }
+
+    /// How long until the matches of a changed grid may be searched again:
+    /// `None` when nothing is stale, zero when a search is due now.
+    pub fn search_wait(&self) -> Option<Duration> {
+        if !self.find.open || self.find.query.text.is_empty() || self.fresh() {
+            return None;
+        }
+        Some(
+            self.found_at
+                .map_or(Duration::ZERO, |at| FIND_EVERY.saturating_sub(at.elapsed())),
+        )
+    }
+
+    /// Hide the find bar and its marks; the query stays for the next `⌘F`.
+    pub fn close_find(&mut self) {
+        self.find.close();
+        self.find.query.focused = false;
+        // The retained text can be a megabyte; the next `⌘F` takes it again.
+        self.found = None;
+        self.marks = self.marks_for_rows();
+    }
+
+    /// Step to the next or previous match and scroll it into view.
+    pub fn step(&mut self, forward: bool, ink: &Ink, session: &str) {
+        if !self.fresh() {
+            self.search();
+        }
+        if forward {
+            self.find.next();
+        } else {
+            self.find.prev();
+        }
+        self.show_active(ink, session);
+    }
+
+    /// Scroll the current match on screen and redraw the rows with it marked.
+    pub fn show_active(&mut self, ink: &Ink, session: &str) {
+        if self.fresh()
+            && let Some((hay, _)) = &self.found
+            && let Some(range) = self.find.active_range()
+            && let Some(&(line, ..)) = self.term.match_cells(hay, range).first()
+        {
+            self.term.reveal(line);
+        }
+        let lines = self.term.lines(ink).to_vec();
+        self.set_lines(&lines, session);
+    }
+
+    /// The matches on the rows now shown: the grid line `l` is on row
+    /// `l + display_offset`.
+    fn marks_for_rows(&self) -> Vec<Vec<term::Mark>> {
+        let mut marks = vec![Vec::new(); self.lines.len()];
+        let Some((hay, _)) = self.found.as_ref().filter(|_| self.fresh()) else {
+            return marks;
+        };
+        if !self.find.open {
+            return marks;
+        }
+        let offset = self.term.display_offset() as i32;
+        let shown = hay.span(-offset, self.lines.len() as i32 - 1 - offset);
+        let from = self.find.matches.partition_point(|m| m.end <= shown.start);
+        for (i, range) in self.find.matches.iter().enumerate().skip(from) {
+            if range.start >= shown.end {
+                break;
+            }
+            let current = self.find.active == Some(i);
+            for (line, start, end) in self.term.match_cells(hay, range.clone()) {
+                if let Some(row) = usize::try_from(line + offset)
+                    .ok()
+                    .and_then(|row| marks.get_mut(row))
+                {
+                    row.push(term::Mark {
+                        start,
+                        end,
+                        current,
+                    });
+                }
+            }
+        }
+        marks
     }
 }
 
@@ -431,6 +560,52 @@ impl State {
         let tab = self.current_tab()?;
         let pane = Self::focused_pane(tab)?;
         self.session_id(&pane.session)
+    }
+
+    /// The key of the focused pane's session — also its attachment's key.
+    fn focused_pane_key(&self) -> Option<String> {
+        let pane = Self::focused_pane(self.current_tab()?)?;
+        Some(pane.session.clone())
+    }
+
+    /// `⌘F` in the Terminal view: show the focused pane's find bar and move
+    /// the keyboard into its query. `false` when the pane has no live terminal.
+    pub fn open_terminal_find(&mut self) -> bool {
+        let Some(att) = self
+            .focused_pane_key()
+            .and_then(|key| self.attachments.get_mut(&key))
+        else {
+            return false;
+        };
+        att.find.open_panel();
+        att.find.query.focused = true;
+        att.search();
+        true
+    }
+
+    /// Hide `key`'s find bar and give the keyboard back to the shell. The query
+    /// and the matches stay for the next `⌘F`.
+    pub fn close_terminal_find(&mut self, key: &str, tx: &mut Tx) {
+        if let Some(att) = self.attachments.get_mut(key) {
+            att.close_find();
+        }
+        tx.blur();
+    }
+
+    /// Whether the focused pane's find bar holds the keyboard, so typing edits
+    /// the query and does not reach the shell.
+    pub fn terminal_find_focused(&self) -> bool {
+        self.focused_pane_key()
+            .and_then(|key| self.attachments.get(&key))
+            .is_some_and(|att| att.find.open && att.find.query.focused)
+    }
+
+    /// Run `f` on `key`'s attachment with the palette its rows are drawn in.
+    fn with_attachment(&mut self, key: &str, f: impl FnOnce(&mut Attachment, &Ink)) {
+        let ink = self.ink;
+        if let Some(att) = self.attachments.get_mut(key) {
+            f(att, &ink);
+        }
     }
 
     /// Type `bytes` into a live session, from the keyboard or a file drop.
@@ -1150,17 +1325,8 @@ impl State {
             // makes the program redraw).
             let mut terminal = term::Terminal::new(session, chunks, ready);
             terminal.resize(cols, rows);
-            self.attachments.insert(
-                key.clone(),
-                Attachment {
-                    term: terminal,
-                    lines: Vec::new(),
-                    links: Vec::new(),
-                    cols,
-                    rows,
-                    pty: (0, 0),
-                },
-            );
+            self.attachments
+                .insert(key.clone(), Attachment::new(terminal, cols, rows));
             changed = true;
         }
         changed
@@ -1243,6 +1409,16 @@ impl State {
                 let lines = lines.to_vec();
                 att.set_lines(&lines, key);
                 changed = true;
+            }
+            // The find bar's matches follow the grid: output that arrived since
+            // they were taken is searched again, no more often than FIND_EVERY.
+            match att.search_wait() {
+                Some(wait) if wait.is_zero() => {
+                    att.search();
+                    changed = true;
+                }
+                Some(wait) => tx.wake_after(wait),
+                None => {}
             }
         }
         for key in failed {
@@ -1722,7 +1898,7 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let lines: Vec<El> = s
         .attachments
         .get(&key)
-        .map(|att| term::term_lines_el(&att.lines, &att.links, ink))
+        .map(|att| term::term_lines_el(&att.lines, &att.links, &att.marks, ink))
         .unwrap_or_default()
         .into_iter()
         .map(|line| {
@@ -1913,8 +2089,98 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     }
     if pane.closing_at.is_some() {
         cell = cell.child(closing_badge(s, ink, pane, &key));
+    } else if let Some(att) = s.attachments.get(&key)
+        && att.find.open
+    {
+        cell = cell.child(find_bar(&att.find, ink, &key));
     }
     cell
+}
+
+/// The `TextEdit` of `key`'s find query. The field's events can outlive the
+/// attachment by a frame; they then land on a spare instead of panicking.
+fn find_query<'a>(s: &'a mut State, key: &str) -> &'a mut rune::TextEdit {
+    match s.attachments.get_mut(key) {
+        Some(att) => &mut att.find.query,
+        None => &mut s.find_idle,
+    }
+}
+
+/// The find bar over a pane: query field, match count, case toggle,
+/// prev/next/close — the editor's find bar, floated over the grid so the PTY
+/// keeps its size.
+fn find_bar(find: &FindState, ink: &Ink, key: &str) -> El {
+    // The keys the handlers below each own.
+    let [edit, change, input, case, prev, next, close] = std::array::from_fn(|_| key.to_string());
+    let mut bar = row()
+        .absolute(12.0, 12.0)
+        .h(34.0)
+        .px(8.0)
+        .gap(6.0)
+        .items_center()
+        .radius(6.0)
+        .border(1.0, ink.border)
+        .fill(ink.panel.alpha(0.97));
+    bar = bar.child(
+        rune::text_input(&find.query, FIND_FONT)
+            .label("Find")
+            .single_line()
+            .placeholder("Find", ink.muted)
+            .w(180.0)
+            .color(ink.text)
+            .caret(ink.text, ink.accent.alpha(0.3))
+            .on_edit(move |s: &mut State| find_query(s, &edit))
+            .on_input_change(move |s: &mut State, _tx: &mut Tx| {
+                s.with_attachment(&change, |att, ink| {
+                    att.search();
+                    att.show_active(ink, &change);
+                });
+            })
+            .on_input_key(
+                move |s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx| -> bool {
+                    match ev.key {
+                        rune::Key::Escape => {
+                            s.close_terminal_find(&input, tx);
+                            true
+                        }
+                        rune::Key::Enter => {
+                            s.with_attachment(&input, |att, ink| {
+                                att.step(!ev.mods.shift, ink, &input)
+                            });
+                            true
+                        }
+                        _ => false,
+                    }
+                },
+            ),
+    );
+    bar = bar.child(theme::txt(&find.count_label(), theme::T12, ink.muted).min_w(58.0));
+    bar = bar.child(
+        theme::btn_sm("Aa", None, find.case_sensitive, ink).on_press_tx(
+            move |s: &mut State, _tx: &mut Tx| {
+                s.with_attachment(&case, |att, ink| {
+                    att.find.case_sensitive = !att.find.case_sensitive;
+                    att.search();
+                    att.show_active(ink, &case);
+                });
+            },
+        ),
+    );
+    bar = bar.child(theme::btn_sm("Prev", None, false, ink).on_press_tx(
+        move |s: &mut State, _tx: &mut Tx| {
+            s.with_attachment(&prev, |att, ink| att.step(false, ink, &prev));
+        },
+    ));
+    bar = bar.child(theme::btn_sm("Next", None, false, ink).on_press_tx(
+        move |s: &mut State, _tx: &mut Tx| {
+            s.with_attachment(&next, |att, ink| att.step(true, ink, &next));
+        },
+    ));
+    bar.child(theme::btn_sm("Close", None, false, ink).on_press_tx(
+        move |s: &mut State, tx: &mut Tx| {
+            s.close_terminal_find(&close, tx);
+        },
+    ))
 }
 
 /// What a pane selection puts on the clipboard: each selected row trimmed
@@ -2056,6 +2322,122 @@ mod tests {
         (key, info)
     }
 
+    /// An attachment whose terminal printed `line0` … `line99`, rows drawn.
+    fn numbered_attachment() -> (Attachment, mpsc::Sender<crate::daemon::Output>) {
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) =
+            mpsc::channel::<Result<protocol::message::Response, BridgeError>>();
+        let mut terminal = term::Terminal::new(SessionId::new(), rx, ready_rx);
+        let data: String = (0..100).map(|n| format!("line{n}\r\n")).collect();
+        tx.send(crate::daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        let mut att = Attachment::new(terminal, term::TERM_COLS, term::TERM_ROWS);
+        let ink = Ink::new();
+        while att.term.hold().is_some() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let lines = att.term.lines(&ink).to_vec();
+        att.set_lines(&lines, "k");
+        (att, tx)
+    }
+    fn marked(att: &Attachment) -> Vec<(usize, term::Mark)> {
+        att.marks
+            .iter()
+            .enumerate()
+            .flat_map(|(row, marks)| marks.iter().map(move |m| (row, *m)))
+            .collect()
+    }
+    #[test]
+    fn find_marks_every_match_on_screen_and_scrolls_to_the_current_one() {
+        let (mut att, _tx) = numbered_attachment();
+        att.find.open_panel();
+        att.find.set_query("line7");
+        att.search();
+        // `line7` is in the history and `line70`…`line79` on screen.
+        assert_eq!(att.find.matches.len(), 11);
+        assert_eq!(att.find.count_label(), "1 of 11");
+        let on_screen = marked(&att);
+        assert_eq!(on_screen.len(), 10, "only the rows shown are marked");
+        assert!(on_screen.iter().all(|(_, m)| !m.current));
+        assert!(on_screen.iter().all(|(_, m)| (m.start, m.end) == (0, 5)));
+        att.show_active(&Ink::new(), "k");
+        let shown = marked(&att);
+        let current: Vec<_> = shown.iter().filter(|(_, m)| m.current).collect();
+        assert_eq!(current.len(), 1, "the first match scrolled into view");
+        assert_eq!(att.lines[current[0].0].text().trim_end(), "line7");
+    }
+    #[test]
+    fn find_steps_both_ways_and_wraps() {
+        let (mut att, _tx) = numbered_attachment();
+        att.find.open_panel();
+        att.find.set_query("line7");
+        att.search();
+        let ink = Ink::new();
+        att.step(false, &ink, "k");
+        assert_eq!(
+            att.find.count_label(),
+            "11 of 11",
+            "back from the first wraps"
+        );
+        att.step(true, &ink, "k");
+        assert_eq!(
+            att.find.count_label(),
+            "1 of 11",
+            "forward from the last wraps"
+        );
+        let current = marked(&att).into_iter().find(|(_, m)| m.current);
+        assert!(current.is_some(), "the current match is on screen");
+    }
+    #[test]
+    fn a_found_grid_that_moved_on_is_neither_drawn_nor_followed_until_searched_again() {
+        let (mut att, tx) = numbered_attachment();
+        att.find.open_panel();
+        att.find.set_query("line7");
+        att.search();
+        assert_eq!(att.search_wait(), None, "fresh matches wait for nothing");
+        tx.send(crate::daemon::Output {
+            seq: att.term.next_seq,
+            data: b"line7 again\r\n".to_vec(),
+        })
+        .unwrap();
+        att.term.feed();
+        let ink = Ink::new();
+        while att.term.hold().is_some() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let lines = att.term.lines(&ink).to_vec();
+        att.set_lines(&lines, "k");
+        assert!(marked(&att).is_empty(), "stale matches are not drawn");
+        assert!(att.search_wait().is_some(), "the new output is searched");
+        att.search();
+        assert_eq!(att.find.matches.len(), 12, "the new line counts");
+        assert_eq!(att.search_wait(), None);
+    }
+    #[test]
+    fn closing_the_find_bar_clears_the_marks_and_keeps_the_query() {
+        let (mut att, _tx) = numbered_attachment();
+        att.find.open_panel();
+        att.find.set_query("line7");
+        att.search();
+        assert!(!marked(&att).is_empty());
+        att.close_find();
+        assert!(marked(&att).is_empty());
+        assert!(!att.find.open);
+        assert_eq!(att.find.query.text, "line7", "the query waits for ⌘F");
+        assert_eq!(att.search_wait(), None, "a closed bar searches nothing");
+    }
+    #[test]
+    fn an_empty_query_marks_nothing() {
+        let (mut att, _tx) = numbered_attachment();
+        att.find.open_panel();
+        att.search();
+        assert!(marked(&att).is_empty());
+        assert_eq!(att.find.count_label(), "");
+    }
     fn pane(layout: &Layout) -> &Pane {
         match layout {
             Layout::Pane(p) => p,
@@ -2482,14 +2864,7 @@ mod tests {
         terminal.feed();
         s.attachments.insert(
             key.clone(),
-            Attachment {
-                term: terminal,
-                lines: Vec::new(),
-                links: Vec::new(),
-                cols: term::TERM_COLS,
-                rows: term::TERM_ROWS,
-                pty: (0, 0),
-            },
+            Attachment::new(terminal, term::TERM_COLS, term::TERM_ROWS),
         );
         // poll_terminals needs a Tx; drive it through a runtime update.
         let mut rt = rune::Runtime::new(

@@ -6,12 +6,14 @@
 //! palette is the Tango ansi16 set the real TerminalController renders on
 //! #1e1e1e, ported from the verified rune-spike `fidelity.rs`.
 
+use std::ops::Range;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
@@ -74,6 +76,54 @@ impl TermLine {
     /// The row's text, runs joined.
     pub fn text(&self) -> String {
         self.runs.iter().map(|run| run.text.as_str()).collect()
+    }
+}
+
+/// A find match painted over a row: the cells `start..end`, and whether it is
+/// the match the find bar is on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    pub start: usize,
+    pub end: usize,
+    pub current: bool,
+}
+
+/// What the find bar searches: the text of every row the grid retains, oldest
+/// first. A row the terminal wrapped runs on into the next; any other ends in
+/// a newline, minus its grid padding.
+pub struct Haystack {
+    pub text: String,
+    /// Each row's grid line (negative in the history) and where its text starts.
+    rows: Vec<(i32, usize)>,
+}
+
+impl Haystack {
+    /// The text the grid lines `first..=last` span.
+    pub fn span(&self, first: i32, last: i32) -> Range<usize> {
+        let at = |line: i32| self.rows.partition_point(|&(l, _)| l < line);
+        let start = self.rows.get(at(first)).map_or(self.text.len(), |r| r.1);
+        let end = self.rows.get(at(last + 1)).map_or(self.text.len(), |r| r.1);
+        start..end
+    }
+}
+
+/// What a cell adds to its row's text: nothing for a wide glyph's spacer, a
+/// space for hidden text, else the character with its combining marks. The same
+/// rule `render_lines` draws by, so a match's bytes map back to cells.
+fn cell_text(cell: &Cell, out: &mut String) {
+    if cell
+        .flags
+        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    {
+        return;
+    }
+    if cell.flags.contains(Flags::HIDDEN) {
+        out.push(' ');
+        return;
+    }
+    out.push(cell.c);
+    for c in cell.zerowidth().into_iter().flatten() {
+        out.push(*c);
     }
 }
 
@@ -208,6 +258,9 @@ pub struct Terminal {
     /// Wheel points not yet worth a whole line: a trackpad sends many
     /// small deltas.
     scroll_rem: f32,
+    /// Counts the changes to the grid's text — new output, a resize — so the
+    /// find bar knows its matches are stale. Scrolling does not count.
+    rev: u64,
 }
 
 impl Terminal {
@@ -241,6 +294,7 @@ impl Terminal {
             more: false,
             typed: None,
             scroll_rem: 0.0,
+            rev: 0,
         }
     }
 
@@ -468,6 +522,7 @@ impl Terminal {
         }
         if changed {
             self.dirty = true;
+            self.rev += 1;
             if self.burst.is_none() {
                 self.burst = Some(Instant::now());
             }
@@ -562,7 +617,95 @@ impl Terminal {
         };
         self.term.resize(size);
         self.dirty = true;
+        self.rev += 1;
         // A resized grid is drawn at once: no burst is settling.
+        self.burst = None;
+    }
+    /// How many times the grid's text changed; see the `rev` field.
+    pub fn revision(&self) -> u64 {
+        self.rev
+    }
+    /// How far the view is scrolled into the history, in rows.
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+    /// The text of everything the grid retains, for the find bar.
+    pub fn haystack(&self) -> Haystack {
+        let grid = self.term.grid();
+        let cols = grid.columns();
+        let mut text = String::new();
+        let mut rows = Vec::new();
+        for line in grid.topmost_line().0..=grid.bottommost_line().0 {
+            let row = &grid[Line(line)];
+            rows.push((line, text.len()));
+            let start = text.len();
+            for col in 0..cols {
+                cell_text(&row[Column(col)], &mut text);
+            }
+            if !row[Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+                let padded = text[start..].trim_end_matches(' ').len();
+                text.truncate(start + padded);
+                text.push('\n');
+            }
+        }
+        Haystack { text, rows }
+    }
+    /// The cells a match of `hay` covers, one `(grid line, first cell, one past
+    /// the last)` per row it touches — two for a match across a wrapped row.
+    pub fn match_cells(&self, hay: &Haystack, range: Range<usize>) -> Vec<(i32, usize, usize)> {
+        let grid = self.term.grid();
+        let first = hay
+            .rows
+            .partition_point(|&(_, start)| start <= range.start)
+            .saturating_sub(1);
+        let mut out = Vec::new();
+        let mut glyph = String::new();
+        for (i, &(line, start)) in hay.rows.iter().enumerate().skip(first) {
+            if start >= range.end {
+                break;
+            }
+            // A haystack of an older grid may name rows that are gone.
+            if line < grid.topmost_line().0 || line > grid.bottommost_line().0 {
+                continue;
+            }
+            let end = hay.rows.get(i + 1).map_or(hay.text.len(), |r| r.1);
+            let (from, to) = (range.start.max(start) - start, range.end.min(end) - start);
+            let row = &grid[Line(line)];
+            let (mut at, mut cells) = (0, None::<(usize, usize)>);
+            for col in 0..grid.columns() {
+                let cell = &row[Column(col)];
+                glyph.clear();
+                cell_text(cell, &mut glyph);
+                if glyph.is_empty() {
+                    continue;
+                }
+                if at < to && at + glyph.len() > from {
+                    let wide = usize::from(cell.flags.contains(Flags::WIDE_CHAR));
+                    let first = cells.map_or(col, |c| c.0);
+                    cells = Some((first, col + 1 + wide));
+                }
+                at += glyph.len();
+                if at >= to {
+                    break;
+                }
+            }
+            if let Some((a, b)) = cells {
+                out.push((line, a, b));
+            }
+        }
+        out
+    }
+    /// Scroll so grid `line` is on screen, centred when it was not; a line
+    /// already showing leaves the view where it is.
+    pub fn reveal(&mut self, line: i32) {
+        let grid = self.term.grid();
+        let (rows, offset) = (grid.screen_lines() as i32, grid.display_offset() as i32);
+        if (-offset..rows - offset).contains(&line) {
+            return;
+        }
+        self.term
+            .scroll_display(Scroll::Delta(rows / 2 - line - offset));
+        self.dirty = true;
         self.burst = None;
     }
 
@@ -1157,6 +1300,7 @@ fn term_line_el(
     cell_w: f32,
     line_h: f32,
     links: &[(std::ops::Range<usize>, String)],
+    marks: &[Mark],
 ) -> El {
     let mut content = String::new();
     let mut spans = Vec::with_capacity(line.runs.len());
@@ -1188,6 +1332,15 @@ fn term_line_el(
         shape = shape.fill(
             vec![[x0, 0.0], [x1, 0.0], [x1, line_h], [x0, line_h]],
             back.color,
+        );
+    }
+    // Find matches wash over the backgrounds, under the glyphs.
+    for mark in marks {
+        let (x0, x1) = (mark.start as f32 * cell_w, mark.end as f32 * cell_w);
+        let alpha = if mark.current { 0.75 } else { 0.3 };
+        shape = shape.fill(
+            vec![[x0, 0.0], [x1, 0.0], [x1, line_h], [x0, line_h]],
+            ink.warning.alpha(alpha),
         );
     }
     if let Some(cursor) = &line.cursor {
@@ -1334,10 +1487,11 @@ pub fn cell_metrics() -> (f32, f32) {
 /// shares, so each split's backgrounds and cursor line up with the cells
 /// its grid was sized to. `links` is the attachment's cached
 /// [`row_links`] output — recomputed only when the rows change, not per
-/// frame.
+/// frame. `marks` are the find matches on each row, parallel to `lines`.
 pub fn term_lines_el(
     lines: &[TermLine],
     links: &[Vec<(std::ops::Range<usize>, String)>],
+    marks: &[Vec<Mark>],
     ink: &Ink,
 ) -> Vec<El> {
     let (cell_w, line_h) = cell_metrics();
@@ -1351,6 +1505,7 @@ pub fn term_lines_el(
                 cell_w,
                 line_h,
                 links.get(i).map_or(&[][..], Vec::as_slice),
+                marks.get(i).map_or(&[][..], Vec::as_slice),
             )
         })
         .collect()
@@ -1471,6 +1626,99 @@ mod tests {
         assert_eq!(first_line(&mut term, &ink()), live);
     }
 
+    /// A terminal that printed `line0` … `line{n-1}`, one per row.
+    fn numbered(n: usize) -> (Terminal, std::sync::mpsc::Sender<Output>) {
+        let (mut term, tx) = terminal();
+        let data: String = (0..n).map(|i| format!("line{i}\r\n")).collect();
+        tx.send(Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        term.feed();
+        (term, tx)
+    }
+    #[test]
+    fn the_find_text_holds_the_history_and_the_screen() {
+        let (term, _tx) = numbered(100);
+        let hay = term.haystack();
+        // `line7` scrolled into the history; `line99` is still on screen.
+        let old = hay.text.find("line7\n").unwrap();
+        let (line, a, b) = term.match_cells(&hay, old..old + 5)[0];
+        assert!(line < 0, "a history row has a negative grid line: {line}");
+        assert_eq!((a, b), (0, 5));
+        let new = hay.text.find("line99\n").unwrap();
+        let (line, a, b) = term.match_cells(&hay, new..new + 6)[0];
+        assert!(line >= 0, "a row on screen: {line}");
+        assert_eq!((a, b), (0, 6));
+    }
+    #[test]
+    fn a_match_across_a_wrapped_row_covers_the_cells_of_both_rows() {
+        let (mut term, tx) = terminal();
+        term.resize(10, 4);
+        tx.send(Output {
+            seq: 0,
+            data: b"abcdefghijklmnop".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let hay = term.haystack();
+        let at = hay.text.find("ijkl").expect("a wrapped row reads on");
+        assert_eq!(
+            term.match_cells(&hay, at..at + 4),
+            vec![(0, 8, 10), (1, 0, 2)]
+        );
+    }
+    #[test]
+    fn a_wide_glyph_takes_two_cells_in_a_match() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: "a日本b".as_bytes().to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        let hay = term.haystack();
+        let cells = |needle: &str| {
+            let at = hay.text.find(needle).unwrap();
+            term.match_cells(&hay, at..at + needle.len())
+        };
+        assert_eq!(cells("本"), vec![(0, 3, 5)]);
+        assert_eq!(cells("b"), vec![(0, 5, 6)]);
+    }
+    #[test]
+    fn reveal_centres_a_line_that_is_off_screen_and_leaves_a_visible_one() {
+        let (mut term, _tx) = numbered(100);
+        let hay = term.haystack();
+        let at = hay.text.find("line30\n").unwrap();
+        let (line, ..) = term.match_cells(&hay, at..at + 6)[0];
+        term.reveal(line);
+        let rows = settled_lines(&mut term, &ink());
+        let row = rows
+            .iter()
+            .position(|l| l.text().trim_end() == "line30")
+            .expect("line30 is on screen");
+        assert_eq!(row, TERM_ROWS / 2, "centred");
+        let offset = term.display_offset();
+        term.reveal(line);
+        assert_eq!(term.display_offset(), offset, "a visible line stays put");
+    }
+    #[test]
+    fn the_revision_counts_new_output_and_resizes_but_not_scrolls() {
+        let (mut term, tx) = numbered(100);
+        let rev = term.revision();
+        term.wheel(40.0, 16.0, (0, 0), false, 0);
+        assert_eq!(term.revision(), rev, "scrolling leaves the text alone");
+        tx.send(Output {
+            seq: term.next_seq,
+            data: b"more\r\n".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        assert_eq!(term.revision(), rev + 1, "new output");
+        term.resize(80, 20);
+        assert_eq!(term.revision(), rev + 2, "a resize reflows the text");
+    }
     #[test]
     fn a_committed_latin_word_gets_the_swallowed_space_back() {
         assert_eq!(committed_text("con"), "con ");
