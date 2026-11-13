@@ -9,6 +9,11 @@
 //! re-evaluates only the paths `git status` names, which is what makes a file
 //! added or edited a moment ago searchable without waiting for a full pass.
 //!
+//! The index holds each chunk's words and line range, not its text: the
+//! full-text table is contentless, which keeps the file at about a third of
+//! the source's size instead of more than twice it. `search` ranks in the
+//! index and reads the preview line of each result from the working tree.
+//!
 //! Index writes happen on the caller's indexer thread; `search` opens the
 //! index read-only and never writes.
 
@@ -18,7 +23,7 @@ use crate::git_view::{
 };
 use protocol::message::ErrorCode;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{DirBuilder, OpenOptions};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -32,8 +37,15 @@ const CHUNK_LINES: usize = 40;
 const CHUNK_BYTES: usize = 4096;
 const CHUNK_OVERLAP: usize = 4;
 const CONCEPT_RESULT_CAP: usize = 50;
-const SCHEMA_VERSION: i64 = 1;
-const BATCH_FILES: usize = 100;
+/// 2: `chunks_fts` became contentless. An index of another version is not
+/// read, and the next full pass replaces it.
+const SCHEMA_VERSION: i64 = 2;
+/// Files per transaction of a full pass. Each commit makes the full-text
+/// index merge what it holds, so few large ones build faster than many small.
+const BATCH_FILES: usize = 1000;
+/// Ranked chunks a query looks at for its `CONCEPT_RESULT_CAP` results.
+/// Chunks overlap, so two can name the same line; this leaves room for that.
+const RANKED_CHUNKS: usize = 1000;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
@@ -47,7 +59,7 @@ CREATE TABLE chunks (
 );
 CREATE INDEX chunks_path ON chunks(path);
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
-    path, idents, body, tokenize='porter unicode61'
+    path, idents, body, content='', contentless_delete=1, tokenize='porter unicode61'
 );
 ";
 
@@ -322,41 +334,77 @@ pub fn search(home: &Path, checkout: &Path, query: &str) -> Result<GitViewSearch
     if words.is_empty() {
         return Err(invalid("No searchable words"));
     }
-    let Some(conn) = open_index(home, checkout, OpenMode::ReadOnly)? else {
+    let checkout = canonical_checkout(checkout)?;
+    let Some(conn) = open_index(home, &checkout, OpenMode::ReadOnly)? else {
         return Ok(GitViewSearch {
             matches: Vec::new(),
             truncated: false,
         });
     };
     let (mut matches, mut truncated) =
-        query_matches(&conn, &match_expression(&words, "AND"), &words)?;
+        query_matches(&conn, &checkout, &match_expression(&words, "AND"), &words)?;
     if matches.is_empty() {
-        (matches, truncated) = query_matches(&conn, &match_expression(&words, "OR"), &words)?;
+        (matches, truncated) =
+            query_matches(&conn, &checkout, &match_expression(&words, "OR"), &words)?;
     }
     Ok(GitViewSearch { matches, truncated })
 }
 
+/// The best `CONCEPT_RESULT_CAP` results for `expression`. The index ranks
+/// and returns ids only, the best `RANKED_CHUNKS` of them; a chunk's lines
+/// are read from the working tree for the results that are kept, so a query
+/// that matches nearly every chunk does not carry every chunk's text.
 fn query_matches(
     conn: &Connection,
+    checkout: &Path,
     expression: &str,
     words: &[String],
 ) -> Result<(Vec<GitViewSearchMatch>, bool), BridgeError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT chunks_fts.path, c.start_line, chunks_fts.body FROM chunks_fts
-             JOIN chunks c ON c.id = chunks_fts.rowid
-             WHERE chunks_fts MATCH ?1
-             ORDER BY bm25(chunks_fts, 2.0, 1.5, 1.0)",
-        )
+    let ranked: Vec<i64> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?1
+                 ORDER BY bm25(chunks_fts, 2.0, 1.5, 1.0) LIMIT ?2",
+            )
+            .map_err(db)?;
+        let rows = stmt
+            .query_map(params![expression, RANKED_CHUNKS as i64], |row| row.get(0))
+            .map_err(db)?;
+        rows.collect::<Result<_, _>>().map_err(db)?
+    };
+    let mut chunk_stmt = conn
+        .prepare("SELECT path, start_line, end_line FROM chunks WHERE id = ?1")
         .map_err(db)?;
-    let mut rows = stmt.query([expression]).map_err(db)?;
+    let mut files: HashMap<String, Option<String>> = HashMap::new();
     let mut seen = HashSet::new();
     let mut matches = Vec::new();
-    let mut truncated = false;
-    while let Some(row) = rows.next().map_err(db)? {
-        let path: String = row.get(0).map_err(db)?;
-        let start = row.get::<_, i64>(1).map_err(db)? as u64;
-        let body: String = row.get(2).map_err(db)?;
+    // More ranked chunks than were looked at means more results than shown.
+    let mut truncated = ranked.len() == RANKED_CHUNKS;
+    for id in ranked {
+        let Some((path, start, end)) = chunk_stmt
+            .query_row([id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, i64>(2)? as u64,
+                ))
+            })
+            .optional()
+            .map_err(db)?
+        else {
+            continue;
+        };
+        let text = files
+            .entry(path.clone())
+            .or_insert_with(|| indexed_text(checkout, &path));
+        // A file that is gone or no longer text since it was indexed has no
+        // line to show.
+        let Some(body) = text
+            .as_deref()
+            .and_then(|text| chunk_lines(text, start, end))
+        else {
+            continue;
+        };
         let line = result_line(start, &body, words);
         if !seen.insert((path.clone(), line)) {
             continue;
@@ -369,6 +417,24 @@ fn query_matches(
         matches.push(GitViewSearchMatch { path, line, text });
     }
     Ok((matches, truncated))
+}
+
+/// The working-tree text of an indexed file, under the rules the index
+/// itself reads files by.
+fn indexed_text(checkout: &Path, path: &str) -> Option<String> {
+    match git_view::file(checkout, path) {
+        Ok(file) if file.kind == "text" && !file.truncated => file.text,
+        _ => None,
+    }
+}
+
+/// Lines `start..=end` (1-based) of `text`, joined the way `chunk_text`
+/// joins them; `None` when the file is now shorter than the chunk's start.
+fn chunk_lines(text: &str, start: u64, end: u64) -> Option<String> {
+    let first = usize::try_from(start.checked_sub(1)?).ok()?;
+    let count = usize::try_from(end.saturating_sub(start) + 1).ok()?;
+    let lines: Vec<&str> = text.lines().skip(first).take(count).collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 fn match_expression(words: &[String], operator: &str) -> String {
@@ -1187,6 +1253,44 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line, 38);
         assert_eq!(matches[0].text, "zebraneedle");
+    }
+
+    #[test]
+    fn the_index_holds_words_not_text_and_previews_come_from_the_file() {
+        let (_dir, root) = repository("code-index-contentless");
+        let sentence = "the quick brown heron crossed seventeen rivers";
+        fs::write(root.join("story.txt"), format!("intro\n{sentence}\n")).unwrap();
+        let home = home();
+        pass(home.path(), &root);
+
+        let index = index_path(home.path(), &root);
+        let mut stored = fs::read(&index).unwrap();
+        stored.extend(fs::read(sidecar(&index, "-wal")).unwrap_or_default());
+        let held = |needle: &str| {
+            stored
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        };
+        assert!(held("story.txt"), "the path is stored");
+        assert!(!held(sentence), "the file's text is not");
+
+        let found = search(home.path(), &root, "heron").unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].path, "story.txt");
+        assert_eq!(found.matches[0].line, 2);
+        assert_eq!(found.matches[0].text, sentence);
+    }
+
+    #[test]
+    fn a_file_gone_since_it_was_indexed_gives_no_result() {
+        let (_dir, root) = repository("code-index-gone");
+        fs::write(root.join("gone.txt"), "vanishing zebra\n").unwrap();
+        fs::write(root.join("kept.txt"), "lasting zebra\n").unwrap();
+        let home = home();
+        pass(home.path(), &root);
+        fs::remove_file(root.join("gone.txt")).unwrap();
+        // No sync ran: the index still names the file, and the search skips it.
+        assert_eq!(paths(home.path(), &root, "zebra"), ["kept.txt"]);
     }
 
     #[test]

@@ -122,7 +122,11 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
   reads each file through `git_view::file`, chunks it, and records `(size, mtime_ns)`;
   a sync re-evaluates only the paths `git_view::status` names (run with
   `--no-optional-locks`, so it never takes `index.lock`), and a query opens the index
-  read-only. The index is derived data; deleting it only costs a rebuild.
+  read-only. The full-text table is contentless: it holds each chunk's words and line
+  range, not its text, so a query ranks in the index (the best 1,000 chunks) and reads
+  the preview line of each result it keeps from the working tree. The index is derived
+  data; deleting it only costs a rebuild, and one written by an older schema version is
+  ignored until the next full pass replaces it.
 - Usage: Claude launches receive a UUIDv4 through `--session-id` and inline `--settings`;
   the injected statusline command saves Claude's JSON to
   `GOKO_HOME/usage/claude/<session-id>.json` and forwards it to the user's own
