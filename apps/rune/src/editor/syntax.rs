@@ -745,10 +745,7 @@ impl Lex<'_> {
                 Bt::None => {}
             }
         }
-        if d.raw_hash && self.raw_string_start() {
-            return true;
-        }
-        false
+        d.raw_hash && self.raw_string_start()
     }
 
     /// Inside a `//`/`#`/`--` line comment or an `<!--` markup comment.

@@ -27,9 +27,12 @@ use crate::State;
 
 #[derive(Clone)]
 struct Slot {
-    #[expect(dead_code, reason = "read on macos")]
+    #[cfg_attr(not(target_os = "macos"), expect(dead_code, reason = "read on macos"))]
     dirty: Arc<AtomicBool>,
-    #[expect(dead_code, reason = "called on macos")]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "called on macos")
+    )]
     notify: Arc<dyn Fn() + Send + Sync>,
 }
 
