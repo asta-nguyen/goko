@@ -1,0 +1,109 @@
+README.md
+  s_99e2d656a9d0b0::t_78b5ebafff573e 110-113
+apps/rune/src/editor/backend.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 628-706,712,720-730,732-813,815-818,820,1117-1123,1126,1131-1143,1145,3589-3612,4087-4121
+apps/rune/src/editor/commit_detail.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 216,236,239,241,577-581,584-590,1109-1119
+crates/daemon/src/pty.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 7-9,11,15,29-43,115-116,131-133,136,138,155-176,221-310,316-319,322-327,350-351,398-416,438-440,445-453,460-482,492-495,504,597-599,767,770-771,780-798,805-865,867-869,877,888,923-931
+  s_99e2d656a9d0b0::t_c465ecf6c89f72 932
+AGENTS.md
+  s_99e2d656a9d0b0::t_78b5ebafff573e 15
+apps/rune/src/sessions.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 26-29,863-868,887-890,893-895,969-974,997,1000-1002,1627-1628,1631-1644,1648-1663
+  s_99e2d656a9d0b0::t_39348d0fd41a94 1664-1665
+crates/daemon/tests/terminal_io_ipc.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 139-198
+apps/rune/src/editor/navigation.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 331,418
+crates/daemon/tests/e2e.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 75-101
+  s_99e2d656a9d0b0::t_c0008f569e0890 74
+apps/rune/src/editor/search.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 52,103-104,207,245,698-702,706-709,1039
+crates/rune-kit/src/markdown/stream.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 10-11,230-237
+  s_99e2d656a9d0b0::t_2c4c6c3fde3a3e 238-239
+crates/rune-kit/src/markdown/stream_tests.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 103-110
+crates/app-core/Cargo.toml
+  s_99e2d656a9d0b0::t_78b5ebafff573e 11
+apps/rune/src/editor/state.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 373-375,670
+CHANGELOG.md
+  s_99e2d656a9d0b0::t_78b5ebafff573e 24-68
+  s_99e2d656a9d0b0::t_f41a3faab875e0 69
+crates/protocol/src/lib.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 3-8
+apps/rune/src/editor/changes.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 1842,1878
+apps/rune/src/editor/quit_guard.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 30,32-35
+crates/daemon/tests/flow.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 101-117,152-192
+  s_99e2d656a9d0b0::t_675358bfaaec4a 193-198
+apps/rune/src/trace.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 24-29
+apps/rune/src/term.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 211-216,291-298,756-765
+  s_99e2d656a9d0b0::t_2f780a22895539 766-767
+.github/workflows/ci.yml
+  s_99e2d656a9d0b0::t_78b5ebafff573e 1-46
+apps/rune/src/editor/files.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 1503
+crates/app-core/src/code_index.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 12-16,26,40-48,62,337-338,345,347-348,353-356,359,363-376,378,381-407,422-439,1258-1294
+  s_99e2d656a9d0b0::t_fe85f7b64042fe 1295
+crates/app-core/src/subagents.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 233-242,353-360
+  s_99e2d656a9d0b0::t_7d0196cf542bf8 361-362
+crates/daemon/src/session.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 32-34,36-38,380-388,397-407
+crates/daemon/src/terminal.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 71-78
+crates/daemon/src/paths.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 15-16,18-22,61-73,80-98,103,106,128-133,138-182,187
+crates/app-core/src/home.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 5,7-19,21-25,31,39-57,63,66-67,69-71,73-108
+crates/daemon/src/server.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 12-14,59-61,159-167,204,223-232,238-244,304-311,324,385-387,392,395-400,416-418,441,456-461,464,472-481,484,491-496,578-602,604
+  s_99e2d656a9d0b0::t_efa566540571b4 603,605
+crates/app-core/src/git_view.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 6-7,13,18-19,32-37,465-470,495,497-499,539-593,1964-1987
+  s_99e2d656a9d0b0::t_9b5a965b8046a4 1988
+crates/app-core/src/activity.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 118-130,132,228-230,232-233,292-300,303-309,313,321-335,444,632-684
+  s_99e2d656a9d0b0::t_2aff92be492fa5 685-687
+crates/daemon/tests/handshake.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 32-48
+crates/daemon/tests/subscribe_ipc.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 368-384,408-410,597-599
+apps/rune/src/editor/syntax.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 748
+apps/rune/src/panes.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 1376-1383
+crates/daemon/src/main.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 11,14-18,22-32,39-40
+apps/rune/src/main.rs
+  s_99e2d656a9d0b0::t_78b5ebafff573e 63-67,316-317,651,660,1289-1291
+ARCHITECTURE.md
+  s_99e2d656a9d0b0::t_78b5ebafff573e 18-22,30-32,125-129,216-217,219,236-237,247-250,278-281,329-332,337-346,372-373
+Cargo.lock
+  s_99e2d656a9d0b0::t_3ffae280acc301 1641,1643,2873,2875,3000,3002,3360,3362
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7f49c6d5515bcee4ba3c38aebcc555f0e3d65766",
+  "prompts": {},
+  "sessions": {
+    "s_99e2d656a9d0b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be22950b-b0c5-4ed5-9cf6-49ccfdfd6935",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
