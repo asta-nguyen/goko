@@ -1500,8 +1500,7 @@ mod tests {
     fn textbox_named(rt: &Runtime<State>, name: &str) -> rune::ElementInfo {
         textboxes(rt)
             .into_iter()
-            .filter(|e| e.label.as_deref() == Some(name))
-            .next_back()
+            .rfind(|e| e.label.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("textbox {name} mounted"))
     }
 

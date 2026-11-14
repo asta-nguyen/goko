@@ -21,6 +21,12 @@ fn path() -> Option<&'static PathBuf> {
         .as_ref()
 }
 
+/// Whether `GOKO_RUNE_TRACE` turned the trace on: a caller that builds its
+/// line every frame checks this first, so an untraced app formats nothing.
+pub fn enabled() -> bool {
+    path().is_some()
+}
+
 /// Append one line to the trace. A trace that cannot be written is not an
 /// error: it is a debugging aid, never a reason to break the app.
 pub fn trace(line: &str) {

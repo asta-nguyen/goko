@@ -100,7 +100,14 @@ fn a_link_still_arriving_draws_as_a_link() {
         assert_eq!(styled(&blocks, Style::Link), [if src.ends_with("do") { "the do" } else { "the docs" }], "{src:?}");
     }
     assert_eq!(styled(&stream("[**bold"), Style::Strong), ["bold"], "an open span inside its text");
-    assert_eq!(shown(&stream("see ![a ch")), "see a ch", "an image shows its alt text");
+    // An image draws as a block of its own once whole, so its alt text never shows as text
+    // while it arrives, and a destination still arriving is never loaded.
+    assert_eq!(shown(&stream("see ![a ch")), "see", "an image still arriving waits");
+    assert_eq!(shown(&stream("see ![a chart](x.p")), "see", "its destination too");
+    assert!(
+        !stream("see ![a chart](x.p").iter().any(|b| matches!(b, Block::Image { .. })),
+        "no image block for a partial destination"
+    );
     // A `[` that isn't a link's shows as written once that's known, and a word's own never hides.
     assert_eq!(shown(&stream("cite [1] here")), "cite [1] here");
     assert_eq!(shown(&stream("xs[0")), "xs[0");

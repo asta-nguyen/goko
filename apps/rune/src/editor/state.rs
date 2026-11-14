@@ -370,6 +370,9 @@ pub struct HistoryState {
     pub file_menu: Option<ListMenu>,
     /// Collapsed directory paths in the detail's `Tree` view.
     pub collapsed_dirs: HashSet<String>,
+    /// The commit whose message body the detail shows in full (`Show more`);
+    /// every other commit's body is clamped.
+    pub body_expanded: Option<String>,
 }
 
 /// A secondary press on a commit row awaiting its menu choice.
@@ -664,6 +667,7 @@ impl EditorState {
                 graph: None,
                 file_menu: None,
                 collapsed_dirs: HashSet::new(),
+                body_expanded: None,
             },
             stashes: StashesState {
                 stashes: Vec::new(),

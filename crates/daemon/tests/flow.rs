@@ -98,7 +98,23 @@ async fn acking_releases_the_reader_with_no_gap() {
     .await;
 
     kill_and_reap(&process).await;
-    let end_seq = collector.await.expect("collector task");
+    // The reader is paused at a full window again, with the producer's last
+    // output still in the PTY. Keep acknowledging what was published so it
+    // drains that and the stream ends with `Closed` — not through the stall
+    // valve, whose `Lagged` would stop the collector before the last bytes.
+    let mut collector = collector;
+    let started = Instant::now();
+    let end_seq = loop {
+        process.ack(process.buffer().2);
+        tokio::select! {
+            end = &mut collector => break end.expect("collector task"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the stream ended through the stall valve, not on its own"
+    );
     assert_eq!(
         end_seq,
         process.buffer().2,
@@ -127,6 +143,53 @@ async fn dropping_the_receiver_releases_the_reader() {
     drop(receiver);
     wait_until("the reader to resume", Duration::from_secs(1), || {
         process.buffer().2 > stalled
+    })
+    .await;
+
+    kill_and_reap(&process).await;
+}
+
+/// (c2) Small reads fill a flow subscriber's queue long before the byte
+/// window does. The reader pauses there and resumes as the queue drains: a
+/// flow subscriber is never dropped for the number of chunks it has queued.
+#[tokio::test(flavor = "multi_thread")]
+async fn small_chunks_pause_the_reader_instead_of_lagging_a_flow_subscriber() {
+    let process = PtyProcess::spawn(spec(&["cat"])).expect("spawn cat");
+    let (snapshot, mut receiver) = process.subscribe_flow();
+    let published = || process.buffer().2 - snapshot.replay_from;
+
+    // The terminal echoes each byte typed, and waiting for that echo before
+    // the next one makes every read one chunk of one byte. Nothing takes the
+    // chunks from the queue, so the reader has to stop on its own.
+    let mut paused = 0;
+    loop {
+        process.write(b"x").expect("type a byte");
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while published() == paused && Instant::now() < deadline {
+            sleep(Duration::from_millis(1)).await;
+        }
+        if published() == paused {
+            break;
+        }
+        paused = published();
+        assert!(paused < 1024, "the reader never paused on the full queue");
+    }
+    assert!(paused > 0, "the echo never arrived");
+
+    // Everything queued is output, in order and with no lag notice.
+    let mut next_seq = snapshot.replay_from;
+    while next_seq < snapshot.replay_from + paused {
+        match tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await {
+            Ok(Some(StreamItem::Chunk { seq, bytes })) => {
+                assert_eq!(seq, next_seq, "stream gap or overlap");
+                next_seq += bytes.len() as u64;
+            }
+            other => panic!("the flow subscriber was dropped: {other:?}"),
+        }
+    }
+    // The byte typed while the reader was paused is still in the PTY.
+    wait_until("the reader to resume", Duration::from_secs(2), || {
+        published() > paused
     })
     .await;
 

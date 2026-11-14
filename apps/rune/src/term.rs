@@ -208,6 +208,12 @@ const FIRST_TURN: Duration = Duration::from_millis(250);
 /// How long after a keystroke the echo is drawn at once, not held back for
 /// the output to settle.
 const TYPING: Duration = Duration::from_millis(200);
+/// Parsed output is acknowledged once this much is unacknowledged: a quarter
+/// of the daemon's 256 KiB flow window, so its reader never waits on the
+/// round trip.
+const ACK_EVERY: u64 = 64 * 1024;
+/// A smaller remainder is acknowledged once the output stayed quiet this long.
+const ACK_IDLE: Duration = Duration::from_millis(30);
 
 /// The live terminal of the attached session: the grid, the ANSI parser and
 /// the daemon's output stream.
@@ -282,7 +288,14 @@ impl Terminal {
             ready: Some(ready),
             next_seq: 0,
             acked_seq: 0,
-            term: Term::new(Config::default(), &size, replies.clone()),
+            term: Term::new(
+                Config {
+                    scrolling_history: protocol::SCROLLBACK_LINES,
+                    ..Config::default()
+                },
+                &size,
+                replies.clone(),
+            ),
             parser: Processor::new(),
             replies,
             paint_seen: false,
@@ -738,6 +751,18 @@ impl Terminal {
     /// flow-controlled stream waits for this.
     pub fn unacked(&self) -> u64 {
         self.next_seq.saturating_sub(self.acked_seq)
+    }
+
+    /// When the parsed output is due to be acknowledged: `Some(ZERO)` now,
+    /// `Some(wait)` once the output stayed quiet that much longer, `None`
+    /// with nothing to acknowledge. A flood is acknowledged every
+    /// `ACK_EVERY` bytes instead of on every turn.
+    pub fn ack_wait(&self) -> Option<Duration> {
+        match self.unacked() {
+            0 => None,
+            unacked if unacked >= ACK_EVERY => Some(Duration::ZERO),
+            _ => Some(ACK_IDLE.saturating_sub(self.last.elapsed())),
+        }
     }
 
     /// Remember the bytes that were acknowledged.

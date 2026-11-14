@@ -1373,8 +1373,14 @@ impl State {
             if !answered.is_empty() {
                 replies.push((att.term.session, answered));
             }
-            if flow && att.term.unacked() > 0 {
-                acks.push((att.term.session, att.term.next_seq));
+            if flow {
+                match att.term.ack_wait() {
+                    Some(wait) if wait.is_zero() => {
+                        acks.push((att.term.session, att.term.next_seq))
+                    }
+                    Some(wait) => tx.wake_after(wait),
+                    None => {}
+                }
             }
             // The program's own copy (OSC 52). Taken from every pane so a
             // stale one never lands later, but only a pane on screen — one

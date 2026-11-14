@@ -23,6 +23,10 @@ use crate::panes::Placement;
 
 /// The terminal size a new session starts with; the daemon resizes it when
 /// the viewport is measured.
+/// How long an unanswered activity or sub-agent read holds back the next
+/// one, in seconds. A reply that never comes must not stop the polls for good.
+const POLL_REPLY_WAIT: f64 = 30.0;
+
 pub const DEFAULT_COLS: u16 = 80;
 pub const DEFAULT_ROWS: u16 = 24;
 
@@ -856,6 +860,12 @@ impl State {
         if self.activity_at.is_some_and(|at| now - at < 1.0) {
             return false;
         }
+        if self
+            .activity_pending
+            .is_some_and(|at| now - at < POLL_REPLY_WAIT)
+        {
+            return false;
+        }
         self.activity_at = Some(now);
         let sessions: Vec<app_core::activity::SessionActivity> = self
             .data
@@ -874,11 +884,15 @@ impl State {
             return false;
         }
         let previous = self.activity.clone();
-        crate::trace::trace(&format!("activity read for {} sessions", sessions.len()));
-        backend::enqueue(
+        if crate::trace::enabled() {
+            crate::trace::trace(&format!("activity read for {} sessions", sessions.len()));
+        }
+        let queued = backend::enqueue(
             &mut self.editor.backend,
             Job::project(Req::Activity { sessions, previous }),
-        )
+        );
+        self.activity_pending = queued.then_some(now);
+        queued
     }
 
     /// Poll the daemon for live output activity across all sessions.
@@ -952,6 +966,12 @@ impl State {
         if self.subagents_at.is_some_and(|at| now - at < 2.0) {
             return false;
         }
+        if self
+            .subagents_pending
+            .is_some_and(|at| now - at < POLL_REPLY_WAIT)
+        {
+            return false;
+        }
         self.subagents_at = Some(now);
         let sessions: Vec<protocol::session::SessionInfo> = self
             .data
@@ -974,10 +994,12 @@ impl State {
             return false;
         }
         let inspect = crate::tab_debug::inspection_sessions(self);
-        backend::enqueue(
+        let queued = backend::enqueue(
             &mut self.editor.backend,
             Job::project(Req::Subagents { sessions, inspect }),
-        )
+        );
+        self.subagents_pending = queued.then_some(now);
+        queued
     }
 
     /// The agent CLIs running under a session, as the row shows them.
@@ -1602,11 +1624,43 @@ mod tests {
     fn the_activity_read_asks_the_worker_about_the_running_sessions() {
         let mut s = state();
         let key = seed_session_id(&mut s);
-        // The first poll asks; the next one waits for the tick.
+        // The first poll asks; the next one waits for the tick, and then for
+        // the first one's answer: a busy worker is not sent a second read.
         assert!(s.poll_activity(0.0));
         assert!(!s.poll_activity(0.5));
-        assert!(s.poll_activity(1.5));
+        assert!(!s.poll_activity(1.5));
+        s.apply_reply(crate::editor::backend::Reply {
+            req: Req::Activity {
+                sessions: Vec::new(),
+                previous: HashMap::new(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Err("the worker was busy".into()),
+        });
+        assert!(s.poll_activity(1.6));
+        // An answer that never comes holds the polls back only so long.
+        assert!(!s.poll_activity(10.0));
+        assert!(s.poll_activity(1.6 + POLL_REPLY_WAIT));
         let _ = key;
+    }
+
+    #[test]
+    fn the_subagent_read_waits_for_the_previous_answer() {
+        let mut s = state();
+        seed_session_id(&mut s);
+        assert!(s.poll_subagents(0.0));
+        assert!(!s.poll_subagents(2.5));
+        s.apply_reply(crate::editor::backend::Reply {
+            req: Req::Subagents {
+                sessions: Vec::new(),
+                inspect: Default::default(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Err("the worker was busy".into()),
+        });
+        assert!(s.poll_subagents(2.6));
     }
 
     /// A session in the scene, with its key.

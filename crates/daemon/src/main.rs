@@ -8,20 +8,36 @@ use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::signal::unix::{signal, SignalKind};
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// How long exiting waits for blocking work that is still running before the
+/// process ends anyway, so no stuck thread can keep a stopped daemon alive.
+const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(2);
+
+fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
     if first.is_none() {
-        return match run().await {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("gokod: cannot start the runtime: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let code = match runtime.block_on(run()) {
             Ok(code) => code,
             Err(error) => {
                 eprintln!("gokod: {error}");
                 ExitCode::FAILURE
             }
         };
+        runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+        return code;
     }
     if first.as_deref() == Some(OsStr::new("--version")) && args.next().is_none() {
         println!("gokod {}", env!("CARGO_PKG_VERSION"));

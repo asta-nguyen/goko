@@ -60,6 +60,11 @@ pub struct State {
     subagents_at: Option<f64>,
     /// When the activity was last read; the reader polls once a second.
     activity_at: Option<f64>,
+    /// When the activity read still unanswered was queued. No second one is
+    /// queued behind it, so a busy worker is not handed a backlog of polls.
+    activity_pending: Option<f64>,
+    /// The same for the sub-agent read.
+    subagents_pending: Option<f64>,
     /// When session output was last polled from the daemon.
     output_polled_at: Option<f64>,
     /// In-flight `session.output` request.
@@ -308,6 +313,8 @@ impl State {
             auto_forced: HashSet::new(),
             activity: HashMap::new(),
             activity_at: None,
+            activity_pending: None,
+            subagents_pending: None,
             output_polled_at: None,
             pending_output: None,
             session_output: HashMap::new(),
@@ -641,6 +648,7 @@ impl State {
                 return;
             }
             backend::Req::Subagents { .. } => {
+                self.subagents_pending = None;
                 if let Ok(backend::ReplyData::Subagents { agents, debug }) = &reply.result {
                     self.subagents = agents.clone();
                     self.debug = debug.clone();
@@ -649,6 +657,7 @@ impl State {
                 return;
             }
             backend::Req::Activity { .. } => {
+                self.activity_pending = None;
                 if let Ok(backend::ReplyData::Activity(activity)) = &reply.result {
                     // A session whose activity newly reads done chimes once —
                     // the reply carries every session, so only a real flip
@@ -1277,7 +1286,9 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     changed |= s.sync_terminals();
     let term_changed = s.poll_terminals(tx);
     changed |= term_changed;
-    crate::trace::trace(&s.terminal_trace());
+    if crate::trace::enabled() {
+        crate::trace::trace(&s.terminal_trace());
+    }
     // A subscriber that fell behind takes a fresh subscription, which
     // replays the daemon's retained output.
     for session in std::mem::take(&mut s.terminal_lagged) {

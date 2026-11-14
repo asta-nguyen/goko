@@ -365,6 +365,23 @@ async fn wait_until(what: &str, limit: Duration, mut condition: impl FnMut() -> 
     panic!("timed out waiting for {what}");
 }
 
+/// Wait until the session's published offset stops moving for 200 ms: whatever
+/// its process was still writing has been published.
+async fn wait_for_quiet(pty: &daemon::pty::PtyProcess) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut last, mut still) = (pty.output_info().0, 0);
+    while still < 4 {
+        assert!(Instant::now() < deadline, "the output never settled");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let now = pty.output_info().0;
+        if now == last {
+            still += 1;
+        } else {
+            (last, still) = (now, 0);
+        }
+    }
+}
+
 /// The `PtyProcess` behind a created session id.
 fn server_pty(server: &TestServer, id: &Value) -> Arc<daemon::pty::PtyProcess> {
     server
@@ -388,6 +405,9 @@ async fn finished_producer(
         pty.buffer().1.len() == MEBIBYTE
     })
     .await;
+    // The process has exited, but the reader may still be taking its last
+    // output from the PTY; a subscribe before that would see it arrive live.
+    wait_for_quiet(&pty).await;
     (id, pty)
 }
 
@@ -574,6 +594,9 @@ async fn a_remount_with_a_far_ahead_offset_gets_one_burst_plus_a_live_window() {
         pty.buffer().1.len() == MEBIBYTE
     })
     .await;
+    // `cat` may still be writing the end of the feed; the burst below must be
+    // the retained snapshot alone, not that live tail.
+    wait_for_quiet(&pty).await;
     let published = pty.buffer().2;
 
     // The previous mount acknowledged everything it received before going away.

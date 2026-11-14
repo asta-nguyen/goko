@@ -4,8 +4,6 @@
 //! Also hosts the "Uncommitted changes" detail shown when the synthetic row
 //! is selected.
 
-use std::sync::Mutex;
-
 use app_core::git_view::GitViewCommit;
 use rune::{El, TextStyle, Tx, col, el, row};
 use rune_kit::ScrollBar;
@@ -215,7 +213,7 @@ pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
     let body_text = patch_detail.map(|d| d.body.as_str()).unwrap_or("");
     if !body_text.trim().is_empty() {
         let lines = body_text.lines().count();
-        let expanded = body_expanded(&commit.id);
+        let expanded = body_expanded(s, &commit.id);
         let clamp = !expanded && lines > 6;
         let shown = if clamp {
             body_text.lines().take(6).collect::<Vec<_>>().join("\n")
@@ -235,14 +233,12 @@ pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
                 )
                 .on_press_tx({
                     let oid = oid.clone();
-                    move |_st: &mut State, _tx: &mut Tx| {
-                        set_body_expanded(&oid, !body_expanded(&oid))
-                    }
+                    move |st: &mut State, _tx: &mut Tx| toggle_body_expanded(st, &oid)
                 })
                 .on_key(
-                    move |_st: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx| {
+                    move |st: &mut State, ev: &rune::KeyEvent, _tx: &mut Tx| {
                         if activate_key(ev) {
-                            set_body_expanded(&key_oid, !body_expanded(&key_oid));
+                            toggle_body_expanded(st, &key_oid);
                             true
                         } else {
                             false
@@ -578,21 +574,20 @@ pub(crate) fn uncommitted_view(s: &State, ink: &Ink) -> El {
     root.child(list.scroll_bar(&s.editor.kit))
 }
 
-// Body expand state: single-slot per commit id (desktop resets on commit
-// change; a map keyed by id is equivalent for the visible commit).
-static BODY_EXPANDED: Mutex<Option<(String, bool)>> = Mutex::new(None);
-
-fn body_expanded(id: &str) -> bool {
-    BODY_EXPANDED
-        .lock()
-        .map(|g| g.as_ref().is_some_and(|(k, v)| k == id && *v))
-        .unwrap_or(false)
+/// Whether `id`'s message body is shown in full. The state is one slot in
+/// `history.body_expanded`: expanding one commit clamps the previous one, as
+/// the desktop's reset on commit change does.
+fn body_expanded(s: &State, id: &str) -> bool {
+    s.editor.history.body_expanded.as_deref() == Some(id)
 }
 
-fn set_body_expanded(id: &str, v: bool) {
-    if let Ok(mut g) = BODY_EXPANDED.lock() {
-        *g = Some((id.to_string(), v));
-    }
+fn toggle_body_expanded(s: &mut State, id: &str) {
+    let history = &mut s.editor.history;
+    history.body_expanded = if history.body_expanded.as_deref() == Some(id) {
+        None
+    } else {
+        Some(id.to_string())
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,11 +1106,17 @@ index 1111111..2222222 100644\n\
 
     #[test]
     fn body_expand_state_is_per_commit() {
-        set_body_expanded("aaa", true);
-        assert!(body_expanded("aaa"));
-        assert!(!body_expanded("bbb"));
-        set_body_expanded("aaa", false);
-        assert!(!body_expanded("aaa"));
+        let (mut s, _home, _guard) = detail_scene();
+        toggle_body_expanded(&mut s, "aaa");
+        assert!(body_expanded(&s, "aaa"));
+        assert!(!body_expanded(&s, "bbb"));
+        toggle_body_expanded(&mut s, "aaa");
+        assert!(!body_expanded(&s, "aaa"));
+        // Expanding another commit clamps the first again.
+        toggle_body_expanded(&mut s, "aaa");
+        toggle_body_expanded(&mut s, "bbb");
+        assert!(body_expanded(&s, "bbb"));
+        assert!(!body_expanded(&s, "aaa"));
     }
 
     // -- changed-file list View menu -------------------------------------------

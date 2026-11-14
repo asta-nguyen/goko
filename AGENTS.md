@@ -12,7 +12,7 @@ The Rust protocol and daemon live in `crates/protocol/` and `crates/daemon/`, sh
 
 - `cargo build --workspace`, `cargo fmt --check`, and `cargo clippy --workspace -- -D warnings` — passed.
 - `cargo test --workspace` runs the protocol and daemon tests (the daemon integration tests start the real `gokod` in a temp `GOKO_HOME`).
-- `gokod --version` prints `gokod 0.1.0`; an unsupported arg prints the usage and exits 2; no args runs the daemon: it holds `daemon.lock` in `GOKO_HOME` (default `~/Library/Application Support/Goko`), serves `daemon.sock`, writes `daemon.token` and `daemon.log`, and exits cleanly on SIGTERM/SIGINT. A second `gokod` prints `gokod: already running` and exits 0.
+- `gokod --version` prints `gokod 0.1.0`; an unsupported arg prints the usage and exits 2; no args runs the daemon: it holds `daemon.lock` in `GOKO_HOME` (default `~/Library/Application Support/Goko` on macOS, `~/.local/state/goko` on Linux), serves `daemon.sock`, writes `daemon.token` and `daemon.log`, and exits cleanly on SIGTERM/SIGINT. A second `gokod` prints `gokod: already running` and exits 0.
 - The observed checks are recorded in [s1-01 task results](docs/agent-devkit/changes/archive/s1-01-repo-init/tasks.md).
 
 The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare binary opens **no window** — without a bundle, LaunchServices never activates the app, so its window is never ordered in. Run it through `apps/rune/run-macos.sh [release|debug]`, which builds the workspace, assembles `target/Goko.app` (the app plus `gokod` beside it, so the app can start the daemon) and launches it. The daemon client spawns `gokod` out of `GOKO_HOME` (`app_core::home::home_dir`), so a fresh home gets its own daemon.
