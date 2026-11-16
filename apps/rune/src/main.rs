@@ -89,6 +89,9 @@ pub struct State {
     /// The layout last written; `None` until the saved one is restored, which
     /// keeps the save idle so an empty start cannot overwrite it.
     tabs_saved: Option<String>,
+    /// Where the pointer last was over a pane, in the pane's points: a click carries no
+    /// position, so one reported to the program takes this.
+    pane_pointer: (f32, f32),
     /// The tab bar's drag to reorder, in positions among the visible tabs.
     tab_reorder: rune_kit::shell::Reorder,
     /// Project id → last focused tab id; hidden tabs keep their pane layouts.
@@ -274,6 +277,7 @@ impl State {
             active_workspace: None,
             open_tabs: Vec::new(),
             active_tab: 0,
+            pane_pointer: (0.0, 0.0),
             tabs_pending: None,
             sessions_loaded: false,
             tabs_saved: None,
@@ -6085,14 +6089,24 @@ mod view_tests {
     }
 
     #[test]
-    fn shift_drag_selects_and_copies_while_the_program_captures_the_mouse() {
+    fn a_drag_selects_and_copies_while_the_program_captures_the_mouse() {
         let mode = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
-        // A plain drag belongs to the program: nothing is selected locally.
+        let copied = |rt: &Runtime<State>| {
+            rt.copy_request
+                .as_ref()
+                .map(|w| w.content().text().to_owned())
+                .unwrap_or_default()
+        };
+        // A plain drag selects, and its release copies.
         let mut rt = captured_pane_runtime(mode);
         drag_across_rows(&mut rt);
-        assert!(rt.copy_request.is_none(), "a captured drag copied");
+        let text = copied(&rt);
+        assert!(
+            text.contains("row") && text.contains('\n'),
+            "drag copied {text:?}"
+        );
 
-        // Shift takes the pointer back: the drag selects and its release copies.
+        // Shift selects too, and takes the clicks back from the program.
         let mut rt = captured_pane_runtime(mode);
         rt.update(|s, _| {
             s.editor.set_modifiers(Mods {
@@ -6102,15 +6116,19 @@ mod view_tests {
         });
         rt.frame(1.0 / 60.0);
         drag_across_rows(&mut rt);
-        let copied = rt
-            .copy_request
-            .as_ref()
-            .map(|w| w.content().text().to_owned())
-            .unwrap_or_default();
-        assert!(
-            copied.contains("row") && copied.contains('\n'),
-            "shift-drag copied {copied:?}"
-        );
+        assert!(copied(&rt).contains("row"), "shift-drag copied");
+
+        // Option hands the drag to the program: nothing is selected locally.
+        let mut rt = captured_pane_runtime(mode);
+        rt.update(|s, _| {
+            s.editor.set_modifiers(Mods {
+                alt: true,
+                ..Mods::default()
+            })
+        });
+        rt.frame(1.0 / 60.0);
+        drag_across_rows(&mut rt);
+        assert!(rt.copy_request.is_none(), "a captured drag copied");
     }
 
     #[test]

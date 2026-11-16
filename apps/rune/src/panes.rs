@@ -2036,6 +2036,7 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let tid = tab.id.clone();
     let (drop_tid, drop_pid, drop_key, hover_key) =
         (tid.clone(), pid.clone(), key.clone(), key.clone());
+    let (click_tid, click_pid) = (tid.clone(), pid.clone());
     let focused = pane.id == tab.active_pane;
     let title = s
         .session_by_key(&key)
@@ -2136,24 +2137,42 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 tx.wake_after(Duration::from_millis(16));
             }
         });
-    // A program in mouse-report mode owns the pointer: presses, drags and
-    // hovers become reports, and attaching `on_drag` makes rune stand its
-    // text selection down — what a real terminal does while an app
-    // captures the mouse. With no mode the pane keeps selection and the
-    // handlers stay off entirely. Holding Shift takes the pointer back for
-    // selection, as Ghostty, kitty and Alacritty do: Claude Code and Codex
-    // both capture the mouse, so without it their panes could not select.
+    // A program in mouse-report mode (Claude Code and Codex both capture the
+    // mouse) still lets you select: a drag selects the text and a click with
+    // no drag is reported to the program, which is what you want from an agent
+    // pane. Holding Option hands the whole pointer to the program, drags
+    // included — attaching `on_drag` makes rune stand its text selection down,
+    // what a real terminal does while an app captures the mouse. Holding Shift
+    // takes it all back for selection, as Ghostty, kitty and Alacritty do.
+    // With no mode the pane keeps selection and the handlers stay off.
     let (mouse, hover) = s
         .attachments
         .get(&key)
         .filter(|_| !s.editor.modifiers.shift)
         .map(|att| (att.term.wants_mouse(), att.term.wants_hover()))
         .unwrap_or_default();
-    if mouse {
-        let (drag_key, sec_key) = (key.clone(), key.clone());
+    let full = mouse && s.editor.modifiers.alt;
+    if mouse && !full {
+        // A press carries no position, so the click goes where the pointer last was.
+        // ponytail: every pointer move over the pane writes this field and wakes a
+        // frame; a position on the press event would make it free.
+        let click_key = key.clone();
         cell = cell
-            .pointer_buttons([rune::PointerButton::Middle])
-            .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+            .on_pointer_move_local(move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+                s.pane_pointer = (e.x, e.y);
+            })
+            .on_press(move |s: &mut State| {
+                s.focus_pane(&click_tid, &click_pid);
+                let (x, y) = s.pane_pointer;
+                for kind in [term::MouseKind::Press(0), term::MouseKind::Release(0)] {
+                    s.pane_mouse(&click_key, kind, x, y, cell_w, line_h);
+                }
+            });
+    }
+    if full {
+        let drag_key = key.clone();
+        cell = cell.pointer_buttons([rune::PointerButton::Middle]).on_drag(
+            move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
                 let button = match tx.button() {
                     rune::PointerButton::Primary => 0,
                     rune::PointerButton::Middle => 1,
@@ -2165,8 +2184,13 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                     rune::Phase::Up => term::MouseKind::Release(button),
                 };
                 s.pane_mouse(&drag_key, kind, d.x, d.y, cell_w, line_h);
-            })
-            .on_secondary_press_local(move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+            },
+        );
+    }
+    if mouse {
+        let sec_key = key.clone();
+        cell = cell.on_secondary_press_local(
+            move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
                 s.pane_mouse(
                     &sec_key,
                     term::MouseKind::Press(2),
@@ -2183,12 +2207,14 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                     cell_w,
                     line_h,
                 );
-            });
+            },
+        );
     }
     if hover {
         let hov_key = key.clone();
         cell = cell.on_pointer_move_local(
             move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+                s.pane_pointer = (e.x, e.y);
                 s.pane_mouse(&hov_key, term::MouseKind::Hover, e.x, e.y, cell_w, line_h);
             },
         );

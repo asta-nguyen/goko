@@ -28,6 +28,9 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Changed
 
+- Selecting text in Claude Code, Codex or vim: a plain drag now selects and copies even
+  while the program tracks the mouse, and a click with no drag still reaches it. Hold
+  Option to give the program the drag itself; Shift still takes the pointer back.
 - A session's terminal keeps 5,000 lines of history (was 10,000), in the daemon and in
   each pane alike, so a reattached pane shows the same history it had. That halves the
   memory a long session holds (about 14 MB instead of 29 MB at 120 columns), and the
