@@ -20,7 +20,7 @@ const T12MONO: TextStyle = TextStyle::new(12.0, 400.0).mono();
 
 /// Enter or Space activates a focused `role("button")` element — Rune's press
 /// is pointer-only, so `on_key` covers keyboard activation.
-fn activate_key(ev: &rune::KeyEvent) -> bool {
+pub(crate) fn activate_key(ev: &rune::KeyEvent) -> bool {
     matches!(&ev.key, rune::Key::Enter)
         || matches!(&ev.key, rune::Key::Text(t) if t.as_str() == " ")
 }
