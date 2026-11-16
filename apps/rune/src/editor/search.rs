@@ -49,7 +49,7 @@ pub enum IndexEvent {
     },
 }
 
-#[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
+#[cfg_attr(test, allow(dead_code))]
 enum IndexJob {
     Pass { checkout: PathBuf, key: String },
     Sync { checkout: PathBuf, key: String },
@@ -101,7 +101,7 @@ impl Indexer {
     }
 
     /// A real thread over an explicit home.
-    #[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
+    #[cfg_attr(test, allow(dead_code))]
     pub fn with_home(handle: AppHandle<State>, home: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -204,7 +204,7 @@ impl Indexer {
     }
 }
 
-#[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
+#[cfg_attr(test, allow(dead_code))]
 fn indexer_thread(
     rx: Receiver<IndexJob>,
     handle: AppHandle<State>,
@@ -242,7 +242,7 @@ fn indexer_thread(
     }
 }
 
-#[cfg_attr(test, expect(dead_code, reason = "the tests run an idle indexer"))]
+#[cfg_attr(test, allow(dead_code))]
 fn event_sink(handle: AppHandle<State>) -> impl FnMut(IndexEvent) {
     move |event| {
         let handle = handle.clone();

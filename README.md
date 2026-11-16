@@ -4,11 +4,12 @@
 
 # Goko
 
-Goko is a desktop app for macOS and Linux (Windows is not supported yet) for
-running interactive command-line agents by project. The native Rune app
-(`apps/rune`) talks to the Rust `gokod` daemon, which owns the terminal
-processes. Project and session metadata is stored separately in SQLite. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together.
+Goko is a desktop app for macOS, Linux and Windows for running interactive
+command-line agents by project. The native Rune app (`apps/rune`) talks to the
+Rust `gokod` daemon, which owns the terminal processes — over a Unix socket on
+macOS and Linux, and a named pipe on Windows. Project and session metadata is
+stored separately in SQLite. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the
+pieces fit together.
 
 ## Layout
 
@@ -19,10 +20,16 @@ processes. Project and session metadata is stored separately in SQLite. See
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
 
-## Install (macOS Apple Silicon, Linux x86_64 and aarch64)
+## Install (macOS Apple Silicon, Linux x86_64 and aarch64, Windows x86_64)
 
 ```sh
 curl -fsSL https://github.com/asta-nguyen/goko/releases/latest/download/install.sh | sh
+```
+
+On Windows (10 1809 or later):
+
+```powershell
+irm https://github.com/asta-nguyen/goko/releases/latest/download/install.ps1 | iex
 ```
 
 This downloads the latest release, checks its sha256 (and, on macOS, its
@@ -37,7 +44,15 @@ On Linux it puts `goko` in `~/.local/bin` (the app and `gokod` in
 working Vulkan or OpenGL driver and `libxkbcommon`. The release workflow builds
 the Linux archives; the installed app has not been run on a desktop.
 
-Intel Macs build from source (below). There is no Windows release.
+On Windows the installer puts the app and `gokod` in `%LOCALAPPDATA%\Goko\app`,
+adds `goko` to your user PATH and a Start-menu shortcut, and re-running it
+updates in place. The archive is unsigned, so SmartScreen warns the first time;
+choose **More info → Run anyway**. Windows 10 1809 or later is required (ConPTY).
+Stopping a session on Windows kills its whole process tree at once — there is no
+graceful signal — and the trash, sound, in-app updater, quit veto, and
+`ps`-based agent attribution are not available there yet.
+
+Intel Macs build from source (below).
 
 Goko → Settings → Updates shows the running version and tells you when a newer
 release is out and what changed in it (set `GOKO_NO_UPDATE_CHECK=1` to stop the
@@ -54,7 +69,9 @@ instead.
   libraries that `winit`/`wgpu` need. On Debian or Ubuntu:
   `sudo apt-get install build-essential pkg-config libfontconfig1-dev libwayland-dev
   libxkbcommon-dev libx11-dev libxcb1-dev libxkbcommon-x11-dev libvulkan-dev`.
-- Windows: not supported yet (see below).
+- Windows: Rust stable with the MSVC toolchain (the default `stable-x86_64-pc-windows-msvc`
+  target and the Visual Studio Build Tools that rustup asks for), plus `git`.
+  Windows 10 1809 or later (ConPTY).
 
 No Node, pnpm or other toolchain is needed.
 
@@ -100,17 +117,30 @@ target/release/goko-rune
 
 ### Windows
 
-Not buildable yet: the daemon and its client currently use Unix domain sockets,
-`flock` and process groups (`killpg`), so the workspace only compiles on macOS and
-Linux. Windows needs a port of those parts (named pipe or TCP transport, a lock
-file, job objects) before it can run.
+```powershell
+cargo build --workspace --release
+target\release\goko-rune.exe
+```
+
+The app finds `gokod.exe` beside itself and starts it detached, so a fresh
+`cargo build` is enough; there is no bundle step. To try a release build without
+touching your install, use a throwaway home:
+`$env:GOKO_HOME = "$env:TEMP\goko-dev"; target\release\goko-rune.exe`.
+
+Known Windows limits in this version: stopping a session kills its whole process
+tree at once (there is no graceful signal), session replies carry no signal name,
+and the trash, sound, in-app updater, quit veto and `ps`-based agent attribution
+are unavailable. Agent accounts share the default environment (no `/usr/bin/env`),
+and Claude's statusline/usage capture and activity hooks do not run.
 
 ### Data and logs
 
 App data lives in `$GOKO_HOME`. The default is `~/Library/Application Support/Goko` on
-macOS and `$XDG_STATE_HOME/goko` (`~/.local/state/goko`) on Linux. A Linux install that
-already has `~/Library/Application Support/Goko` from an earlier version keeps using it.
-The folder holds `goko.db`, `daemon.sock`, `daemon.token`, `daemon.lock` and `daemon.log`.
+macOS, `$XDG_STATE_HOME/goko` (`~/.local/state/goko`) on Linux, and
+`%LOCALAPPDATA%\Goko` on Windows. A Linux install that already has
+`~/Library/Application Support/Goko` from an earlier version keeps using it. The folder
+holds `goko.db`, `daemon.token`, `daemon.lock` and `daemon.log`, plus `daemon.sock` on
+macOS and Linux (Windows serves a named pipe derived from the folder instead).
 
 Keep development data separate from your normal data with a throwaway home:
 
@@ -126,10 +156,14 @@ To reset everything, quit Goko and delete that directory.
 ```sh
 cargo test --workspace                     # protocol, daemon and app tests
 cargo fmt --check
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The daemon integration tests start the real `gokod` in a temporary `GOKO_HOME`.
+CI runs the same checks on `ubuntu-22.04` and `macos-15`; on `windows-latest` it
+builds the whole workspace and runs the `protocol`, `daemon` and `app-core`
+tests (the app's own test harness is Unix-only in this version, and the Windows
+daemon tests live in `crates/daemon/tests/windows_ipc.rs`).
 
 ## Releasing
 
@@ -141,12 +175,17 @@ A release is a pushed tag. The app's version is the workspace `version` in
    date, leaving a fresh `Unreleased` above it.
 2. Merge to `main`, then `git tag v0.2.0 && git push origin v0.2.0`.
 
-`.github/workflows/release.yml` then builds macOS (Apple Silicon) and publishes
-the archive, a `latest.json` manifest and `install.sh` as a GitHub release; the workflow refuses a tag that does not match
-`Cargo.toml`. To try the builds without publishing, run the workflow by hand
-(Actions → release → Run workflow): it keeps the archives as artifacts.
+`.github/workflows/release.yml` then builds macOS (Apple Silicon), Linux (x86_64
+and aarch64) and Windows (x86_64) and publishes the archives, a `latest.json`
+manifest, `install.sh` and `install.ps1` as a GitHub release; the workflow
+refuses a tag that does not match `Cargo.toml`. To try the builds without
+publishing, run the workflow by hand (Actions → release → Run workflow): it
+keeps the archives as artifacts.
 
 macOS builds are signed ad hoc (no Apple Developer account, so no
 notarization), which is why the installer is a `curl` command; see the macOS
-note above. The packaging scripts are `apps/rune/package-macos.sh` and
-`apps/rune/package-linux.sh` (Linux is not in the workflow yet); `gokod` has its own version (`gokod --version`).
+note above. Windows builds are unsigned, so SmartScreen warns on first run. The
+packaging scripts are `apps/rune/package-macos.sh`,
+`apps/rune/package-linux.sh` and `apps/rune/package-windows.ps1`; the
+installers are `distribution/install.sh` and `distribution/install.ps1`. `gokod`
+has its own version (`gokod --version`).

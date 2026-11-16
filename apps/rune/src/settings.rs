@@ -251,7 +251,37 @@ fn os_dark_mode() -> bool {
     unsafe { name.containsString(&dark) }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: the user's app-theme preference
+/// (`HKCU\...\Themes\Personalize\AppsUseLightTheme`); 0 means dark.
+#[cfg(windows)]
+fn os_dark_mode() -> bool {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let subkey = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("AppsUseLightTheme");
+    let mut light: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: the strings are NUL-terminated and the out-buffer has `size`.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut light as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    status == ERROR_SUCCESS && light == 0
+}
+
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 fn os_dark_mode() -> bool {
     true
 }

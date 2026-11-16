@@ -15,14 +15,47 @@ const APPLICATION_SUPPORT: &str = "Library/Application Support/Goko";
 ///   variable is unset or not absolute. An install that already has the
 ///   macOS-style folder keeps using it, so its data stays where it is.
 ///
+/// - Windows: `%LOCALAPPDATA%\Goko`.
+///
 /// Not `$XDG_DATA_HOME/goko`: the installer keeps the binaries there and
 /// replaces that folder on every update.
 pub fn home_dir() -> Result<PathBuf, BridgeError> {
+    #[cfg(windows)]
+    {
+        return home_dir_windows(
+            std::env::var_os("GOKO_HOME"),
+            std::env::var_os("LOCALAPPDATA"),
+            std::env::var_os("USERPROFILE"),
+        );
+    }
+    #[cfg(not(windows))]
     home_dir_from(
         std::env::var_os("GOKO_HOME"),
         std::env::var_os("HOME"),
         std::env::var_os("XDG_STATE_HOME"),
     )
+}
+
+/// `GOKO_HOME`, else `%LOCALAPPDATA%\Goko`, else `%USERPROFILE%\AppData\Local\Goko`.
+#[cfg(windows)]
+pub fn home_dir_windows(
+    goko_home: Option<OsString>,
+    local_app_data: Option<OsString>,
+    user_profile: Option<OsString>,
+) -> Result<PathBuf, BridgeError> {
+    if let Some(dir) = goko_home.filter(|dir| !dir.is_empty()) {
+        return Ok(dir.into());
+    }
+    if let Some(local) = local_app_data.filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(local).join("Goko"));
+    }
+    let profile = user_profile.filter(|dir| !dir.is_empty()).ok_or_else(|| {
+        BridgeError::new(
+            Code::DaemonUnavailable,
+            "neither GOKO_HOME, LOCALAPPDATA nor USERPROFILE is set",
+        )
+    })?;
+    Ok(PathBuf::from(profile).join("AppData/Local/Goko"))
 }
 
 pub fn home_dir_from(

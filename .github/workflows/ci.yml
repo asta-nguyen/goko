@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-15]
+        os: [ubuntu-22.04, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -42,5 +42,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The app's and daemon's integration suites drive Unix sockets and POSIX
+      # shells; on Windows the portable crates' tests run instead, and the app
+      # is built but not test-run (its harness is Unix-only until ported).
       - name: Test
+        if: runner.os != 'Windows'
         run: cargo test --workspace
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test -p protocol -p daemon -p app-core

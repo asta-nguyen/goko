@@ -286,6 +286,9 @@ fn open_files(pids: &HashSet<u32>) -> HashMap<u32, Vec<PathBuf>> {
         .collect::<Vec<_>>()
         .join(",");
     // -b avoids potentially blocking filesystem calls; -F is the machine-readable interface.
+    #[cfg(windows)]
+    return HashMap::new();
+    #[cfg(not(windows))]
     let Ok(output) = std::process::Command::new("lsof")
         .args(["-b", "-w", "-n", "-P", "-p", &pids, "-Fpn"])
         .output()

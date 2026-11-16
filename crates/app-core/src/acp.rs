@@ -22,7 +22,7 @@ use protocol::message::ErrorCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -121,9 +121,14 @@ impl Connection {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .process_group(0);
+            .kill_on_drop(true);
+        crate::platform::configure_child(&mut command);
         let mut child = command.spawn().map_err(|error| {
+            let _ = std::fs::remove_dir_all(&dir);
+            spawn_error(&spec.program, error)
+        })?;
+        let job = crate::platform::ChildJob::assign(child.id().unwrap_or(0)).map_err(|error| {
+            let _ = child.start_kill();
             let _ = std::fs::remove_dir_all(&dir);
             spawn_error(&spec.program, error)
         })?;
@@ -143,7 +148,7 @@ impl Connection {
             }
         });
 
-        let inner = Arc::new(Inner::new(dir.clone(), writes, child));
+        let inner = Arc::new(Inner::new(dir.clone(), writes, child, job));
         tokio::spawn(read_loop(Arc::downgrade(&inner), stdout));
         let connection = Connection { inner };
 
@@ -318,7 +323,7 @@ impl Connection {
     pub async fn shutdown(&self) {
         self.inner.mark_dead();
         let mut child = self.inner.child.lock().await;
-        kill_tree(&mut child);
+        kill_tree(&mut child, &self.inner.job);
         if let Ok(status) = child.wait().await {
             self.inner.record_exit(status);
         }
@@ -333,6 +338,8 @@ struct Inner {
     /// Serialized JSON-RPC lines for the child's stdin; one writer task drains it.
     writes: mpsc::UnboundedSender<String>,
     child: tokio::sync::Mutex<Child>,
+    /// The child's process tree (a Job Object on Windows).
+    job: crate::platform::ChildJob,
     /// The connection's dedicated empty working directory.
     dir: PathBuf,
     capabilities: Mutex<Capabilities>,
@@ -361,11 +368,17 @@ struct AuthMethod {
 }
 
 impl Inner {
-    fn new(dir: PathBuf, writes: mpsc::UnboundedSender<String>, child: Child) -> Self {
+    fn new(
+        dir: PathBuf,
+        writes: mpsc::UnboundedSender<String>,
+        child: Child,
+        job: crate::platform::ChildJob,
+    ) -> Self {
         Self {
             routes: Mutex::new(Some(Routes::default())),
             writes,
             child: tokio::sync::Mutex::new(child),
+            job,
             dir,
             capabilities: Mutex::new(Capabilities::default()),
             exit: Mutex::new(None),
@@ -463,7 +476,7 @@ impl Drop for Inner {
     fn drop(&mut self) {
         // `&mut self` rules out a held child guard; `kill_on_drop` still
         // covers the child itself as the field drops.
-        kill_tree(self.child.get_mut());
+        kill_tree(self.child.get_mut(), &self.job);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -544,12 +557,18 @@ fn spawn_error(program: &str, error: std::io::Error) -> AcpError {
 /// its own group (`process_group(0)` at spawn), so wrappers like `npx` cannot
 /// leave grandchildren behind. `start_kill` still covers the child itself —
 /// and is the only option once its pid is gone.
-fn kill_tree(child: &mut Child) {
+fn kill_tree(
+    child: &mut Child,
+    #[cfg_attr(unix, allow(unused_variables))] job: &crate::platform::ChildJob,
+) {
+    #[cfg(unix)]
     if let Some(pid) = child.id() {
         // SAFETY: killpg(2) on the group the child leads; ESRCH just means
         // the whole group is already gone.
         unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
     }
+    #[cfg(windows)]
+    job.terminate();
     let _ = child.start_kill();
 }
 
@@ -573,7 +592,7 @@ async fn read_loop(weak: Weak<Inner>, stdout: ChildStdout) {
     // Reap the child for its exit status; killing its group also covers an
     // agent that closed stdout but kept running.
     let mut child = inner.child.lock().await;
-    kill_tree(&mut child);
+    kill_tree(&mut child, &inner.job);
     if let Ok(status) = child.wait().await {
         inner.record_exit(status);
     }
@@ -739,12 +758,13 @@ fn parse_capabilities(result: &Value) -> Capabilities {
 
 fn exit_detail(status: &ExitStatus) -> String {
     if let Some(code) = status.code() {
-        format!(" (exit code {code})")
-    } else if let Some(signal) = status.signal() {
-        format!(" (signal {signal})")
-    } else {
-        String::new()
+        return format!(" (exit code {code})");
     }
+    #[cfg(unix)]
+    if let Some(signal) = status.signal() {
+        return format!(" (signal {signal})");
+    }
+    String::new()
 }
 
 // ---------- agent configuration ----------
@@ -1062,12 +1082,8 @@ fn command_available(command: &str) -> bool {
 }
 
 fn program_available(program: &str) -> bool {
-    if program.contains('/') {
-        let path = Path::new(program);
-        return path.is_file()
-            && path
-                .metadata()
-                .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0);
+    if program.contains('/') || program.contains('\\') {
+        return crate::platform::is_executable(Path::new(program));
     }
     agents::resolve(program, std::env::var_os("PATH").as_deref()).is_some()
 }

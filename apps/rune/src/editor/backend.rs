@@ -1141,8 +1141,15 @@ fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
         .collect()
 }
 
+/// pid -> `CODEX_THREAD_ID`. Windows has no `ps -E`: attribution degrades to
+/// no thread ids (documented v1).
+#[cfg(windows)]
+fn thread_ids(_pids: &[u32]) -> HashMap<u32, String> {
+    HashMap::new()
+}
+
 /// pid -> `CODEX_THREAD_ID`, read from the processes' environments.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(windows)))]
 fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
     if pids.is_empty() {
         return HashMap::new();
@@ -1165,6 +1172,14 @@ fn thread_ids(pids: &[u32]) -> HashMap<u32, String> {
 }
 
 /// The process table: `pid`, `ppid` and the command of every process.
+/// Windows has no `ps`: attribution degrades to no rows (documented v1).
+#[cfg(windows)]
+fn process_table() -> (Vec<app_core::subagents::ProcessRow>, HashMap<u32, u64>) {
+    Default::default()
+}
+
+/// The process table: `pid`, `ppid` and the command of every process.
+#[cfg(not(windows))]
 fn process_table() -> (Vec<app_core::subagents::ProcessRow>, HashMap<u32, u64>) {
     let Ok(output) = std::process::Command::new("ps")
         .args(["-axww", "-o", "pid=,ppid=,rss=,command="])
@@ -1180,11 +1195,18 @@ fn process_table() -> (Vec<app_core::subagents::ProcessRow>, HashMap<u32, u64>) 
 
 /// The shell a `shell` session runs: `$SHELL`, else `/bin/zsh` — the same
 /// rule the desktop's `default_shell` uses.
+/// The user's default shell: `$SHELL`, else `/bin/zsh` on Unix and
+/// `%COMSPEC%` (or `powershell.exe`) on Windows.
 pub fn default_shell() -> String {
-    std::env::var("SHELL")
+    let (variable, fallback) = if cfg!(windows) {
+        ("COMSPEC", "powershell.exe")
+    } else {
+        ("SHELL", "/bin/zsh")
+    };
+    std::env::var(variable)
         .ok()
         .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 /// Where Claude's usage and activity hooks write. Tests use a temp
@@ -3925,6 +3947,7 @@ mod tests {
     /// One combined env-mutating test: the named account's argv carries its
     /// `CLAUDE_CONFIG_DIR`, a quoted sign-in command parses into words, and
     /// `Usage` reads a temp home.
+    #[cfg(unix)]
     #[test]
     fn named_account_launches_and_sign_in_and_usage_read() {
         let home = TempDir::new("rune-acct-home");

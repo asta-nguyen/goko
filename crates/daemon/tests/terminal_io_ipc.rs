@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 mod common;
 
 use base64::engine::general_purpose::STANDARD;

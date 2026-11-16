@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! The whole daemon, as a client sees it: the real `gokod` in a temp `GOKO_HOME`.
 
 mod common;

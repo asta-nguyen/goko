@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! The daemon client's own tests: a stand-in `gokod` on a Unix socket.
 //!
 //! The fake completes the handshake, then hands every request to the

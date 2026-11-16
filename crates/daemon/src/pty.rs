@@ -2,10 +2,14 @@ use crate::buffer::RingBuffer;
 use crate::terminal::TerminalModel;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use std::error::Error;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::PathBuf;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -31,10 +35,12 @@ const FLOW_RECHECK: Duration = Duration::from_millis(250);
 const QUEUE_RECHECK: Duration = Duration::from_millis(5);
 /// How often a write waiting for the child to take its input re-checks
 /// whether the child exited, so a write to a process that is gone ends.
+#[cfg(unix)]
 const WRITE_RECHECK: Duration = Duration::from_millis(100);
 /// Longest single wait of the reader for output. Output and the end of the
 /// PTY both end the wait at once; this only bounds it, and each expiry is a
 /// wakeup of an idle session, so it is long.
+#[cfg(unix)]
 const READ_WAIT: Duration = Duration::from_secs(10);
 /// Output chunks the terminal model may be behind the reader before the
 /// reader waits for it (at most 16 KiB each).
@@ -311,12 +317,15 @@ impl Model {
 type ExitState = Option<Result<ExitStatus, PtyError>>;
 
 pub struct PtyProcess {
-    pid: libc::pid_t,
+    pid: u32,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
-    /// A non-blocking handle on the PTY master for input. A write waits for
-    /// room in `select` and gives up once the child exited, so input nobody
-    /// will ever read cannot hold a thread forever.
-    writer: Mutex<File>,
+    /// The PTY master's input handle. On Unix it is non-blocking, so a write
+    /// waits for room in `select` and gives up once the child exited; on
+    /// Windows it is ConPTY's blocking writer.
+    writer: Mutex<PtyWriter>,
+    /// Windows: the Job Object owning the child's process tree.
+    #[cfg(windows)]
+    job: win::Job,
     shared: Arc<Mutex<Shared>>,
     gate: Arc<Condvar>,
     model: Arc<Model>,
@@ -347,6 +356,7 @@ impl PtyProcess {
                 pixel_height: 0,
             })
             .map_err(|error| PtyError::SpawnFailed(format!("could not open PTY: {error:#}")))?;
+        #[cfg(unix)]
         let (reader, writer) = nonblocking_master(pair.master.as_ref()).map_err(|error| {
             PtyError::SpawnFailed(format!("could not set up PTY input and output: {error}"))
         })?;
@@ -374,17 +384,28 @@ impl PtyProcess {
         })?;
         drop(slave);
 
-        // portable-pty starts the child with `setsid`, so its pid is also its process-group id.
-        let Some(pid) = child
-            .process_id()
-            .and_then(|pid| libc::pid_t::try_from(pid).ok())
-        else {
+        // On Unix portable-pty starts the child with `setsid`, so its pid is
+        // also its process-group id; on Windows the pid is the Job Object's
+        // assignment target.
+        let Some(pid) = child.process_id() else {
             let _ = child.kill();
             let _ = child.wait();
             return Err(PtyError::SpawnFailed(
                 "PTY backend did not provide a child process id".to_owned(),
             ));
         };
+        #[cfg(windows)]
+        let job = win::Job::assign(pid).map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            PtyError::SpawnFailed(format!("could not assign the PTY child to a job: {error}"))
+        })?;
+        #[cfg(windows)]
+        let (reader, writer) = windows_master_io(master.as_ref()).map_err(|error| {
+            let _ = job.terminate();
+            let _ = child.wait();
+            PtyError::SpawnFailed(format!("could not set up PTY input and output: {error}"))
+        })?;
 
         let shared = Arc::new(Mutex::new(Shared {
             buffer: RingBuffer::new(),
@@ -398,7 +419,7 @@ impl PtyProcess {
         let (model, feed) = match Model::spawn(spec.cols, spec.rows) {
             Ok(model) => model,
             Err(error) => {
-                let _ = signal_group(pid, libc::SIGKILL);
+                terminate_tree(pid);
                 let _ = child.wait();
                 return Err(PtyError::Io(format!(
                     "could not start PTY terminal model: {error}"
@@ -414,7 +435,7 @@ impl PtyProcess {
             Arc::clone(&feed),
             Arc::clone(&activity),
         ) {
-            let _ = signal_group(pid, libc::SIGKILL);
+            terminate_tree(pid);
             let _ = child.wait();
             return Err(PtyError::Io(format!(
                 "could not start PTY output reader: {error}"
@@ -423,7 +444,7 @@ impl PtyProcess {
 
         let (exit_sender, exit_state) = watch::channel(None);
         if let Err(error) = spawn_waiter(child, exit_sender) {
-            let _ = signal_group(pid, libc::SIGKILL);
+            terminate_tree(pid);
             return Err(PtyError::Io(format!(
                 "could not start PTY exit waiter: {error}"
             )));
@@ -433,6 +454,8 @@ impl PtyProcess {
             pid,
             master: Mutex::new(master),
             writer: Mutex::new(writer),
+            #[cfg(windows)]
+            job,
             shared,
             gate,
             model,
@@ -469,9 +492,14 @@ impl PtyProcess {
                             "the process exited before it read all of its input".to_owned(),
                         ));
                     }
+                    #[cfg(unix)]
                     wait_ready(writer.as_raw_fd(), Ready::Write, WRITE_RECHECK).map_err(
                         |error| PtyError::Io(format!("could not wait to write to PTY: {error}")),
                     )?;
+                    #[cfg(windows)]
+                    return Err(PtyError::Io(
+                        "the PTY input is not accepting writes".to_owned(),
+                    ));
                 }
                 Err(error) => {
                     return Err(PtyError::Io(format!("could not write to PTY: {error}")));
@@ -505,26 +533,36 @@ impl PtyProcess {
         Ok(())
     }
 
-    /// Send SIGTERM to the child process group.
+    /// Send SIGTERM to the child process group. Windows has no graceful
+    /// signal: this is already a tree kill there.
     pub fn terminate(&self) -> Result<(), PtyError> {
-        self.signal_process_group(libc::SIGTERM)
+        #[cfg(unix)]
+        return self.signal_process_group(libc::SIGTERM);
+        #[cfg(windows)]
+        return self.signal_process_group(0);
     }
 
     /// Send SIGHUP to the child process group: what a terminal sends when its
     /// window closes. Interactive shells ignore SIGTERM but exit on SIGHUP
     /// (and pass it on to their jobs), as do TUI agents.
     pub fn hangup(&self) -> Result<(), PtyError> {
-        self.signal_process_group(libc::SIGHUP)
+        #[cfg(unix)]
+        return self.signal_process_group(libc::SIGHUP);
+        #[cfg(windows)]
+        return self.signal_process_group(0);
     }
 
     /// Send SIGKILL to the child process group.
     pub fn kill(&self) -> Result<(), PtyError> {
-        self.signal_process_group(libc::SIGKILL)
+        #[cfg(unix)]
+        return self.signal_process_group(libc::SIGKILL);
+        #[cfg(windows)]
+        return self.signal_process_group(0);
     }
 
     /// Return the process identifier of the PTY child.
     pub fn pid(&self) -> u32 {
-        self.pid as u32
+        self.pid
     }
 
     /// Read the child process's current working directory when the platform exposes it.
@@ -657,12 +695,21 @@ impl PtyProcess {
             return Ok(());
         }
 
-        signal_group(self.pid, signal).map_err(|error| {
+        #[cfg(unix)]
+        return signal_group(self.pid, signal).map_err(|error| {
             PtyError::Io(format!(
                 "could not signal process group {}: {error}",
                 self.pid
             ))
-        })
+        });
+        #[cfg(windows)]
+        {
+            // No POSIX signals: every stop level is an immediate tree kill.
+            let _ = signal;
+            self.job.terminate().map_err(|error| {
+                PtyError::Io(format!("could not terminate the process tree: {error}"))
+            })
+        }
     }
 }
 
@@ -689,6 +736,7 @@ fn is_utf8_locale(locale: &str) -> bool {
     matches!(encoding.to_ascii_lowercase().as_str(), "utf8" | "utf-8")
 }
 
+#[cfg(unix)]
 fn is_available_utf8_locale(locale: &str) -> bool {
     if !is_utf8_locale(locale) {
         return false;
@@ -703,6 +751,13 @@ fn is_available_utf8_locale(locale: &str) -> bool {
     }
     unsafe { libc::freelocale(resolved) };
     true
+}
+
+/// ConPTY speaks UTF-8 regardless of locale; the inherited value is trusted
+/// as long as it names a UTF-8 locale.
+#[cfg(windows)]
+fn is_available_utf8_locale(locale: &str) -> bool {
+    is_utf8_locale(locale)
 }
 
 fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
@@ -720,7 +775,8 @@ fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
+fn process_current_dir(pid: u32) -> Option<PathBuf> {
+    let pid = pid as libc::pid_t;
     // SAFETY: proc_vnodepathinfo contains only integer fields, for which zero is valid.
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of_val(&info);
@@ -745,12 +801,12 @@ fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
+fn process_current_dir(pid: u32) -> Option<PathBuf> {
     fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_current_dir(_pid: libc::pid_t) -> Option<PathBuf> {
+fn process_current_dir(_pid: u32) -> Option<PathBuf> {
     None
 }
 
@@ -763,6 +819,7 @@ pub(crate) fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn spawn_reader(
     mut reader: File,
     shared: Arc<Mutex<Shared>>,
@@ -802,10 +859,47 @@ fn spawn_reader(
         })
 }
 
+/// Windows: ConPTY exposes a blocking `Read`; the thread parks in it, and the
+/// flow gate pauses between reads (backpressure reaches the child through the
+/// pipe). No readiness wait exists.
+#[cfg(windows)]
+fn spawn_reader(
+    mut reader: Box<dyn Read + Send>,
+    shared: Arc<Mutex<Shared>>,
+    gate: Arc<Condvar>,
+    feed: Arc<Mutex<SyncSender<ModelInput>>>,
+    activity: Arc<Notify>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("gokod-pty-reader".to_owned())
+        .spawn(move || {
+            let mut chunk = [0_u8; 16 * 1024];
+            loop {
+                wait_for_flow_credit(&shared, &gate);
+                match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        let feed = lock_unpoisoned(&feed);
+                        let (seq, bytes) = lock_unpoisoned(&shared).publish(&chunk[..count]);
+                        let end = seq + count as u64;
+                        let _ = feed.send(ModelInput::Output { end, bytes });
+                        drop(feed);
+                        activity.notify_one();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    // A broken pipe or a closed handle: the child is gone.
+                    Err(_) => break,
+                }
+            }
+            lock_unpoisoned(&shared).close();
+        })
+}
+
 /// Two handles on the PTY master — one to read output, one to write input — on
 /// a file description switched to non-blocking, so neither direction can park a
 /// thread in the kernel for good.
-fn nonblocking_master(master: &dyn portable_pty::MasterPty) -> io::Result<(File, File)> {
+#[cfg(unix)]
+fn nonblocking_master(master: &dyn portable_pty::MasterPty) -> io::Result<(File, PtyWriter)> {
     let fd = master
         .as_raw_fd()
         .ok_or_else(|| io::Error::other("the PTY backend has no master descriptor"))?;
@@ -815,9 +909,10 @@ fn nonblocking_master(master: &dyn portable_pty::MasterPty) -> io::Result<(File,
     let reader = File::from(borrowed.try_clone_to_owned()?);
     let writer = File::from(borrowed.try_clone_to_owned()?);
     set_nonblocking(fd)?;
-    Ok((reader, writer))
+    Ok((reader, PtyWriter(writer)))
 }
 
+#[cfg(unix)]
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: F_GETFL/F_SETFL take plain integers on a descriptor the caller owns.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -827,6 +922,7 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum Ready {
     Read,
@@ -835,6 +931,7 @@ enum Ready {
 
 /// Wait until `fd` can be read or written, or `timeout` passes. `select`, not
 /// `poll`: on macOS `poll` does not work on PTY devices.
+#[cfg(unix)]
 fn wait_ready(fd: RawFd, ready: Ready, timeout: Duration) -> io::Result<()> {
     if usize::try_from(fd).map_or(true, |fd| fd >= libc::FD_SETSIZE) {
         // `select` cannot name this descriptor; wait a little and let the caller retry.
@@ -943,12 +1040,158 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn signal_group(process_group_id: libc::pid_t, signal: i32) -> std::io::Result<()> {
+#[cfg(unix)]
+fn signal_group(process_group_id: u32, signal: i32) -> std::io::Result<()> {
     // SAFETY: `killpg` takes plain integers and has no memory-safety preconditions.
-    if unsafe { libc::killpg(process_group_id, signal) } == 0 {
+    if unsafe { libc::killpg(process_group_id as libc::pid_t, signal) } == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Kill a child tree while a spawn is failing. Unix: SIGKILL to the group.
+/// Windows: terminate the job (no-op when the pid has no job yet).
+#[cfg(unix)]
+fn terminate_tree(pid: u32) {
+    let _ = signal_group(pid, libc::SIGKILL);
+}
+
+#[cfg(windows)]
+fn terminate_tree(_pid: u32) {
+    // The job is dropped with `PtyProcess`; a failing spawn kills the child
+    // through `child.kill()` on every path that reaches here.
+}
+
+/// The PTY master's input side.
+#[cfg(unix)]
+struct PtyWriter(File);
+
+#[cfg(unix)]
+impl Write for PtyWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+#[cfg(unix)]
+impl AsRawFd for PtyWriter {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+/// Windows: ConPTY's blocking writer handle.
+#[cfg(windows)]
+struct PtyWriter(Box<dyn Write + Send>);
+
+#[cfg(windows)]
+impl Write for PtyWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Windows: the ConPTY reader clone and writer handle.
+#[cfg(windows)]
+fn windows_master_io(
+    master: &dyn portable_pty::MasterPty,
+) -> io::Result<(Box<dyn Read + Send>, PtyWriter)> {
+    let reader = master
+        .try_clone_reader()
+        .map_err(|error| io::Error::other(format!("{error:#}")))?;
+    let writer = master
+        .take_writer()
+        .map_err(|error| io::Error::other(format!("{error:#}")))?;
+    Ok((reader, PtyWriter(writer)))
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::c_void;
+    use std::io;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    /// A `KILL_ON_JOB_CLOSE` Job Object owning one PTY child's tree. Dropping
+    /// it kills whatever is left, which is the daemon's shutdown contract.
+    pub struct Job(HANDLE);
+
+    // SAFETY: job handles are process-wide and the job APIs are thread-safe.
+    unsafe impl Send for Job {}
+    // SAFETY: same as above.
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// Create the job and assign `pid` to it.
+        pub fn assign(pid: u32) -> io::Result<Self> {
+            // SAFETY: null attributes and name are allowed.
+            let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Self(handle);
+            // SAFETY: the extended-limit struct is plain data; zero is valid.
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: the struct matches the information class and its size.
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if configured == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the rights are the ones assignment needs; the handle is
+            // closed right after.
+            let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if process.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: both handles are valid for this call.
+            let assigned = unsafe { AssignProcessToJobObject(job.0, process) };
+            unsafe { CloseHandle(process) };
+            if assigned == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        pub fn terminate(&self) -> io::Result<()> {
+            // SAFETY: `self.0` is a live job handle.
+            if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closing the last handle kills the remaining tree.
+            unsafe { CloseHandle(self.0) };
+        }
     }
 }
 

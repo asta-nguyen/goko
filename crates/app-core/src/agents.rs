@@ -12,13 +12,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// A Finder-launched app gets launchd's bare `PATH`, so `claude`/`codex` are not found.
 /// Ask the user's login shell for its `PATH` and adopt it; the daemon and every
 /// session inherit it. Markers skip any noise printed by rc files.
+#[cfg(unix)]
 pub fn adopt_login_shell_path(shell: &str) {
     let Ok(output) = std::process::Command::new(shell)
         .args(["-ilc", "printf '__GOKO__%s__GOKO__' \"$PATH\""])
@@ -36,6 +36,11 @@ pub fn adopt_login_shell_path(shell: &str) {
         std::env::set_var("PATH", path);
     }
 }
+
+/// A Windows GUI process already inherits the merged user `PATH` (there is no
+/// launchd-style bare environment to repair), so this is a no-op.
+#[cfg(windows)]
+pub fn adopt_login_shell_path(_shell: &str) {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentInfo {
@@ -164,6 +169,14 @@ pub fn argv_for_account(
             })?;
             // A named Claude or Codex account sets its folder variable through
             // `env`; the dir stays a single argv element even with spaces.
+            // Windows has no `/usr/bin/env`: a named account there shares the
+            // default environment (documented v1 degradation).
+            #[cfg(windows)]
+            let env_word: Option<String> = {
+                let _ = account;
+                None
+            };
+            #[cfg(not(windows))]
             let env_word = match (agent, account.dir.as_ref()) {
                 ("claude", Some(dir)) => Some(format!("CLAUDE_CONFIG_DIR={}", dir.display())),
                 ("codex", Some(dir)) => Some(format!("CODEX_HOME={}", dir.display())),
@@ -208,42 +221,62 @@ pub fn argv_for_account(
                 )
                 .with_hint("check permissions for GOKO_HOME")
             })?;
-            let statusline = claude_statusline_command(
-                &usage_dir.join(format!("{session_id}.json")),
-                original_statusline,
-            )?;
-            let activity_file = activity_dir.join(&session_id);
-            let hook = |word: &str| -> Result<Value, BridgeError> {
-                Ok(json!([{
-                    "hooks": [{
+            // The statusline and hook commands are POSIX shell strings; on
+            // Windows they are skipped (documented v1 degradation: no usage
+            // capture or activity words there).
+            #[cfg(not(windows))]
+            let settings: Option<Value> = {
+                let statusline = claude_statusline_command(
+                    &usage_dir.join(format!("{session_id}.json")),
+                    original_statusline,
+                )?;
+                let activity_file = activity_dir.join(&session_id);
+                let hook = |word: &str| -> Result<Value, BridgeError> {
+                    Ok(json!([{
+                        "hooks": [{
+                            "type": "command",
+                            "command": claude_hook_command(&activity_file, word)?,
+                        }]
+                    }]))
+                };
+                Some(json!({
+                    "statusLine": {
                         "type": "command",
-                        "command": claude_hook_command(&activity_file, word)?,
-                    }]
-                }]))
+                        "command": statusline,
+                    },
+                    "hooks": {
+                        "UserPromptSubmit": hook("working")?,
+                        "Notification": hook("waiting")?,
+                        "Stop": hook("done")?,
+                        "PostToolUse": hook("working")?,
+                    }
+                }))
             };
-            let settings = json!({
-                "statusLine": {
-                    "type": "command",
-                    "command": statusline,
-                },
-                "hooks": {
-                    "UserPromptSubmit": hook("working")?,
-                    "Notification": hook("waiting")?,
-                    "Stop": hook("done")?,
-                    "PostToolUse": hook("working")?,
-                }
-            });
+            #[cfg(windows)]
+            let settings: Option<Value> = {
+                let _ = (
+                    original_statusline,
+                    &usage_dir,
+                    &activity_dir,
+                    session_id.as_str(),
+                );
+                None
+            };
+            #[cfg(windows)]
+            let mut argv: Vec<String> = Vec::new();
+            #[cfg(not(windows))]
             let mut argv = match env_word {
                 Some(word) => vec!["/usr/bin/env".to_owned(), word],
                 None => Vec::new(),
             };
-            argv.extend([
-                path.display().to_string(),
-                "--session-id".to_owned(),
-                session_id,
-                "--settings".to_owned(),
-                settings.to_string(),
-            ]);
+            #[cfg(windows)]
+            argv.push(path.display().to_string());
+            #[cfg(not(windows))]
+            argv.push(path.display().to_string());
+            argv.extend(["--session-id".to_owned(), session_id]);
+            if let Some(settings) = settings {
+                argv.extend(["--settings".to_owned(), settings.to_string()]);
+            }
             Ok(argv)
         }
     }
@@ -291,19 +324,32 @@ pub fn shell_words(command: &str) -> Option<Vec<String>> {
     shlex::split(command).filter(|words| !words.is_empty())
 }
 
-/// The first `name` under `path_var` that is an executable file.
+/// The first `name` under `path_var` that is an executable file. Windows
+/// also tries the `PATHEXT` variants (`claude` finds `claude.cmd`).
 pub(crate) fn resolve(name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path_var?).find_map(|dir| {
-        let hit = dir.join(name);
-        executable(&hit).then(|| fs::canonicalize(&hit).unwrap_or(hit))
+        let direct = dir.join(name);
+        if executable(&direct) {
+            return Some(fs::canonicalize(&direct).unwrap_or(direct));
+        }
+        #[cfg(windows)]
+        {
+            for extension in std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+                .split(';')
+            {
+                let hit = dir.join(format!("{name}{extension}"));
+                if executable(&hit) {
+                    return Some(fs::canonicalize(&hit).unwrap_or(hit));
+                }
+            }
+        }
+        None
     })
 }
 
 fn executable(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .metadata()
-            .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    crate::platform::is_executable(path)
 }
 
 #[cfg(test)]
@@ -312,6 +358,8 @@ mod tests {
     use crate::test_support::TempDir;
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStrExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     /// A `PATH` value naming `dirs` in order, each created under `dir`.
     fn path_var(dirs: &[&Path]) -> OsString {

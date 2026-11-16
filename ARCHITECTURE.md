@@ -7,9 +7,9 @@ their results are in [docs/agent-devkit](docs/agent-devkit/INDEX.md).
 
 ```text
 Rune app (apps/rune)                          gokod (crates/daemon)
-┌───────────────────────────┐   Unix socket   ┌──────────────────────────────┐
+┌───────────────────────────┐ socket or pipe  ┌──────────────────────────────┐
 │ native UI ─▶ daemon client┼────────────────▶│ server ─▶ SessionManager     │
-│ (alacritty_terminal grid) │   daemon.sock   │            └─▶ PtyProcess ─▶ child
+│ (alacritty_terminal grid) │ daemon.sock     │            └─▶ PtyProcess ─▶ child
 └─────────────┬─────────────┘                 └──────────────────────────────┘
               └─▶ crates/app-core ─▶ goko.db, git, language servers, ACP
 ```
@@ -22,15 +22,17 @@ Rune app (apps/rune)                          gokod (crates/daemon)
   authenticated `system.shutdown` request (see [Daemon lifecycle](#daemon-lifecycle)).
 - **The Rune app** (`apps/rune`, package `goko-rune`) is the only frontend. Its daemon
   client (`apps/rune/src/daemon.rs`) runs on its own Tokio runtime thread, speaks the
-  `protocol` crate to `daemon.sock`, and spawns `gokod` when the socket is absent. The UI
-  thread never touches the socket.
+  `protocol` crate over the transport seam (`apps/rune/src/daemon/net.rs`): `daemon.sock`
+  on macOS and Linux, a home-derived named pipe on Windows. It spawns `gokod` when the
+  endpoint is absent. The UI thread never touches the transport.
 - **`crates/app-core`** holds everything that is not UI and not PTY: the `goko.db` store,
   project and checkout validation, Git/file access, worktrees, agents/accounts/ACP,
   language servers, and usage/activity readers.
-- Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` on macOS and
-  `$XDG_STATE_HOME/goko` (`~/.local/state/goko`) elsewhere, where an existing
-  `~/Library/Application Support/Goko` from an earlier version is kept (mode 0700),
-  holding `daemon.lock`, `daemon.sock` (0600), `daemon.token` (0600), `daemon.log`,
+- Support directory: `$GOKO_HOME`, else `~/Library/Application Support/Goko` on macOS,
+  `$XDG_STATE_HOME/goko` (`~/.local/state/goko`) on Linux, and `%LOCALAPPDATA%\Goko` on
+  Windows, where an existing `~/Library/Application Support/Goko` from an earlier version
+  is kept. It is private to the user (mode 0700 on Unix, the profile ACL on Windows) and
+  holds `daemon.lock`, `daemon.sock` (0600, Unix only), `daemon.token` (0600), `daemon.log`,
   the app-owned `goko.db` (0600), `usage/claude/<session-id>.json` captures, and
   `activity/claude/<session-id>` hook files holding `working`, `waiting`, or `done`
   (files older than seven days are pruned at app startup).
@@ -207,16 +209,21 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
 
 ## Daemon lifecycle
 
-1. `gokod` takes an exclusive `flock` on `daemon.lock`. If it is held, it prints
-   `gokod: already running` and exits 0, and the first daemon is untouched.
-2. It writes a fresh 32-byte random token (64 hex characters) to `daemon.token`, removes
-   any stale `daemon.sock`, and binds the socket with mode 0600.
-3. SIGTERM or SIGINT stops accepting, drops every connection, calls
-   `SessionManager::shutdown()` (SIGTERM every session's process group, wait up to 2 s,
-   then SIGKILL), removes the socket file, and exits 0. Blocking work still running then
-   gets at most 2 s more (`Runtime::shutdown_timeout`), so nothing stuck keeps it alive.
-4. The authenticated `system.shutdown` request follows the same stop and session cleanup
-   path. The app does not send it; it is for tools and tests. App data is kept.
+1. `gokod` takes an exclusive lock on `daemon.lock` (`flock` on Unix, `File::try_lock` on
+   Windows). If it is held, it prints `gokod: already running` and exits 0, and the first
+   daemon is untouched. On Windows a live pipe also answers `ERROR_PIPE_BUSY` with the same
+   message and exit code.
+2. It writes a fresh 32-byte random token (64 hex characters, from `getrandom`) to
+   `daemon.token`, then binds the endpoint: `daemon.sock` (mode 0600) on Unix, the
+   owner-only named pipe on Windows.
+3. SIGTERM or SIGINT (Unix), console close or Ctrl-C (Windows), or the authenticated
+   `system.shutdown` request stops accepting, drops every connection, and calls
+   `SessionManager::shutdown()`. On Unix that SIGTERMs every session's process group, waits
+   up to 2 s, then SIGKILLs; on Windows it terminates each session's Job Object, which
+   kills the whole tree at once. The socket file is removed on Unix; the pipe disappears
+   with the process. Blocking work still running then gets at most 2 s more
+   (`Runtime::shutdown_timeout`), so nothing stuck keeps it alive. App data is kept.
+4. The `system.shutdown` request is for tools and tests; the app does not send it.
 
 The lock is released by the kernel when the process dies, so a crashed daemon never blocks
 the next one; the stale socket file is replaced on the next start.
@@ -288,16 +295,18 @@ created | starting → failed
 
 `PtyProcess` (via `portable-pty`) opens the PTY, starts the child in a new session with
 the PTY as its controlling terminal (`TERM=xterm-256color`, `COLORTERM=truecolor`), and
-keeps the master. Each child gets the first inherited UTF-8 locale among `LC_ALL`, `LC_CTYPE`,
-and `LANG` that the system recognizes, or `en_US.UTF-8` when none is usable. The child clears
-an unavailable or non-UTF-8 `LC_ALL` and sets `LC_CTYPE` and `LANG` to the selected locale;
-Goko and the daemon keep their
-original environments. The child's pid is also its process-group id, so SIGTERM and SIGKILL go
-to the whole group with `killpg` and take grandchildren with them. The daemon retains the
-child PID to query its current working directory: macOS uses `proc_pidinfo` with
-`PROC_PIDVNODEPATHINFO`, Linux reads `/proc/<pid>/cwd`, and other platforms report an
-unknown directory. Commands are `argv` arrays; no shell string is ever built. A reader thread
-moves output into the replay buffer and a waiter thread records the exit status. Resize
+keeps the master. On Unix each child gets the first inherited UTF-8 locale among `LC_ALL`,
+`LC_CTYPE`, and `LANG` that the system recognizes, or `en_US.UTF-8` when none is usable. The
+child clears an unavailable or non-UTF-8 `LC_ALL` and sets `LC_CTYPE` and `LANG` to the
+selected locale; Goko and the daemon keep their original environments. On Windows ConPTY is
+always UTF-8 and the locale is left alone. On Unix the child's pid is also its
+process-group id, so SIGTERM and SIGKILL go to the whole group with `killpg` and take
+grandchildren with them; on Windows the child is assigned to a `KILL_ON_JOB_CLOSE` Job
+Object and `stop` calls `TerminateJobObject`. The daemon retains the child PID to query its
+current working directory: macOS uses `proc_pidinfo` with `PROC_PIDVNODEPATHINFO`, Linux
+reads `/proc/<pid>/cwd`, and Windows reports an unknown directory. Commands are `argv`
+arrays; no shell string is ever built. A reader thread moves output into the replay buffer
+and a waiter thread records the exit status. Resize
 accepts 1 to 1000 in each dimension.
 
 Closing the master (the daemon dying) hangs up the terminal, so processes that do not
@@ -342,8 +351,10 @@ with `protocol::SCROLLBACK_LINES` of history, the same as the app's grids) for t
 paint of a `paint: true` subscribe. It is parsed on its own thread (`gokod-pty-model`) fed
 in stream order, so neither the reader nor the subscribe/ack lock waits for parsing; a
 paint holds that lock and waits until the model has parsed up to its offset. The PTY
-master is non-blocking: the reader and a pending write wait in `select` (macOS `poll`
-does not work on PTYs), and a write gives up once the child has exited.
+master is non-blocking on Unix: the reader and a pending write wait in `select` (macOS
+`poll` does not work on PTYs), and a write gives up once the child has exited. On Windows
+ConPTY exposes a blocking reader instead, so one dedicated thread parks in it and the flow
+window pauses between reads; a broken pipe ends the stream, and there is no readiness wait.
 
 ## Documented limit: raw replay
 

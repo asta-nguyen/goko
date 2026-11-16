@@ -2538,6 +2538,9 @@ fn badge_button(label: &str, tone: Color, ink: &Ink, f: impl Fn(&mut State) + 's
 
 /// Open `url` with the platform's opener, without waiting for it.
 pub(crate) fn open_url(url: &str) {
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(not(windows))]
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {

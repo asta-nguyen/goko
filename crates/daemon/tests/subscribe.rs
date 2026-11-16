@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use daemon::pty::{PtyProcess, SpawnSpec, StreamItem};
 use std::time::Duration;
 

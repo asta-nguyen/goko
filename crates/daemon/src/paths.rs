@@ -2,7 +2,6 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 /// Locations of the daemon's files inside its support directory.
@@ -15,6 +14,15 @@ impl Paths {
     /// `GOKO_HOME`, else the platform's default folder (see [`dir_from`]),
     /// created with mode 0700.
     pub fn resolve() -> io::Result<Self> {
+        #[cfg(windows)]
+        {
+            return Self::at(dir_from_windows(
+                env::var_os("GOKO_HOME"),
+                env::var_os("LOCALAPPDATA"),
+                env::var_os("USERPROFILE"),
+            )?);
+        }
+        #[cfg(not(windows))]
         Self::at(dir_from(
             env::var_os("GOKO_HOME"),
             env::var_os("HOME"),
@@ -25,8 +33,22 @@ impl Paths {
     /// Use `dir` as the support directory, creating it (and parents) with mode 0700.
     pub fn at(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
-        DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = DirBuilder::new();
+            fs::create_dir_all(&dir)?;
+        }
         Ok(Self { dir })
+    }
+
+    /// The support directory itself (pipe-name derivation on Windows).
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn lock(&self) -> PathBuf {
@@ -39,6 +61,19 @@ impl Paths {
 
     pub fn socket(&self) -> PathBuf {
         self.dir.join("daemon.sock")
+    }
+
+    /// The transport endpoint to log: the socket path on Unix, the named-pipe
+    /// name on Windows.
+    pub fn endpoint(&self) -> String {
+        #[cfg(unix)]
+        {
+            self.socket().display().to_string()
+        }
+        #[cfg(windows)]
+        {
+            crate::net::pipe_name(&self.dir)
+        }
     }
 
     pub fn token(&self) -> PathBuf {
@@ -59,6 +94,7 @@ pub(crate) fn remove_if_exists(path: &Path) -> io::Result<()> {
 }
 
 /// The folder Goko first used on every platform, and still uses on macOS.
+#[cfg(unix)]
 const APPLICATION_SUPPORT: &str = "Library/Application Support/Goko";
 
 /// `GOKO_HOME`, else the platform's default folder (the same rule as
@@ -66,6 +102,7 @@ const APPLICATION_SUPPORT: &str = "Library/Application Support/Goko";
 /// elsewhere `$XDG_STATE_HOME/goko`, or `~/.local/state/goko` when that
 /// variable is unset or not absolute, unless the macOS-style folder already
 /// exists, which an older install keeps using.
+#[cfg(unix)]
 fn dir_from(
     goko_home: Option<OsString>,
     home: Option<OsString>,
@@ -84,6 +121,30 @@ fn dir_from(
     ))
 }
 
+/// `GOKO_HOME`, else `%LOCALAPPDATA%\Goko`, else
+/// `%USERPROFILE%\AppData\Local\Goko` (the same rule as `app_core::home`).
+#[cfg(windows)]
+fn dir_from_windows(
+    goko_home: Option<OsString>,
+    local_app_data: Option<OsString>,
+    user_profile: Option<OsString>,
+) -> io::Result<PathBuf> {
+    if let Some(dir) = goko_home.filter(|dir| !dir.is_empty()) {
+        return Ok(dir.into());
+    }
+    if let Some(local) = local_app_data.filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(local).join("Goko"));
+    }
+    let profile = user_profile.filter(|dir| !dir.is_empty()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "neither GOKO_HOME, LOCALAPPDATA nor USERPROFILE is set",
+        )
+    })?;
+    Ok(PathBuf::from(profile).join("AppData/Local/Goko"))
+}
+
+#[cfg(unix)]
 fn default_dir(home: &Path, xdg_state_home: Option<OsString>, macos: bool) -> PathBuf {
     let application_support = home.join(APPLICATION_SUPPORT);
     if macos || application_support.is_dir() {
@@ -102,7 +163,6 @@ fn default_dir(home: &Path, xdg_state_home: Option<OsString>, macos: bool) -> Pa
 mod tests {
     use super::{default_dir, dir_from, Paths, APPLICATION_SUPPORT};
     use crate::test_support::TempDir;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -111,8 +171,12 @@ mod tests {
         let dir = temp.path().join("nested/goko");
         let paths = Paths::at(&dir).expect("create paths");
 
-        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o700);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
         assert_eq!(paths.lock(), dir.join("daemon.lock"));
         assert_eq!(
             paths.worktree_operations_lock(),

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![cfg(unix)]
 
 use daemon::paths::Paths;
 use daemon::session::SessionManager;

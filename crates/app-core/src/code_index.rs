@@ -24,9 +24,9 @@ use crate::git_view::{
 use protocol::message::ErrorCode;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::collections::{HashMap, HashSet};
-use std::fs::{DirBuilder, OpenOptions};
+use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -491,11 +491,7 @@ fn open_index(
 
 fn open_for_refresh(path: &Path, checkout: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .map_err(io)?;
+        crate::platform::create_private_dir(parent).map_err(io)?;
     }
     create_file(path)?;
     let canonical = checkout.to_string_lossy();
@@ -585,13 +581,9 @@ fn check_schema(conn: &Connection, canonical: &str) -> Result<bool, BridgeError>
 }
 
 fn create_file(path: &Path) -> Result<(), BridgeError> {
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)
-        .map_err(io)?;
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(false);
+    crate::platform::open_private(&mut options, path).map_err(io)?;
     Ok(())
 }
 

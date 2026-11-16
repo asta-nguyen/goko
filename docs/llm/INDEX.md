@@ -8,6 +8,7 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 - [App icons](domains/app-icons.md) — Goko icon assets, macOS bundles, and Linux launcher packaging
 - [Architecture overview](architecture/overview.md) — process topology, domains, and cross-domain dependencies
 - [Desktop Editor](architecture/editor.md) — CodeMirror editing, Vim mode, Git content search, result navigation, and staging, commit, push, and ACP commit messages
+- [Gokod daemon](domains/gokod-daemon.md) — transport (Unix socket or Windows named pipe), PTY driver, process stop, and GOKO_HOME resolution
 - [Desktop Settings](domains/desktop-settings.md) — Settings page navigation, preference controls, and ACP agents
 - [Desktop Theme](domains/desktop-theme.md) — dark and light palettes and theme preference behavior
 - [Rune chrome](domains/rune-chrome.md) — goko-rune header, workspace tab strip, and session controls strip on mock data
@@ -17,6 +18,7 @@ Maintenance rules: [AGENTS.md](AGENTS.md).
 
 | Prefix | Domain |
 |---|---|
+| GKD | Gokod daemon |
 | ICO | App icons |
 | EDT | Desktop Editor |
 | RNC | Rune chrome |

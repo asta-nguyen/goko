@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
@@ -762,7 +762,12 @@ pub fn env_copy(
 
 fn copy_env_file(source: &Path, target: &Path) -> io::Result<bool> {
     let mut source_options = OpenOptions::new();
-    source_options.read(true).custom_flags(libc::O_NOFOLLOW);
+    source_options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        source_options.custom_flags(libc::O_NOFOLLOW);
+    }
     let mut source_file = source_options.open(source)?;
     if !source_file.metadata()?.is_file() {
         return Err(io::Error::new(
@@ -771,17 +776,20 @@ fn copy_env_file(source: &Path, target: &Path) -> io::Result<bool> {
         ));
     }
     let mut target_options = OpenOptions::new();
-    target_options.write(true).create_new(true).mode(0o600);
-    let mut target_file = match target_options.open(target) {
+    target_options.write(true).create_new(true);
+    let mut target_file = match crate::platform::open_private(&mut target_options, target) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
         Err(error) => return Err(error),
     };
-    let identity = target_file.metadata().ok();
+    let identity = target_file
+        .metadata()
+        .ok()
+        .map(|meta| crate::platform::file_id(&meta));
     if let Err(error) = io::copy(&mut source_file, &mut target_file) {
         drop(target_file);
         if let (Some(identity), Ok(current)) = (identity, fs::symlink_metadata(target)) {
-            if current.dev() == identity.dev() && current.ino() == identity.ino() {
+            if crate::platform::file_id(&current) == identity {
                 let _ = fs::remove_file(target);
             }
         }

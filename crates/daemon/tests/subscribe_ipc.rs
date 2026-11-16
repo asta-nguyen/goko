@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 mod common;
 
 use common::{frame_bytes, read_incoming, Client, Incoming, TestServer};

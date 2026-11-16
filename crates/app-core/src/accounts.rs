@@ -33,8 +33,7 @@ use crate::usage::codex_home_from;
 use protocol::message::ErrorCode;
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, DirBuilder};
-use std::os::unix::fs::{symlink, DirBuilderExt};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 /// Settings key holding the whole `accounts` JSON value.
@@ -380,7 +379,7 @@ pub fn link_shared(agent: &str, default_dir: &Path, dir: &Path) -> Vec<String> {
         if fs::symlink_metadata(&source).is_err() || fs::symlink_metadata(&target).is_ok() {
             continue;
         }
-        if symlink(&source, &target).is_ok() {
+        if crate::platform::link_dir(&source, &target).is_ok() {
             linked.push(entry.to_owned());
         }
     }
@@ -621,16 +620,12 @@ fn ensure_dir(dir: &Path) -> Result<(), BridgeError> {
     if dir.is_dir() {
         return Ok(());
     }
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|error| {
-            invalid(format!(
-                "cannot create the account folder {}: {error}",
-                dir.display()
-            ))
-        })
+    crate::platform::create_private_dir(dir).map_err(|error| {
+        invalid(format!(
+            "cannot create the account folder {}: {error}",
+            dir.display()
+        ))
+    })
 }
 
 /// The entries an agent can share with its Default folder. Anything not
@@ -669,7 +664,8 @@ mod tests {
     use protocol::message::ErrorCode;
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
     use std::path::{Path, PathBuf};
 
     fn open(dir: &TempDir) -> Storage {
@@ -1575,6 +1571,7 @@ mod tests {
         assert!(error.hint.unwrap().contains("install"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn add_rejects_a_symlink_to_the_default_folder() {
         let dir = TempDir::new("accounts-dir-link-default");
@@ -1624,6 +1621,7 @@ mod tests {
         assert!(read(&storage).claude.items.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn add_rejects_a_parent_symlink_to_the_default_folder() {
         let dir = TempDir::new("accounts-parent-link");
@@ -1649,6 +1647,7 @@ mod tests {
         assert!(read(&storage).claude.items.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn add_rejects_a_symlink_to_another_accounts_folder() {
         let dir = TempDir::new("accounts-link-account");
@@ -1672,6 +1671,7 @@ mod tests {
         assert_eq!(read(&storage).claude.items.len(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn add_accepts_a_symlink_to_a_different_real_folder() {
         let dir = TempDir::new("accounts-link-legit");

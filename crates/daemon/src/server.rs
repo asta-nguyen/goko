@@ -23,7 +23,8 @@
 //!   socket, so frames never interleave.
 
 use crate::auth::Token;
-use crate::paths::{remove_if_exists, Paths};
+use crate::net;
+use crate::paths::Paths;
 use crate::pty::{PtyError, PtyProcess, Snapshot, StreamItem, FLOW_WINDOW};
 use crate::session::{CreateSpec, SessionError, SessionManager};
 use base64::engine::general_purpose::STANDARD;
@@ -37,17 +38,13 @@ use protocol::PROTOCOL_VERSION;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, warn};
@@ -68,19 +65,17 @@ struct State {
     shutdown: mpsc::UnboundedSender<()>,
 }
 
-/// Replace any stale `daemon.sock` and bind a fresh one with mode 0600. The caller must
-/// hold the instance lock, which proves no live daemon owns the old socket.
-pub fn bind(paths: &Paths) -> io::Result<UnixListener> {
-    remove_if_exists(&paths.socket())?;
-    let listener = UnixListener::bind(paths.socket())?;
-    fs::set_permissions(paths.socket(), Permissions::from_mode(0o600))?;
-    Ok(listener)
+/// Bind the daemon's transport (`daemon.sock` on Unix, its named pipe on
+/// Windows). The caller must hold the instance lock, which proves no live
+/// daemon owns the old endpoint.
+pub fn bind(paths: &Paths) -> io::Result<net::Listener> {
+    net::Listener::bind(paths)
 }
 
 /// Accept clients until `shutdown` completes. Open connections are dropped on return;
 /// the sessions keep running until the caller shuts the manager down.
 pub async fn serve(
-    listener: UnixListener,
+    mut listener: net::Listener,
     token: Token,
     sessions: Arc<SessionManager>,
     worktree_operations_lock: PathBuf,
@@ -101,7 +96,7 @@ pub async fn serve(
         tokio::select! {
             () = &mut shutdown => return Ok(()),
             accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+                Ok(stream) => {
                     connections.spawn(handle(stream, Arc::clone(&state)));
                 }
                 Err(error) => {
@@ -114,20 +109,13 @@ pub async fn serve(
     }
 }
 
+/// Take the shared session-launch lock a worktree removal takes exclusively.
+/// Unix keeps the `flock`; Windows uses the std shared file lock, which the
+/// worktree-removal side takes exclusively.
 async fn acquire_session_launch_lock(path: PathBuf) -> Result<File, ProtoError> {
     let file = tokio::task::spawn_blocking(move || -> io::Result<File> {
-        let mut options = OpenOptions::new();
-        options
-            .create(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW);
-        let file = options.open(path)?;
-        // SAFETY: `file` stays open while the shared lock protects PTY creation.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        let file = open_launch_lock(&path)?;
+        lock_shared(&file)?;
         Ok(file)
     })
     .await
@@ -144,7 +132,48 @@ async fn acquire_session_launch_lock(path: PathBuf) -> Result<File, ProtoError> 
     Ok(file)
 }
 
-async fn handle(stream: UnixStream, state: Arc<State>) {
+#[cfg(unix)]
+fn open_launch_lock(path: &std::path::Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = OpenOptions::new();
+    options
+        .create(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn lock_shared(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` stays open while the shared lock protects PTY creation.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_launch_lock(path: &std::path::Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn lock_shared(file: &File) -> io::Result<()> {
+    use std::fs::TryLockError;
+    file.try_lock_shared().map_err(|error| match error {
+        TryLockError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        TryLockError::Error(error) => error,
+    })
+}
+
+async fn handle(stream: net::Stream, state: Arc<State>) {
     if let Err(error) = connection(stream, &state).await {
         match error.kind() {
             io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset => {
@@ -155,7 +184,7 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
     }
 }
 
-async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
+async fn connection(mut stream: net::Stream, state: &State) -> io::Result<()> {
     let first = match tokio::time::timeout(HELLO_TIMEOUT, next_control(&mut stream)).await {
         Ok(first) => first?,
         Err(_) => {
@@ -193,7 +222,7 @@ async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
     };
     stream.write_all(&encode_control(&hello_ok)?).await?;
 
-    let (mut reader, writer) = stream.into_split();
+    let (mut reader, writer) = tokio::io::split(stream);
     let (outgoing, queued) = mpsc::channel(OUTGOING_QUEUE);
     let writer = tokio::spawn(write_frames(writer, queued));
     let mut client = Client {
@@ -688,7 +717,7 @@ async fn send_queued(outgoing: &mpsc::Sender<Vec<u8>>, bytes: Vec<u8>) -> io::Re
 
 /// The connection's only writer: frames reach the socket whole and in queue order.
 async fn write_frames(
-    mut writer: OwnedWriteHalf,
+    mut writer: impl AsyncWrite + Unpin,
     mut queued: mpsc::Receiver<Vec<u8>>,
 ) -> io::Result<()> {
     while let Some(bytes) = queued.recv().await {

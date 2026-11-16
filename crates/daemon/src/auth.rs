@@ -1,7 +1,6 @@
 use crate::paths::{remove_if_exists, Paths};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 
 /// The shared secret clients must present in `Hello`: 64 hex characters.
 pub struct Token(String);
@@ -24,17 +23,19 @@ impl Token {
 /// instance lock.
 pub fn create_token(paths: &Paths) -> io::Result<Token> {
     let mut bytes = [0_u8; 32];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
 
     // Replace the file instead of truncating it so a stale file's mode cannot apply.
     remove_if_exists(&paths.token())?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(paths.token())?
-        .write_all(token.as_bytes())?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(paths.token())?.write_all(token.as_bytes())?;
     Ok(Token(token))
 }
 
@@ -43,7 +44,6 @@ mod tests {
     use super::create_token;
     use crate::paths::Paths;
     use crate::test_support::TempDir;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn token_file_is_0600_with_64_hex_characters() {
@@ -52,11 +52,15 @@ mod tests {
 
         create_token(&paths).unwrap();
 
-        let mode = std::fs::metadata(paths.token())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(paths.token())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let text = std::fs::read_to_string(paths.token()).unwrap();
         assert_eq!(text.len(), 64);
         assert!(text.bytes().all(|byte| byte.is_ascii_hexdigit()));
