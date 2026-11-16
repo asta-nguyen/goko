@@ -1,0 +1,26 @@
+crates/app-core/src/home.rs
+  s_e91da40daf9a7a::t_0391bdd0ebbcbd 24-28,30,34-35
+crates/daemon/src/paths.rs
+  s_e91da40daf9a7a::t_63e25abf4dda26 167
+  s_e91da40daf9a7a::t_f45fb50246705d 163,192,204,213,232,244,256
+  s_e91da40daf9a7a::t_3fb127a10017cc 164-165
+  s_e91da40daf9a7a::t_0391bdd0ebbcbd 18-22,24,28-29
+crates/daemon/src/server.rs
+  s_e91da40daf9a7a::t_0391bdd0ebbcbd 164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e41f38e082682ab61716971595877f6bfc459cc7",
+  "prompts": {},
+  "sessions": {
+    "s_e91da40daf9a7a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pattern-ease",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
