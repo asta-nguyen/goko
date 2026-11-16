@@ -12,6 +12,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::index::Side;
+use alacritty_terminal::selection::SelectionType;
 use protocol::session::SessionId;
 use rune::{Color, El, Phase, TextStyle, Tx, col, el, row};
 use serde::{Deserialize, Serialize};
@@ -682,6 +684,110 @@ impl State {
         true
     }
 
+    /// A drag in a pane that is not the program's: it selects. The first press
+    /// starts a selection (a double click a word, a triple click a line), moving
+    /// extends it, and past the pane's top or bottom edge the view scrolls on a
+    /// repeat while the press is held. Releasing copies what is selected; a
+    /// release that never moved is a click, reported to a program that captures
+    /// the mouse (`captured`) instead.
+    fn pane_select(
+        &mut self,
+        key: &str,
+        d: &rune::Drag,
+        tx: &mut Tx,
+        captured: bool,
+        cell_w: f32,
+        line_h: f32,
+    ) {
+        let ink = self.ink;
+        let Some(att) = self.attachments.get_mut(key) else {
+            return;
+        };
+        let (cols, rows) = att.term.size();
+        let row_f = (d.y - PANE_PAD) / line_h;
+        let col_f = ((d.x - PANE_PAD) / cell_w).max(0.0);
+        let col = (col_f as usize).min(cols.saturating_sub(1));
+        let side = if col_f.fract() < 0.5 {
+            Side::Left
+        } else {
+            Side::Right
+        };
+        let row = (row_f.max(0.0) as usize).min(rows.saturating_sub(1));
+        let mut click = None;
+        match d.phase {
+            Phase::Down => {
+                let kind = match d.clicks {
+                    0 | 1 => SelectionType::Simple,
+                    2 => SelectionType::Semantic,
+                    _ => SelectionType::Lines,
+                };
+                att.term.select_start(kind, row, col, side);
+            }
+            Phase::Move => {
+                // Past an edge the view scrolls, faster the farther out the pointer is.
+                let past = if row_f < 0.0 {
+                    -row_f
+                } else {
+                    row_f - rows as f32 + 1.0
+                };
+                if past > 0.0 {
+                    let lines = past.ceil().clamp(1.0, 5.0) as i32;
+                    att.term.scroll_by(if row_f < 0.0 { lines } else { -lines });
+                    tx.drag_repeat_after(Duration::from_millis(50));
+                }
+                att.term.select_update(row, col, side);
+            }
+            Phase::Up => {
+                let moved = d.dx.abs() >= 4.0 || d.dy.abs() >= 4.0;
+                if d.cancelled() {
+                    att.term.select_clear();
+                } else if captured && d.clicks <= 1 && !moved {
+                    att.term.select_clear();
+                    click = Some((d.x, d.y));
+                } else if let Some(text) = att.term.selection_text() {
+                    tx.copy(text);
+                    self.notice = Some("Copied to clipboard".into());
+                }
+            }
+        }
+        // Draw the new highlight now, not on the next poll.
+        let Some(att) = self.attachments.get_mut(key) else {
+            return;
+        };
+        let lines = att.term.lines(&ink);
+        if att.lines.as_slice() != lines {
+            let lines = lines.to_vec();
+            att.set_lines(&lines, key);
+        }
+        if let Some((x, y)) = click {
+            for kind in [term::MouseKind::Press(0), term::MouseKind::Release(0)] {
+                self.pane_mouse(key, kind, x, y, cell_w, line_h);
+            }
+        }
+    }
+
+    /// Cmd+C: put the focused pane's selection on the clipboard. `false` when
+    /// nothing is selected there.
+    pub fn copy_pane_selection(&mut self, tx: &mut Tx) -> bool {
+        let Some(key) = self
+            .current_tab()
+            .and_then(State::focused_pane)
+            .map(|pane| pane.session.clone())
+        else {
+            return false;
+        };
+        let Some(text) = self
+            .attachments
+            .get(&key)
+            .and_then(|att| att.term.selection_text())
+        else {
+            return false;
+        };
+        tx.copy(text);
+        self.notice = Some("Copied to clipboard".into());
+        true
+    }
+
     /// A pointer event over pane `key`'s cell — press, drag motion, hover
     /// or release — as the mouse-report bytes the program asked for. `x`,
     /// `y` are the pane's own layout points; the cell clamps to the grid.
@@ -711,6 +817,8 @@ impl State {
             return;
         };
         let session = att.term.session;
+        #[cfg(test)]
+        self.mouse_sent.push(bytes.clone());
         self.write_terminal(session, &bytes);
     }
 
@@ -1453,13 +1561,20 @@ impl State {
             let Some(session) = self.session_id(&key) else {
                 continue;
             };
-            let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
+            // Wait for the pane's first layout, before subscribing: the replay
+            // has to be parsed at the real grid size, and the layout asks for a
+            // frame once it has measured the pane. Subscribing first and
+            // dropping the channels made the daemon replay the session's output
+            // again on every poll for a pane never shown (a restored tab in the
+            // background), which kept the app and the daemon busy and growing.
+            let Some(&(cols, rows)) = self.pane_grids.get(&key) else {
                 continue;
             };
-            // Wait for the pane's first layout: the replay has to be parsed
-            // at the real grid size, and the layout asks for a frame once
-            // it has measured the pane.
-            let Some(&(cols, rows)) = self.pane_grids.get(&key) else {
+            #[cfg(test)]
+            {
+                self.output_subscribes += 1;
+            }
+            let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
                 continue;
             };
             // The daemon replays its retained output as soon as the stream
@@ -2036,7 +2151,6 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let tid = tab.id.clone();
     let (drop_tid, drop_pid, drop_key, hover_key) =
         (tid.clone(), pid.clone(), key.clone(), key.clone());
-    let (click_tid, click_pid) = (tid.clone(), pid.clone());
     let focused = pane.id == tab.active_pane;
     let title = s
         .session_by_key(&key)
@@ -2137,42 +2251,35 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 tx.wake_after(Duration::from_millis(16));
             }
         });
+    // The terminal owns the selection (`Terminal::select_*`), so a drag in a
+    // pane selects, reaches into the history and scrolls when it leaves the pane.
     // A program in mouse-report mode (Claude Code and Codex both capture the
-    // mouse) still lets you select: a drag selects the text and a click with
-    // no drag is reported to the program, which is what you want from an agent
-    // pane. Holding Option hands the whole pointer to the program, drags
-    // included — attaching `on_drag` makes rune stand its text selection down,
-    // what a real terminal does while an app captures the mouse. Holding Shift
-    // takes it all back for selection, as Ghostty, kitty and Alacritty do.
-    // With no mode the pane keeps selection and the handlers stay off.
-    let (mouse, hover) = s
+    // mouse) still lets you select there: a click with no drag is reported to it.
+    // But a program on the alternate screen (Claude Code's fullscreen mode) keeps
+    // no history for the terminal to select or scroll through: it scrolls and
+    // selects inside its own UI, so it gets the drag, and while the pointer is
+    // held past the pane's top or bottom it is told so again and again, which is
+    // what makes it scroll. Holding Option hands the drag to any capturing
+    // program, and Shift takes the pointer back for selection, as Ghostty, kitty
+    // and Alacritty do.
+    let (mouse, hover, alt_screen) = s
         .attachments
         .get(&key)
         .filter(|_| !s.editor.modifiers.shift)
-        .map(|att| (att.term.wants_mouse(), att.term.wants_hover()))
+        .map(|att| {
+            (
+                att.term.wants_mouse(),
+                att.term.wants_hover(),
+                att.term.alt_screen(),
+            )
+        })
         .unwrap_or_default();
-    let full = mouse && s.editor.modifiers.alt;
-    if mouse && !full {
-        // A press carries no position, so the click goes where the pointer last was.
-        // ponytail: every pointer move over the pane writes this field and wakes a
-        // frame; a position on the press event would make it free.
-        let click_key = key.clone();
-        cell = cell
-            .on_pointer_move_local(move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
-                s.pane_pointer = (e.x, e.y);
-            })
-            .on_press(move |s: &mut State| {
-                s.focus_pane(&click_tid, &click_pid);
-                let (x, y) = s.pane_pointer;
-                for kind in [term::MouseKind::Press(0), term::MouseKind::Release(0)] {
-                    s.pane_mouse(&click_key, kind, x, y, cell_w, line_h);
-                }
-            });
-    }
-    if full {
-        let drag_key = key.clone();
-        cell = cell.pointer_buttons([rune::PointerButton::Middle]).on_drag(
+    let full = mouse && (alt_screen || s.editor.modifiers.alt);
+    let drag_key = key.clone();
+    cell = if full {
+        cell.pointer_buttons([rune::PointerButton::Middle]).on_drag(
             move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+                s.pane_drag_held = d.phase != rune::Phase::Up;
                 let button = match tx.button() {
                     rune::PointerButton::Primary => 0,
                     rune::PointerButton::Middle => 1,
@@ -2184,9 +2291,24 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                     rune::Phase::Up => term::MouseKind::Release(button),
                 };
                 s.pane_mouse(&drag_key, kind, d.x, d.y, cell_w, line_h);
+                // Held past the top or bottom: keep reporting the edge cell, so the
+                // program keeps scrolling without the pointer having to move.
+                let rows = s
+                    .attachments
+                    .get(&drag_key)
+                    .map_or(0, |att| att.term.size().1);
+                let outside = d.y < PANE_PAD || d.y > PANE_PAD + rows as f32 * line_h;
+                if outside && d.phase != rune::Phase::Up {
+                    tx.drag_repeat_after(Duration::from_millis(50));
+                }
             },
-        );
-    }
+        )
+    } else {
+        cell.on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+            s.pane_drag_held = d.phase != rune::Phase::Up;
+            s.pane_select(&drag_key, d, tx, mouse, cell_w, line_h);
+        })
+    };
     if mouse {
         let sec_key = key.clone();
         cell = cell.on_secondary_press_local(
@@ -2214,7 +2336,12 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
         let hov_key = key.clone();
         cell = cell.on_pointer_move_local(
             move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
-                s.pane_pointer = (e.x, e.y);
+                // Rune hears every move, held or not. A move with the button held is
+                // the drag's to report (code 32); a bare hover (35) would tell the
+                // program no button is down and end its selection mid-drag.
+                if s.pane_drag_held {
+                    return;
+                }
                 s.pane_mouse(&hov_key, term::MouseKind::Hover, e.x, e.y, cell_w, line_h);
             },
         );
@@ -2227,24 +2354,6 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
             .min_w(0.0)
             .padding(PANE_PAD)
             .shrink()
-            .selection_group(true)
-            // Rows are padded to the grid width; copy without the padding.
-            .selection_copy(pane_selection_text)
-            // A finished drag (and any other selection) copies at once —
-            // `dragging` stays true until the press releases.
-            .on_selection_change(|s: &mut State, change, tx| {
-                if change.dragging() {
-                    return;
-                }
-                let Some(sel) = change.selection() else {
-                    return;
-                };
-                let text = pane_selection_text(sel).unwrap_or_else(|| sel.text().to_string());
-                if !text.is_empty() {
-                    tx.copy(text);
-                    s.notice = Some("Copied to clipboard".into());
-                }
-            })
             .children(lines),
     );
     // The input method follows the focused, live pane's cursor: the
@@ -2357,19 +2466,6 @@ fn find_bar(find: &FindState, ink: &Ink, key: &str) -> El {
             s.close_terminal_find(&close, tx);
         },
     ))
-}
-
-/// What a pane selection puts on the clipboard: each selected row trimmed
-/// of the grid's trailing padding, joined with newlines. Shared by Cmd+C
-/// (`selection_copy`) and the copy-on-release in `on_selection_change`.
-fn pane_selection_text(sel: &rune::TextSelection) -> Option<String> {
-    let rows: Vec<&str> = sel
-        .texts()
-        .iter()
-        .filter(|t| t.is_selected())
-        .map(|t| t.text().trim_end())
-        .collect();
-    Some(rows.join("\n").trim_end().to_string())
 }
 
 /// The marked text an input method is composing, over the cursor's cell.
@@ -2993,10 +3089,15 @@ mod tests {
         let (a, _) = tabbed_session(&mut s, "first");
         s.data.connected = true;
         assert!(!s.sync_terminals());
+        assert!(!s.sync_terminals());
         assert!(!s.attachments.contains_key(&a));
+        // Nor does it subscribe: a subscription nobody keeps makes the daemon
+        // replay the session's output into a dropped channel, every poll.
+        assert_eq!(s.output_subscribes, 0);
         s.pane_grids.insert(a.clone(), (90, 20));
         assert!(s.sync_terminals());
         assert!(s.attachments.contains_key(&a));
+        assert_eq!(s.output_subscribes, 1);
     }
 
     #[test]

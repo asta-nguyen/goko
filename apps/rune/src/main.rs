@@ -89,11 +89,17 @@ pub struct State {
     /// The layout last written; `None` until the saved one is restored, which
     /// keeps the save idle so an empty start cannot overwrite it.
     tabs_saved: Option<String>,
-    /// Where the pointer last was over a pane, in the pane's points: a click carries no
-    /// position, so one reported to the program takes this.
-    pane_pointer: (f32, f32),
     /// The tab bar's drag to reorder, in positions among the visible tabs.
     tab_reorder: rune_kit::shell::Reorder,
+    /// A pane has the pointer pressed in a drag: its program hears the drag's own
+    /// moves, not hovers.
+    pane_drag_held: bool,
+    /// The mouse reports sent to programs, for the tests to read.
+    #[cfg(test)]
+    mouse_sent: Vec<Vec<u8>>,
+    /// How many terminal output subscriptions were asked of the daemon.
+    #[cfg(test)]
+    output_subscribes: usize,
     /// Project id → last focused tab id; hidden tabs keep their pane layouts.
     project_tabs: HashMap<String, String>,
     /// "Worktrees" group header open per project id; absent means open.
@@ -277,11 +283,15 @@ impl State {
             active_workspace: None,
             open_tabs: Vec::new(),
             active_tab: 0,
-            pane_pointer: (0.0, 0.0),
             tabs_pending: None,
             sessions_loaded: false,
             tabs_saved: None,
             tab_reorder: rune_kit::shell::Reorder::new().gap(4.0),
+            pane_drag_held: false,
+            #[cfg(test)]
+            mouse_sent: Vec::new(),
+            #[cfg(test)]
+            output_subscribes: 0,
             project_tabs: HashMap::new(),
             worktree_groups: HashMap::new(),
             worktrees_open: HashMap::new(),
@@ -1450,6 +1460,9 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     // App shortcuts come before the Terminal forwards keys to the shell.
     if ev.mods.cmd && !ev.mods.ctrl {
         if matches!(ev.key, rune::Key::Command('c')) {
+            if s.view == View::Terminal && s.copy_pane_selection(tx) {
+                return true;
+            }
             s.notice = Some("Copied to clipboard".into());
         }
         if app_shortcut(s, ev, tx) {
@@ -5964,7 +5977,10 @@ mod view_tests {
         rt.pointer_move(x1, y1);
         rt.pointer_up(x1, y1);
         rt.frame(1.0 / 60.0);
-        assert!(rt.selected_text().is_some(), "the drag selected rows");
+        assert!(
+            rt.state.attachments[&key].term.selection_text().is_some(),
+            "the drag selected rows"
+        );
         rt.key(KeyEvent {
             key: Key::Command('c'),
             mods: Mods {
@@ -6088,6 +6104,90 @@ mod view_tests {
         rt.frame(1.0 / 60.0);
     }
 
+    /// A drag that leaves the pane at the top scrolls the history and keeps
+    /// selecting, so the copy holds rows that were never on screen together.
+    #[test]
+    fn dragging_past_the_top_scrolls_and_selects_into_the_history() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..200).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let rows: Vec<[f32; 4]> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.text.as_deref().is_some_and(|t| t.starts_with("row")))
+            .map(|e| e.rect)
+            .collect();
+        let (top, bottom) = (rows[0], rows[rows.len() - 2]);
+        let x = bottom[0] + 20.0;
+        let y = bottom[1] + bottom[3] / 2.0;
+        rt.pointer_down(x, y);
+        rt.pointer_move(x, y - 20.0);
+        for _ in 0..8 {
+            rt.pointer_move(x, top[1] - 30.0);
+        }
+        rt.pointer_up(x, top[1] - 30.0);
+        rt.frame(1.0 / 60.0);
+        let term = &rt.state.attachments[&key].term;
+        assert!(term.display_offset() > 0, "the view scrolled into history");
+        let text = term.selection_text().unwrap_or_default();
+        assert!(
+            text.lines().count() > rows.len(),
+            "more rows than one screen: {}",
+            text.lines().count()
+        );
+    }
+
+    /// Claude Code's fullscreen mode asks for every motion (?1003) on the
+    /// alternate screen. While the button is held, each move must reach it as
+    /// a drag (button 0 held, code 32), never also as a bare hover (code 35):
+    /// a hover says no button is down, which ends its selection mid-drag.
+    #[test]
+    fn a_drag_on_the_alt_screen_never_reports_a_buttonless_move() {
+        let mode = "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+        let mut rt = captured_pane_runtime(mode);
+        rt.update(|s, _| s.mouse_sent.clear());
+        drag_across_rows(&mut rt);
+        let sent: Vec<String> = rt
+            .state
+            .mouse_sent
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect();
+        let press = sent
+            .iter()
+            .position(|r| r.starts_with("\x1b[<0;") && r.ends_with('M'));
+        let release = sent.iter().rposition(|r| r.ends_with('m'));
+        let (Some(press), Some(release)) = (press, release) else {
+            panic!("no press and release reported: {sent:?}");
+        };
+        let held = &sent[press..release];
+        assert!(
+            held.iter().any(|r| r.starts_with("\x1b[<32;")),
+            "the drag reported its moves: {sent:?}"
+        );
+        assert!(
+            !held.iter().any(|r| r.starts_with("\x1b[<35;")),
+            "a bare hover went out while the button was held: {sent:?}"
+        );
+    }
+
     #[test]
     fn a_drag_selects_and_copies_while_the_program_captures_the_mouse() {
         let mode = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
@@ -6117,6 +6217,15 @@ mod view_tests {
         rt.frame(1.0 / 60.0);
         drag_across_rows(&mut rt);
         assert!(copied(&rt).contains("row"), "shift-drag copied");
+
+        // On the alternate screen (Claude Code's fullscreen mode) there is no history
+        // to select in: the program gets a plain drag, and scrolls and selects itself.
+        let mut rt = captured_pane_runtime(&format!("\x1b[?1049h{mode}"));
+        drag_across_rows(&mut rt);
+        assert!(
+            rt.copy_request.is_none(),
+            "an alt-screen drag selected locally"
+        );
 
         // Option hands the drag to the program: nothing is selected locally.
         let mut rt = captured_pane_runtime(mode);
@@ -6202,7 +6311,13 @@ mod view_tests {
         rt.pointer_move(640.0, 460.0);
         rt.pointer_up(640.0, 460.0);
         rt.frame(1.0 / 60.0);
-        assert!(rt.selected_text().is_some(), "rows are selected");
+        assert!(
+            rt.state.attachments[&pane_key]
+                .term
+                .selection_text()
+                .is_some(),
+            "rows are selected"
+        );
         for ph in [
             rune::GesturePhase::Began,
             rune::GesturePhase::Moved,
@@ -6223,7 +6338,7 @@ mod view_tests {
             top(&mut rt),
             live,
             "trackpad scrolled, selected {:?}",
-            rt.selected_text()
+            rt.state.attachments[&pane_key].term.selection_text()
         );
     }
 

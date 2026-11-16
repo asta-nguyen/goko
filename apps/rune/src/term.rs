@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
 use protocol::frame::PAINT_SEQ;
@@ -361,6 +362,12 @@ impl Terminal {
         self.term.mode().intersects(TermMode::MOUSE_MODE)
     }
 
+    /// Whether the program is on the alternate screen: the terminal keeps no
+    /// history there, the program scrolls its own view.
+    pub fn alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     /// Whether it asked for every-motion reports including hover (?1003).
     pub fn wants_hover(&self) -> bool {
         self.term.mode().contains(TermMode::MOUSE_MOTION)
@@ -434,6 +441,55 @@ impl Terminal {
             self.dirty = true;
             self.burst = None;
         }
+    }
+
+    // -- Selection -----------------------------------------------------------
+    // The terminal owns the selection, in grid lines, so it reaches into the
+    // history and follows output that scrolls, and the highlight and the copy
+    // come from the grid rather than from the rows on screen.
+
+    /// Start a selection at the visible `row` and `col`, on the cell's left or right half.
+    /// A double click selects a word and a triple click a line.
+    pub fn select_start(&mut self, kind: SelectionType, row: usize, col: usize, side: Side) {
+        let point = viewport_to_point(self.display_offset(), Point::new(row, Column(col)));
+        self.term.selection = Some(Selection::new(kind, point, side));
+        self.repaint();
+    }
+
+    /// Extend the selection to the visible `row` and `col`.
+    pub fn select_update(&mut self, row: usize, col: usize, side: Side) {
+        let point = viewport_to_point(self.display_offset(), Point::new(row, Column(col)));
+        if let Some(selection) = &mut self.term.selection {
+            selection.update(point, side);
+            self.repaint();
+        }
+    }
+
+    /// Drop the selection; `true` when there was one.
+    pub fn select_clear(&mut self) -> bool {
+        let had = self.term.selection.take().is_some();
+        if had {
+            self.repaint();
+        }
+        had
+    }
+
+    /// The selected text, or `None` when nothing (or an empty range) is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term
+            .selection_to_string()
+            .filter(|text| !text.is_empty())
+    }
+
+    /// Scroll the view `lines` into the history (negative: back toward the live screen),
+    /// for a selection dragged past the pane's edge.
+    pub fn scroll_by(&mut self, lines: i32) {
+        self.scroll_history(lines);
+    }
+
+    fn repaint(&mut self) {
+        self.dirty = true;
+        self.burst = None;
     }
 
     /// The daemon's answer to `terminal.subscribe`: `Err` means the attach
@@ -552,6 +608,8 @@ impl Terminal {
     /// The user typed into this terminal: its echo is drawn at once.
     pub fn typed(&mut self) {
         self.typed = Some(Instant::now());
+        // Typing replaces what was selected, as in any terminal.
+        self.select_clear();
     }
 
     /// The answers to the program's queries since the last call, to write to
@@ -870,11 +928,15 @@ fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
     // screen is `-display_offset..screen_lines-display_offset`; the row a
     // cell lands on is its line plus the scroll offset.
     let display_offset = content.display_offset as i32;
-    let mut grid: Vec<Vec<&Cell>> = (0..rows).map(|_| Vec::with_capacity(cols)).collect();
+    // Each cell with whether the selection covers it.
+    let mut grid: Vec<Vec<(&Cell, bool)>> = (0..rows).map(|_| Vec::with_capacity(cols)).collect();
     for indexed in content.display_iter {
         let row = indexed.point.line.0 + display_offset;
         if (0..rows as i32).contains(&row) {
-            grid[row as usize].push(indexed.cell);
+            let selected = content
+                .selection
+                .is_some_and(|range| range.contains(indexed.point));
+            grid[row as usize].push((indexed.cell, selected));
         }
     }
 
@@ -913,7 +975,7 @@ fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
             let cursor_here = cursor.filter(|(line, ..)| *line == row);
             // The ink under the cursor cell, for the non-block shapes.
             let mut cursor_fg: Option<Color> = None;
-            for (col, cell) in cells.iter().enumerate() {
+            for (col, &(cell, selected)) in cells.iter().enumerate() {
                 // INVERSE video swaps the cell's colours, as a terminal does.
                 let (fg_ansi, bg_ansi) = if cell.flags.contains(Flags::INVERSE) {
                     (cell.bg, cell.fg)
@@ -930,6 +992,9 @@ fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
                     A::Named(N::Background) => None,
                     ansi => Some(ansi_color(ansi, ink)),
                 };
+                if selected {
+                    bg = Some(ink.bg.mix(ink.accent, 0.35));
+                }
                 if cursor_here.is_some_and(|(_, at, ..)| at == col) {
                     cursor_fg = Some(fg);
                 }
@@ -1049,7 +1114,7 @@ fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
                 cursor,
                 wrapped: cells
                     .last()
-                    .is_some_and(|cell| cell.flags.contains(Flags::WRAPLINE)),
+                    .is_some_and(|(cell, _)| cell.flags.contains(Flags::WRAPLINE)),
             }
         })
         .collect()
@@ -1439,11 +1504,7 @@ fn term_line_el(
         );
     }
     // A grid row is exactly one cell line, whatever the font says.
-    // Rows select and copy as one group: drag across them, Cmd+C copies.
-    el.shape(shape)
-        .h(line_h)
-        .selectable(true)
-        .selection_color(ink.accent.alpha(0.35))
+    el.shape(shape).h(line_h)
 }
 
 // ---------------------------------------------------------------------------

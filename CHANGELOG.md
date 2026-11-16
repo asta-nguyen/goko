@@ -28,9 +28,15 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Changed
 
-- Selecting text in Claude Code, Codex or vim: a plain drag now selects and copies even
-  while the program tracks the mouse, and a click with no drag still reaches it. Hold
-  Option to give the program the drag itself; Shift still takes the pointer back.
+- Selecting text in the terminal: a plain drag selects and copies even while Claude Code,
+  Codex or vim tracks the mouse, and a click with no drag still reaches the program.
+  Dragging past the top or bottom of a pane scrolls through the history while you
+  select, double click selects a word and triple click a line, and the copy (on release,
+  or Cmd+C) holds every selected row, not just the ones on screen. Claude Code's
+  fullscreen mode keeps no history for the terminal to select in, so there a plain drag
+  goes to Claude Code and keeps reporting the edge while you hold past the top or
+  bottom, so its own selection scrolls. Hold Option to give any program the drag
+  itself; Shift always selects what is on screen.
 - A session's terminal keeps 5,000 lines of history (was 10,000), in the daemon and in
   each pane alike, so a reattached pane shows the same history it had. That halves the
   memory a long session holds (about 14 MB instead of 29 MB at 120 columns), and the
@@ -61,6 +67,13 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Fixed
 
+- Goko and its daemon kept busy and grew to over a gigabyte with tabs open in the
+  background (as restored tabs are): a pane never shown subscribed to its session's
+  output on every redraw and dropped it, so the daemon replayed that output again and
+  again. A pane now subscribes once it has been laid out.
+- Selecting in Claude Code's fullscreen mode ended as soon as the drag moved: each move
+  also went out as a plain hover (no button held), which told Claude Code the button was
+  up. A held drag now reports only its own moves.
 - A large paste into a program that was not reading its input (16 KiB or more into a
   shell running a command) froze every terminal: the daemon answered nothing else on the
   app's connection until the input was read, and never again if the program exited first.
