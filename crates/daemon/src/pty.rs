@@ -1227,6 +1227,7 @@ mod locale_tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn unavailable_utf8_named_locale_is_rejected() {
         assert_eq!(

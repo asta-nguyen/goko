@@ -116,7 +116,7 @@ mod windows {
         options
             .first_pipe_instance(first)
             .reject_remote_clients(true)
-            .max_instances(255);
+            .max_instances(254);
         let mut attributes = security_attributes()?;
         // SAFETY: `attributes` outlives the call and carries a valid
         // self-relative descriptor; the pipe copies it during creation.
