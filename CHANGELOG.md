@@ -17,6 +17,11 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
   at 50/50 again.
 - Reorder tabs: drag a tab sideways in the tab bar to move it; the other tabs step
   aside, the active tab stays active, and tabs of other projects keep their order.
+- Open the file from a diff: every changed-file row in Changes, a commit's detail and a
+  stash has an open icon and an Open File item in its context menu, and each file's
+  header in the diff has an open button. They open the file as it is in the working tree,
+  in the editor; a file deleted or renamed since then shows as missing instead of
+  failing. Clicking the row still selects its diff.
 - Update now: Settings → Updates installs a newer release over the copy that is
   running, so `/Applications/Goko.app` is replaced where it sits instead of a second
   copy appearing in `~/Applications`; reopen Goko afterwards. A copy it cannot replace
@@ -67,10 +72,6 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Fixed
 
-- Goko and its daemon kept busy and grew to over a gigabyte with tabs open in the
-  background (as restored tabs are): a pane never shown subscribed to its session's
-  output on every redraw and dropped it, so the daemon replayed that output again and
-  again. A pane now subscribes once it has been laid out.
 - Selecting in Claude Code's fullscreen mode ended as soon as the drag moved: each move
   also went out as a plain hover (no button held), which told Claude Code the button was
   up. A held drag now reports only its own moves.
