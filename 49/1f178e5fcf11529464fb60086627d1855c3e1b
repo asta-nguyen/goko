@@ -1,0 +1,40 @@
+apps/rune/src/panes.rs
+  s_2077f94a10f543::t_4f37fd9c5b034d 859-880
+  s_2077f94a10f543::t_736d53716d7bc7 3004-3021
+  s_2077f94a10f543::t_8c7fc671a746d6 3003
+crates/rune-kit/src/shell/reorder.rs
+  s_2077f94a10f543::t_dfe26aa8960c3c 52
+  s_2077f94a10f543::t_f0c8952e7c0abe 35-37
+  s_2077f94a10f543::t_30ecfa535a6a47 60
+apps/rune/src/chrome.rs
+  s_2077f94a10f543::t_f0bd96593dccd2 598-604
+  s_2077f94a10f543::t_cffbd1e604d9f1 650-655
+  s_2077f94a10f543::t_1443411a462940 706-707
+  s_2077f94a10f543::t_c5734243ee4744 607
+  s_2077f94a10f543::t_7079836458aa48 676-681,683-696
+  s_2077f94a10f543::t_617cef1669e4b6 477-479
+apps/rune/src/tab_debug.rs
+  s_2077f94a10f543::t_474e3d803fd2cd 271-296
+  s_2077f94a10f543::t_5aa8f344cc7813 270
+CHANGELOG.md
+  s_2077f94a10f543::t_e91682c5071fca 15-16
+apps/rune/src/main.rs
+  s_2077f94a10f543::t_7588660bb9b124 84-85
+  s_2077f94a10f543::t_eaa16b1fc8e321 269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "491f178e5fcf11529464fb60086627d1855c3e1b",
+  "prompts": {},
+  "sessions": {
+    "s_2077f94a10f543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f50a806-d74e-43be-acc0-f467607ad767",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
