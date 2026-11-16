@@ -2012,6 +2012,7 @@ mod tests {
         Storage::open(dir.path())
     }
 
+    #[cfg(unix)]
     /// The command line a test override gives one preset agent: the fake
     /// fixture selected by `case`, logging to `<dir>/agent.log` and writing
     /// its pid to `<dir>/agent.pid` so tests can signal their own agent.
@@ -2033,6 +2034,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     async fn set_fake_agent(storage: &Storage, hub: &AcpHub, id: &str, case: &str, dir: &TempDir) {
         agents_set(
             storage,
@@ -2074,6 +2076,7 @@ mod tests {
         (dir, root)
     }
 
+    #[cfg(unix)]
     /// A repo mid-merge: `file.txt` is conflicted, `other.txt` is staged.
     fn conflicted_repo(label: &str) -> (TempDir, PathBuf) {
         let dir = TempDir::new(label);
@@ -2119,6 +2122,7 @@ mod tests {
             .id
     }
 
+    #[cfg(unix)]
     /// The `text` of every `prompt` event the fake agent logged.
     fn prompt_texts(dir: &TempDir) -> Vec<String> {
         log_events(dir.path())
@@ -2408,6 +2412,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn connect_then_status_and_disconnect_round_trip() {
         let dir = TempDir::new("acp-hub-life");
@@ -2522,6 +2527,7 @@ mod tests {
         hub.disconnect("opencode").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn disabling_or_reediting_a_connected_agent_disconnects_it() {
         let dir = TempDir::new("acp-hub-reconfig");
@@ -2584,6 +2590,7 @@ mod tests {
         assert!(agent_config(&storage, "nope").is_err());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn generate_rejects_nothing_staged_and_merge_conflicts() {
         let home = TempDir::new("acp-gen-states");
@@ -2628,6 +2635,7 @@ mod tests {
         hub.disconnect("opencode").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn generate_returns_the_reply_and_sends_the_full_prompt() {
         let home = TempDir::new("acp-gen-ok");
@@ -2667,6 +2675,7 @@ mod tests {
         hub.disconnect("opencode").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn generate_marks_a_capped_diff_as_truncated() {
         let home = TempDir::new("acp-gen-trunc");
@@ -2700,6 +2709,7 @@ mod tests {
         hub.disconnect("opencode").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn generate_with_only_binary_changes_still_sends_the_stat() {
         let home = TempDir::new("acp-gen-binary");
@@ -2735,6 +2745,7 @@ mod tests {
         hub.disconnect("opencode").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_custom_prompt_replaces_the_default_and_an_empty_one_uses_it() {
         let home = TempDir::new("acp-gen-custom");
@@ -2800,6 +2811,7 @@ mod tests {
         hub.disconnect("opencode").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_second_generate_aborts_the_first() {
         let home = TempDir::new("acp-gen-abort");
@@ -2864,6 +2876,7 @@ mod tests {
         hub.disconnect("gemini").await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn cancel_ends_a_running_generation_and_keeps_the_connection() {
         let home = TempDir::new("acp-gen-cancel");

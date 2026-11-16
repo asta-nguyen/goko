@@ -1159,6 +1159,7 @@ mod tests {
         assert!(index_path(home.path(), &root_b).is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn remove_orphans_deletes_missing_checkouts_only() {
         let (_dir_a, root_a) = repository("code-index-orphan-a");
@@ -1331,6 +1332,7 @@ mod tests {
         assert!(!home.path().join("search").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn version_mismatch_answers_empty_and_is_untouched() {
         let (_dir, root) = repository("code-index-version");

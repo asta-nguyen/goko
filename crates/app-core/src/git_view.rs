@@ -1803,6 +1803,7 @@ mod tests {
             .unwrap_or_else(|| panic!("missing entry {path}: {entries:?}"))
     }
 
+    #[cfg(unix)]
     #[test]
     fn status_groups_every_layer_and_preserves_unusual_names() {
         let (_t, root) = repository("status");
@@ -1961,6 +1962,7 @@ mod tests {
         assert!(first.parents.is_empty() && !first.head);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_missing_commit_graph_is_written_once_and_changes_no_page() {
         let (_t, root) = repository("commit-graph");
@@ -2294,6 +2296,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn tree_lists_one_level_and_excludes_git_but_keeps_ignored() {
         let (_t, root) = repository("tree");
@@ -2353,6 +2356,7 @@ mod tests {
         assert!(tree(&root, "tracked.txt").unwrap().entries.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn tree_treats_glob_characters_in_paths_literally() {
         let (_t, root) = repository("tree-glob-path");
@@ -2668,6 +2672,7 @@ mod tests {
         assert!(repo_checkout(&bare_root).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ahead_is_none_without_upstream_and_counts_unpushed_commits() {
         let (_t, root) = repository("ahead");
@@ -2689,6 +2694,7 @@ mod tests {
         assert_eq!(changes(&unborn).unwrap().ahead, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn rename_path_renames_in_place_and_refuses_the_rest() {
         let dir = TempDir::new("rename-path");
@@ -2714,6 +2720,7 @@ mod tests {
         assert!(rename(".git/HEAD", "y").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ignored_children_lists_one_level_and_stays_in_the_checkout() {
         let dir = TempDir::new("ignored-children");

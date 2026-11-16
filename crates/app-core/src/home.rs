@@ -111,6 +111,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn other_platforms_use_the_xdg_state_folder() {
         let home = Path::new("/home/goko-no-such-user");

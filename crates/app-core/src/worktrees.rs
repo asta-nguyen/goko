@@ -937,6 +937,7 @@ mod tests {
         (dir, root)
     }
 
+    #[cfg(unix)]
     #[test]
     fn lists_root_external_branches_and_detached_head_with_newline_paths() {
         let (_dir, root) = repository("wt-list");
@@ -1025,6 +1026,7 @@ mod tests {
         assert!(!contains_checkout(&root, &unrelated).unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn missing_worktree_remains_listed_and_status_counts_changes_and_renames_once() {
         let (_dir, root) = repository("wt-status");
@@ -1122,6 +1124,7 @@ mod tests {
         assert!(listed.worktrees.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn absent_git_binary_has_an_install_hint() {
         let dir = TempDir::new("wt-no-git");
@@ -1135,6 +1138,7 @@ mod tests {
             .contains("Install Git"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn creates_new_and_existing_branches_and_rejects_checked_out_or_invalid_inputs() {
         let (_dir, root) = repository("wt-create");
@@ -1198,6 +1202,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn creates_missing_parent_directories_only_after_validation() {
         let (_dir, root) = repository("wt-create-parent");

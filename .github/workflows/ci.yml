@@ -49,4 +49,4 @@ jobs:
         run: cargo test --workspace
       - name: Test (Windows)
         if: runner.os == 'Windows'
-        run: cargo test -p protocol -p daemon -p app-core
+        run: cargo test --no-fail-fast -p protocol -p daemon -p app-core
