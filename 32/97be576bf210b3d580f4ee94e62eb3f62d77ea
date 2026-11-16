@@ -1,0 +1,25 @@
+Cargo.toml
+  s_e91da40daf9a7a::t_975a945a79b1a2 6
+CHANGELOG.md
+  s_e91da40daf9a7a::t_a43556780fd11e 17-24
+  s_e91da40daf9a7a::t_975a945a79b1a2 13-14
+  s_e91da40daf9a7a::t_9da7463fb70b10 25
+Cargo.lock
+  s_e91da40daf9a7a::t_6b98efb9d02ec1 185,197,764,773,1184,1201,2669
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3297be576bf210b3d580f4ee94e62eb3f62d77ea",
+  "prompts": {},
+  "sessions": {
+    "s_e91da40daf9a7a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pattern-ease",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
