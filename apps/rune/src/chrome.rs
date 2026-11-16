@@ -5,14 +5,16 @@
 
 use std::f32::consts::FRAC_PI_3;
 
-use rune::{El, Spring, TextStyle, Transition, Tx, el, row, spacer};
+use rune::{El, Spring, TextStyle, Transition, Tx, col, el, row, spacer};
 
 use crate::data;
 use crate::editor::backend;
 use crate::editor::navigation::{self, PendingNav};
 use crate::panes::{self, Tab};
 use crate::sidebar;
-use crate::theme::{self, Ink, STATE_SPRING, T11M_LH, T12, T12M, T12TN, T14, T14M, T14S};
+use crate::theme::{
+    self, Ink, STATE_SPRING, T10_SUB, T11, T11M, T11M_LH, T12, T12M, T12TN, T14, T14M, T14S,
+};
 use crate::{State, View};
 
 /// "goko" on a 20 pt line box, so the wordmark sits on whole device pixels in the
@@ -77,120 +79,7 @@ fn settings_button(open: bool, ink: &Ink) -> El {
         })
 }
 
-/// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
-/// bg-panel px-4` (48 px, gap 12, px 16).
-/// One provider's quota chip: the name, the active account's name when the
-/// agent has more than one, and each window's `label value`. Mirrors
-/// UsageChips.tsx — `usageValue` turns an elapsed window into a muted
-/// "reset"; the chip exists only while it has limits or a second account.
-fn usage_chip_for(
-    s: &State,
-    agent: &'static str,
-    name: &'static str,
-    updated_at: Option<i64>,
-    limits: &[theme::ChipLimit],
-    ink: &Ink,
-) -> Option<El> {
-    let view = s.data.accounts.as_ref().map(|v| match agent {
-        "claude" => &v.claude,
-        _ => &v.codex,
-    });
-    let multi = view.is_some_and(|v| v.items.len() >= 2);
-    if limits.is_empty() && !multi {
-        return None;
-    }
-    let active_name = if multi {
-        view.and_then(|v| {
-            v.items
-                .iter()
-                .find(|item| item.id == v.active)
-                .map(|item| item.name.clone())
-        })
-    } else {
-        None
-    };
-    // `<name> · <account>`: the account sits muted inside the name span.
-    let mut chip = theme::usage_chip(name, limits, ink);
-    if let Some(account) = &active_name {
-        chip = chip.child(theme::txt(
-            &format!("· {account}"),
-            theme::T11M_LH,
-            ink.muted,
-        ));
-    }
-    let resets: Vec<String> = s
-        .data
-        .usage
-        .as_ref()
-        .map(|_| {
-            limits
-                .iter()
-                .map(|limit| format!("{} resets {}", limit.label, limit.reset_at))
-                .collect()
-        })
-        .unwrap_or_default();
-    let help = {
-        let mut lines =
-            vec!["Each percentage is the share of that window already used".to_string()];
-        lines.extend(resets);
-        lines.push(format!("Updated {}", data::usage_age(updated_at, s.now_ms)));
-        lines.join("\n")
-    };
-    let agent = agent.to_string();
-    let mut chip = chip.help(help);
-    if multi {
-        // Its account menu drops from the chip itself.
-        chip = chip
-            .key(format!("usage-chip:{agent}"))
-            .role("button")
-            .focusable(true)
-            .expanded(s.usage_menu.as_deref() == Some(agent.as_str()))
-            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
-                s.usage_menu = Some(agent.clone());
-                crate::yield_focus(s, tx);
-            });
-    }
-    Some(chip)
-}
-
-/// UsageChips.tsx: both providers' chips, hidden while there is nothing to
-/// say (no limits and no second account).
-fn usage_chips(s: &State, ink: &Ink) -> Vec<El> {
-    let Some(usage) = &s.data.usage else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let claude = [
-        usage.claude.five_hour.as_ref(),
-        usage.claude.seven_day.as_ref(),
-    ];
-    let claude_limits = chip_limits(&claude, "claude", s.now_ms);
-    if let Some(chip) = usage_chip_for(
-        s,
-        "claude",
-        "Claude",
-        usage.claude.updated_at,
-        &claude_limits,
-        ink,
-    ) {
-        out.push(chip);
-    }
-    let codex = [usage.codex.primary.as_ref(), usage.codex.secondary.as_ref()];
-    let codex_limits = chip_limits(&codex, "codex", s.now_ms);
-    if let Some(chip) = usage_chip_for(
-        s,
-        "codex",
-        "Codex",
-        usage.codex.updated_at,
-        &codex_limits,
-        ink,
-    ) {
-        out.push(chip);
-    }
-    out
-}
-
-/// One window's value as the chips show it: a window that has already
+/// One window's value in an account's quota line: a window that has already
 /// reset reads "reset", never its last percentage.
 pub fn limit_value(limit: &app_core::usage::Limit, now_ms: i64) -> String {
     if limit.resets_at * 1000 <= now_ms {
@@ -200,34 +89,8 @@ pub fn limit_value(limit: &app_core::usage::Limit, now_ms: i64) -> String {
     }
 }
 
-/// `limitsFor` + `usageValue`: one rendered window per present limit.
-fn chip_limits(
-    limits: &[Option<&app_core::usage::Limit>],
-    provider: &str,
-    now_ms: i64,
-) -> Vec<theme::ChipLimit> {
-    limits
-        .iter()
-        .flatten()
-        .map(|limit| {
-            let reset = limit.resets_at * 1000 <= now_ms;
-            theme::ChipLimit {
-                label: data::window_label(limit.window_minutes, provider),
-                value: limit_value(limit, now_ms),
-                tone: if reset {
-                    theme::UsageTone::Muted
-                } else {
-                    theme::usage_tone(limit.used_pct)
-                },
-                reset_at: crate::data::relative_time(limit.resets_at * 1000 - now_ms),
-            }
-        })
-        .collect()
-}
-
-/// The account menu's quota line: the same expiry-aware values the chips
-/// show — a window that already reset reads "reset", never its last
-/// percentage.
+/// An account row's quota line in the Agents dropdown: expiry-aware, so a
+/// window that already reset reads "reset", never its last percentage.
 pub fn account_usage_summary(
     usage: &app_core::usage::AccountUsage,
     provider: &str,
@@ -247,66 +110,484 @@ pub fn account_usage_summary(
         .join(" · ")
 }
 
-/// The multi-account chip's dropdown: pick the active account or jump to
-/// the Accounts settings section, like the desktop's AccountMenu.
-pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
-    let agent = s.usage_menu.clone()?;
-    let view = s.data.accounts.as_ref()?;
-    let agent_view = match agent.as_str() {
-        "claude" => &view.claude,
-        _ => &view.codex,
+/// One limit window from Omarchy's agent usage state. `percent` is the used
+/// share as a fraction (0.42 is 42%); `resets_at` is RFC 3339, or empty.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct OmarchyLimit {
+    pub label: String,
+    #[serde(default)]
+    pub percent: f64,
+    #[serde(default, rename = "resetsAt")]
+    pub resets_at: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// Reset credits info (e.g. Codex free resets).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct OmarchyResetCredits {
+    #[serde(default)]
+    pub available: u32,
+    #[serde(default, rename = "nextExpiresAt")]
+    pub next_expires_at: Option<String>,
+}
+
+/// One provider's complete record in ~/.local/state/omarchy/agents/usage/<id>.json.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct OmarchyRecord {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "tierLabel")]
+    pub tier_label: Option<String>,
+    #[serde(default)]
+    pub limits: Vec<OmarchyLimit>,
+    #[serde(default, rename = "resetCredits")]
+    pub reset_credits: Option<OmarchyResetCredits>,
+    #[serde(default, rename = "todaySessions")]
+    pub today_sessions: Option<u64>,
+}
+
+/// The time left until `resets_at` (RFC 3339) on the app's clock: "2d 3h",
+/// "1h 5m", "12m", "reset" once it has passed, and nothing when the provider
+/// gave no time.
+fn format_countdown(resets_at: Option<&str>, now_ms: i64) -> String {
+    let Some(at) = resets_at.and_then(|iso| chrono::DateTime::parse_from_rfc3339(iso).ok()) else {
+        return String::new();
     };
-    let mut menu = rune_kit::Menu::new("usage-menu")
-        .anchor(format!("usage-chip:{agent}"))
-        .placement(rune_kit::Placement::BottomEnd)
-        .open(true);
-    for item in &agent_view.items {
-        let account_id = item.id.clone();
-        let account_name = item.name.clone();
-        let agent = agent.clone();
-        // AccountUsageSummary: the account's own limits, joined.
-        let summary = s
-            .data
-            .usage
-            .as_ref()
-            .and_then(|u| u.accounts.get(&format!("{}:{}", agent, account_id)))
-            .map(|usage| {
-                // The same expiry-aware value the chips show: a window
-                // that already reset must not keep its last percentage
-                // here.
-                account_usage_summary(usage, &agent, s.now_ms)
-            })
-            .unwrap_or_else(|| "No usage data".to_string());
-        let is_active = account_id == agent_view.active;
-        menu = menu.item(
-            rune_kit::MenuItem::new(account_name)
-                .checked(is_active)
-                .description(summary)
-                .on_select_tx(move |st: &mut State, _tx: &mut Tx| {
-                    st.usage_menu = None;
-                    if !is_active {
-                        let _ = backend::enqueue(
-                            &mut st.editor.backend,
-                            backend::Job::project(backend::Req::AccountSetActive {
-                                agent: agent.clone(),
-                                id: account_id.clone(),
-                            }),
-                        );
-                    }
-                }),
-        );
+    let diff = (at.timestamp_millis() - now_ms) / 1000;
+    if diff <= 0 {
+        return "reset".to_string();
     }
-    menu = menu.item(rune_kit::MenuItem::new("Manage accounts…").on_select_tx(
-        |st: &mut State, tx: &mut Tx| {
-            st.usage_menu = None;
-            st.settings.section = crate::settings::Section::Accounts;
-            navigation::navigate(st, PendingNav::SetView(View::Settings), tx);
-        },
-    ));
-    Some(
-        menu.on_close(|st: &mut State| st.usage_menu = None)
-            .build(&s.editor.kit, layer),
-    )
+    let days = diff / 86400;
+    let hours = (diff % 86400) / 3600;
+    let mins = (diff % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+fn read_record(path: &std::path::Path) -> Option<OmarchyRecord> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// Omarchy's per-provider usage records
+/// (`~/.local/state/omarchy/agents/usage/<id>.json`), keeping the ones that
+/// have limits. A machine without Omarchy has none. This reads the disk, so it
+/// runs from event handlers and the usage poll, never from a view.
+pub fn read_agent_usage() -> Vec<OmarchyRecord> {
+    let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) else {
+        return Vec::new();
+    };
+    let dir = std::path::PathBuf::from(home).join(".local/state/omarchy/agents/usage");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    // Goko's own Antigravity record, kept in its home, replaces Omarchy's
+    // while it has limits.
+    let own_agy = app_core::home::home_dir()
+        .ok()
+        .and_then(|home| read_record(&home.join("agents/usage/agy.json")))
+        .filter(|record| !record.limits.is_empty());
+    let mut records = Vec::new();
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(mut record) = read_record(&path) else {
+            continue;
+        };
+        if record.id == "agy"
+            && let Some(own) = &own_agy
+        {
+            record = own.clone();
+        }
+        if !record.limits.is_empty() {
+            records.push(record);
+        }
+    }
+    records
+}
+
+/// Goko's own usage snapshot as dropdown records: the active Claude and Codex
+/// accounts' windows. The snapshot does not know the plan, so there is no tier.
+fn snapshot_records(usage: &app_core::usage::UsageSnapshot) -> Vec<OmarchyRecord> {
+    let windows = |pairs: [(&str, &Option<app_core::usage::Limit>); 2]| -> Vec<OmarchyLimit> {
+        pairs
+            .into_iter()
+            .filter_map(|(title, limit)| {
+                let limit = limit.as_ref()?;
+                Some(OmarchyLimit {
+                    label: title.to_string(),
+                    percent: limit.used_pct / 100.0,
+                    // `Limit::resets_at` is epoch seconds.
+                    resets_at: chrono::DateTime::from_timestamp(limit.resets_at, 0)
+                        .map(|at| at.to_rfc3339()),
+                    title: Some(title.to_string()),
+                })
+            })
+            .collect()
+    };
+    [
+        (
+            "claude",
+            "Claude Code",
+            windows([
+                ("Session", &usage.claude.five_hour),
+                ("Weekly", &usage.claude.seven_day),
+            ]),
+        ),
+        (
+            "codex",
+            "Codex",
+            windows([
+                ("Session", &usage.codex.primary),
+                ("Weekly", &usage.codex.secondary),
+            ]),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, _, limits)| !limits.is_empty())
+    .map(|(id, name, limits)| OmarchyRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        limits,
+        ..Default::default()
+    })
+    .collect()
+}
+
+/// The dropdown's providers in a fixed order: Omarchy's records as last read
+/// (`State::agent_usage`), plus Goko's own snapshot for each provider Omarchy
+/// has no record of.
+fn usage_records(s: &State) -> Vec<OmarchyRecord> {
+    let mut records = s.agent_usage.clone();
+    if let Some(usage) = &s.data.usage {
+        for record in snapshot_records(usage) {
+            if !records.iter().any(|known| known.id == record.id) {
+                records.push(record);
+            }
+        }
+    }
+    let rank = |id: &str| match id {
+        "ollama" => 1,
+        "devin" => 2,
+        "claude" => 3,
+        "agy" => 4,
+        "codex" => 5,
+        _ => 10,
+    };
+    records.sort_by(|a, b| rank(&a.id).cmp(&rank(&b.id)).then_with(|| a.id.cmp(&b.id)));
+    records
+}
+
+/// Runs `program` in the background and reaps it when it ends, so a finished
+/// child never lingers as a zombie. A program that is not there is skipped.
+#[cfg(target_os = "linux")]
+fn spawn_reaped(program: impl AsRef<std::ffi::OsStr>) {
+    use std::process::{Command, Stdio};
+    if let Ok(mut child) = Command::new(program)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
+/// Asks the usage updaters, where they are installed, to rewrite the records
+/// `read_agent_usage` reads. They finish on their own time; the usage poll
+/// re-reads the records while the dropdown is open.
+fn run_usage_updaters() {
+    #[cfg(target_os = "linux")]
+    {
+        // The user's own Antigravity updater, when they have one.
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            let fix_agy = std::path::PathBuf::from(home).join(".local/bin/fix-agy-usage.py");
+            if fix_agy.is_file() {
+                spawn_reaped(fix_agy);
+            }
+        }
+        spawn_reaped("omarchy-agent-usage-update");
+    }
+}
+
+/// The header line under "Agents": today's sessions when a provider reports
+/// them, otherwise the sessions Goko has.
+fn sessions_line(records: &[OmarchyRecord], own_sessions: usize) -> String {
+    let today: Vec<u64> = records.iter().filter_map(|r| r.today_sessions).collect();
+    let (count, suffix) = if today.is_empty() {
+        (own_sessions as u64, "")
+    } else {
+        (today.iter().sum(), " TODAY")
+    };
+    let noun = if count == 1 { "SESSION" } else { "SESSIONS" };
+    format!("{count} {noun}{suffix}")
+}
+
+/// The agents usage dropdown: inspect active limits, countdowns, and accounts
+/// across providers, or jump to Settings -> Accounts, matching Omarchy's agent dropdown.
+pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    s.usage_menu.as_ref()?;
+    let ink = &s.ink;
+    let records = usage_records(s);
+
+    let mut body = col().w_full().gap(12.0);
+
+    // Header hero row: Robot icon + Title + SESSIONS TODAY + Refresh button
+    let hero = row()
+        .key("agents-hero")
+        .w_full()
+        .items_center()
+        .justify_between()
+        .child(
+            row()
+                .gap(8.0)
+                .items_center()
+                .child(theme::ic(&theme::BOT, 16.0, ink.accent))
+                .child(
+                    col()
+                        .gap(1.0)
+                        .child(theme::txt("Agents", T14M, ink.text))
+                        .child(theme::txt(
+                            &sessions_line(&records, s.data.sessions.len()),
+                            T10_SUB,
+                            ink.muted,
+                        )),
+                ),
+        )
+        .child(
+            theme::btn_sm("Refresh", None, true, ink).on_press(|st: &mut State| {
+                st.request_usage();
+                run_usage_updaters();
+                st.agent_usage = read_agent_usage();
+            }),
+        );
+    body = body.child(hero);
+
+    if records.is_empty() {
+        body = body
+            .child(el().w_full().h(1.0).fill(ink.border.alpha(0.5)))
+            .child(theme::txt(
+                "No active agent quota limits found.",
+                T11,
+                ink.muted,
+            ));
+    } else {
+        for (idx, provider) in records.iter().enumerate() {
+            body = body.child(el().w_full().h(1.0).fill(ink.border.alpha(0.5)));
+            let mut prov_col = col().key(format!("agent-prov-{idx}")).w_full().gap(6.0);
+
+            let tier_text = provider.tier_label.as_deref().unwrap_or("");
+            let head_row = row()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(
+                    row()
+                        .gap(6.0)
+                        .items_center()
+                        .child(el().w(6.0).h(6.0).radius(3.0).fill(ink.accent))
+                        .child(theme::txt(&provider.name, T12M, ink.text)),
+                )
+                .child(if !tier_text.is_empty() {
+                    row()
+                        .px(6.0)
+                        .py(1.0)
+                        .radius(4.0)
+                        .border(1.0, ink.border.alpha(0.6))
+                        .child(theme::txt(tier_text, T10_SUB, ink.muted))
+                } else {
+                    el()
+                });
+            prov_col = prov_col.child(head_row);
+
+            // Limit meter rows
+            for (l_idx, limit) in provider.limits.iter().enumerate() {
+                let rst = format_countdown(limit.resets_at.as_deref(), s.now_ms);
+                // A window that already reset has nothing used: its last
+                // percentage must not stay on the meter.
+                let pct = if rst == "reset" {
+                    0.0
+                } else {
+                    limit.percent.clamp(0.0, 1.0)
+                };
+                let tone = match theme::usage_tone(pct * 100.0) {
+                    theme::UsageTone::Danger => ink.danger,
+                    theme::UsageTone::Warning => ink.warning,
+                    theme::UsageTone::Muted => ink.accent,
+                };
+                let title = limit.title.as_deref().unwrap_or(&limit.label);
+                let display_title = match title {
+                    t if t.starts_with("Session") => "Session",
+                    t if t.starts_with("Weekly") => "Weekly",
+                    t if t.starts_with("5h") => "Session",
+                    t if t.starts_with("Monthly") => "Monthly",
+                    t if t.starts_with("Daily") => "Daily",
+                    t => t,
+                };
+                let track_w = 140.0;
+                let fill_w = (track_w * pct as f32).max(if pct > 0.0 { 3.0 } else { 0.0 });
+
+                let limit_row = row()
+                    .key(format!("limit-row-{idx}-{l_idx}"))
+                    .w_full()
+                    .h(18.0)
+                    .items_center()
+                    .justify_between()
+                    .gap(8.0)
+                    .child(theme::txt(display_title, T11, ink.muted).w(80.0))
+                    .child(
+                        row()
+                            .h(4.0)
+                            .w(track_w)
+                            .radius(2.0)
+                            .fill(ink.border.alpha(0.4))
+                            .child(el().h(4.0).radius(2.0).w(fill_w).fill(tone)),
+                    )
+                    .child(
+                        row()
+                            .w(60.0)
+                            .justify_end()
+                            .child(theme::txt(&rst, T11, ink.muted)),
+                    );
+                prov_col = prov_col.child(limit_row);
+            }
+
+            // Reset credits notes (e.g. Codex)
+            if let Some(rc) = &provider.reset_credits {
+                let exp = format_countdown(rc.next_expires_at.as_deref(), s.now_ms);
+                let note = if !exp.is_empty() && exp != "reset" {
+                    format!("{} free resets · next expires in {}", rc.available, exp)
+                } else {
+                    format!("{} free resets", rc.available)
+                };
+                prov_col = prov_col.child(theme::txt(&note, T10_SUB, ink.muted).pt(2.0));
+            }
+
+            // Multi-account switcher rows if accounts view exists
+            if let Some(view) = s.data.accounts.as_ref() {
+                let agent_accounts = match provider.id.as_str() {
+                    "claude" => Some(&view.claude),
+                    "codex" => Some(&view.codex),
+                    _ => None,
+                };
+                if let Some(av) = agent_accounts
+                    && av.items.len() >= 2
+                {
+                    let mut acc_col = col().w_full().gap(2.0).pt(2.0);
+                    for item in &av.items {
+                        let is_active = item.id == av.active;
+                        let aid = item.id.clone();
+                        let aname = item.name.clone();
+                        let prov_id = provider.id.clone();
+                        // The account's own limits, expiry-aware.
+                        let summary = s
+                            .data
+                            .usage
+                            .as_ref()
+                            .and_then(|u| u.accounts.get(&format!("{prov_id}:{aid}")))
+                            .map(|usage| account_usage_summary(usage, &prov_id, s.now_ms))
+                            .filter(|summary| !summary.is_empty())
+                            .unwrap_or_else(|| "No usage data".to_string());
+                        let acc_row = row()
+                            .key(format!("acc-{idx}-{}", aid))
+                            .w_full()
+                            .h(22.0)
+                            .px(6.0)
+                            .radius(4.0)
+                            .items_center()
+                            .justify_between()
+                            .fill(if is_active {
+                                ink.accent.alpha(0.12)
+                            } else {
+                                ink.bg.alpha(0.0)
+                            })
+                            .hover(ink.text.alpha(0.06))
+                            .role("button")
+                            .label(format!("{} account {aname}", provider.name))
+                            .checked(is_active)
+                            .focusable(true)
+                            .focus_ring(2.0, 1.0, ink.accent)
+                            .child(
+                                row()
+                                    .gap(6.0)
+                                    .items_center()
+                                    .child(theme::txt(
+                                        if is_active { "✓" } else { " " },
+                                        T11M,
+                                        ink.accent,
+                                    ))
+                                    .child(theme::txt(
+                                        &aname,
+                                        T11,
+                                        if is_active { ink.text } else { ink.muted },
+                                    )),
+                            )
+                            .child(theme::txt(&summary, T10_SUB, ink.muted))
+                            .on_press_tx(move |st: &mut State, _tx: &mut Tx| {
+                                if !is_active {
+                                    let _ = backend::enqueue(
+                                        &mut st.editor.backend,
+                                        backend::Job::project(backend::Req::AccountSetActive {
+                                            agent: prov_id.clone(),
+                                            id: aid.clone(),
+                                        }),
+                                    );
+                                }
+                            });
+                        acc_col = acc_col.child(acc_row);
+                    }
+                    prov_col = prov_col.child(acc_col);
+                }
+            }
+
+            body = body.child(prov_col);
+        }
+    }
+
+    body = body.child(el().w_full().h(1.0).fill(ink.border.alpha(0.5)));
+
+    // Bottom footer actions
+    let footer = row()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .pt(2.0)
+        .child(
+            theme::btn_sm("Manage accounts…", None, true, ink).on_press_tx(
+                |st: &mut State, tx: &mut Tx| {
+                    st.usage_menu = None;
+                    st.settings.section = crate::settings::Section::Accounts;
+                    navigation::navigate(st, PendingNav::SetView(View::Settings), tx);
+                },
+            ),
+        )
+        .child(
+            theme::btn_sm("Close", None, true, ink).on_press(|st: &mut State| {
+                st.usage_menu = None;
+            }),
+        );
+    body = body.child(footer);
+
+    let popover = rune_kit::Popover::new("usage-popover")
+        .anchor("agents-button")
+        .placement(rune_kit::Placement::BottomEnd)
+        .width(360.0)
+        .gutter(6.0)
+        .padding(14.0)
+        .open(true)
+        .on_close(|st: &mut State| st.usage_menu = None)
+        .child(body);
+
+    Some(popover.build(&s.editor.kit, layer))
 }
 
 /// `path` with a leading `$HOME` shown as `~`, as a shell prompt shows it.
@@ -354,13 +635,47 @@ pub fn active_display_path(s: &State) -> Option<String> {
     None
 }
 
+/// Header button to inspect agent usage: icon-only toggle matching the settings gear.
+fn agents_button(open: bool, ink: &Ink) -> El {
+    let glyph = if open {
+        ink.accent.mix(ink.white, 0.4)
+    } else {
+        ink.muted
+    };
+    el().key("agents-button")
+        .size(28.0, 28.0)
+        .radius(8.0)
+        .center()
+        .fill(ink.accent.alpha(if open { 0.16 } else { 0.0 }))
+        .hover_group()
+        .hover(ink.text.alpha(0.08))
+        .press(ink.text.alpha(0.12))
+        .press_scale(0.95)
+        .motion(STATE_SPRING)
+        .role("toggle")
+        .label("Agents")
+        .checked(open)
+        .help("Agent usage and quotas\nEach meter is the share of that window already used")
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .child(theme::ic(&theme::BOT, 16.0, glyph).group_color(if open { glyph } else { ink.text }))
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            if s.usage_menu.is_some() {
+                s.usage_menu = None;
+            } else {
+                s.usage_menu = Some("agents".to_string());
+                // Read here, not in the view: the dropdown draws from this.
+                s.agent_usage = read_agent_usage();
+            }
+            crate::yield_focus(s, tx);
+        })
+}
+
 /// App.tsx header: `flex h-12 items-center gap-3 border-b border-border
 /// bg-panel px-4` (48 px, gap 12, px 16).
 pub fn header(s: &State, ink: &Ink, inset: f32) -> El {
     let mut right = row().gap(8.0).items_center();
-    for chip in usage_chips(s, ink) {
-        right = right.child(chip);
-    }
+    right = right.child(agents_button(s.usage_menu.is_some(), ink));
     // ConnectionBadge only renders when the daemon is not connected; the mock
     // is connected, so it is absent — kept for the real-data swap. It arrives
     // with a short fade and a small scale-up (never from nothing) and leaves
@@ -995,30 +1310,106 @@ mod tests {
         );
     }
 
-    /// A chip with a limit says what its percentage measures.
+    /// The Agents button says what the dropdown's meters measure.
     #[test]
-    fn a_usage_chip_says_its_percentage_is_the_used_share() {
-        let now_ms = 1_700_000_000_000;
+    fn the_agents_button_says_its_meters_are_the_used_share() {
+        let els = header_elements(State::new(crate::test_handle()));
+        let button = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some("agents-button"))
+            .expect("the header carries the Agents button");
+        let help = button.help.as_deref().unwrap_or_default();
+        assert!(
+            help.contains("share of that window already used"),
+            "button help {help:?} does not say what a meter measures",
+        );
+    }
+
+    const NOW_MS: i64 = 1_700_000_000_000;
+
+    /// A state whose own snapshot has one Claude window, resetting in `in_secs`.
+    fn state_with_claude_window(used_pct: f64, in_secs: i64) -> State {
         let mut s = State::new(crate::test_handle());
-        s.now_ms = now_ms;
+        s.now_ms = NOW_MS;
         s.data.usage = Some(app_core::usage::UsageSnapshot {
             claude: app_core::usage::ClaudeUsage {
-                five_hour: Some(limit(42.0, now_ms / 1000 + 3600)),
-                updated_at: Some(now_ms),
+                five_hour: Some(limit(used_pct, NOW_MS / 1000 + in_secs)),
+                updated_at: Some(NOW_MS),
                 ..Default::default()
             },
             ..Default::default()
         });
-        let els = header_elements(s);
-        let chip = els
-            .iter()
-            .find(|e| e.help.as_deref().is_some_and(|h| h.contains("Updated")))
-            .expect("the Claude chip carries its help");
-        let help = chip.help.as_deref().unwrap();
-        assert!(
-            help.contains("share of that window already used"),
-            "chip help {help:?} does not say what the percentage measures",
+        s
+    }
+
+    fn record(id: &str, percent: f64) -> OmarchyRecord {
+        OmarchyRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            limits: vec![OmarchyLimit {
+                label: "Weekly".to_string(),
+                percent,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_countdown_reads_the_time_left_on_the_apps_clock() {
+        let at = |secs: i64| {
+            chrono::DateTime::from_timestamp(NOW_MS / 1000 + secs, 0).map(|at| at.to_rfc3339())
+        };
+        let left = |secs: i64| format_countdown(at(secs).as_deref(), NOW_MS);
+        assert_eq!(left(2 * 86_400 + 3 * 3_600), "2d 3h");
+        assert_eq!(left(3_600 + 5 * 60), "1h 5m");
+        assert_eq!(left(12 * 60), "12m");
+        assert_eq!(left(-1), "reset");
+        assert_eq!(format_countdown(Some(""), NOW_MS), "");
+        assert_eq!(format_countdown(None, NOW_MS), "");
+    }
+
+    /// `Limit::resets_at` is epoch seconds: a window an hour away must count
+    /// down, not read "reset", and the snapshot claims no plan tier.
+    #[test]
+    fn the_snapshot_fallback_counts_down_to_its_reset() {
+        let s = state_with_claude_window(42.0, 3_600);
+        let records = usage_records(&s);
+        assert_eq!(records.len(), 1, "only Claude has a window");
+        let claude = &records[0];
+        assert_eq!(claude.id, "claude");
+        assert_eq!(claude.tier_label, None);
+        assert_eq!(claude.limits[0].percent, 0.42);
+        assert_eq!(
+            format_countdown(claude.limits[0].resets_at.as_deref(), s.now_ms),
+            "1h 0m"
         );
+    }
+
+    /// Omarchy knowing one provider must not hide Goko's own data for the
+    /// others, and Omarchy's record wins for a provider both know.
+    #[test]
+    fn the_snapshot_fills_in_providers_omarchy_has_no_record_of() {
+        let mut s = state_with_claude_window(42.0, 3_600);
+        s.agent_usage = vec![record("ollama", 0.1)];
+        let ids: Vec<String> = usage_records(&s).into_iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["ollama", "claude"]);
+
+        s.agent_usage = vec![record("claude", 0.9)];
+        let records = usage_records(&s);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].limits[0].percent, 0.9);
+    }
+
+    #[test]
+    fn the_sessions_line_only_says_today_when_a_provider_reports_it() {
+        assert_eq!(sessions_line(&[record("claude", 0.1)], 3), "3 SESSIONS");
+        assert_eq!(sessions_line(&[], 1), "1 SESSION");
+        let mut today = record("codex", 0.1);
+        today.today_sessions = Some(0);
+        assert_eq!(sessions_line(&[today.clone()], 3), "0 SESSIONS TODAY");
+        today.today_sessions = Some(2);
+        assert_eq!(sessions_line(&[today], 3), "2 SESSIONS TODAY");
     }
 
     fn header_only(s: &State, _cx: &mut Cx<State>) -> El {

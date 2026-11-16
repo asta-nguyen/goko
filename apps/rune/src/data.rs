@@ -380,47 +380,6 @@ pub fn window_label(window_minutes: u64, provider: &str) -> String {
     format!("{window_minutes}m")
 }
 
-/// `usageAge()` from usage/tone.ts: "Updated …" for the chip tooltip.
-pub fn usage_age(updated_at: Option<i64>, now_ms: i64) -> String {
-    let Some(updated_at) = updated_at else {
-        return "unknown".to_string();
-    };
-    let seconds = ((now_ms - updated_at) / 1000).max(0);
-    if seconds < 60 {
-        return format!("{seconds}s ago");
-    }
-    if seconds < 3600 {
-        return format!("{}m ago", seconds / 60);
-    }
-    if seconds < 86_400 {
-        return format!("{}h ago", seconds / 3600);
-    }
-    format!("{}d ago", seconds / 86_400)
-}
-
-/// The chip tooltip's reset phrase — main's `resetTime()` shows the local
-/// clock time, which std has no formatter for; a relative "in 2h"/"just
-/// now" says the same thing without a calendar.
-pub fn relative_time(delta_ms: i64) -> String {
-    if delta_ms <= 0 {
-        return "just now".to_string();
-    }
-    let seconds = delta_ms / 1000;
-    if seconds < 120 {
-        return format!("in {seconds}s");
-    }
-    let minutes = seconds / 60;
-    if minutes < 120 {
-        return format!("in {minutes}m");
-    }
-    let hours = minutes / 60;
-    if hours < 48 {
-        let rem = minutes % 60;
-        return format!("in {hours}h {rem}m");
-    }
-    format!("in {}d", hours / 24)
-}
-
 /// `accountNameOf()` from services/accounts.ts: the account a session argv
 /// runs under, read from its OWN argv — never the current active account.
 /// The env-prefixed first word (`env CLAUDE_CONFIG_DIR=…`/`CODEX_HOME=…`)
@@ -703,23 +662,5 @@ mod tests {
         assert_eq!(window_label(2880, "claude"), "2d");
         assert_eq!(window_label(180, "claude"), "3h");
         assert_eq!(window_label(45, "claude"), "45m");
-    }
-
-    #[test]
-    fn usage_age_formats_the_ages() {
-        assert_eq!(usage_age(None, 1_000), "unknown");
-        assert_eq!(usage_age(Some(1_000), 1_500), "0s ago");
-        assert_eq!(usage_age(Some(0), 61_000), "1m ago");
-        assert_eq!(usage_age(Some(0), 3_700_000), "1h ago");
-        assert_eq!(usage_age(Some(0), 90_000_000), "1d ago");
-    }
-
-    #[test]
-    fn relative_time_formats_the_reset_phrase() {
-        assert_eq!(relative_time(-1), "just now");
-        assert_eq!(relative_time(45_000), "in 45s");
-        assert_eq!(relative_time(9 * 60_000), "in 9m");
-        assert_eq!(relative_time(2 * 3_600_000 + 30 * 60_000), "in 2h 30m");
-        assert_eq!(relative_time(3 * 24 * 3_600_000), "in 3d");
     }
 }

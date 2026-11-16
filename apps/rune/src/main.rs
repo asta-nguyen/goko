@@ -212,9 +212,12 @@ pub struct State {
     /// When the usage/accounts read was last issued; the worker re-reads
     /// the sources about every five seconds.
     usage_at: Option<f64>,
-    /// The open usage-chip account menu: the agent it belongs to; the kit
-    /// menu anchors to that chip.
+    /// The open Agents usage dropdown (`"agents"`); it anchors to the header's
+    /// Agents button.
     usage_menu: Option<String>,
+    /// Omarchy's usage records as last read from disk: when the dropdown
+    /// opens, on Refresh, and on the usage poll while it stays open.
+    agent_usage: Vec<chrome::OmarchyRecord>,
     /// What the check for a newer release found (Settings → Updates).
     update: update::Status,
     /// Where "Update now" installs over this copy; `None` when this copy can
@@ -353,6 +356,7 @@ impl State {
             subagents_at: None,
             usage_at: None,
             usage_menu: None,
+            agent_usage: Vec::new(),
             update: update::Status::default(),
             update_dir: update::install_dir(),
             settings: settings::SettingsState::default(),
@@ -5494,12 +5498,17 @@ mod view_tests {
         assert_eq!(Theme::Dracula.resolve(false), Theme::Dracula);
     }
 
+    /// The Agents dropdown mounts only while it is open, and needs neither an
+    /// accounts view nor usage data to do so.
     #[test]
-    fn the_usage_menu_needs_an_account_view() {
+    fn the_agents_usage_dropdown_mounts_only_while_open() {
         let mut s = State::new(test_handle());
-        s.usage_menu = Some("claude".to_string());
         let mut layer = Vec::new();
         assert!(chrome::usage_menu_layer(&s, &mut layer).is_none());
+        assert!(layer.is_empty());
+        s.usage_menu = Some("agents".to_string());
+        assert!(chrome::usage_menu_layer(&s, &mut layer).is_some());
+        assert!(!layer.is_empty(), "the popover goes on the overlay layer");
         s.data.accounts = Some(usage_view());
         assert!(chrome::usage_menu_layer(&s, &mut layer).is_some());
     }

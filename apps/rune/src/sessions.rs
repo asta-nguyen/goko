@@ -828,6 +828,11 @@ impl State {
             return false;
         }
         self.usage_at = Some(now);
+        // The open Agents dropdown also draws Omarchy's records; re-read them
+        // on the same cadence so a finished Refresh shows up.
+        if self.usage_menu.is_some() {
+            self.agent_usage = crate::chrome::read_agent_usage();
+        }
         self.request_usage()
     }
 
