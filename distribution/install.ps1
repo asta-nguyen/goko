@@ -20,16 +20,16 @@ function Fail($message) {
     exit 1
 }
 
-# The release names its archive in <target>.target.json so the installer never
-# guesses a version number.
-$entryUrl = "$releases/$target.target.json"
+# The release names its archives in latest.json so the installer never guesses
+# a version number.
+$manifestUrl = "$releases/latest.json"
 try {
-    $entry = Invoke-RestMethod -Uri $entryUrl -UseBasicParsing
+    $manifest = Invoke-RestMethod -Uri $manifestUrl -UseBasicParsing
 } catch {
-    Fail "cannot read $entryUrl (no Windows build published yet?)"
+    Fail "cannot read $manifestUrl"
 }
-$url = $entry.$target.url
-$sha = $entry.$target.sha256
+$url = $manifest.targets.$target.url
+$sha = $manifest.targets.$target.sha256
 if (-not $url) { Fail "the release has no $target build" }
 
 $temp = Join-Path $env:TEMP "goko-install-$([guid]::NewGuid().ToString('N'))"
