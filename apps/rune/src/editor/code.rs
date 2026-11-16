@@ -403,6 +403,7 @@ pub struct Code<S> {
     on_go_to: Option<GoToCallback<S>>,
     on_indent: Option<IndentCallback<S>>,
     on_blame: Option<BlameCallback<S>>,
+    on_send: Option<StateCallback<S>>,
 }
 
 impl<S: 'static> Code<S> {
@@ -415,6 +416,7 @@ impl<S: 'static> Code<S> {
             on_go_to: None,
             on_indent: None,
             on_blame: None,
+            on_send: None,
         }
     }
 
@@ -448,6 +450,12 @@ impl<S: 'static> Code<S> {
     /// Called when the blame chip is pressed; receives the new enabled state.
     pub fn on_blame(mut self, f: impl Fn(&mut S, bool, &mut Tx) + 'static) -> Code<S> {
         self.on_blame = Some(Rc::new(f));
+        self
+    }
+
+    /// Called when the Send chip is pressed: send the snapshot to the terminal.
+    pub fn on_send(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Code<S> {
+        self.on_send = Some(Rc::new(f));
         self
     }
 
@@ -722,8 +730,33 @@ impl<S: 'static> Code<S> {
             .items_center()
             .justify_end()
             .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+            .child(self.send_chip(ink))
             .child(self.blame_chip(s, ink))
             .child(self.indent_chip(s, ink))
+    }
+
+    /// The Send chip: snapshot the selection (or the whole file) into the
+    /// focused terminal session. The action reports its own outcome.
+    fn send_chip(&self, ink: &Ink) -> El {
+        let on_send = self.on_send.clone();
+        row()
+            .h(28.0)
+            .px(10.0)
+            .items_center()
+            .radius(8.0)
+            .child(theme::txt("Send", T128, ink.text))
+            .hover(ink.text.alpha(0.08))
+            .press(ink.text.alpha(0.12))
+            .press_scale(0.97)
+            .role("button")
+            .label("Send snapshot to terminal")
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press_tx(move |st, tx| {
+                if let Some(cb) = &on_send {
+                    cb(st, tx);
+                }
+            })
     }
 
     /// The inline-blame toggle chip. The chip stays visible even when the

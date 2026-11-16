@@ -21,6 +21,7 @@ use crate::editor::history::{self, UNCOMMITTED_ID};
 use crate::editor::navigation::{self, PendingNav};
 use crate::editor::quick_open;
 use crate::editor::search;
+use crate::editor::snapshot;
 use crate::editor::state::{ListView, Section};
 use crate::{State, View};
 
@@ -49,6 +50,14 @@ pub fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if quick_open::chord(s, ev) {
         return true;
+    }
+    if ev.mods.cmd && ev.mods.shift && !ev.mods.alt {
+        if ev.is_command('c') {
+            return snapshot::copy(s, tx);
+        }
+        if matches!(ev.key, Key::Enter) {
+            return snapshot::send_chord(s, tx);
+        }
     }
     if ev.is_command('s') {
         files::save_active_doc(s);

@@ -1067,6 +1067,9 @@ fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
         .on_blame(|st: &mut State, enabled, _tx: &mut Tx| {
             crate::editor::blame::set_enabled(&mut st.editor, enabled);
         })
+        .on_send(|st: &mut State, tx: &mut Tx| {
+            crate::editor::snapshot::send(st, tx);
+        })
         .build(s, ink, k)
 }
 
@@ -1727,6 +1730,67 @@ mod tests {
             size: text.len() as u64,
         };
         s.editor.doc = Some(crate::editor::draft::OpenDoc::new(path, &file));
+    }
+
+    /// ⌘⇧C copies the selection's whole lines with their path and range.
+    #[test]
+    fn the_snapshot_chord_copies_the_selected_lines() {
+        let mut s = scene();
+        open_text_doc(
+            &mut s,
+            "src/a.rs",
+            "fn one() {}\nfn two() {}\nfn three() {}\n",
+        );
+        {
+            let doc = s.editor.doc.as_mut().unwrap();
+            doc.code.edit.focused = true;
+            let start = doc.code.edit.text.find("fn two").unwrap();
+            let end = start + "fn two() {}".len();
+            doc.code.edit.set_selection(start, end);
+        }
+        let mut rt = kb_runtime(s);
+        let clip = rune::clipboard::memory();
+        rt.use_clipboard(&clip);
+        rt.key(KeyEvent {
+            key: Key::Command('c'),
+            mods: Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.0);
+        assert_eq!(
+            clip.text().map(|t| t.to_string()).as_deref(),
+            Some("src/a.rs:2 (rust)\n\n```rust\nfn two() {}\n```\n")
+        );
+        assert_eq!(
+            rt.state.notice.as_deref(),
+            Some("Snapshot copied to clipboard")
+        );
+    }
+
+    /// The footer chip is mounted and reports the missing session instead of
+    /// writing bytes.
+    #[test]
+    fn the_send_chip_reports_a_missing_session() {
+        let mut s = scene();
+        open_text_doc(&mut s, "src/a.rs", "fn main() {}\n");
+        let mut rt = kb_runtime(s);
+        let chip = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Send snapshot to terminal") && !e.exiting)
+            .expect("send chip mounted");
+        click(
+            &mut rt,
+            chip.rect[0] + chip.rect[2] / 2.0,
+            chip.rect[1] + chip.rect[3] / 2.0,
+        );
+        assert_eq!(
+            rt.state.notice.as_deref(),
+            Some("No live terminal session to send to")
+        );
     }
 
     fn status(path: &str) -> app_core::git_view::StatusEntry {

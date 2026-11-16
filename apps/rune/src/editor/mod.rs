@@ -32,6 +32,7 @@ pub mod patch;
 pub mod quick_open;
 pub mod quit_guard;
 pub mod search;
+pub mod snapshot;
 pub mod stashes;
 pub mod state;
 pub mod syntax;
