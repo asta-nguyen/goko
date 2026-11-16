@@ -12,6 +12,7 @@
 
 ## Archived changes
 
+- [Open file from diff](changes/archive/2026-11-16-open-file-from-diff/delta.md)
 - [Project Map](changes/archive/project-map/design.md) ([tasks](changes/archive/project-map/tasks.md), [delta](changes/archive/project-map/delta.md))
 - [Project terminal filter](changes/archive/project-terminal-filter/delta.md)
 - [Current branch in the editor header](changes/archive/editor-current-branch/delta.md)

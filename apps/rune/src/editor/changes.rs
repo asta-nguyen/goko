@@ -607,7 +607,11 @@ fn clean_view(s: &State, ink: &Ink) -> El {
                 .justify_center()
                 .gap(8.0)
                 .on_secondary_press(|st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
-                    st.editor.changes.menu = Some(ListMenu::Point { x: p.x, y: p.y });
+                    st.editor.changes.menu = Some(ListMenu::Point {
+                        x: p.x,
+                        y: p.y,
+                        path: None,
+                    });
                 })
                 .child(theme::txt("✓", T12M, ink.success))
                 .child(theme::txt("Working tree clean", T12M, ink.text))
@@ -736,10 +740,14 @@ fn aside(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChange
             .key(keyboard::nav_scroll_scope(
                 crate::editor::state::Section::Changes,
             ))
-            // The list's View/Group-By menu opens on a secondary press
-            // anywhere over the rows — it is list-level, not row-level.
+            // The list's View/Group-By menu opens on a secondary press over
+            // empty space; file rows open the same menu scoped to their path.
             .on_secondary_press(|st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
-                st.editor.changes.menu = Some(ListMenu::Point { x: p.x, y: p.y });
+                st.editor.changes.menu = Some(ListMenu::Point {
+                    x: p.x,
+                    y: p.y,
+                    path: None,
+                });
             })
             .scroll(rune::ScrollSpec {
                 stick_bottom: false,
@@ -979,13 +987,25 @@ fn dir_row(
 fn list_menu(s: &State, layer: &mut Vec<El>) -> Option<El> {
     let m = s.editor.changes.menu.as_ref()?;
     let menu = match m {
-        ListMenu::Point { x, y } => context_menu(
+        ListMenu::Point { x, y, .. } => context_menu(
             "changes-list",
             el(),
             Some(rune::PointerPress { x: *x, y: *y }),
         ),
         ListMenu::Anchor => Menu::new("changes-list").anchor(VIEW_MENU_KEY).open(true),
     };
+    // A menu opened on a file row leads with Open File for that row.
+    let mut menu = menu;
+    if let Some(open_path) = m.path().map(str::to_string) {
+        menu = menu
+            .item(
+                MenuItem::new("Open File").on_select_tx(move |st: &mut State, tx: &mut Tx| {
+                    st.editor.changes.menu = None;
+                    crate::editor::files::open_doc(st, &open_path, None, tx);
+                }),
+            )
+            .separator();
+    }
     let view = s.editor.list_view;
     let group = s.editor.changes.group;
     let view_item = |label: &'static str, v: ListView| {
@@ -1078,9 +1098,11 @@ fn entry_row(
     let nav_cur = keyboard::nav_active(s, crate::editor::state::Section::Changes, &nav_key);
     let busy = s.editor.changes.busy.is_some();
     let (kind, discard_ok) = row_kind(key);
-    // One owned copy per closure: select, row action and discard each move
-    // their own `String` so no handler can observe another's path.
+    // One owned copy per closure: select, open, menu, row action and discard
+    // each move their own `String` so no handler can observe another's path.
     let sel_path = path.clone();
+    let open_path = path.clone();
+    let menu_path = path.clone();
     let act_path = path.clone();
     let dis_path = path.clone();
     let mut row_el = row()
@@ -1140,6 +1162,15 @@ fn entry_row(
             .help(verb)
             .disabled(busy)
     };
+    // Every row can open its file in the editor — the same `open_doc` path
+    // the file tree uses (draft-guarded, switches to the Files section).
+    row_el = row_el.child(
+        row_icon(&theme::OPEN_FILE, "Open file", &path)
+            .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                crate::editor::files::open_doc(st, &open_path, None, tx);
+            })
+            .build(k),
+    );
     match kind {
         RowKind::Stage => {
             row_el = row_el.child(
@@ -1181,7 +1212,15 @@ fn entry_row(
                 .build(k),
         );
     }
-    row_el
+    // A secondary press on the row opens the list menu scoped to this path —
+    // it leads with Open File and keeps the View/Group-By items.
+    row_el.on_secondary_press(move |st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
+        st.editor.changes.menu = Some(ListMenu::Point {
+            x: p.x,
+            y: p.y,
+            path: Some(menu_path.clone()),
+        });
+    })
 }
 
 /// Right side: empty hint or the shared patch pane for Pane::Changes.
@@ -1904,9 +1943,8 @@ mod tests {
         assert_eq!(ListView::default(), ListView::Tree);
     }
 
-    /// Right-click on the changed-file list opens its View/Group-By menu
-    /// with the active choices checked — the menu is list-level, so a press
-    /// over a file row still names the list.
+    /// Right-click on a file row opens the View/Group-By menu scoped to that
+    /// path — the same items as a list-level open plus a leading Open File.
     #[test]
     fn secondary_press_opens_the_list_menu() {
         let (s, _home, _guard) = editor_scene();
@@ -1933,7 +1971,15 @@ mod tests {
             .menu
             .as_ref()
             .expect("secondary press opens the list menu");
-        assert_eq!(*m, ListMenu::Point { x, y });
+        assert_eq!(
+            m,
+            &ListMenu::Point {
+                x,
+                y,
+                path: Some("src/staged-00.rs".into())
+            },
+            "a row press scopes the menu to that file"
+        );
 
         rt.frame(1.0 / 60.0);
         let item = |rt: &Runtime<State>, label: &str| {
@@ -1959,12 +2005,84 @@ mod tests {
         assert!(!item(&rt, "List").item_selected);
     }
 
+    /// A row-scoped menu leads with Open File; picking it navigates through
+    /// `open_doc` (a `doc_load` read is armed) and closes the menu.
+    #[test]
+    fn row_menu_open_file_loads_the_doc() {
+        let (s, _home, _guard) = editor_scene();
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let row = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "button" && e.label.as_deref() == Some("src/staged-00.rs"))
+            .expect("staged row mounted");
+        let (x, y) = (
+            row.rect[0] + row.rect[2] / 2.0,
+            row.rect[1] + row.rect[3] / 2.0,
+        );
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+
+        let open = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Open File"))
+            .expect("row menu leads with Open File");
+        click(
+            &mut rt,
+            open.rect[0] + open.rect[2] / 2.0,
+            open.rect[1] + open.rect[3] / 2.0,
+        );
+        rt.frame(1.0 / 60.0);
+
+        assert!(
+            rt.state.editor.changes.menu.is_none(),
+            "picking closes the menu"
+        );
+        assert!(
+            rt.state.editor.doc_load.is_some(),
+            "open_doc armed a file read"
+        );
+    }
+
+    /// The row's own open icon goes through the same `open_doc` path.
+    #[test]
+    fn row_open_icon_loads_the_doc() {
+        let (s, _home, _guard) = editor_scene();
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let icon = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Open file src/staged-00.rs"))
+            .expect("row open icon mounted");
+        click(
+            &mut rt,
+            icon.rect[0] + icon.rect[2] / 2.0,
+            icon.rect[1] + icon.rect[3] / 2.0,
+        );
+        rt.frame(1.0 / 60.0);
+
+        assert!(
+            rt.state.editor.doc_load.is_some(),
+            "open_doc armed a file read"
+        );
+    }
+
     /// Picking a menu item writes the choice, closes the menu, and the new
     /// layout renders — dir rows for `Tree`, composite headers for a group.
     #[test]
     fn menu_items_switch_view_and_group() {
         let (mut s, _home, _guard) = editor_scene();
-        s.editor.changes.menu = Some(ListMenu::Point { x: 100.0, y: 100.0 });
+        s.editor.changes.menu = Some(ListMenu::Point {
+            x: 100.0,
+            y: 100.0,
+            path: None,
+        });
         let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
         rt.frame(1.0 / 60.0);
@@ -1999,7 +2117,11 @@ mod tests {
             "misc dir row mounts in Tree view"
         );
 
-        rt.state.editor.changes.menu = Some(ListMenu::Point { x: 100.0, y: 100.0 });
+        rt.state.editor.changes.menu = Some(ListMenu::Point {
+            x: 100.0,
+            y: 100.0,
+            path: None,
+        });
         rt.invalidate();
         rt.frame(1.0 / 60.0);
         pick(&mut rt, "Staged & Unstaged");

@@ -592,6 +592,30 @@ The system SHALL show a dismiss button on the Editor's notice bar that clears th
 
 Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`
 
+### RNE-open-changed-file
+
+The system SHALL offer an "Open file" affordance on every changed-file row of the Changes list, the History commit detail's changed-file list, and the Stash detail's changed-file list — both as a row icon and as an `Open File` context-menu item opened by a secondary press on the row — and an open action on every file header in the shared diff pane, each opening the file's working-tree version through the same draft-guarded navigation as opening it from the file tree.
+
+#### Scenario: Open from a row
+
+- GIVEN a changed-file row in Changes, a commit detail, or a stash detail
+- WHEN the user presses the row's open icon, or picks `Open File` from the row's context menu
+- THEN the file opens on the Files code surface at its working-tree version, while a primary press on the row still selects its diff
+
+#### Scenario: Open from the diff header
+
+- GIVEN a diff is showing in Changes, History, or Stashes
+- WHEN the user presses the open action in a file's diff header
+- THEN that file opens on the Files code surface at its working-tree version
+
+#### Scenario: File gone from the working tree
+
+- GIVEN a row or diff header names a file deleted or renamed away in the working tree
+- WHEN the user opens it
+- THEN the open document shows the read-only missing-file state rather than an error
+
+Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit_detail.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/navigation.rs`
+
 ### RNE-pane-resize
 
 The system SHALL let the user drag an 8 px separator grip between each editor list pane and its detail pane — Files aside, Changes list/patch, Stashes list/detail, and the History table/detail divider — clamping the stored width to 180–480 px against at least 240 px of sibling space, persisting widths inside the shared `goko.history.layout` settings document, stepping by keyboard, and resetting on double-press.
@@ -1045,6 +1069,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/editor/indent.rs`
 - `apps/rune/src/editor/syntax.rs`
 - `apps/rune/src/editor/highlight.rs`
+- `apps/rune/src/editor/line_changes.rs`
 - `apps/rune/src/editor/search.rs`
 - `apps/rune/src/editor/find.rs`
 - `apps/rune/src/editor/go_to_definition.rs`

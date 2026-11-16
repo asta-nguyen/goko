@@ -6,7 +6,8 @@
 
 use app_core::git_view::GitViewCommit;
 use rune::{El, TextStyle, Tx, col, el, row};
-use rune_kit::ScrollBar;
+use rune_kit::diff::DiffState;
+use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::changes::{self, TreeRow};
@@ -334,7 +335,8 @@ pub(crate) const META_MAX_H: f32 = 600.0;
 
 /// Which state drives a changed-file list. The History commit detail is
 /// `History`-bound (`view`, `file_menu`, `collapsed_dirs`); the stash
-/// detail is `Flat` — always a plain list, no menu or collapse state.
+/// detail is `Flat` — always a plain list, no collapse state, and a
+/// `stashes.file_menu` that holds only Open File.
 #[derive(Clone, Copy)]
 pub(crate) enum ChangedFileHost {
     History,
@@ -346,7 +348,8 @@ pub(crate) enum ChangedFileHost {
 /// `−removed` counts in success/danger pushed to the row's end. For
 /// `ChangedFileHost::History` the `View` (`List`/`Tree`) comes from
 /// the shared `editor.list_view` and a secondary press anywhere on the list opens its
-/// context menu; `Flat` always renders the plain list.
+/// context menu; `Flat` always renders the plain list, and only its rows
+/// open a menu (Open File).
 pub(crate) fn changed_files(
     s: &State,
     files: &[app_core::git_view::StatusEntry],
@@ -355,6 +358,7 @@ pub(crate) fn changed_files(
 ) -> El {
     let count = files.len();
     let history = matches!(host, ChangedFileHost::History);
+    let k = &s.editor.kit;
     let mut list = col()
         .w_full()
         .gap(2.0)
@@ -364,7 +368,11 @@ pub(crate) fn changed_files(
     if history {
         // The list's `View` menu is list-level, like the Changes section's.
         list = list.on_secondary_press(|st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
-            st.editor.history.file_menu = Some(ListMenu::Point { x: p.x, y: p.y });
+            st.editor.history.file_menu = Some(ListMenu::Point {
+                x: p.x,
+                y: p.y,
+                path: None,
+            });
         });
     }
     list = list.child(row().w_full().items_center().py(2.0).child(txt(
@@ -379,7 +387,7 @@ pub(crate) fn changed_files(
     } {
         ListView::List => {
             for f in files {
-                list = list.child(changed_file_row(f, ink, 0.0));
+                list = list.child(changed_file_row(f, ink, 0.0, host, k));
             }
         }
         ListView::Tree => {
@@ -391,7 +399,7 @@ pub(crate) fn changed_files(
                 list = list.child(match trow {
                     TreeRow::Dir { path, name, depth } => dir_row(s, ink, &path, &name, depth),
                     TreeRow::File { entry, depth, .. } => {
-                        changed_file_row(entry, ink, depth as f32 * changes::DIR_INDENT)
+                        changed_file_row(entry, ink, depth as f32 * changes::DIR_INDENT, host, k)
                     }
                 });
             }
@@ -441,13 +449,33 @@ fn dir_row(s: &State, ink: &Ink, path: &str, name: &str, depth: usize) -> El {
         })
 }
 
+/// The `DiffState` a host's file rows scroll — the stash detail shares this
+/// row with History but scrolls its own diff, not the commit's.
+fn host_diff(s: &mut State, host: ChangedFileHost) -> &mut DiffState {
+    match host {
+        ChangedFileHost::History => &mut s.editor.history.diff,
+        ChangedFileHost::Flat => &mut s.editor.stashes.diff,
+    }
+}
+
 /// One changed file in the commit detail: a press scrolls the patch pane to
-/// that file's diff. `indent` is the `Tree` view's extra left padding.
-fn changed_file_row(f: &app_core::git_view::StatusEntry, ink: &Ink, indent: f32) -> El {
+/// that file's diff, a secondary press opens the host's file menu scoped to
+/// the path, and the trailing icon opens the file in the editor. `indent` is
+/// the `Tree` view's extra left padding.
+fn changed_file_row(
+    f: &app_core::git_view::StatusEntry,
+    ink: &Ink,
+    indent: f32,
+    host: ChangedFileHost,
+    k: &Kit,
+) -> El {
     let path = f.path.clone();
     let key_path = f.path.clone();
+    let open_path = f.path.clone();
+    let menu_path = f.path.clone();
     let mut r = row()
-        .w_full()
+        .grow(1.0)
+        .min_w(0.0)
         .items_center()
         .gap(8.0)
         .px(6.0)
@@ -461,14 +489,16 @@ fn changed_file_row(f: &app_core::git_view::StatusEntry, ink: &Ink, indent: f32)
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
         .on_press_tx(move |st: &mut State, tx: &mut Tx| {
-            if let Some(idx) = st.editor.history.diff.file_index(&path) {
-                st.editor.history.diff.scroll_to_file(idx, tx);
+            let diff = host_diff(st, host);
+            if let Some(idx) = diff.file_index(&path) {
+                diff.scroll_to_file(idx, tx);
             }
         })
         .on_key(move |st: &mut State, ev: &rune::KeyEvent, tx: &mut Tx| {
             if activate_key(ev) {
-                if let Some(idx) = st.editor.history.diff.file_index(&key_path) {
-                    st.editor.history.diff.scroll_to_file(idx, tx);
+                let diff = host_diff(st, host);
+                if let Some(idx) = diff.file_index(&key_path) {
+                    diff.scroll_to_file(idx, tx);
                 }
                 true
             } else {
@@ -511,7 +541,36 @@ fn changed_file_row(f: &app_core::git_view::StatusEntry, ink: &Ink, indent: f32)
                 )),
         );
     }
-    r
+    // Outer shell mirrors the Changes `entry_row`: the pressable row plus
+    // the open-file icon, with a row-scoped context menu on secondary press.
+    row()
+        .w_full()
+        .items_center()
+        .gap(2.0)
+        .px(2.0)
+        .child(r)
+        .child(
+            IconButton::new(&theme::OPEN_FILE)
+                .variant(IconButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .label(format!("Open file {}", f.path))
+                .help("Open file")
+                .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                    crate::editor::files::open_doc(st, &open_path, None, tx);
+                })
+                .build(k),
+        )
+        .on_secondary_press(move |st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
+            let menu = ListMenu::Point {
+                x: p.x,
+                y: p.y,
+                path: Some(menu_path.clone()),
+            };
+            match host {
+                ChangedFileHost::History => st.editor.history.file_menu = Some(menu),
+                ChangedFileHost::Flat => st.editor.stashes.file_menu = Some(menu),
+            }
+        })
 }
 
 /// `UncommittedDetail`: entry list + "Open in Changes".
@@ -1163,7 +1222,15 @@ index 1111111..2222222 100644\n\
             .file_menu
             .as_ref()
             .expect("secondary press opens the file menu");
-        assert_eq!(*m, ListMenu::Point { x, y });
+        assert_eq!(
+            m,
+            &ListMenu::Point {
+                x,
+                y,
+                path: Some("src/a.rs".into())
+            },
+            "a row press scopes the menu to that file"
+        );
 
         rt.frame(1.0 / 60.0);
         let item = |rt: &Runtime<State>, label: &str| {

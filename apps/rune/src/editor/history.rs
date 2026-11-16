@@ -633,9 +633,12 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
     }
 
     // Changed-file list context menu on the commit detail: a secondary
-    // press on `commit_detail::changed_files` stores the point here and the
-    // View choice is written straight into the shared `editor.list_view`.
-    if let Some((x, y)) = h.file_menu.as_ref().and_then(|m| m.point()) {
+    // press on `commit_detail::changed_files` stores the point here — on a
+    // file row the menu also carries the path and leads with Open File;
+    // the View choice is written straight into the shared `editor.list_view`.
+    if let Some(m) = &h.file_menu
+        && let Some((x, y)) = m.point()
+    {
         let view = s.editor.list_view;
         let view_item = |label: &'static str, v: ListView| {
             MenuItem::new(label)
@@ -645,7 +648,18 @@ fn history_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
                     st.editor.history.file_menu = None;
                 })
         };
-        let menu = context_menu("history-files", el(), Some(rune::PointerPress { x, y }))
+        let mut menu = context_menu("history-files", el(), Some(rune::PointerPress { x, y }));
+        if let Some(open_path) = m.path().map(str::to_string) {
+            menu = menu
+                .item(MenuItem::new("Open File").on_select_tx(
+                    move |st: &mut State, tx: &mut Tx| {
+                        st.editor.history.file_menu = None;
+                        crate::editor::files::open_doc(st, &open_path, None, tx);
+                    },
+                ))
+                .separator();
+        }
+        let menu = menu
             .group_label("View")
             .item(view_item("List", ListView::List))
             .item(view_item("Tree", ListView::Tree))

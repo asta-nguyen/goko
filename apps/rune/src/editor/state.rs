@@ -97,12 +97,17 @@ pub enum ChangeGroup {
     StagedUnstaged,
 }
 
-/// An open view menu on a changed-file list — its items write the shared
-/// view state, never a row. Opens at a secondary-press point, or anchored
-/// under the header's view button.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// An open view menu on a changed-file list — opened on empty space at a
+/// secondary-press point or anchored under the header's view button, and
+/// opened on a file row with `path` set so the menu also offers "Open File".
+#[derive(Clone, Debug, PartialEq)]
 pub enum ListMenu {
-    Point { x: f32, y: f32 },
+    Point {
+        x: f32,
+        y: f32,
+        /// The row the menu was opened on; `None` for a list-level open.
+        path: Option<String>,
+    },
     Anchor,
 }
 
@@ -111,7 +116,15 @@ impl ListMenu {
     /// anchored to an element instead.
     pub fn point(&self) -> Option<(f32, f32)> {
         match *self {
-            ListMenu::Point { x, y } => Some((x, y)),
+            ListMenu::Point { x, y, .. } => Some((x, y)),
+            ListMenu::Anchor => None,
+        }
+    }
+
+    /// The row path a row-opened menu acts on; `None` for a list-level open.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            ListMenu::Point { path, .. } => path.as_deref(),
             ListMenu::Anchor => None,
         }
     }
@@ -396,6 +409,8 @@ pub struct StashesState {
     pub detail: Option<Patch>,
     /// rune-kit diff model for the stash-detail patch pane.
     pub diff: DiffState,
+    /// Open context menu on the detail's changed-file list.
+    pub file_menu: Option<ListMenu>,
     pub detail_loading: bool,
 }
 
@@ -679,6 +694,7 @@ impl EditorState {
                 selected: None,
                 detail: None,
                 diff: DiffState::new(Vec::new()),
+                file_menu: None,
                 detail_loading: false,
             },
             pane_row_w: 0.0,

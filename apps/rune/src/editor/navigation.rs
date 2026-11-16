@@ -333,6 +333,7 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     s.editor.stashes.selected = None;
     s.editor.stashes.detail = None;
     s.editor.stashes.checkout = None;
+    s.editor.stashes.file_menu = None;
     s.editor.go_to = None;
     s.editor.commit.message = rune::edit::TextEdit::new("");
     s.editor.commit.gen_snapshot = None;
@@ -420,6 +421,7 @@ fn clear_checkout(s: &mut State) {
     s.editor.stashes.selected = None;
     s.editor.stashes.detail = None;
     s.editor.stashes.checkout = None;
+    s.editor.stashes.file_menu = None;
     s.editor.go_to = None;
     s.editor.commit.message = rune::edit::TextEdit::new("");
     s.editor.commit.gen_snapshot = None;
