@@ -1,0 +1,46 @@
+docs/llm/domains/rune-editor.md
+  s_d95194358f3f5d::t_fe181106782d63 51
+  s_d95194358f3f5d::t_57c304cbd8cf6b 1142
+  s_d95194358f3f5d::t_ebce238c44cbb4 1097-1103
+  s_d95194358f3f5d::t_8323e94cf44763 49-50,52-96
+apps/rune/src/editor/keyboard.rs
+  s_d95194358f3f5d::t_4dcd893833b43b 54-61
+  s_d95194358f3f5d::t_0548b549c90e03 24
+apps/rune/src/editor/mod.rs
+  s_d95194358f3f5d::t_77db90bbccea66 35
+apps/rune/src/editor/files.rs
+  s_d95194358f3f5d::t_ebceaf9e9fb7b8 1785-1789
+  s_d95194358f3f5d::t_1ab9124d956956 1735-1784,1790-1795
+  s_d95194358f3f5d::t_2a0e8753fa98e4 1070-1072
+apps/rune/src/editor/code.rs
+  s_d95194358f3f5d::t_666151c36e24ae 419
+  s_d95194358f3f5d::t_57eca45a5655bc 406
+  s_d95194358f3f5d::t_2f20cfe42ad098 738-739,741-759
+  s_d95194358f3f5d::t_691f34fa669e1a 456-461,760
+  s_d95194358f3f5d::t_a5503175f8fe64 740
+  s_d95194358f3f5d::t_b158d178666a8e 733
+  s_d95194358f3f5d::t_516df00344e8c0 761
+apps/rune/src/editor/snapshot.rs
+  s_d95194358f3f5d::t_fd3631837c06c1 1-7,9-345
+  s_d95194358f3f5d::t_ebceaf9e9fb7b8 8
+docs/agent-devkit/INDEX.md
+  s_d95194358f3f5d::t_1013944a5928eb 15
+docs/agent-devkit/changes/archive/agent-snapshot/delta.md
+  s_d95194358f3f5d::t_e39e4979adcf31 1-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a73d4aea57229367461cbaad69f5cd7226973805",
+  "prompts": {},
+  "sessions": {
+    "s_d95194358f3f5d": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "polarized-cast",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
