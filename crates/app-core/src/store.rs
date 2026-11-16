@@ -572,6 +572,7 @@ fn not_found(message: impl Into<String>) -> BridgeError {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn open(dir: &TempDir) -> Store {
@@ -649,6 +650,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn open_creates_goko_db_mode_0600_and_reopening_is_idempotent() {
         let dir = TempDir::new("store-open");

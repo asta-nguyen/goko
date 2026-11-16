@@ -25,8 +25,6 @@ use protocol::message::ErrorCode;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -117,7 +115,7 @@ pub fn index_path(home: &Path, checkout: &Path) -> PathBuf {
     let canonical = canonical_checkout(checkout).unwrap_or_else(|_| checkout.to_path_buf());
     home.join("search").join(format!(
         "{:016x}.db",
-        fnv1a64(canonical.as_os_str().as_bytes())
+        fnv1a64(canonical.to_string_lossy().as_bytes())
     ))
 }
 
@@ -1020,6 +1018,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn indexed_set_skips_ignored_binary_large_and_outside() {
         let (_dir, root) = repository("code-index-set");
@@ -1074,6 +1073,7 @@ mod tests {
         assert!(file_row(home.path(), &root, "tracked.txt"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinked_checkout_shares_one_index_file() {
         let (_dir, root) = repository("code-index-symlink");
@@ -1123,6 +1123,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn directory_and_file_modes_are_private() {
         use std::os::unix::fs::PermissionsExt;
@@ -1405,6 +1406,7 @@ mod tests {
         assert!(paths(home.path(), &root, "needle").contains(&"renamed.txt".to_string()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn sync_without_changes_reads_nothing() {
         let (_dir, root) = repository("code-index-sync-none");

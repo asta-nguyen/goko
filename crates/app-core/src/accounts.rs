@@ -694,6 +694,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(unix)]
     /// An executable fake `name` inside `dir`; tests canonicalize it because
     /// `agents::resolve` canonicalizes what it finds.
     fn fake_bin(dir: &Path, name: &str) -> PathBuf {
@@ -704,6 +705,7 @@ mod tests {
     }
 
     /// A `PATH` value naming `dirs` in order — never the process environment.
+    #[cfg(unix)]
     fn path_var(dirs: &[&Path]) -> OsString {
         std::env::join_paths(dirs.iter().map(|dir| dir.as_os_str())).unwrap()
     }
@@ -711,6 +713,7 @@ mod tests {
     /// Everything a `sign_in_launch` test needs: temp storage holding one
     /// added "Work" account for `agent` in `<root>/<folder>`, a `bin` dir with
     /// fake `claude`/`codex`, and a `PATH` naming only it.
+    #[cfg(unix)]
     struct SignIn {
         root: TempDir,
         path: OsString,
@@ -719,6 +722,7 @@ mod tests {
         folder: PathBuf,
     }
 
+    #[cfg(unix)]
     fn sign_in_setup(agent: &str, folder: &str) -> SignIn {
         let root = TempDir::new("accounts-signin");
         let storage = open(&root);
@@ -812,6 +816,7 @@ mod tests {
         assert_eq!(default_dir_from("shell", None, None, home), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn add_stores_the_account_marks_it_active_and_creates_its_folder() {
         let dir = TempDir::new("accounts-add");
@@ -1426,6 +1431,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn link_shared_skips_existing_targets_and_failed_links() {
         let dir = TempDir::new("accounts-link-fail");
@@ -1459,6 +1465,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_claude_quotes_a_folder_with_spaces() {
         // The space proves the env word stays one shell word.
@@ -1482,6 +1489,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_codex_quotes_its_home() {
         let s = sign_in_setup("codex", "cx");
@@ -1503,6 +1511,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_runs_in_the_account_folder_with_a_named_title() {
         let s = sign_in_setup("claude", "work");
@@ -1513,6 +1522,7 @@ mod tests {
         assert_eq!(launch.title, "Sign in · Work");
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_rejects_the_default_account() {
         let s = sign_in_setup("claude", "work");
@@ -1523,6 +1533,7 @@ mod tests {
         assert!(error.message.contains("terminal"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_rejects_an_unknown_account_id() {
         let s = sign_in_setup("claude", "work");
@@ -1533,6 +1544,7 @@ mod tests {
         assert!(error.message.contains("ghost"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_rejects_an_unknown_agent() {
         let s = sign_in_setup("claude", "work");
@@ -1543,6 +1555,7 @@ mod tests {
         assert!(error.message.contains("unknown agent"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_rejects_a_missing_account_folder() {
         let s = sign_in_setup("claude", "work");
@@ -1555,6 +1568,7 @@ mod tests {
         assert!(error.hint.unwrap().contains("Settings › Accounts"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn sign_in_rejects_a_binary_missing_from_path() {
         let s = sign_in_setup("claude", "work");

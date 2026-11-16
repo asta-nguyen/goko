@@ -265,6 +265,7 @@ mod tests {
     use crate::git_view::{GitViewChanges, StatusEntry};
     use crate::test_support::TempDir;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::process::Command;

@@ -1219,6 +1219,7 @@ mod tests {
         assert_eq!(created.branch.as_deref(), Some("generated"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn accepts_empty_paths_and_rejects_symlink_targets() {
         use std::os::unix::fs::symlink;
@@ -1252,6 +1253,7 @@ mod tests {
         assert!(referent.is_dir());
     }
 
+    #[cfg(unix)]
     #[test]
     fn previews_and_copies_only_regular_non_example_environment_files_without_overwriting() {
         use std::os::unix::fs::symlink;
@@ -1333,6 +1335,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn reports_partial_copy_failures_and_keeps_the_created_checkout() {
         use std::os::unix::fs::PermissionsExt;

@@ -107,7 +107,6 @@ pub fn configure_child(command: &mut tokio::process::Command) {
     command.process_group(0);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW: a GUI-launched agent or server gets no console.
         command.creation_flags(0x0800_0000);
     }
@@ -211,7 +210,7 @@ pub type FileId = (u64, u64);
 
 /// A file's identity, comparable across two reads of the same path.
 #[cfg(windows)]
-pub type FileId = (u32, u64);
+pub type FileId = (u64, u64);
 
 /// Read the identity of `meta`'s file. Unix: device + inode; Windows: volume
 /// serial + file index.
@@ -221,15 +220,15 @@ pub fn file_id(meta: &fs::Metadata) -> FileId {
     (meta.dev(), meta.ino())
 }
 
-/// Read the identity of `meta`'s file. Unix: device + inode; Windows: volume
-/// serial + file index.
+/// Read the identity of `meta`'s file. Unix: device + inode; Windows:
+/// creation + last-write time.
+// ponytail: the volume serial and file index are unstable in std; a copy that
+// preserves both times compares equal. Switch to GetFileInformationByHandle if
+// that ever matters.
 #[cfg(windows)]
 pub fn file_id(meta: &fs::Metadata) -> FileId {
     use std::os::windows::fs::MetadataExt;
-    (
-        meta.volume_serial_number().unwrap_or(0),
-        meta.file_index().unwrap_or(0),
-    )
+    (meta.creation_time(), meta.last_write_time())
 }
 
 /// Whether two paths name the same file.

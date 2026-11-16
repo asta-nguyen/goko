@@ -1558,14 +1558,17 @@ mod tests {
         Connection::connect(&fake_spec(case, dir)).await.unwrap()
     }
 
+    #[cfg(unix)]
     async fn agent_pid(dir: &Path) -> libc::pid_t {
         pid_in_file(dir, "agent.pid").await
     }
 
+    #[cfg(unix)]
     async fn grandchild_pid(dir: &Path) -> libc::pid_t {
         pid_in_file(dir, "agent-child.pid").await
     }
 
+    #[cfg(unix)]
     async fn pid_in_file(dir: &Path, name: &str) -> libc::pid_t {
         let path = dir.join(name);
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1582,11 +1585,13 @@ mod tests {
         .expect("the agent should write its pid")
     }
 
+    #[cfg(unix)]
     fn process_alive(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only probes for the process; it sends nothing.
         (unsafe { libc::kill(pid, 0) }) == 0
     }
 
+    #[cfg(unix)]
     async fn wait_dead(pid: libc::pid_t) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while process_alive(pid) {
@@ -1597,6 +1602,7 @@ mod tests {
         .expect("the agent process should exit");
     }
 
+    #[cfg(unix)]
     fn process_gone(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only probes for the process; it sends nothing.
         if unsafe { libc::kill(pid, 0) } == 0 {
@@ -1606,6 +1612,7 @@ mod tests {
         std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
 
+    #[cfg(unix)]
     async fn wait_gone(pid: libc::pid_t) {
         tokio::time::timeout(Duration::from_secs(3), async {
             while !process_gone(pid) {
@@ -1670,6 +1677,7 @@ mod tests {
         assert!(!conn.is_alive());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn connect_timeout_kills_the_agent() {
         let dir = TempDir::new("acp-noinit");
@@ -1903,6 +1911,7 @@ mod tests {
         assert!(error.message.contains("exited"), "{}", error.message);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn killing_the_agent_fails_the_running_session() {
         let dir = TempDir::new("acp-kill");
@@ -1942,6 +1951,7 @@ mod tests {
         conn.shutdown().await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_agent_and_removes_its_dir() {
         let dir = TempDir::new("acp-shutdown");
@@ -1956,6 +1966,7 @@ mod tests {
         assert!(!conn_dir.exists());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn dropping_the_connection_kills_the_agent() {
         let dir = TempDir::new("acp-drop");
@@ -1969,6 +1980,7 @@ mod tests {
         assert!(!conn_dir.exists());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_agent_process_group() {
         let dir = TempDir::new("acp-group-shutdown");
@@ -1981,6 +1993,7 @@ mod tests {
         wait_gone(grandchild).await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn dropping_the_connection_kills_the_agent_process_group() {
         let dir = TempDir::new("acp-group-drop");
@@ -2477,6 +2490,7 @@ mod tests {
         assert_eq!(hub.status()["opencode"].state, AgentState::Disconnected);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_crashed_agent_shows_error_in_status() {
         let dir = TempDir::new("acp-hub-crash");

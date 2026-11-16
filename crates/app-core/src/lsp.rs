@@ -14,7 +14,6 @@
 //! official schema.
 
 use std::collections::{BTreeMap, HashMap};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
@@ -315,12 +314,8 @@ pub fn parse_argv(command: &str) -> Result<Vec<String>, LspError> {
 
 /// `argv[0]` resolves on `PATH` — or, containing `/`, is an executable file.
 fn program_available(program: &str) -> bool {
-    if program.contains('/') {
-        let path = Path::new(program);
-        return path.is_file()
-            && path
-                .metadata()
-                .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0);
+    if program.contains(['/', std::path::MAIN_SEPARATOR]) {
+        return crate::platform::is_executable(Path::new(program));
     }
     crate::agents::resolve(program, std::env::var_os("PATH").as_deref()).is_some()
 }
@@ -1661,6 +1656,7 @@ mod tests {
         (conn, rx)
     }
 
+    #[cfg(unix)]
     async fn pid_in_file(dir: &Path, name: &str) -> libc::pid_t {
         let path = dir.join(name);
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -1677,11 +1673,13 @@ mod tests {
         .expect("the server should write its pid")
     }
 
+    #[cfg(unix)]
     fn process_alive(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only probes for the process; it sends nothing.
         (unsafe { libc::kill(pid, 0) }) == 0
     }
 
+    #[cfg(unix)]
     fn process_gone(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only probes for the process; it sends nothing.
         if unsafe { libc::kill(pid, 0) } == 0 {
@@ -1690,6 +1688,7 @@ mod tests {
         std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
 
+    #[cfg(unix)]
     async fn wait_gone(pid: libc::pid_t) {
         tokio::time::timeout(Duration::from_secs(10), async {
             while !process_gone(pid) {
@@ -1956,6 +1955,7 @@ mod tests {
         assert_eq!(error.kind, LspErrorKind::Disconnected);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_terminates_the_process_group() {
         let dir = TempDir::new("lsp-killpg");
@@ -1981,6 +1981,7 @@ mod tests {
         conn.shutdown().await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn initialize_timeout_kills_the_child() {
         let dir = TempDir::new("lsp-timeout");
@@ -2026,6 +2027,7 @@ mod tests {
         hub.shutdown().await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn two_checkouts_run_isolated_servers() {
         let dir_a = TempDir::new("lsp-iso-a");
