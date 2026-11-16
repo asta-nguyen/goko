@@ -1,0 +1,37 @@
+crates/app-core/src/acp.rs
+  s_e3b28812d5a93b::t_6579559a220973 2015,2037,2079,2125
+  s_e3b28812d5a93b::t_dc9b32bf505a57 2415,2530,2593,2638,2678,2712,2748,2814,2879
+crates/app-core/src/git_view.rs
+  s_e3b28812d5a93b::t_dc9b32bf505a57 1806,1965,2299,2359,2675,2697,2723
+crates/app-core/src/home.rs
+  s_e3b28812d5a93b::t_dc9b32bf505a57 114
+.github/workflows/ci.yml
+  s_e3b28812d5a93b::t_dc9b32bf505a57 52
+crates/app-core/src/git_write.rs
+  s_e3b28812d5a93b::t_dc9b32bf505a57 440,593,608,624
+  s_e3b28812d5a93b::t_6579559a220973 312,321,334
+crates/app-core/src/code_index.rs
+  s_e3b28812d5a93b::t_dc9b32bf505a57 1162,1335
+crates/app-core/src/worktrees.rs
+  s_e3b28812d5a93b::t_8cbade20bf15c3 940,1029,1127,1141,1205
+crates/app-core/src/usage.rs
+  s_e3b28812d5a93b::t_6579559a220973 634,642,659,686,699,716,728,737
+  s_e3b28812d5a93b::t_ad4f6a84b5c0b0 612,615
+  s_e3b28812d5a93b::t_8cbade20bf15c3 873,898,918,944,962,983,1001,1035,1086,1118,1166,1195,1225,1268,1304,1358,1407
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6221d636cefd914618f44fb16d93c3af282c4a88",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
