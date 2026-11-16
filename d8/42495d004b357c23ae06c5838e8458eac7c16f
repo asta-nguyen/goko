@@ -1,0 +1,19 @@
+.github/workflows/ci.yml
+  s_e3b28812d5a93b::t_2458be2faabead 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d842495d004b357c23ae06c5838e8458eac7c16f",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
