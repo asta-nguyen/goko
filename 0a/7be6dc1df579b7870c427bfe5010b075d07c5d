@@ -1,0 +1,78 @@
+apps/rune/src/editor/state.rs
+  s_e91da40daf9a7a::t_109f6aff4eb115 100-103,105-110,119-127
+  s_e91da40daf9a7a::t_ae27a08c8b965f 697
+  s_e91da40daf9a7a::t_93ad7c2d87033a 412-413
+docs/agent-devkit/INDEX.md
+  s_e91da40daf9a7a::t_3ac2bf05cc9585 15
+apps/rune/src/editor/history.rs
+  s_e91da40daf9a7a::t_b65b16d024e06a 636-638,656,661
+  s_e91da40daf9a7a::t_ad57a131dffb45 639-641
+  s_e91da40daf9a7a::t_80dc1ea10ad252 654-655,658-659
+  s_e91da40daf9a7a::t_f8cf702d50d508 651-653,657,660,662
+apps/rune/src/theme.rs
+  s_e91da40daf9a7a::t_8d828a8632cb35 315,317-318,320-323
+  s_e91da40daf9a7a::t_e5a5a25d0ecab0 316,319
+apps/rune/src/editor/changes.rs
+  s_e91da40daf9a7a::t_568bcd585f7e90 990,997-1000,1003-1004,1007-1008
+  s_e91da40daf9a7a::t_793ebe210f7a01 743-744,746-750
+  s_e91da40daf9a7a::t_aefd3888e399cd 1001-1002,1005-1006
+  s_e91da40daf9a7a::t_ed5ff6de614aba 1101-1102,1104-1105
+  s_e91da40daf9a7a::t_8bcba9380c5753 1215-1223
+  s_e91da40daf9a7a::t_2d3596fe5ffc58 610-614
+  s_e91da40daf9a7a::t_396f6b1fb6e6c1 1974-1982
+  s_e91da40daf9a7a::t_9da1e89f9c465f 2120-2124
+  s_e91da40daf9a7a::t_ec434ac3e7aa32 1165-1173
+  s_e91da40daf9a7a::t_4195dc4690ee6c 1946-1947
+  s_e91da40daf9a7a::t_22920d20c391f4 2008-2075
+  s_e91da40daf9a7a::t_73c1c307e52c63 2081-2085
+apps/rune/src/editor/commit_detail.rs
+  s_e91da40daf9a7a::t_ec685b4ff43409 338-339
+  s_e91da40daf9a7a::t_94d285271365f6 452-453,455-460,462-471,474-475,477-478,492-494,499-501
+  s_e91da40daf9a7a::t_cf965044d675a7 1225-1233
+  s_e91da40daf9a7a::t_a118468ea093c0 454
+  s_e91da40daf9a7a::t_253c050b69316b 351-352
+  s_e91da40daf9a7a::t_92767eeeba76ea 544-573
+  s_e91da40daf9a7a::t_c7269e62200956 390,402
+  s_e91da40daf9a7a::t_f3f233895b2e1c 371-375
+  s_e91da40daf9a7a::t_258aaa93bd7e14 361
+apps/rune/src/editor/stashes.rs
+  s_e91da40daf9a7a::t_3502e9bcdee9e8 57-69
+  s_e91da40daf9a7a::t_4d26eae5f6dd84 6
+  s_e91da40daf9a7a::t_7747e131bf723c 53-56,70-71,84
+apps/rune/src/editor/navigation.rs
+  s_e91da40daf9a7a::t_1e626c6fba202c 424
+  s_e91da40daf9a7a::t_9f44258fa8e863 336
+docs/llm/domains/rune-editor.md
+  s_e91da40daf9a7a::t_a7e49318c8d766 595-618
+  s_e91da40daf9a7a::t_b4309965672059 1072
+apps/rune/src/editor/patch.rs
+  s_e91da40daf9a7a::t_8b155f38939630 448-449,456,460-479
+  s_e91da40daf9a7a::t_eb88e9c605ea3b 15
+  s_2077f94a10f543::t_d10db92a5a7f22 480-481
+docs/agent-devkit/changes/archive/2026-11-16-open-file-from-diff/delta.md
+  s_2077f94a10f543::t_305b3a418ecd0b 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0a7be6dc1df579b7870c427bfe5010b075d07c5d",
+  "prompts": {},
+  "sessions": {
+    "s_2077f94a10f543": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f50a806-d74e-43be-acc0-f467607ad767",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e91da40daf9a7a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pattern-ease",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
