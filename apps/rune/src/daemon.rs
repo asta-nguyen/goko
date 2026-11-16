@@ -187,7 +187,7 @@ impl Daemon {
 
     /// Test constructor: connect to whatever listens at `home`, never
     /// spawning `gokod` (the test owns the socket).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn spawn_connect_only(
         home: PathBuf,
         wake: impl Fn() + Send + Sync + 'static,

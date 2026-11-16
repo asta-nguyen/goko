@@ -3927,7 +3927,9 @@ mod tests {
 
     /// `PATH`/`GOKO_HOME`/`CODEX_HOME` point at temp dirs for the launch
     /// and usage reads — the real account folders are never touched.
+    #[cfg(unix)]
     struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+    #[cfg(unix)]
     impl EnvGuard {
         fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
             let prev = std::env::var_os(key);
@@ -3935,6 +3937,7 @@ mod tests {
             EnvGuard(key, prev)
         }
     }
+    #[cfg(unix)]
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.1 {
