@@ -44,6 +44,8 @@ jobs:
           TAG: ${{ github.ref_name }}
           IS_TAG: ${{ github.ref_type == 'tag' }}
           SCRIPT: ${{ matrix.script }}
+        # The Windows runner defaults to PowerShell; the script below is bash.
+        shell: bash
         run: |
           if [ "$IS_TAG" = true ]; then
             version="${TAG#v}"
