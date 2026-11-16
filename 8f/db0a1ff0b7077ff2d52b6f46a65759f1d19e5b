@@ -1,0 +1,23 @@
+crates/daemon/src/main.rs
+  s_e3b28812d5a93b::t_85739302020041 78-79
+crates/daemon/src/net.rs
+  s_e3b28812d5a93b::t_a72357fca3682a 92-94
+crates/daemon/tests/windows_ipc.rs
+  s_e3b28812d5a93b::t_a72357fca3682a 103-107,172-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8fdb0a1ff0b7077ff2d52b6f46a65759f1d19e5b",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
