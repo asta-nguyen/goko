@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 alacritty_terminal = "0.26.0"
+getrandom = { version = "0.3", features = ["std"] }
 libc = "0.2"
 portable-pty = "0.9"
 protocol = { path = "../protocol" }
@@ -15,6 +16,15 @@ serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 [[bin]]
 name = "gokod"

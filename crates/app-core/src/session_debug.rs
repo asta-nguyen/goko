@@ -277,7 +277,7 @@ fn file_id(kind: &str, path: &Path) -> Option<String> {
 }
 
 fn open_files(pids: &HashSet<u32>) -> HashMap<u32, Vec<PathBuf>> {
-    if pids.is_empty() {
+    if pids.is_empty() || cfg!(windows) {
         return HashMap::new();
     }
     let pids = pids

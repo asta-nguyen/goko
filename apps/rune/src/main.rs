@@ -60,6 +60,11 @@ pub struct State {
     subagents_at: Option<f64>,
     /// When the activity was last read; the reader polls once a second.
     activity_at: Option<f64>,
+    /// When the activity read still unanswered was queued. No second one is
+    /// queued behind it, so a busy worker is not handed a backlog of polls.
+    activity_pending: Option<f64>,
+    /// The same for the sub-agent read.
+    subagents_pending: Option<f64>,
     /// When session output was last polled from the daemon.
     output_polled_at: Option<f64>,
     /// In-flight `session.output` request.
@@ -76,6 +81,25 @@ pub struct State {
     /// tab's id is never "the tab's session".
     open_tabs: Vec<panes::Tab>,
     active_tab: usize,
+    /// The saved tab layout as read from the settings store, until it is restored
+    /// (`Some(None)`: the read found nothing).
+    tabs_pending: Option<Option<String>>,
+    /// The daemon's first session list has arrived.
+    sessions_loaded: bool,
+    /// The layout last written; `None` until the saved one is restored, which
+    /// keeps the save idle so an empty start cannot overwrite it.
+    tabs_saved: Option<String>,
+    /// The tab bar's drag to reorder, in positions among the visible tabs.
+    tab_reorder: rune_kit::shell::Reorder,
+    /// A pane has the pointer pressed in a drag: its program hears the drag's own
+    /// moves, not hovers.
+    pane_drag_held: bool,
+    /// The mouse reports sent to programs, for the tests to read.
+    #[cfg(test)]
+    mouse_sent: Vec<Vec<u8>>,
+    /// How many terminal output subscriptions were asked of the daemon.
+    #[cfg(test)]
+    output_subscribes: usize,
     /// Project id → last focused tab id; hidden tabs keep their pane layouts.
     project_tabs: HashMap<String, String>,
     /// "Worktrees" group header open per project id; absent means open.
@@ -193,6 +217,9 @@ pub struct State {
     usage_menu: Option<String>,
     /// What the check for a newer release found (Settings → Updates).
     update: update::Status,
+    /// Where "Update now" installs over this copy; `None` when this copy can
+    /// only be updated by hand (`update::install_dir`).
+    update_dir: Option<std::path::PathBuf>,
     /// The settings page's own state (section, forms, drafts).
     settings: settings::SettingsState,
     /// The appearance choice restored from `goko.theme`.
@@ -256,6 +283,15 @@ impl State {
             active_workspace: None,
             open_tabs: Vec::new(),
             active_tab: 0,
+            tabs_pending: None,
+            sessions_loaded: false,
+            tabs_saved: None,
+            tab_reorder: rune_kit::shell::Reorder::new().gap(4.0),
+            pane_drag_held: false,
+            #[cfg(test)]
+            mouse_sent: Vec::new(),
+            #[cfg(test)]
+            output_subscribes: 0,
             project_tabs: HashMap::new(),
             worktree_groups: HashMap::new(),
             worktrees_open: HashMap::new(),
@@ -305,6 +341,8 @@ impl State {
             auto_forced: HashSet::new(),
             activity: HashMap::new(),
             activity_at: None,
+            activity_pending: None,
+            subagents_pending: None,
             output_polled_at: None,
             pending_output: None,
             session_output: HashMap::new(),
@@ -316,6 +354,7 @@ impl State {
             usage_at: None,
             usage_menu: None,
             update: update::Status::default(),
+            update_dir: update::install_dir(),
             settings: settings::SettingsState::default(),
             theme_choice: theme::Theme::Dark,
             os_dark: true,
@@ -637,6 +676,7 @@ impl State {
                 return;
             }
             backend::Req::Subagents { .. } => {
+                self.subagents_pending = None;
                 if let Ok(backend::ReplyData::Subagents { agents, debug }) = &reply.result {
                     self.subagents = agents.clone();
                     self.debug = debug.clone();
@@ -645,6 +685,7 @@ impl State {
                 return;
             }
             backend::Req::Activity { .. } => {
+                self.activity_pending = None;
                 if let Ok(backend::ReplyData::Activity(activity)) = &reply.result {
                     // A session whose activity newly reads done chimes once —
                     // the reply carries every session, so only a real flip
@@ -1014,6 +1055,14 @@ impl State {
                 }
                 return;
             }
+            backend::Req::GetSetting { key } if key == panes::TABS_KEY => {
+                self.tabs_pending = Some(match &reply.result {
+                    Ok(backend::ReplyData::Setting(raw)) => raw.clone(),
+                    _ => None,
+                });
+                self.restore_tabs();
+                return;
+            }
             backend::Req::GetSetting { key } if key == sidebar::SIDEBAR_WIDTH_KEY => {
                 if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
                     && let Ok(width) = raw.parse::<f32>()
@@ -1197,6 +1246,13 @@ fn setup(s: &mut State, waker: rune::Waker) {
             key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
         }),
     );
+    // The tabs' layout comes back once the daemon's session list is in too.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: panes::TABS_KEY.to_string(),
+        }),
+    );
     // The workspace list and the last selected workspace restore on the same
     // lane; the list is requested first so the saved id validates against it.
     s.request_workspaces();
@@ -1263,6 +1319,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         s.apply_daemon_event(event);
         changed = true;
     }
+    s.save_tabs_if_changed();
     // The replies the session requests are waiting for.
     changed |= s.drain_pending();
     // Closing panes drive their own stop→delete lifecycle.
@@ -1273,7 +1330,9 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     changed |= s.sync_terminals();
     let term_changed = s.poll_terminals(tx);
     changed |= term_changed;
-    crate::trace::trace(&s.terminal_trace());
+    if crate::trace::enabled() {
+        crate::trace::trace(&s.terminal_trace());
+    }
     // A subscriber that fell behind takes a fresh subscription, which
     // replays the daemon's retained output.
     for session in std::mem::take(&mut s.terminal_lagged) {
@@ -1401,6 +1460,9 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     // App shortcuts come before the Terminal forwards keys to the shell.
     if ev.mods.cmd && !ev.mods.ctrl {
         if matches!(ev.key, rune::Key::Command('c')) {
+            if s.view == View::Terminal && s.copy_pane_selection(tx) {
+                return true;
+            }
             s.notice = Some("Copied to clipboard".into());
         }
         if app_shortcut(s, ev, tx) {
@@ -5522,6 +5584,52 @@ mod view_tests {
         );
     }
 
+    /// Where this copy can be replaced, a found release offers "Update now" in
+    /// place of the command, and shows what changed in it.
+    #[test]
+    fn settings_updates_offers_update_now_and_the_release_notes() {
+        let page = |dir: Option<std::path::PathBuf>, status: update::Status| {
+            let mut s = State::new(test_handle());
+            s.settings.section = crate::settings::Section::Updates;
+            s.update = status;
+            s.update_dir = dir;
+            let mut rt = Runtime::new(s, settings_view, (1512.0, 814.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            let infos = els(&rt);
+            let has = |wanted: &str| {
+                infos.iter().any(|e| {
+                    e.label.as_deref() == Some(wanted) || e.text.as_deref() == Some(wanted)
+                })
+            };
+            (
+                has("Update now"),
+                has("Copy install command"),
+                has("What's new in Goko 9.9.9"),
+                has("• Find in the terminal"),
+            )
+        };
+        let release = || update::Release {
+            version: "9.9.9".into(),
+            notes: "### Added\n\n- Find in the `terminal`".into(),
+        };
+        let here = Some(std::env::temp_dir());
+        let (now, copy, heading, bullet) = page(here.clone(), update::Status::Available(release()));
+        assert!(
+            now && !copy,
+            "this copy can be replaced, so no command to paste"
+        );
+        assert!(heading && bullet, "the notes say what changed");
+        let (now, copy, ..) = page(None, update::Status::Available(release()));
+        assert!(
+            !now && copy,
+            "a copy that cannot be replaced gets the command"
+        );
+        let (now, _, heading, _) = page(here.clone(), update::Status::Installing(release()));
+        assert!(!now && heading, "no second install while one runs");
+        let (_, _, heading, _) = page(here, update::Status::Available("9.9.9".into()));
+        assert!(!heading, "a release without notes shows none");
+    }
+
     // -- Terminal row geometry ------------------------------------------------
 
     /// Whether the element `idx` sits under the element `ancestor` —
@@ -5869,7 +5977,10 @@ mod view_tests {
         rt.pointer_move(x1, y1);
         rt.pointer_up(x1, y1);
         rt.frame(1.0 / 60.0);
-        assert!(rt.selected_text().is_some(), "the drag selected rows");
+        assert!(
+            rt.state.attachments[&key].term.selection_text().is_some(),
+            "the drag selected rows"
+        );
         rt.key(KeyEvent {
             key: Key::Command('c'),
             mods: Mods {
@@ -5993,15 +6104,109 @@ mod view_tests {
         rt.frame(1.0 / 60.0);
     }
 
+    /// A drag that leaves the pane at the top scrolls the history and keeps
+    /// selecting, so the copy holds rows that were never on screen together.
     #[test]
-    fn shift_drag_selects_and_copies_while_the_program_captures_the_mouse() {
+    fn dragging_past_the_top_scrolls_and_selects_into_the_history() {
+        let mut s = State::new(test_handle());
+        let key = seed_session(&mut s, "claude", "/work/repo");
+        s.focus_session_tab(&key);
+        let session = s.session_id(&key).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let (_ready_tx, ready_rx) = mpsc::channel();
+        let mut terminal = term::Terminal::new(session, rx, ready_rx);
+        let data: String = (0..200).map(|n| format!("row{n}\r\n")).collect();
+        tx.send(daemon::Output {
+            seq: 0,
+            data: data.into_bytes(),
+        })
+        .unwrap();
+        terminal.feed();
+        attach(&mut s, &key, terminal);
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), Env::new(true, 2.0));
+        rt.poll = Some(poll);
+        for _ in 0..6 {
+            rt.frame(1.0 / 60.0);
+        }
+        let rows: Vec<[f32; 4]> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.text.as_deref().is_some_and(|t| t.starts_with("row")))
+            .map(|e| e.rect)
+            .collect();
+        let (top, bottom) = (rows[0], rows[rows.len() - 2]);
+        let x = bottom[0] + 20.0;
+        let y = bottom[1] + bottom[3] / 2.0;
+        rt.pointer_down(x, y);
+        rt.pointer_move(x, y - 20.0);
+        for _ in 0..8 {
+            rt.pointer_move(x, top[1] - 30.0);
+        }
+        rt.pointer_up(x, top[1] - 30.0);
+        rt.frame(1.0 / 60.0);
+        let term = &rt.state.attachments[&key].term;
+        assert!(term.display_offset() > 0, "the view scrolled into history");
+        let text = term.selection_text().unwrap_or_default();
+        assert!(
+            text.lines().count() > rows.len(),
+            "more rows than one screen: {}",
+            text.lines().count()
+        );
+    }
+
+    /// Claude Code's fullscreen mode asks for every motion (?1003) on the
+    /// alternate screen. While the button is held, each move must reach it as
+    /// a drag (button 0 held, code 32), never also as a bare hover (code 35):
+    /// a hover says no button is down, which ends its selection mid-drag.
+    #[test]
+    fn a_drag_on_the_alt_screen_never_reports_a_buttonless_move() {
+        let mode = "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+        let mut rt = captured_pane_runtime(mode);
+        rt.update(|s, _| s.mouse_sent.clear());
+        drag_across_rows(&mut rt);
+        let sent: Vec<String> = rt
+            .state
+            .mouse_sent
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect();
+        let press = sent
+            .iter()
+            .position(|r| r.starts_with("\x1b[<0;") && r.ends_with('M'));
+        let release = sent.iter().rposition(|r| r.ends_with('m'));
+        let (Some(press), Some(release)) = (press, release) else {
+            panic!("no press and release reported: {sent:?}");
+        };
+        let held = &sent[press..release];
+        assert!(
+            held.iter().any(|r| r.starts_with("\x1b[<32;")),
+            "the drag reported its moves: {sent:?}"
+        );
+        assert!(
+            !held.iter().any(|r| r.starts_with("\x1b[<35;")),
+            "a bare hover went out while the button was held: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_selects_and_copies_while_the_program_captures_the_mouse() {
         let mode = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
-        // A plain drag belongs to the program: nothing is selected locally.
+        let copied = |rt: &Runtime<State>| {
+            rt.copy_request
+                .as_ref()
+                .map(|w| w.content().text().to_owned())
+                .unwrap_or_default()
+        };
+        // A plain drag selects, and its release copies.
         let mut rt = captured_pane_runtime(mode);
         drag_across_rows(&mut rt);
-        assert!(rt.copy_request.is_none(), "a captured drag copied");
+        let text = copied(&rt);
+        assert!(
+            text.contains("row") && text.contains('\n'),
+            "drag copied {text:?}"
+        );
 
-        // Shift takes the pointer back: the drag selects and its release copies.
+        // Shift selects too, and takes the clicks back from the program.
         let mut rt = captured_pane_runtime(mode);
         rt.update(|s, _| {
             s.editor.set_modifiers(Mods {
@@ -6011,15 +6216,28 @@ mod view_tests {
         });
         rt.frame(1.0 / 60.0);
         drag_across_rows(&mut rt);
-        let copied = rt
-            .copy_request
-            .as_ref()
-            .map(|w| w.content().text().to_owned())
-            .unwrap_or_default();
+        assert!(copied(&rt).contains("row"), "shift-drag copied");
+
+        // On the alternate screen (Claude Code's fullscreen mode) there is no history
+        // to select in: the program gets a plain drag, and scrolls and selects itself.
+        let mut rt = captured_pane_runtime(&format!("\x1b[?1049h{mode}"));
+        drag_across_rows(&mut rt);
         assert!(
-            copied.contains("row") && copied.contains('\n'),
-            "shift-drag copied {copied:?}"
+            rt.copy_request.is_none(),
+            "an alt-screen drag selected locally"
         );
+
+        // Option hands the drag to the program: nothing is selected locally.
+        let mut rt = captured_pane_runtime(mode);
+        rt.update(|s, _| {
+            s.editor.set_modifiers(Mods {
+                alt: true,
+                ..Mods::default()
+            })
+        });
+        rt.frame(1.0 / 60.0);
+        drag_across_rows(&mut rt);
+        assert!(rt.copy_request.is_none(), "a captured drag copied");
     }
 
     #[test]
@@ -6093,7 +6311,13 @@ mod view_tests {
         rt.pointer_move(640.0, 460.0);
         rt.pointer_up(640.0, 460.0);
         rt.frame(1.0 / 60.0);
-        assert!(rt.selected_text().is_some(), "rows are selected");
+        assert!(
+            rt.state.attachments[&pane_key]
+                .term
+                .selection_text()
+                .is_some(),
+            "rows are selected"
+        );
         for ph in [
             rune::GesturePhase::Began,
             rune::GesturePhase::Moved,
@@ -6114,7 +6338,7 @@ mod view_tests {
             top(&mut rt),
             live,
             "trackpad scrolled, selected {:?}",
-            rt.selected_text()
+            rt.state.attachments[&pane_key].term.selection_text()
         );
     }
 

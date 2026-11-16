@@ -162,6 +162,18 @@ The system SHALL let the Changes changed-file list and the History commit detail
 
 Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit_detail.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/keyboard.rs`, `apps/rune/src/editor/navigation.rs`
 
+### RNE-checkout-path-copy
+
+The system SHALL let a press on the checkout path chip in the shared editor header copy the full checkout path to the clipboard and show the shared "Copied to clipboard" notice.
+
+#### Scenario: Press the path chip
+
+- GIVEN a checkout is selected and its path chip is visible in the editor header
+- WHEN the user presses it
+- THEN the full checkout path lands on the clipboard and the "Copied to clipboard" notice shows
+
+Evidence: `apps/rune/src/editor/workspace.rs`
+
 ### RNE-checkout-selection
 
 The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from terminal sessions.
@@ -292,7 +304,7 @@ Evidence: `apps/rune/src/editor/search.rs`, `apps/rune/src/editor/files.rs`, `ap
 
 ### RNE-current-branch
 
-The system SHALL show the current checkout's branch in the shared editor header across all sections, showing Detached with the short commit ID when detached, refreshing in the background while the editor is active, and showing loading or unavailable states instead of another checkout's branch or a failed cached value without changing Git state or document drafts.
+The system SHALL show the current checkout's branch in the shared editor header across all sections, showing Detached with the short commit ID when detached, refreshing in the background while the editor is active, showing loading or unavailable states instead of another checkout's branch or a failed cached value without changing Git state or document drafts, and letting a press on the badge copy the branch name — or the short commit ID when detached — to the clipboard with the shared "Copied to clipboard" notice.
 
 #### Scenario: Branch stays visible
 
@@ -311,6 +323,12 @@ The system SHALL show the current checkout's branch in the shared editor header 
 - GIVEN a checkout changes or its Git metadata cannot be read
 - WHEN the header renders before a successful read
 - THEN it shows loading or an unavailable state and does not present stale metadata as current
+
+#### Scenario: Press to copy
+
+- GIVEN the badge shows a named branch
+- WHEN the user presses it
+- THEN the full branch name lands on the clipboard and the "Copied to clipboard" notice shows; a detached badge copies its short commit ID, while loading and unavailable states stay inert
 
 Evidence: `apps/rune/src/editor/branch.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/main.rs`
 
@@ -592,6 +610,30 @@ The system SHALL show a dismiss button on the Editor's notice bar that clears th
 
 Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`
 
+### RNE-open-changed-file
+
+The system SHALL offer an "Open file" affordance on every changed-file row of the Changes list, the History commit detail's changed-file list, and the Stash detail's changed-file list — both as a row icon and as an `Open File` context-menu item opened by a secondary press on the row — and an open action on every file header in the shared diff pane, each opening the file's working-tree version through the same draft-guarded navigation as opening it from the file tree.
+
+#### Scenario: Open from a row
+
+- GIVEN a changed-file row in Changes, a commit detail, or a stash detail
+- WHEN the user presses the row's open icon, or picks `Open File` from the row's context menu
+- THEN the file opens on the Files code surface at its working-tree version, while a primary press on the row still selects its diff
+
+#### Scenario: Open from the diff header
+
+- GIVEN a diff is showing in Changes, History, or Stashes
+- WHEN the user presses the open action in a file's diff header
+- THEN that file opens on the Files code surface at its working-tree version
+
+#### Scenario: File gone from the working tree
+
+- GIVEN a row or diff header names a file deleted or renamed away in the working tree
+- WHEN the user opens it
+- THEN the open document shows the read-only missing-file state rather than an error
+
+Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit_detail.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/navigation.rs`
+
 ### RNE-pane-resize
 
 The system SHALL let the user drag an 8 px separator grip between each editor list pane and its detail pane — Files aside, Changes list/patch, Stashes list/detail, and the History table/detail divider — clamping the stored width to 180–480 px against at least 240 px of sibling space, persisting widths inside the shared `goko.history.layout` settings document, stepping by keyboard, and resetting on double-press.
@@ -724,7 +766,11 @@ The shared editor header places a Git branch badge beside Project and Checkout
 in all five sections. A named branch shows its name (including before the first
 commit); a detached checkout shows `Detached · <short HEAD>`. Long names truncate
 with the full value in the tooltip and accessibility label. The path yields
-space and the header wraps at narrow widths. The badge is informational.
+space and the header wraps at narrow widths. Once a branch is known, pressing
+the badge copies it — the branch name, or the short HEAD when detached — to
+the clipboard with the shared "Copied to clipboard" notice; loading and
+unavailable states stay inert. The checkout path chip beside it likewise
+copies the full checkout path on press.
 
 `branch::poll` issues `Req::CurrentBranch` immediately on entering the editor
 and then at three-second intervals while it is active, allowing only one probe
@@ -1045,6 +1091,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/editor/indent.rs`
 - `apps/rune/src/editor/syntax.rs`
 - `apps/rune/src/editor/highlight.rs`
+- `apps/rune/src/editor/line_changes.rs`
 - `apps/rune/src/editor/search.rs`
 - `apps/rune/src/editor/find.rs`
 - `apps/rune/src/editor/go_to_definition.rs`

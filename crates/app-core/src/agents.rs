@@ -9,16 +9,18 @@ use crate::accounts::{is_safe_account_id, LaunchAccount};
 use crate::error::{BridgeError, Code};
 use protocol::message::ErrorCode;
 use serde::Serialize;
-use serde_json::{json, Value};
+#[cfg(not(windows))]
+use serde_json::json;
+use serde_json::Value;
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// A Finder-launched app gets launchd's bare `PATH`, so `claude`/`codex` are not found.
 /// Ask the user's login shell for its `PATH` and adopt it; the daemon and every
 /// session inherit it. Markers skip any noise printed by rc files.
+#[cfg(unix)]
 pub fn adopt_login_shell_path(shell: &str) {
     let Ok(output) = std::process::Command::new(shell)
         .args(["-ilc", "printf '__GOKO__%s__GOKO__' \"$PATH\""])
@@ -36,6 +38,11 @@ pub fn adopt_login_shell_path(shell: &str) {
         std::env::set_var("PATH", path);
     }
 }
+
+/// A Windows GUI process already inherits the merged user `PATH` (there is no
+/// launchd-style bare environment to repair), so this is a no-op.
+#[cfg(windows)]
+pub fn adopt_login_shell_path(_shell: &str) {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentInfo {
@@ -164,6 +171,14 @@ pub fn argv_for_account(
             })?;
             // A named Claude or Codex account sets its folder variable through
             // `env`; the dir stays a single argv element even with spaces.
+            // Windows has no `/usr/bin/env`: a named account there shares the
+            // default environment (documented v1 degradation).
+            #[cfg(windows)]
+            let env_word: Option<String> = {
+                let _ = account;
+                None
+            };
+            #[cfg(not(windows))]
             let env_word = match (agent, account.dir.as_ref()) {
                 ("claude", Some(dir)) => Some(format!("CLAUDE_CONFIG_DIR={}", dir.display())),
                 ("codex", Some(dir)) => Some(format!("CODEX_HOME={}", dir.display())),
@@ -208,42 +223,62 @@ pub fn argv_for_account(
                 )
                 .with_hint("check permissions for GOKO_HOME")
             })?;
-            let statusline = claude_statusline_command(
-                &usage_dir.join(format!("{session_id}.json")),
-                original_statusline,
-            )?;
-            let activity_file = activity_dir.join(&session_id);
-            let hook = |word: &str| -> Result<Value, BridgeError> {
-                Ok(json!([{
-                    "hooks": [{
+            // The statusline and hook commands are POSIX shell strings; on
+            // Windows they are skipped (documented v1 degradation: no usage
+            // capture or activity words there).
+            #[cfg(not(windows))]
+            let settings: Option<Value> = {
+                let statusline = claude_statusline_command(
+                    &usage_dir.join(format!("{session_id}.json")),
+                    original_statusline,
+                )?;
+                let activity_file = activity_dir.join(&session_id);
+                let hook = |word: &str| -> Result<Value, BridgeError> {
+                    Ok(json!([{
+                        "hooks": [{
+                            "type": "command",
+                            "command": claude_hook_command(&activity_file, word)?,
+                        }]
+                    }]))
+                };
+                Some(json!({
+                    "statusLine": {
                         "type": "command",
-                        "command": claude_hook_command(&activity_file, word)?,
-                    }]
-                }]))
+                        "command": statusline,
+                    },
+                    "hooks": {
+                        "UserPromptSubmit": hook("working")?,
+                        "Notification": hook("waiting")?,
+                        "Stop": hook("done")?,
+                        "PostToolUse": hook("working")?,
+                    }
+                }))
             };
-            let settings = json!({
-                "statusLine": {
-                    "type": "command",
-                    "command": statusline,
-                },
-                "hooks": {
-                    "UserPromptSubmit": hook("working")?,
-                    "Notification": hook("waiting")?,
-                    "Stop": hook("done")?,
-                    "PostToolUse": hook("working")?,
-                }
-            });
+            #[cfg(windows)]
+            let settings: Option<Value> = {
+                let _ = (
+                    original_statusline,
+                    &usage_dir,
+                    &activity_dir,
+                    session_id.as_str(),
+                );
+                None
+            };
+            #[cfg(windows)]
+            let mut argv: Vec<String> = Vec::new();
+            #[cfg(not(windows))]
             let mut argv = match env_word {
                 Some(word) => vec!["/usr/bin/env".to_owned(), word],
                 None => Vec::new(),
             };
-            argv.extend([
-                path.display().to_string(),
-                "--session-id".to_owned(),
-                session_id,
-                "--settings".to_owned(),
-                settings.to_string(),
-            ]);
+            #[cfg(windows)]
+            argv.push(path.display().to_string());
+            #[cfg(not(windows))]
+            argv.push(path.display().to_string());
+            argv.extend(["--session-id".to_owned(), session_id]);
+            if let Some(settings) = settings {
+                argv.extend(["--settings".to_owned(), settings.to_string()]);
+            }
             Ok(argv)
         }
     }
@@ -257,6 +292,7 @@ pub fn original_statusline(settings_path: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+#[cfg(not(windows))]
 fn claude_statusline_command(path: &Path, original: Option<&str>) -> Result<String, BridgeError> {
     let quote = |value: &str| shell_quote(value, "statusline");
     let path = quote(&path.display().to_string())?;
@@ -267,11 +303,13 @@ fn claude_statusline_command(path: &Path, original: Option<&str>) -> Result<Stri
 }
 
 /// A Claude event hook: write `word` to `path`, print nothing, always exit 0.
+#[cfg(not(windows))]
 fn claude_hook_command(path: &Path, word: &str) -> Result<String, BridgeError> {
     let path = shell_quote(&path.display().to_string(), "activity hook")?;
     Ok(format!("printf %s {word} >{path} 2>/dev/null; exit 0"))
 }
 
+#[cfg(not(windows))]
 fn shell_quote(value: &str, what: &str) -> Result<String, BridgeError> {
     shlex::try_quote(value)
         .map(|value| value.into_owned())
@@ -291,19 +329,32 @@ pub fn shell_words(command: &str) -> Option<Vec<String>> {
     shlex::split(command).filter(|words| !words.is_empty())
 }
 
-/// The first `name` under `path_var` that is an executable file.
+/// The first `name` under `path_var` that is an executable file. Windows
+/// also tries the `PATHEXT` variants (`claude` finds `claude.cmd`).
 pub(crate) fn resolve(name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path_var?).find_map(|dir| {
-        let hit = dir.join(name);
-        executable(&hit).then(|| fs::canonicalize(&hit).unwrap_or(hit))
+        let direct = dir.join(name);
+        if executable(&direct) {
+            return Some(fs::canonicalize(&direct).unwrap_or(direct));
+        }
+        #[cfg(windows)]
+        {
+            for extension in std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+                .split(';')
+            {
+                let hit = dir.join(format!("{name}{extension}"));
+                if executable(&hit) {
+                    return Some(fs::canonicalize(&hit).unwrap_or(hit));
+                }
+            }
+        }
+        None
     })
 }
 
 fn executable(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .metadata()
-            .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    crate::platform::is_executable(path)
 }
 
 #[cfg(test)]
@@ -311,13 +362,17 @@ mod tests {
     use super::*;
     use crate::test_support::TempDir;
     use std::ffi::OsString;
+    #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     /// A `PATH` value naming `dirs` in order, each created under `dir`.
     fn path_var(dirs: &[&Path]) -> OsString {
         std::env::join_paths(dirs.iter().map(|dir| dir.as_os_str())).unwrap()
     }
 
+    #[cfg(unix)]
     fn fake_bin(dir: &TempDir, name: &str, mode: u32) -> PathBuf {
         let file = dir.path().join(name);
         fs::write(&file, "#!/bin/sh\n").unwrap();
@@ -325,6 +380,7 @@ mod tests {
         file
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_found_agent_is_available_with_its_resolved_path() {
         let dir = TempDir::new("agents-hit");
@@ -356,6 +412,7 @@ mod tests {
         assert_eq!(shell.path.as_deref(), Some("/bin/zsh"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_non_executable_file_does_not_count_and_the_first_hit_wins() {
         let dir = TempDir::new("agents-order");
@@ -376,6 +433,7 @@ mod tests {
         assert_eq!(resolved, fs::canonicalize(&exec).unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn argv_for_resolves_a_present_binary_and_rejects_a_missing_or_unknown_one() {
         let dir = TempDir::new("agents-argv");
@@ -407,6 +465,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn no_path_var_means_nothing_is_found() {
         let agents = discover(None, "/bin/zsh");
@@ -419,6 +478,7 @@ mod tests {
         assert!(resolve("claude", Some(weird)).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn claude_argv_has_a_v4_session_id_and_capture_settings() {
         let dir = TempDir::new("agents-claude");
@@ -459,6 +519,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn claude_argv_injects_activity_hooks_for_the_session() {
         let dir = TempDir::new("agents-claude-hooks");
@@ -491,6 +552,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn claude_activity_hook_writes_its_word_and_always_exits_zero() {
         let dir = TempDir::new("agents-claude-hook-run");
@@ -521,6 +583,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn claude_statusline_preserves_a_quoted_original_command() {
         let dir = TempDir::new("agents-claude-original");
@@ -583,6 +646,7 @@ mod tests {
         assert_eq!(original_statusline(&settings), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_named_claude_account_prefixes_env_and_captures_under_its_id() {
         let dir = TempDir::new("agents-claude-acct");
@@ -645,6 +709,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_named_codex_account_prefixes_env_with_its_home() {
         let dir = TempDir::new("agents-codex-acct");
@@ -670,6 +735,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn opencode_devin_agy_and_shell_ignore_a_named_account() {
         let dir = TempDir::new("agents-other-acct");
@@ -697,6 +763,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_malformed_launch_account_cannot_escape_goko_home() {
         let dir = TempDir::new("agents-claude-escape");

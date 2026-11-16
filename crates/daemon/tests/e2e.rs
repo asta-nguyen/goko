@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! The whole daemon, as a client sees it: the real `gokod` in a temp `GOKO_HOME`.
 
 mod common;
@@ -69,6 +71,34 @@ async fn wait_for_exit(control: &mut Client, id: &Value) -> Value {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("session never exited");
+}
+
+#[tokio::test]
+async fn the_daemon_exits_on_sigterm_with_unread_input_pending() {
+    let home = TempDir::new("e2e-unread");
+    let paths = Paths::at(home.path()).unwrap();
+    let mut daemon = Daemon::start(&home);
+    let mut control = connect(&paths).await;
+    let created = control.request(create("exec sleep 30")).await;
+    let id = created["result"]["id"].clone();
+    // `sleep` never reads its input, so this write waits for room until the end.
+    control
+        .send(&json!({
+            "id": 1_000_000,
+            "type": "terminal.write",
+            "session_id": id,
+            "data_b64": STANDARD.encode("echo pasted line\n".repeat(4096)),
+        }))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // SAFETY: signalling the daemon this test started.
+    assert_eq!(unsafe { libc::kill(daemon.pid(), libc::SIGTERM) }, 0);
+    let status = daemon
+        .exited_within(Duration::from_secs(8))
+        .await
+        .expect("gokod should exit after SIGTERM with a write pending");
+    assert!(status.success());
 }
 
 #[tokio::test]

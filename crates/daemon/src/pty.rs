@@ -2,15 +2,21 @@ use crate::buffer::RingBuffer;
 use crate::terminal::TerminalModel;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use std::error::Error;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fmt;
 use std::fs;
-use std::io::{Read, Write};
+#[cfg(unix)]
+use std::fs::File;
+use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::PathBuf;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 const MAX_DIMENSION: u16 = 1000;
 const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
@@ -24,6 +30,23 @@ pub(crate) const FLOW_WINDOW: u64 = 256 * 1024;
 const FLOW_STALL: Duration = Duration::from_secs(5);
 /// How often a paused reader re-checks the flow gate at the latest.
 const FLOW_RECHECK: Duration = Duration::from_millis(250);
+/// How often a reader paused on a flow subscriber's full queue looks again:
+/// nothing signals the gate when the consumer takes a chunk.
+const QUEUE_RECHECK: Duration = Duration::from_millis(5);
+/// How often a write waiting for the child to take its input re-checks
+/// whether the child exited, so a write to a process that is gone ends.
+#[cfg(unix)]
+const WRITE_RECHECK: Duration = Duration::from_millis(100);
+/// Longest single wait of the reader for output. Output and the end of the
+/// PTY both end the wait at once; this only bounds it, and each expiry is a
+/// wakeup of an idle session, so it is long.
+#[cfg(unix)]
+const READ_WAIT: Duration = Duration::from_secs(10);
+/// Output chunks the terminal model may be behind the reader before the
+/// reader waits for it (at most 16 KiB each).
+const MODEL_QUEUE: usize = 64;
+/// Longest a first paint waits for the model to parse up to its offset.
+const PAINT_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub enum PtyError {
@@ -95,11 +118,10 @@ struct Subscriber {
 
 /// The replay buffer and its subscribers behind one lock, so a snapshot and a
 /// registration are atomic with respect to the reader's append and fan-out.
+/// The terminal model is not in here: it is parsed on its own thread
+/// ([`Model`]), so neither the reader nor an ack waits for parsing.
 struct Shared {
     buffer: RingBuffer,
-    /// The session's terminal, parsed from the same bytes under the same lock,
-    /// so a first paint always matches the raw offset it is taken at.
-    model: TerminalModel,
     subscribers: Vec<Subscriber>,
     closed: bool,
     /// Highest output offset the session's consumer has acknowledged. It is
@@ -112,15 +134,16 @@ struct Shared {
 }
 
 impl Shared {
-    fn publish(&mut self, bytes: &[u8]) {
+    /// Append `bytes` and hand them to every subscriber; returns the offset of
+    /// the first byte and the shared copy the model is fed from.
+    fn publish(&mut self, bytes: &[u8]) -> (u64, Arc<[u8]>) {
         self.last_output_at = Some(now_ms());
         let seq = self.buffer.append(bytes);
-        self.model.advance(bytes);
+        let bytes: Arc<[u8]> = Arc::from(bytes);
         if self.subscribers.is_empty() {
-            return;
+            return (seq, bytes);
         }
 
-        let bytes: Arc<[u8]> = Arc::from(bytes);
         self.subscribers.retain(|subscriber| {
             // Each queue has one slot beyond SUBSCRIBER_QUEUE, kept for the final item.
             if subscriber.sender.capacity() <= 1 {
@@ -135,17 +158,28 @@ impl Shared {
                 })
                 .is_ok()
         });
+        (seq, bytes)
     }
 
-    /// Whether the reader must pause: a live flow subscriber exists and the
-    /// unacknowledged output has reached the window. A subscriber whose
-    /// receiver is gone does not count.
-    fn flow_blocked(&self) -> bool {
-        self.buffer.next_seq().saturating_sub(self.acknowledged) >= FLOW_WINDOW
-            && self
-                .subscribers
-                .iter()
-                .any(|subscriber| subscriber.flow && !subscriber.sender.is_closed())
+    /// Whether the reader must pause, as how soon to look again: a live flow
+    /// subscriber exists and either the unacknowledged output has reached the
+    /// window or that subscriber's queue has no room for another chunk. The
+    /// window counts bytes and the queue counts chunks, so small reads fill
+    /// the queue first; pausing there keeps `publish` from dropping a flow
+    /// subscriber as lagging. A subscriber whose receiver is gone does not
+    /// count.
+    fn flow_pause(&self) -> Option<Duration> {
+        let mut live = self
+            .subscribers
+            .iter()
+            .filter(|subscriber| subscriber.flow && !subscriber.sender.is_closed())
+            .peekable();
+        live.peek()?;
+        if self.buffer.next_seq().saturating_sub(self.acknowledged) >= FLOW_WINDOW {
+            return Some(FLOW_RECHECK);
+        }
+        live.any(|subscriber| subscriber.sender.capacity() <= 1)
+            .then_some(QUEUE_RECHECK)
     }
 
     /// Raise the acknowledged offset toward `upto_seq`, capped at the
@@ -190,16 +224,116 @@ impl Shared {
     }
 }
 
+/// What the model thread applies, in stream order.
+enum ModelInput {
+    /// Output whose last byte ends at offset `end`.
+    Output {
+        end: u64,
+        bytes: Arc<[u8]>,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+}
+
+/// The session's terminal, parsed from every output chunk on its own thread so
+/// a GUI that attaches later can be handed a first paint. `parsed` is the
+/// offset the model has consumed through; a paint waits until it reaches the
+/// offset the paint is taken at.
+struct Model {
+    state: Mutex<ModelState>,
+    /// Signalled whenever `parsed` moves.
+    progress: Condvar,
+}
+
+struct ModelState {
+    term: TerminalModel,
+    parsed: u64,
+}
+
+impl Model {
+    /// A model of a `cols`×`rows` terminal and the thread that feeds it.
+    fn spawn(cols: u16, rows: u16) -> io::Result<(Arc<Model>, SyncSender<ModelInput>)> {
+        let model = Arc::new(Model {
+            state: Mutex::new(ModelState {
+                term: TerminalModel::new(cols, rows),
+                parsed: 0,
+            }),
+            progress: Condvar::new(),
+        });
+        let (feed, inputs) = sync_channel(MODEL_QUEUE);
+        let parser = Arc::clone(&model);
+        thread::Builder::new()
+            .name("gokod-pty-model".to_owned())
+            .spawn(move || {
+                parser.run(inputs);
+                // The inputs end when the process and its reader are gone, so this
+                // is usually the last reference: the model's history is freed here.
+                drop(parser);
+                release_freed_memory();
+            })?;
+        Ok((model, feed))
+    }
+
+    /// Apply inputs until every sender is gone.
+    fn run(&self, inputs: Receiver<ModelInput>) {
+        for input in inputs {
+            let mut state = lock_unpoisoned(&self.state);
+            match input {
+                ModelInput::Output { end, bytes } => {
+                    state.term.advance(&bytes);
+                    state.parsed = end;
+                }
+                ModelInput::Resize { cols, rows } => state.term.resize(cols, rows),
+            }
+            drop(state);
+            self.progress.notify_all();
+        }
+    }
+
+    /// The first paint at offset `seq`, once the model has parsed up to it. The
+    /// caller holds the `Shared` lock, so the reader cannot publish past `seq`
+    /// meanwhile; everything before `seq` is already queued for the model.
+    fn paint_at(&self, seq: u64) -> Vec<u8> {
+        let deadline = Instant::now() + PAINT_WAIT;
+        let mut state = lock_unpoisoned(&self.state);
+        while state.parsed < seq {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // The model thread is gone or stuck: paint what it has.
+                break;
+            }
+            state = self
+                .progress
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        state.term.paint()
+    }
+}
+
 type ExitState = Option<Result<ExitStatus, PtyError>>;
-type PtyReader = Box<dyn Read + Send>;
-type PtyWriter = Box<dyn Write + Send>;
 
 pub struct PtyProcess {
-    pid: libc::pid_t,
+    pid: u32,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    /// The PTY master's input handle. On Unix it is non-blocking, so a write
+    /// waits for room in `select` and gives up once the child exited; on
+    /// Windows it is ConPTY's blocking writer.
     writer: Mutex<PtyWriter>,
+    /// Windows: the Job Object owning the child's process tree.
+    #[cfg(windows)]
+    job: win::Job,
     shared: Arc<Mutex<Shared>>,
     gate: Arc<Condvar>,
+    model: Arc<Model>,
+    /// Feeds the model thread. The reader and `resize` send while holding this
+    /// lock, so the model sees output and resizes in stream order.
+    feed: Arc<Mutex<SyncSender<ModelInput>>>,
+    /// Signalled when the process printed output or was sent input.
+    activity: Arc<Notify>,
     exit_state: watch::Receiver<ExitState>,
 }
 
@@ -222,11 +356,9 @@ impl PtyProcess {
                 pixel_height: 0,
             })
             .map_err(|error| PtyError::SpawnFailed(format!("could not open PTY: {error:#}")))?;
-        let reader = pair.master.try_clone_reader().map_err(|error| {
-            PtyError::SpawnFailed(format!("could not create PTY output reader: {error:#}"))
-        })?;
-        let writer = pair.master.take_writer().map_err(|error| {
-            PtyError::SpawnFailed(format!("could not create PTY input writer: {error:#}"))
+        #[cfg(unix)]
+        let (reader, writer) = nonblocking_master(pair.master.as_ref()).map_err(|error| {
+            PtyError::SpawnFailed(format!("could not set up PTY input and output: {error}"))
         })?;
 
         let argv = spec.argv.into_iter().map(Into::into).collect();
@@ -252,21 +384,31 @@ impl PtyProcess {
         })?;
         drop(slave);
 
-        // portable-pty starts the child with `setsid`, so its pid is also its process-group id.
-        let Some(pid) = child
-            .process_id()
-            .and_then(|pid| libc::pid_t::try_from(pid).ok())
-        else {
+        // On Unix portable-pty starts the child with `setsid`, so its pid is
+        // also its process-group id; on Windows the pid is the Job Object's
+        // assignment target.
+        let Some(pid) = child.process_id() else {
             let _ = child.kill();
             let _ = child.wait();
             return Err(PtyError::SpawnFailed(
                 "PTY backend did not provide a child process id".to_owned(),
             ));
         };
+        #[cfg(windows)]
+        let job = win::Job::assign(pid).map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            PtyError::SpawnFailed(format!("could not assign the PTY child to a job: {error}"))
+        })?;
+        #[cfg(windows)]
+        let (reader, writer) = windows_master_io(master.as_ref()).map_err(|error| {
+            let _ = job.terminate();
+            let _ = child.wait();
+            PtyError::SpawnFailed(format!("could not set up PTY input and output: {error}"))
+        })?;
 
         let shared = Arc::new(Mutex::new(Shared {
             buffer: RingBuffer::new(),
-            model: TerminalModel::new(spec.cols, spec.rows),
             subscribers: Vec::new(),
             closed: false,
             acknowledged: 0,
@@ -274,8 +416,26 @@ impl PtyProcess {
             last_output_at: None,
         }));
         let gate = Arc::new(Condvar::new());
-        if let Err(error) = spawn_reader(reader, Arc::clone(&shared), Arc::clone(&gate)) {
-            let _ = signal_group(pid, libc::SIGKILL);
+        let (model, feed) = match Model::spawn(spec.cols, spec.rows) {
+            Ok(model) => model,
+            Err(error) => {
+                terminate_tree(pid);
+                let _ = child.wait();
+                return Err(PtyError::Io(format!(
+                    "could not start PTY terminal model: {error}"
+                )));
+            }
+        };
+        let feed = Arc::new(Mutex::new(feed));
+        let activity = Arc::new(Notify::new());
+        if let Err(error) = spawn_reader(
+            reader,
+            Arc::clone(&shared),
+            Arc::clone(&gate),
+            Arc::clone(&feed),
+            Arc::clone(&activity),
+        ) {
+            terminate_tree(pid);
             let _ = child.wait();
             return Err(PtyError::Io(format!(
                 "could not start PTY output reader: {error}"
@@ -284,7 +444,7 @@ impl PtyProcess {
 
         let (exit_sender, exit_state) = watch::channel(None);
         if let Err(error) = spawn_waiter(child, exit_sender) {
-            let _ = signal_group(pid, libc::SIGKILL);
+            terminate_tree(pid);
             return Err(PtyError::Io(format!(
                 "could not start PTY exit waiter: {error}"
             )));
@@ -294,23 +454,60 @@ impl PtyProcess {
             pid,
             master: Mutex::new(master),
             writer: Mutex::new(writer),
+            #[cfg(windows)]
+            job,
             shared,
             gate,
+            model,
+            feed,
+            activity,
             exit_state,
         })
     }
 
-    /// Write terminal input to the PTY and flush it to the child.
+    /// Resolves once the process has printed output or been sent input since
+    /// the last time this resolved. An idle process never wakes the caller.
+    pub async fn activity(&self) {
+        self.activity.notified().await;
+    }
+
+    /// Write terminal input to the PTY. It blocks while the child is not
+    /// reading its input, but never past the child's exit: a process that is
+    /// gone will never take the rest, so the write fails instead.
     pub fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
         if self.exit_state.borrow().is_some() {
             return Err(PtyError::Io("cannot write to an exited process".to_owned()));
         }
 
         let mut writer = lock_unpoisoned(&self.writer);
-        writer
-            .write_all(bytes)
-            .and_then(|()| writer.flush())
-            .map_err(|error| PtyError::Io(format!("could not write to PTY: {error}")))
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match writer.write(rest) {
+                Ok(0) => return Err(PtyError::Io("the PTY input is closed".to_owned())),
+                Ok(count) => rest = &rest[count..],
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if self.exit_state.borrow().is_some() {
+                        return Err(PtyError::Io(
+                            "the process exited before it read all of its input".to_owned(),
+                        ));
+                    }
+                    #[cfg(unix)]
+                    wait_ready(writer.as_raw_fd(), Ready::Write, WRITE_RECHECK).map_err(
+                        |error| PtyError::Io(format!("could not wait to write to PTY: {error}")),
+                    )?;
+                    #[cfg(windows)]
+                    return Err(PtyError::Io(
+                        "the PTY input is not accepting writes".to_owned(),
+                    ));
+                }
+                Err(error) => {
+                    return Err(PtyError::Io(format!("could not write to PTY: {error}")));
+                }
+            }
+        }
+        self.activity.notify_one();
+        Ok(())
     }
 
     /// Resize the PTY window after checking the supported dimension range.
@@ -320,9 +517,10 @@ impl PtyProcess {
             return Err(PtyError::Io("cannot resize an exited process".to_owned()));
         }
 
-        // Shared first, then master: no path takes Shared while holding master. The
-        // reader cannot publish between the PTY and the model changing size.
-        let mut shared = lock_unpoisoned(&self.shared);
+        // Feed first, then master: no path takes the feed while holding master. The
+        // reader cannot queue output for the model between the PTY and the model
+        // changing size, so the model resizes at the same point of the stream.
+        let feed = lock_unpoisoned(&self.feed);
         lock_unpoisoned(&self.master)
             .resize(PtySize {
                 rows,
@@ -331,30 +529,40 @@ impl PtyProcess {
                 pixel_height: 0,
             })
             .map_err(|error| PtyError::Io(format!("could not resize PTY: {error:#}")))?;
-        shared.model.resize(cols, rows);
+        let _ = feed.send(ModelInput::Resize { cols, rows });
         Ok(())
     }
 
-    /// Send SIGTERM to the child process group.
+    /// Send SIGTERM to the child process group. Windows has no graceful
+    /// signal: this is already a tree kill there.
     pub fn terminate(&self) -> Result<(), PtyError> {
-        self.signal_process_group(libc::SIGTERM)
+        #[cfg(unix)]
+        return self.signal_process_group(libc::SIGTERM);
+        #[cfg(windows)]
+        return self.signal_process_group(0);
     }
 
     /// Send SIGHUP to the child process group: what a terminal sends when its
     /// window closes. Interactive shells ignore SIGTERM but exit on SIGHUP
     /// (and pass it on to their jobs), as do TUI agents.
     pub fn hangup(&self) -> Result<(), PtyError> {
-        self.signal_process_group(libc::SIGHUP)
+        #[cfg(unix)]
+        return self.signal_process_group(libc::SIGHUP);
+        #[cfg(windows)]
+        return self.signal_process_group(0);
     }
 
     /// Send SIGKILL to the child process group.
     pub fn kill(&self) -> Result<(), PtyError> {
-        self.signal_process_group(libc::SIGKILL)
+        #[cfg(unix)]
+        return self.signal_process_group(libc::SIGKILL);
+        #[cfg(windows)]
+        return self.signal_process_group(0);
     }
 
     /// Return the process identifier of the PTY child.
     pub fn pid(&self) -> u32 {
-        self.pid as u32
+        self.pid
     }
 
     /// Read the child process's current working directory when the platform exposes it.
@@ -424,7 +632,9 @@ impl PtyProcess {
     pub fn subscribe_paint(&self, flow: bool) -> (Snapshot, Vec<u8>, mpsc::Receiver<StreamItem>) {
         let mut shared = lock_unpoisoned(&self.shared);
         let next_seq = shared.buffer.next_seq();
-        let paint = shared.model.paint();
+        // Holding `shared` keeps the reader from publishing past `next_seq`, so
+        // the paint is taken exactly at that offset.
+        let paint = self.model.paint_at(next_seq);
         let raised = flow && shared.raise_acknowledged(next_seq);
         let receiver = shared.register(flow);
         drop(shared);
@@ -485,12 +695,21 @@ impl PtyProcess {
             return Ok(());
         }
 
-        signal_group(self.pid, signal).map_err(|error| {
+        #[cfg(unix)]
+        return signal_group(self.pid, signal).map_err(|error| {
             PtyError::Io(format!(
                 "could not signal process group {}: {error}",
                 self.pid
             ))
-        })
+        });
+        #[cfg(windows)]
+        {
+            // No POSIX signals: every stop level is an immediate tree kill.
+            let _ = signal;
+            self.job.terminate().map_err(|error| {
+                PtyError::Io(format!("could not terminate the process tree: {error}"))
+            })
+        }
     }
 }
 
@@ -517,6 +736,7 @@ fn is_utf8_locale(locale: &str) -> bool {
     matches!(encoding.to_ascii_lowercase().as_str(), "utf8" | "utf-8")
 }
 
+#[cfg(unix)]
 fn is_available_utf8_locale(locale: &str) -> bool {
     if !is_utf8_locale(locale) {
         return false;
@@ -531,6 +751,13 @@ fn is_available_utf8_locale(locale: &str) -> bool {
     }
     unsafe { libc::freelocale(resolved) };
     true
+}
+
+/// ConPTY speaks UTF-8 regardless of locale; the inherited value is trusted
+/// as long as it names a UTF-8 locale.
+#[cfg(windows)]
+fn is_available_utf8_locale(locale: &str) -> bool {
+    is_utf8_locale(locale)
 }
 
 fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
@@ -548,7 +775,8 @@ fn validate_cwd(cwd: &std::path::Path) -> Result<(), PtyError> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
+fn process_current_dir(pid: u32) -> Option<PathBuf> {
+    let pid = pid as libc::pid_t;
     // SAFETY: proc_vnodepathinfo contains only integer fields, for which zero is valid.
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of_val(&info);
@@ -573,12 +801,12 @@ fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_current_dir(pid: libc::pid_t) -> Option<PathBuf> {
+fn process_current_dir(pid: u32) -> Option<PathBuf> {
     fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_current_dir(_pid: libc::pid_t) -> Option<PathBuf> {
+fn process_current_dir(_pid: u32) -> Option<PathBuf> {
     None
 }
 
@@ -591,10 +819,13 @@ pub(crate) fn validate_size(cols: u16, rows: u16) -> Result<(), PtyError> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn spawn_reader(
-    mut reader: PtyReader,
+    mut reader: File,
     shared: Arc<Mutex<Shared>>,
     gate: Arc<Condvar>,
+    feed: Arc<Mutex<SyncSender<ModelInput>>>,
+    activity: Arc<Notify>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("gokod-pty-reader".to_owned())
@@ -603,17 +834,136 @@ fn spawn_reader(
             loop {
                 wait_for_flow_credit(&shared, &gate);
                 match reader.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(count) => lock_unpoisoned(&shared).publish(&chunk[..count]),
+                    Ok(0) => break,
+                    Ok(count) => {
+                        // Published and queued for the model under the feed lock, so
+                        // the model sees output and resizes in stream order.
+                        let feed = lock_unpoisoned(&feed);
+                        let (seq, bytes) = lock_unpoisoned(&shared).publish(&chunk[..count]);
+                        let end = seq + count as u64;
+                        let _ = feed.send(ModelInput::Output { end, bytes });
+                        drop(feed);
+                        activity.notify_one();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        if wait_ready(reader.as_raw_fd(), Ready::Read, READ_WAIT).is_err() {
+                            break;
+                        }
+                    }
+                    // EIO: the slave side closed.
+                    Err(_) => break,
                 }
             }
             lock_unpoisoned(&shared).close();
         })
 }
 
+/// Windows: ConPTY exposes a blocking `Read`; the thread parks in it, and the
+/// flow gate pauses between reads (backpressure reaches the child through the
+/// pipe). No readiness wait exists.
+#[cfg(windows)]
+fn spawn_reader(
+    mut reader: Box<dyn Read + Send>,
+    shared: Arc<Mutex<Shared>>,
+    gate: Arc<Condvar>,
+    feed: Arc<Mutex<SyncSender<ModelInput>>>,
+    activity: Arc<Notify>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("gokod-pty-reader".to_owned())
+        .spawn(move || {
+            let mut chunk = [0_u8; 16 * 1024];
+            loop {
+                wait_for_flow_credit(&shared, &gate);
+                match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        let feed = lock_unpoisoned(&feed);
+                        let (seq, bytes) = lock_unpoisoned(&shared).publish(&chunk[..count]);
+                        let end = seq + count as u64;
+                        let _ = feed.send(ModelInput::Output { end, bytes });
+                        drop(feed);
+                        activity.notify_one();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    // A broken pipe or a closed handle: the child is gone.
+                    Err(_) => break,
+                }
+            }
+            lock_unpoisoned(&shared).close();
+        })
+}
+
+/// Two handles on the PTY master — one to read output, one to write input — on
+/// a file description switched to non-blocking, so neither direction can park a
+/// thread in the kernel for good.
+#[cfg(unix)]
+fn nonblocking_master(master: &dyn portable_pty::MasterPty) -> io::Result<(File, PtyWriter)> {
+    let fd = master
+        .as_raw_fd()
+        .ok_or_else(|| io::Error::other("the PTY backend has no master descriptor"))?;
+    // SAFETY: `master` owns `fd` and stays alive for this call; the clones are
+    // new descriptors that share its file description.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let reader = File::from(borrowed.try_clone_to_owned()?);
+    let writer = File::from(borrowed.try_clone_to_owned()?);
+    set_nonblocking(fd)?;
+    Ok((reader, PtyWriter(writer)))
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+    // SAFETY: F_GETFL/F_SETFL take plain integers on a descriptor the caller owns.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum Ready {
+    Read,
+    Write,
+}
+
+/// Wait until `fd` can be read or written, or `timeout` passes. `select`, not
+/// `poll`: on macOS `poll` does not work on PTY devices.
+#[cfg(unix)]
+fn wait_ready(fd: RawFd, ready: Ready, timeout: Duration) -> io::Result<()> {
+    if usize::try_from(fd).map_or(true, |fd| fd >= libc::FD_SETSIZE) {
+        // `select` cannot name this descriptor; wait a little and let the caller retry.
+        thread::sleep(timeout.min(Duration::from_millis(5)));
+        return Ok(());
+    }
+    // SAFETY: an all-zero fd_set is the empty set, and `fd` is below FD_SETSIZE.
+    let mut set: libc::fd_set = unsafe { std::mem::zeroed() };
+    unsafe { libc::FD_SET(fd, &mut set) };
+    let mut wait = libc::timeval {
+        tv_sec: timeout.as_secs() as libc::time_t,
+        tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+    };
+    let (read, write) = match ready {
+        Ready::Read => (&mut set as *mut libc::fd_set, std::ptr::null_mut()),
+        Ready::Write => (std::ptr::null_mut(), &mut set as *mut libc::fd_set),
+    };
+    // SAFETY: the sets and the timeout outlive the call.
+    let result = unsafe { libc::select(fd + 1, read, write, std::ptr::null_mut(), &mut wait) };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// Pause before the next read while a live flow subscriber has a full window
-/// of unacknowledged output. The `Shared` lock is not held across the wait and
-/// the state is re-checked at least every `FLOW_RECHECK`. When `FLOW_STALL`
+/// of unacknowledged output or a full queue. The `Shared` lock is not held
+/// across the wait and the state is re-checked at least every `FLOW_RECHECK`
+/// (`QUEUE_RECHECK` for a full queue). When `FLOW_STALL`
 /// passes without the acknowledged offset moving, the flow subscribers are
 /// dropped through the usual `Lagged` path and reading continues.
 fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
@@ -621,7 +971,7 @@ fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
     // (when the current wait began, acknowledged offset it began at); an ack
     // move restarts the stall clock.
     let mut waiting: Option<(Instant, u64)> = None;
-    while shared.flow_blocked() {
+    while let Some(recheck) = shared.flow_pause() {
         match waiting {
             Some((since, baseline)) if shared.acknowledged == baseline => {
                 if since.elapsed() >= FLOW_STALL {
@@ -632,7 +982,7 @@ fn wait_for_flow_credit(shared_mutex: &Mutex<Shared>, gate: &Condvar) {
             _ => waiting = Some((Instant::now(), shared.acknowledged)),
         }
         let (guard, _) = gate
-            .wait_timeout(shared, FLOW_RECHECK)
+            .wait_timeout(shared, recheck)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared = guard;
     }
@@ -667,6 +1017,16 @@ fn spawn_waiter(
     result
 }
 
+/// Hand the heap's free pages back to the system. glibc keeps what a deleted
+/// session's history freed; without this the daemon's resident size only grows.
+fn release_freed_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only walks the allocator's own free lists.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -680,18 +1040,166 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn signal_group(process_group_id: libc::pid_t, signal: i32) -> std::io::Result<()> {
+#[cfg(unix)]
+fn signal_group(process_group_id: u32, signal: i32) -> std::io::Result<()> {
     // SAFETY: `killpg` takes plain integers and has no memory-safety preconditions.
-    if unsafe { libc::killpg(process_group_id, signal) } == 0 {
+    if unsafe { libc::killpg(process_group_id as libc::pid_t, signal) } == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
     }
 }
 
+/// Kill a child tree while a spawn is failing. Unix: SIGKILL to the group.
+/// Windows: terminate the job (no-op when the pid has no job yet).
+#[cfg(unix)]
+fn terminate_tree(pid: u32) {
+    let _ = signal_group(pid, libc::SIGKILL);
+}
+
+#[cfg(windows)]
+fn terminate_tree(_pid: u32) {
+    // The job is dropped with `PtyProcess`; a failing spawn kills the child
+    // through `child.kill()` on every path that reaches here.
+}
+
+/// The PTY master's input side.
+#[cfg(unix)]
+struct PtyWriter(File);
+
+#[cfg(unix)]
+impl Write for PtyWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+#[cfg(unix)]
+impl AsRawFd for PtyWriter {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+/// Windows: ConPTY's blocking writer handle.
+#[cfg(windows)]
+struct PtyWriter(Box<dyn Write + Send>);
+
+#[cfg(windows)]
+impl Write for PtyWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Windows: the ConPTY reader clone and writer handle.
+#[cfg(windows)]
+fn windows_master_io(
+    master: &dyn portable_pty::MasterPty,
+) -> io::Result<(Box<dyn Read + Send>, PtyWriter)> {
+    let reader = master
+        .try_clone_reader()
+        .map_err(|error| io::Error::other(format!("{error:#}")))?;
+    let writer = master
+        .take_writer()
+        .map_err(|error| io::Error::other(format!("{error:#}")))?;
+    Ok((reader, PtyWriter(writer)))
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::c_void;
+    use std::io;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    /// A `KILL_ON_JOB_CLOSE` Job Object owning one PTY child's tree. Dropping
+    /// it kills whatever is left, which is the daemon's shutdown contract.
+    pub struct Job(HANDLE);
+
+    // SAFETY: job handles are process-wide and the job APIs are thread-safe.
+    unsafe impl Send for Job {}
+    // SAFETY: same as above.
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// Create the job and assign `pid` to it.
+        pub fn assign(pid: u32) -> io::Result<Self> {
+            // SAFETY: null attributes and name are allowed.
+            let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Self(handle);
+            // SAFETY: the extended-limit struct is plain data; zero is valid.
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: the struct matches the information class and its size.
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if configured == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the rights are the ones assignment needs; the handle is
+            // closed right after.
+            let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if process.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: both handles are valid for this call.
+            let assigned = unsafe { AssignProcessToJobObject(job.0, process) };
+            unsafe { CloseHandle(process) };
+            if assigned == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        pub fn terminate(&self) -> io::Result<()> {
+            // SAFETY: `self.0` is a live job handle.
+            if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closing the last handle kills the remaining tree.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod locale_tests {
-    use super::{resolve_utf8_locale, DEFAULT_UTF8_LOCALE};
+    use super::resolve_utf8_locale;
+    #[cfg(unix)]
+    use super::DEFAULT_UTF8_LOCALE;
 
     #[test]
     fn locale_precedence_prefers_lc_all_then_lc_ctype_then_lang() {
@@ -721,6 +1229,7 @@ mod locale_tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn unavailable_utf8_named_locale_is_rejected() {
         assert_eq!(

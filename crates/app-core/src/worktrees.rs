@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
@@ -762,7 +762,12 @@ pub fn env_copy(
 
 fn copy_env_file(source: &Path, target: &Path) -> io::Result<bool> {
     let mut source_options = OpenOptions::new();
-    source_options.read(true).custom_flags(libc::O_NOFOLLOW);
+    source_options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        source_options.custom_flags(libc::O_NOFOLLOW);
+    }
     let mut source_file = source_options.open(source)?;
     if !source_file.metadata()?.is_file() {
         return Err(io::Error::new(
@@ -771,17 +776,20 @@ fn copy_env_file(source: &Path, target: &Path) -> io::Result<bool> {
         ));
     }
     let mut target_options = OpenOptions::new();
-    target_options.write(true).create_new(true).mode(0o600);
-    let mut target_file = match target_options.open(target) {
+    target_options.write(true).create_new(true);
+    let mut target_file = match crate::platform::open_private(&mut target_options, target) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
         Err(error) => return Err(error),
     };
-    let identity = target_file.metadata().ok();
+    let identity = target_file
+        .metadata()
+        .ok()
+        .map(|meta| crate::platform::file_id(&meta));
     if let Err(error) = io::copy(&mut source_file, &mut target_file) {
         drop(target_file);
         if let (Some(identity), Ok(current)) = (identity, fs::symlink_metadata(target)) {
-            if current.dev() == identity.dev() && current.ino() == identity.ino() {
+            if crate::platform::file_id(&current) == identity {
                 let _ = fs::remove_file(target);
             }
         }
@@ -929,6 +937,7 @@ mod tests {
         (dir, root)
     }
 
+    #[cfg(unix)]
     #[test]
     fn lists_root_external_branches_and_detached_head_with_newline_paths() {
         let (_dir, root) = repository("wt-list");
@@ -1017,6 +1026,7 @@ mod tests {
         assert!(!contains_checkout(&root, &unrelated).unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn missing_worktree_remains_listed_and_status_counts_changes_and_renames_once() {
         let (_dir, root) = repository("wt-status");
@@ -1114,6 +1124,7 @@ mod tests {
         assert!(listed.worktrees.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn absent_git_binary_has_an_install_hint() {
         let dir = TempDir::new("wt-no-git");
@@ -1127,6 +1138,7 @@ mod tests {
             .contains("Install Git"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn creates_new_and_existing_branches_and_rejects_checked_out_or_invalid_inputs() {
         let (_dir, root) = repository("wt-create");
@@ -1190,6 +1202,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn creates_missing_parent_directories_only_after_validation() {
         let (_dir, root) = repository("wt-create-parent");
@@ -1211,6 +1224,7 @@ mod tests {
         assert_eq!(created.branch.as_deref(), Some("generated"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn accepts_empty_paths_and_rejects_symlink_targets() {
         use std::os::unix::fs::symlink;
@@ -1244,6 +1258,7 @@ mod tests {
         assert!(referent.is_dir());
     }
 
+    #[cfg(unix)]
     #[test]
     fn previews_and_copies_only_regular_non_example_environment_files_without_overwriting() {
         use std::os::unix::fs::symlink;
@@ -1325,6 +1340,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn reports_partial_copy_failures_and_keeps_the_created_checkout() {
         use std::os::unix::fs::PermissionsExt;

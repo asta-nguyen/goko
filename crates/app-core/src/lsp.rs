@@ -14,7 +14,6 @@
 //! official schema.
 
 use std::collections::{BTreeMap, HashMap};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
@@ -315,12 +314,8 @@ pub fn parse_argv(command: &str) -> Result<Vec<String>, LspError> {
 
 /// `argv[0]` resolves on `PATH` — or, containing `/`, is an executable file.
 fn program_available(program: &str) -> bool {
-    if program.contains('/') {
-        let path = Path::new(program);
-        return path.is_file()
-            && path
-                .metadata()
-                .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0);
+    if program.contains(['/', std::path::MAIN_SEPARATOR]) {
+        return crate::platform::is_executable(Path::new(program));
     }
     crate::agents::resolve(program, std::env::var_os("PATH").as_deref()).is_some()
 }
@@ -383,8 +378,8 @@ impl Connection {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
+            .kill_on_drop(true);
+        crate::platform::configure_child(&mut command);
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 LspError::new(LspErrorKind::Spawn, format!("{program} was not found"))
@@ -395,6 +390,13 @@ impl Connection {
                     format!("cannot start {program}: {error}"),
                 )
             }
+        })?;
+        let job = crate::platform::ChildJob::assign(child.id().unwrap_or(0)).map_err(|error| {
+            let _ = child.start_kill();
+            LspError::new(
+                LspErrorKind::Spawn,
+                format!("cannot start {program}: {error}"),
+            )
         })?;
         let stdin = child.stdin.take().expect("piped server stdin");
         let stdout = child.stdout.take().expect("piped server stdout");
@@ -411,7 +413,7 @@ impl Connection {
             }
         });
 
-        let inner = Arc::new(Inner::new(writes, child));
+        let inner = Arc::new(Inner::new(writes, child, job));
         tokio::spawn(read_stderr(Arc::downgrade(&inner), stderr));
         tokio::spawn(read_loop(Arc::downgrade(&inner), stdout, events.clone()));
         let connection = Connection {
@@ -530,7 +532,7 @@ impl Connection {
     async fn terminate(&self) {
         self.inner.mark_dead();
         let mut child = self.inner.child.lock().await;
-        kill_tree(&mut child);
+        kill_tree(&mut child, &self.inner.job);
         if let Ok(status) = child.wait().await {
             self.inner.record_exit(status);
         }
@@ -618,6 +620,8 @@ struct Inner {
     /// Serialized framed messages for the child's stdin.
     writes: mpsc::UnboundedSender<String>,
     child: tokio::sync::Mutex<Child>,
+    /// The child's process tree (a Job Object on Windows).
+    job: crate::platform::ChildJob,
     /// Bounded tail of stderr for status/advice.
     stderr_tail: Mutex<String>,
     capabilities: Mutex<Option<ServerCapabilities>>,
@@ -631,11 +635,16 @@ struct Routes {
 }
 
 impl Inner {
-    fn new(writes: mpsc::UnboundedSender<String>, child: Child) -> Self {
+    fn new(
+        writes: mpsc::UnboundedSender<String>,
+        child: Child,
+        job: crate::platform::ChildJob,
+    ) -> Self {
         Self {
             routes: Mutex::new(Some(Routes::default())),
             writes,
             child: tokio::sync::Mutex::new(child),
+            job,
             stderr_tail: Mutex::new(String::new()),
             capabilities: Mutex::new(None),
             exit: Mutex::new(None),
@@ -713,7 +722,7 @@ impl Drop for Inner {
     fn drop(&mut self) {
         // `&mut self` rules out a held child guard; `kill_on_drop` still
         // covers the child itself as the field drops.
-        kill_tree(self.child.get_mut());
+        kill_tree(self.child.get_mut(), &self.job);
     }
 }
 
@@ -759,12 +768,18 @@ fn frame(message: &Value) -> String {
 /// Kill the server's whole process group, not just the child: the child
 /// leads its own group (`process_group(0)` at spawn), so wrappers like
 /// `npx` cannot leave grandchildren behind.
-fn kill_tree(child: &mut Child) {
+fn kill_tree(
+    child: &mut Child,
+    #[cfg_attr(unix, allow(unused_variables))] job: &crate::platform::ChildJob,
+) {
+    #[cfg(unix)]
     if let Some(pid) = child.id() {
         // SAFETY: killpg(2) on the group the child leads; ESRCH just means
         // the whole group is already gone.
         unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
     }
+    #[cfg(windows)]
+    job.terminate();
     let _ = child.start_kill();
 }
 
@@ -880,7 +895,7 @@ async fn read_loop(weak: Weak<Inner>, stdout: ChildStdout, events: mpsc::Sender<
     // Reap the child for its exit status; killing its group also covers a
     // server that closed stdout but kept running.
     let mut child = inner.child.lock().await;
-    kill_tree(&mut child);
+    kill_tree(&mut child, &inner.job);
     if let Ok(status) = child.wait().await {
         inner.record_exit(status);
     }
@@ -1641,6 +1656,7 @@ mod tests {
         (conn, rx)
     }
 
+    #[cfg(unix)]
     async fn pid_in_file(dir: &Path, name: &str) -> libc::pid_t {
         let path = dir.join(name);
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -1657,11 +1673,13 @@ mod tests {
         .expect("the server should write its pid")
     }
 
+    #[cfg(unix)]
     fn process_alive(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only probes for the process; it sends nothing.
         (unsafe { libc::kill(pid, 0) }) == 0
     }
 
+    #[cfg(unix)]
     fn process_gone(pid: libc::pid_t) -> bool {
         // SAFETY: signal 0 only probes for the process; it sends nothing.
         if unsafe { libc::kill(pid, 0) } == 0 {
@@ -1670,6 +1688,7 @@ mod tests {
         std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
 
+    #[cfg(unix)]
     async fn wait_gone(pid: libc::pid_t) {
         tokio::time::timeout(Duration::from_secs(10), async {
             while !process_gone(pid) {
@@ -1936,6 +1955,7 @@ mod tests {
         assert_eq!(error.kind, LspErrorKind::Disconnected);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_terminates_the_process_group() {
         let dir = TempDir::new("lsp-killpg");
@@ -1961,6 +1981,7 @@ mod tests {
         conn.shutdown().await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn initialize_timeout_kills_the_child() {
         let dir = TempDir::new("lsp-timeout");
@@ -2006,6 +2027,7 @@ mod tests {
         hub.shutdown().await;
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn two_checkouts_run_isolated_servers() {
         let dir_a = TempDir::new("lsp-iso-a");

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod buffer;
 pub mod lock;
+pub mod net;
 pub mod paths;
 pub mod pty;
 pub mod server;

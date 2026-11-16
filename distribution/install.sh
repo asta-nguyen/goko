@@ -6,6 +6,8 @@
 # Downloads the latest release, checks its sha256 (and, on macOS, its
 # signature), and installs it: Goko.app in ~/Applications, or on Linux the
 # `goko` command in ~/.local/bin and a launcher entry. Running it again updates.
+# On macOS, GOKO_APP_DIR names the folder that holds Goko.app (default
+# ~/Applications); the app sets it to update the copy that is running.
 set -eu
 
 releases=${GOKO_RELEASES_URL:-https://github.com/asta-nguyen/goko/releases/latest/download}
@@ -59,7 +61,7 @@ curl -fsSL "$url" -o "$tmp/goko.tar.gz" || fail "download failed"
 tar -xzf "$tmp/goko.tar.gz" -C "$tmp"
 
 if [ "$os" = macos ]; then
-  apps="$HOME/Applications"
+  apps=${GOKO_APP_DIR:-$HOME/Applications}
   app="$apps/Goko.app"
   [ -d "$tmp/Goko.app" ] || fail "the archive has no Goko.app"
   /usr/bin/codesign --verify --deep --strict "$tmp/Goko.app" || fail "invalid app signature"
@@ -69,8 +71,8 @@ if [ "$os" = macos ]; then
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
   say "Goko is installed in $app."
   running="$app/Contents/MacOS/goko-rune"
-  if [ -d /Applications/Goko.app ]; then
-    say "Note: another copy exists at /Applications/Goko.app; open the one in ~/Applications."
+  if [ -d /Applications/Goko.app ] && [ "$apps" != /Applications ]; then
+    say "Note: another copy exists at /Applications/Goko.app; open the one in $apps."
   fi
 else
   data=${XDG_DATA_HOME:-$HOME/.local/share}

@@ -8,8 +8,7 @@ use crate::error::{BridgeError, Code};
 use protocol::message::ErrorCode;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
-use std::fs::{DirBuilder, OpenOptions};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -132,19 +131,13 @@ impl Store {
     /// Open `goko.db` inside `home`, creating both as needed (dir mode 0700, file mode
     /// 0600), then apply pending migrations.
     pub fn open(home: &Path) -> Result<Self, BridgeError> {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(home)
+        crate::platform::create_private_dir(home)
             .map_err(|error| storage("cannot create the app directory", error))?;
         // Create the file explicitly so a fresh database always has mode 0600.
         let path = home.join("goko.db");
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)
+        let mut options = OpenOptions::new();
+        options.create(true).write(true).truncate(false);
+        crate::platform::open_private(&mut options, &path)
             .map_err(|error| storage("cannot open goko.db", error))?;
         let mut conn =
             Connection::open(&path).map_err(|error| storage("cannot open goko.db", error))?;
@@ -579,6 +572,7 @@ fn not_found(message: impl Into<String>) -> BridgeError {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn open(dir: &TempDir) -> Store {
@@ -656,6 +650,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn open_creates_goko_db_mode_0600_and_reopening_is_idempotent() {
         let dir = TempDir::new("store-open");

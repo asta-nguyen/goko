@@ -1,8 +1,10 @@
 # Architecture overview
 
-Goko is a macOS-first desktop app for running interactive command-line agents
-per project. A Tauri 2 / React app talks to a separate Rust daemon (`gokod`)
-over a Unix socket; the daemon owns every PTY and child process. Project and
+Goko is a desktop app for running interactive command-line agents per
+project. The native app talks to a separate Rust daemon (`gokod`) — over a
+Unix socket on macOS and Linux, and a named pipe on Windows (see
+[Gokod daemon](../domains/gokod-daemon.md)); the daemon owns every PTY and
+child process. Project and
 session metadata lives in an app-owned SQLite database. A second frontend, the
 native Rune shell (`apps/rune`), shares the Tauri-free `crates/app-core`
 backend for project, Git, file, ACP, and language-server operations; its

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use daemon::session::{CreateSpec, SessionError, SessionManager};
 use protocol::session::{SessionId, SessionInfo, SessionState};
 use std::fs;

@@ -609,8 +609,10 @@ fn unix_millis(time: SystemTime) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::accounts::StoredAccount;
     use serde_json::json;
+    #[cfg(unix)]
     use std::time::SystemTime;
 
     fn codex_line(primary: Value, secondary: Value) -> Vec<u8> {
@@ -629,6 +631,7 @@ mod tests {
         tail.push(b'\n');
     }
 
+    #[cfg(unix)]
     fn set_modified(path: &Path, modified: SystemTime) {
         File::open(path)
             .unwrap()
@@ -636,6 +639,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(unix)]
     fn write_claude(
         home: &Path,
         id: &str,
@@ -652,6 +656,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     /// A statusline capture in an explicit folder: Default's flat
     /// `usage/claude` or a named account's `usage/claude/<id>`.
     fn write_claude_capture(
@@ -678,6 +683,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     fn write_claude_context_only(home: &Path, id: &str, context_pct: f64, modified: SystemTime) {
         let dir = home.join("usage/claude");
         fs::create_dir_all(&dir).unwrap();
@@ -690,6 +696,7 @@ mod tests {
         set_modified(&path, modified);
     }
 
+    #[cfg(unix)]
     fn write_rollout(home: &Path, day: &str, used_pct: f64, modified: SystemTime) -> PathBuf {
         let dir = home.join("sessions").join(day);
         fs::create_dir_all(&dir).unwrap();
@@ -706,6 +713,7 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
     /// A fresh mtime `offset_secs` after a fixed ~1-hour-old base: captures
     /// are never stale to the read-time prune, and offsets still order by
     /// mtime exactly as the old `UNIX_EPOCH + N` fixtures did. The base is
@@ -717,6 +725,7 @@ mod tests {
             + Duration::from_secs(offset_secs)
     }
 
+    #[cfg(unix)]
     fn stored(id: &str, dir: &Path) -> StoredAccount {
         StoredAccount {
             id: id.to_owned(),
@@ -725,6 +734,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn agent_accounts(active: &str, items: Vec<StoredAccount>) -> AgentAccounts {
         AgentAccounts {
             active: active.to_owned(),
@@ -860,6 +870,7 @@ mod tests {
         assert_eq!(parse_codex_tail(&no_limits), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn prune_old_removes_only_json_older_than_the_limit() {
         let dir = crate::test_support::TempDir::new("usage-prune");
@@ -884,6 +895,7 @@ mod tests {
         assert!(other.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_uses_the_newest_claude_file_and_keeps_each_session_context() {
         let home = crate::test_support::TempDir::new("usage-claude-latest");
@@ -903,6 +915,7 @@ mod tests {
         assert_eq!(snapshot.claude.sessions["session-new"].context_pct, 62.0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_skips_a_newer_claude_file_that_has_no_rate_limits_yet() {
         // A session that has not had its first API response (or an API-key session) writes
@@ -928,6 +941,7 @@ mod tests {
         assert_eq!(again.claude.five_hour, snapshot.claude.five_hour);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_without_any_claude_limits_reports_context_only() {
         let home = crate::test_support::TempDir::new("usage-claude-context-only");
@@ -945,6 +959,7 @@ mod tests {
         assert_eq!(snapshot.claude.sessions["only"].context_pct, 7.0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_keeps_the_previous_claude_value_when_the_newest_file_is_corrupt() {
         let home = crate::test_support::TempDir::new("usage-claude-corrupt");
@@ -965,6 +980,7 @@ mod tests {
         assert_eq!(snapshot.claude.sessions, previous.claude.sessions);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_reads_codex_from_the_newest_rollout_day_and_last_64_kib() {
         let home = crate::test_support::TempDir::new("usage-codex");
@@ -982,6 +998,7 @@ mod tests {
         assert_eq!(snapshot.codex.updated_at, unix_millis(recent(20)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_scans_only_the_two_newest_codex_day_directories() {
         let home = crate::test_support::TempDir::new("usage-codex-days");
@@ -1015,6 +1032,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn poll_once_emits_only_when_the_snapshot_changes() {
         let home = crate::test_support::TempDir::new("usage-poll");
@@ -1065,6 +1083,7 @@ mod tests {
         assert_eq!(state.snapshot(), current);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_reports_the_default_account_exactly_as_before() {
         let home = crate::test_support::TempDir::new("usage-default-account");
@@ -1096,6 +1115,7 @@ mod tests {
         assert_eq!(snapshot.accounts["codex:default"].updated_at, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_reads_every_claude_account_and_reports_the_active_one() {
         let home = crate::test_support::TempDir::new("usage-two-claude");
@@ -1143,6 +1163,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_merges_claude_sessions_across_account_folders() {
         let home = crate::test_support::TempDir::new("usage-claude-sessions");
@@ -1171,6 +1192,7 @@ mod tests {
         assert_eq!(snapshot.claude.sessions["work-session"].context_pct, 70.0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_does_not_read_a_subfolder_as_default_claude_captures() {
         let home = crate::test_support::TempDir::new("usage-claude-subdir");
@@ -1200,6 +1222,7 @@ mod tests {
         assert!(!snapshot.accounts.contains_key("claude:stray"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_reads_codex_per_account_and_reports_the_active_one() {
         let home = crate::test_support::TempDir::new("usage-codex-accounts");
@@ -1242,6 +1265,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_keeps_an_accounts_previous_value_when_its_capture_is_corrupt() {
         let home = crate::test_support::TempDir::new("usage-corrupt-account");
@@ -1277,6 +1301,7 @@ mod tests {
         assert_eq!(snapshot.accounts["claude:default"].limits[0].used_pct, 13.0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_ignores_a_capture_folder_no_account_owns() {
         let home = crate::test_support::TempDir::new("usage-orphan");
@@ -1330,6 +1355,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_prunes_stale_captures_in_owned_folders_only() {
         let home = crate::test_support::TempDir::new("usage-prune-read");
@@ -1378,6 +1404,7 @@ mod tests {
         assert!(snapshot.claude.sessions.contains_key("fresh"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_snapshot_gives_every_account_an_entry_even_without_data() {
         let home = crate::test_support::TempDir::new("usage-all-accounts");

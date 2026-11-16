@@ -251,7 +251,37 @@ fn os_dark_mode() -> bool {
     unsafe { name.containsString(&dark) }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: the user's app-theme preference
+/// (`HKCU\...\Themes\Personalize\AppsUseLightTheme`); 0 means dark.
+#[cfg(windows)]
+fn os_dark_mode() -> bool {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let subkey = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("AppsUseLightTheme");
+    let mut light: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: the strings are NUL-terminated and the out-buffer has `size`.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut light as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    status == ERROR_SUCCESS && light == 0
+}
+
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 fn os_dark_mode() -> bool {
     true
 }
@@ -683,7 +713,20 @@ fn updates_section(s: &State, ink: &Ink) -> El {
         ),
         Status::Checking => ("Checking…".to_string(), ink.muted),
         Status::UpToDate => ("You are on the latest version.".to_string(), ink.muted),
-        Status::Available(version) => (format!("Goko {version} is available."), ink.accent),
+        Status::Available(release) => (
+            format!("Goko {} is available.", release.version),
+            ink.accent,
+        ),
+        Status::Installing(release) => {
+            (format!("Updating to Goko {}…", release.version), ink.muted)
+        }
+        Status::Installed(release) => (
+            format!(
+                "Goko {} is installed — restart Goko to use it.",
+                release.version
+            ),
+            ink.accent,
+        ),
         Status::Failed(error) => (format!("Could not check: {error}"), ink.danger),
     };
     let mut actions = row().gap(8.0).items_center().child(
@@ -692,15 +735,32 @@ fn updates_section(s: &State, ink: &Ink) -> El {
             .on_press(|s: &mut State| s.check_for_update()),
     );
     if matches!(s.update, Status::Available(_)) {
-        actions = actions.child(
+        actions = actions.child(if s.update_dir.is_some() {
+            ghost("Update now", ink)
+                .key("update-now")
+                .on_press(|s: &mut State| s.install_update())
+        } else {
             ghost("Copy install command", ink)
                 .key("update-copy")
                 .on_press_tx(|s: &mut State, tx: &mut Tx| {
                     tx.copy(update::INSTALL_COMMAND.to_string());
                     s.notice = Some("Install command copied — paste it in a terminal".into());
-                }),
-        );
+                })
+        });
     }
+    let mut status = col()
+        .w_full()
+        .gap(8.0)
+        .child(theme::txt(&line, T12, color))
+        .child(actions);
+    if let Some(release) = s.update.release().filter(|r| !r.notes.is_empty()) {
+        status = status.child(notes_view(release, ink));
+    }
+    let how = if s.update_dir.is_some() {
+        "Update now installs the new version over this copy; reopen Goko afterwards."
+    } else {
+        "To update, run the install command in a terminal, then reopen Goko."
+    };
     col()
         .w_full()
         .gap(20.0)
@@ -712,14 +772,32 @@ fn updates_section(s: &State, ink: &Ink) -> El {
         ))
         .child(field(
             "Updates",
-            "To update, run the install command in a terminal, then reopen Goko. \
-             Set GOKO_NO_UPDATE_CHECK=1 to stop the automatic check.",
-            col()
-                .gap(8.0)
-                .child(theme::txt(&line, T12, color))
-                .child(actions),
+            &format!("{how} Set GOKO_NO_UPDATE_CHECK=1 to stop the automatic check."),
+            status,
             ink,
         ))
+}
+
+/// What changed in `release`: its changelog entry, a heading per kind of change
+/// and a paragraph per bullet.
+fn notes_view(release: &crate::update::Release, ink: &Ink) -> El {
+    use crate::update::note_rows;
+
+    let mut rows = col().w_full().max_w(640.0).gap(6.0).child(theme::txt(
+        &format!("What's new in Goko {}", release.version),
+        T12M,
+        ink.text,
+    ));
+    for (heading, text) in note_rows(&release.notes) {
+        rows = rows.child(if heading {
+            theme::txt(&text, T12M, ink.text)
+        } else {
+            theme::txt(&format!("• {text}"), T11M.lh(16.0), ink.muted)
+                .wrap()
+                .w_full()
+        });
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@
 
 use rune::{El, Tx, col, el, row};
 use rune_kit::diff::{DiffMode, DiffState, DiffView};
-use rune_kit::{Kit, ScrollBar};
+use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::state::Patch;
@@ -445,13 +445,38 @@ fn file_names(patch: &Patch, ink: &Ink, k: &Kit) -> El {
 
 /// The real `DiffView`, keyed per pane, with `DiffState::key` wired for
 /// hunk/file navigation (j/k, ]/[, expand, mode keys) like the kit example.
+/// Every file header also gets an "Open file" control that navigates to the
+/// file's working-tree version through `files::open_doc`.
 fn diff_view(s: &State, pane: Pane, k: &Kit) -> El {
     DiffView::new(
         move |st: &State| diff_state(st, pane),
         move |st: &mut State| diff_state_mut(st, pane),
     )
     .key(format!("patch:{}", pane.label()))
+    .header_actions(move |st: &State, idx: usize| open_file_action(st, pane, idx))
     .build(s, k)
+}
+
+/// The per-file open control in a diff header. `open_doc` opens the
+/// working-tree version — the same navigation the file tree uses
+/// (draft-guarded, switches to the Files section).
+fn open_file_action(s: &State, pane: Pane, idx: usize) -> El {
+    let Some(path) = diff_state(s, pane)
+        .files()
+        .get(idx)
+        .map(|f| f.path().to_string())
+    else {
+        return el();
+    };
+    IconButton::new(&theme::OPEN_FILE)
+        .variant(IconButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .label(format!("Open file {path}"))
+        .help("Open file")
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+            crate::editor::files::open_doc(st, &path, None, tx);
+        })
+        .build(&s.editor.kit)
 }
 
 #[cfg(test)]

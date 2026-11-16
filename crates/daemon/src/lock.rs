@@ -2,7 +2,6 @@ use crate::paths::Paths;
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 
 #[derive(Debug)]
 pub enum LockError {
@@ -29,13 +28,14 @@ pub struct InstanceLock {
 
 impl InstanceLock {
     pub fn acquire(paths: &Paths) -> Result<Self, LockError> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .open(paths.lock())
-            .map_err(LockError::Io)?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(paths.lock()).map_err(LockError::Io)?;
         match file.try_lock() {
             Ok(()) => Ok(Self { _file: file }),
             Err(TryLockError::WouldBlock) => Err(LockError::AlreadyRunning),

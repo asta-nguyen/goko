@@ -65,8 +65,10 @@ x86_64 is not built: it needs an x86 machine (emulation is very slow).
 ```sh
 # each archive's sha256 must equal the one in its target.json
 shasum -a 256 dist/*.tar.gz; cat dist/*.target.json
-# one manifest for every platform; the version comes first, as install.sh reads it
-jq -cs --arg version 0.1.1 '{version: $version, targets: add}' dist/*.target.json > dist/latest.json
+# one manifest for every platform; the version comes first, as install.sh reads it;
+# notes is the CHANGELOG.md entry, which the app shows in Settings → Updates
+notes="$(awk -v v=0.1.1 '/^## \[/ { on = index($0, "[" v "]") == 4; next } on' CHANGELOG.md)"
+jq -cs --arg version 0.1.1 --arg notes "$notes" '{version: $version, targets: add, notes: $notes}' dist/*.target.json > dist/latest.json
 gh release create v0.1.1 dist/*.tar.gz dist/latest.json distribution/install.sh \
   --title "Goko 0.1.1" --generate-notes
 ```

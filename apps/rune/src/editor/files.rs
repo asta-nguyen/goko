@@ -472,8 +472,16 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
 }
 
 /// Show `path` selected in the system file manager.
-// ponytail: macOS `open -R`; elsewhere the folder opens, with no selection.
+// ponytail: macOS `open -R`, Windows `explorer /select,`; elsewhere the
+// folder opens, with no selection.
 fn reveal(path: &std::path::Path) {
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = std::process::Command::new("explorer");
+        c.arg(format!("/select,{}", path.display()));
+        c
+    };
+    #[cfg(not(windows))]
     let mut command = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg("-R").arg(path);
@@ -1500,8 +1508,7 @@ mod tests {
     fn textbox_named(rt: &Runtime<State>, name: &str) -> rune::ElementInfo {
         textboxes(rt)
             .into_iter()
-            .filter(|e| e.label.as_deref() == Some(name))
-            .next_back()
+            .rfind(|e| e.label.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("textbox {name} mounted"))
     }
 

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use daemon::pty::{PtyError, PtyProcess, SpawnSpec};
 use std::fs;
 use std::path::{Path, PathBuf};

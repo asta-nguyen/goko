@@ -4,6 +4,7 @@ use std::path::Path;
 
 use rune::{El, Tx, row};
 
+use crate::State;
 use crate::editor::backend::Req;
 use crate::editor::state::EditorState;
 use crate::theme::{self, Ink};
@@ -104,16 +105,31 @@ pub fn view(ed: &EditorState, ink: &Ink) -> El {
     } else {
         ink.accent
     };
-    let help = if let Some(error) = error {
+    let mut help = if let Some(error) = error {
         format!("Current branch unavailable: {error}")
     } else if ed.branch.pending {
         format!("Current branch: {label} · checking Git…")
     } else {
         format!("Current branch: {label}")
     };
-    row()
+    // A press copies the branch — or the detached short hash — like the
+    // checkout path chip beside it; loading/error states stay inert, so an
+    // "unavailable" badge never copies its stale last read.
+    let copy_value = if error.is_some() {
+        None
+    } else {
+        data.map(|b| b.name.clone().unwrap_or_else(|| b.head.clone()))
+    };
+    if copy_value.is_some() {
+        help = format!("{help} (click to copy)");
+    }
+    let mut badge = row()
         .key("editor-current-branch")
-        .role("group")
+        .role(if copy_value.is_some() {
+            "button"
+        } else {
+            "group"
+        })
         .label(format!("Current branch: {label}"))
         .h(26.0)
         .px(8.0)
@@ -133,7 +149,30 @@ pub fn view(ed: &EditorState, ink: &Ink) -> El {
             theme::txt(&label, theme::T12M, color)
                 .min_w(0.0)
                 .truncate_middle(),
-        )
+        );
+    if let Some(value) = copy_value {
+        let key_value = value.clone();
+        badge = badge
+            .cursor(rune::Cursor::Pointer)
+            .hover(ink.text.alpha(0.06))
+            .press(ink.text.alpha(0.12))
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                tx.copy(value.clone());
+                st.notice = Some("Copied to clipboard".into());
+            })
+            .on_key(move |st: &mut State, ev: &rune::KeyEvent, tx: &mut Tx| {
+                if crate::editor::commit_detail::activate_key(ev) {
+                    tx.copy(key_value.clone());
+                    st.notice = Some("Copied to clipboard".into());
+                    true
+                } else {
+                    false
+                }
+            });
+    }
+    badge
 }
 
 #[cfg(test)]

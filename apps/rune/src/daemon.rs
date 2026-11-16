@@ -21,10 +21,8 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,7 +39,6 @@ use protocol::session::{SessionId, SessionInfo};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::sync::mpsc as tmpsc;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
@@ -190,7 +187,7 @@ impl Daemon {
 
     /// Test constructor: connect to whatever listens at `home`, never
     /// spawning `gokod` (the test owns the socket).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn spawn_connect_only(
         home: PathBuf,
         wake: impl Fn() + Send + Sync + 'static,
@@ -686,9 +683,7 @@ async fn connect(
     event_tx: &mpsc::Sender<UiEvent>,
     wake: &Wake,
 ) -> Result<Connection, BridgeError> {
-    let mut stream = UnixStream::connect(home.join("daemon.sock"))
-        .await
-        .map_err(unavailable)?;
+    let mut stream = net::connect(home).await.map_err(unavailable)?;
     // The token is read only once the socket accepted: a live daemon
     // writes it before binding, so a stale file from a crashed daemon is
     // never sent.
@@ -697,7 +692,7 @@ async fn connect(
         .await
         .map_err(|_| timed_out())??;
 
-    let (reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = tokio::io::split(stream);
     let shared: Shared = Arc::new(Mutex::new(Some(Routes {
         pending: HashMap::new(),
         outputs: HashMap::new(),
@@ -730,7 +725,7 @@ async fn connect(
 /// The events and the output frames arrive on the reader task; both are
 /// routed through the shared table.
 async fn read_loop(
-    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+    mut reader: BufReader<tokio::io::ReadHalf<net::Stream>>,
     shared: Shared,
     event_tx: mpsc::Sender<UiEvent>,
     wake: Wake,
@@ -823,7 +818,7 @@ fn push_event(event_tx: &mpsc::Sender<UiEvent>, wake: &Wake, event: UiEvent) {
     wake();
 }
 
-async fn handshake(stream: &mut UnixStream, token: String) -> Result<String, BridgeError> {
+async fn handshake(stream: &mut net::Stream, token: String) -> Result<String, BridgeError> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         token,
@@ -899,7 +894,7 @@ fn daemon_bin() -> Result<PathBuf, BridgeError> {
 fn daemon_bin_from(var: Option<OsString>, exe: &Path) -> PathBuf {
     match var.filter(|var| !var.is_empty()) {
         Some(bin) => bin.into(),
-        None => exe.with_file_name("gokod"),
+        None => exe.with_file_name(if cfg!(windows) { "gokod.exe" } else { "gokod" }),
     }
 }
 
@@ -912,16 +907,11 @@ fn spawn_daemon(home: &Path, bin: &Path) -> Result<(), BridgeError> {
         BridgeError::new(Code::DaemonStartFailed, format!("{what}: {error}"))
             .with_hint(format!("see {}", log_path.display()))
     };
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(home)
+    app_core::platform::create_private_dir(home)
         .map_err(|error| failed("cannot create the daemon directory", error))?;
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log_path)
+    let mut log_options = OpenOptions::new();
+    log_options.create(true).append(true);
+    let log = app_core::platform::open_private(&mut log_options, &log_path)
         .map_err(|error| failed("cannot open daemon.log", error))?;
     let mut command = Command::new(bin);
     command
@@ -933,7 +923,18 @@ fn spawn_daemon(home: &Path, bin: &Path) -> Result<(), BridgeError> {
         )
         .stderr(log);
     // Its own process group: the daemon survives the app's terminal.
-    command.process_group(0);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, survives
+        // the app.
+        command.creation_flags(0x0000_0008 | 0x0000_0200);
+    }
     command
         .spawn()
         .map(drop)
@@ -968,6 +969,8 @@ fn disconnected() -> BridgeError {
 fn timed_out() -> BridgeError {
     BridgeError::new(Code::Timeout, "gokod did not answer in time")
 }
+
+mod net;
 
 #[cfg(test)]
 mod tests;

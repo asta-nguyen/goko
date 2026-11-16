@@ -12,8 +12,11 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::index::Side;
+use alacritty_terminal::selection::SelectionType;
 use protocol::session::SessionId;
 use rune::{Color, El, Phase, TextStyle, Tx, col, el, row};
+use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::data::SessionState;
@@ -52,7 +55,7 @@ const FIND_FONT: TextStyle = TextStyle::new(12.0, 400.0).mono();
 
 /// Which way a split arranges its panes: `SideBySide` is a row (left |
 /// right), `Stacked` a column (top / bottom).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Direction {
     SideBySide,
     Stacked,
@@ -270,6 +273,57 @@ impl Attachment {
 // ---------------------------------------------------------------------------
 // The layout tree — ports of stores/ui.ts's pane helpers.
 // ---------------------------------------------------------------------------
+
+/// The settings key the open tabs' layout is stored under.
+pub const TABS_KEY: &str = "rune.tabs";
+
+/// A tab as saved: its title and the shape of its panes.
+#[derive(Serialize, Deserialize)]
+struct SavedTab {
+    title: String,
+    shape: Shape,
+}
+
+/// A layout reduced to what survives a restart: the split directions and
+/// which session each pane shows.
+#[derive(Serialize, Deserialize)]
+enum Shape {
+    Pane(String),
+    Split(Direction, Box<Shape>, Box<Shape>),
+}
+
+impl Shape {
+    fn of(layout: &Layout) -> Shape {
+        match layout {
+            Layout::Pane(pane) => Shape::Pane(pane.session.clone()),
+            Layout::Split(split) => Shape::Split(
+                split.direction,
+                Box::new(Shape::of(&split.first)),
+                Box::new(Shape::of(&split.second)),
+            ),
+        }
+    }
+
+    /// The layout again at 50/50, keeping only panes whose session `alive`
+    /// accepts; `None` when none does.
+    fn into_layout(self, alive: &dyn Fn(&str) -> bool) -> Option<Layout> {
+        match self {
+            Shape::Pane(key) => alive(&key).then(|| Layout::Pane(new_pane(&key))),
+            Shape::Split(direction, first, second) => {
+                match (first.into_layout(alive), second.into_layout(alive)) {
+                    (Some(first), Some(second)) => Some(Layout::Split(Split {
+                        id: split_id(&collect_panes(&second)[0].id),
+                        direction,
+                        ratio: 0.5,
+                        first: Box::new(first),
+                        second: Box::new(second),
+                    })),
+                    (one, other) => one.or(other),
+                }
+            }
+        }
+    }
+}
 
 pub fn pane_id(key: &str) -> String {
     format!("pane-{key}")
@@ -630,6 +684,110 @@ impl State {
         true
     }
 
+    /// A drag in a pane that is not the program's: it selects. The first press
+    /// starts a selection (a double click a word, a triple click a line), moving
+    /// extends it, and past the pane's top or bottom edge the view scrolls on a
+    /// repeat while the press is held. Releasing copies what is selected; a
+    /// release that never moved is a click, reported to a program that captures
+    /// the mouse (`captured`) instead.
+    fn pane_select(
+        &mut self,
+        key: &str,
+        d: &rune::Drag,
+        tx: &mut Tx,
+        captured: bool,
+        cell_w: f32,
+        line_h: f32,
+    ) {
+        let ink = self.ink;
+        let Some(att) = self.attachments.get_mut(key) else {
+            return;
+        };
+        let (cols, rows) = att.term.size();
+        let row_f = (d.y - PANE_PAD) / line_h;
+        let col_f = ((d.x - PANE_PAD) / cell_w).max(0.0);
+        let col = (col_f as usize).min(cols.saturating_sub(1));
+        let side = if col_f.fract() < 0.5 {
+            Side::Left
+        } else {
+            Side::Right
+        };
+        let row = (row_f.max(0.0) as usize).min(rows.saturating_sub(1));
+        let mut click = None;
+        match d.phase {
+            Phase::Down => {
+                let kind = match d.clicks {
+                    0 | 1 => SelectionType::Simple,
+                    2 => SelectionType::Semantic,
+                    _ => SelectionType::Lines,
+                };
+                att.term.select_start(kind, row, col, side);
+            }
+            Phase::Move => {
+                // Past an edge the view scrolls, faster the farther out the pointer is.
+                let past = if row_f < 0.0 {
+                    -row_f
+                } else {
+                    row_f - rows as f32 + 1.0
+                };
+                if past > 0.0 {
+                    let lines = past.ceil().clamp(1.0, 5.0) as i32;
+                    att.term.scroll_by(if row_f < 0.0 { lines } else { -lines });
+                    tx.drag_repeat_after(Duration::from_millis(50));
+                }
+                att.term.select_update(row, col, side);
+            }
+            Phase::Up => {
+                let moved = d.dx.abs() >= 4.0 || d.dy.abs() >= 4.0;
+                if d.cancelled() {
+                    att.term.select_clear();
+                } else if captured && d.clicks <= 1 && !moved {
+                    att.term.select_clear();
+                    click = Some((d.x, d.y));
+                } else if let Some(text) = att.term.selection_text() {
+                    tx.copy(text);
+                    self.notice = Some("Copied to clipboard".into());
+                }
+            }
+        }
+        // Draw the new highlight now, not on the next poll.
+        let Some(att) = self.attachments.get_mut(key) else {
+            return;
+        };
+        let lines = att.term.lines(&ink);
+        if att.lines.as_slice() != lines {
+            let lines = lines.to_vec();
+            att.set_lines(&lines, key);
+        }
+        if let Some((x, y)) = click {
+            for kind in [term::MouseKind::Press(0), term::MouseKind::Release(0)] {
+                self.pane_mouse(key, kind, x, y, cell_w, line_h);
+            }
+        }
+    }
+
+    /// Cmd+C: put the focused pane's selection on the clipboard. `false` when
+    /// nothing is selected there.
+    pub fn copy_pane_selection(&mut self, tx: &mut Tx) -> bool {
+        let Some(key) = self
+            .current_tab()
+            .and_then(State::focused_pane)
+            .map(|pane| pane.session.clone())
+        else {
+            return false;
+        };
+        let Some(text) = self
+            .attachments
+            .get(&key)
+            .and_then(|att| att.term.selection_text())
+        else {
+            return false;
+        };
+        tx.copy(text);
+        self.notice = Some("Copied to clipboard".into());
+        true
+    }
+
     /// A pointer event over pane `key`'s cell — press, drag motion, hover
     /// or release — as the mouse-report bytes the program asked for. `x`,
     /// `y` are the pane's own layout points; the cell clamps to the grid.
@@ -659,6 +817,8 @@ impl State {
             return;
         };
         let session = att.term.session;
+        #[cfg(test)]
+        self.mouse_sent.push(bytes.clone());
         self.write_terminal(session, &bytes);
     }
 
@@ -854,6 +1014,28 @@ impl State {
         }
         self.active_tab = index;
         self.sync_selection();
+    }
+
+    /// Move the visible tab at position `from` to position `to` among the visible
+    /// tabs. Hidden tabs keep their relative order, and the active tab stays active.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        let visible: Vec<usize> = self.visible_tabs().map(|(i, _)| i).collect();
+        let (Some(&a), Some(&b)) = (visible.get(from), visible.get(to)) else {
+            return;
+        };
+        let active = self.open_tabs.get(self.active_tab).map(|t| t.id.clone());
+        let tab = self.open_tabs.remove(a);
+        self.open_tabs.insert(b, tab);
+        if let Some(id) = active {
+            self.active_tab = self.open_tabs.iter().position(|t| t.id == id).unwrap_or(0);
+        }
+    }
+
+    /// Select the tab with `id`, as a click on it does.
+    pub fn activate_tab_id(&mut self, id: &str) {
+        if let Some(index) = self.open_tabs.iter().position(|t| t.id == id) {
+            self.activate_tab(index);
+        }
     }
 
     /// Focus a session: its pane's tab and pane become active, opening a
@@ -1243,6 +1425,76 @@ impl State {
         self.sync_selection();
     }
 
+    // -- Layout across restarts ---------------------------------------------
+
+    /// The open tabs as the settings store keeps them: each tab's title and
+    /// split tree, not the ratios — a restored split starts at 50/50.
+    fn tabs_snapshot(&self) -> String {
+        let tabs: Vec<SavedTab> = self
+            .open_tabs
+            .iter()
+            .filter(|tab| !tab.closing)
+            .map(|tab| SavedTab {
+                title: tab.title.clone(),
+                shape: Shape::of(&tab.layout),
+            })
+            .collect();
+        serde_json::to_string(&tabs).unwrap_or_default()
+    }
+
+    /// Write the layout to the settings store when it changed. Idle until
+    /// the saved one has been restored, so an empty start never overwrites it.
+    pub fn save_tabs_if_changed(&mut self) {
+        let Some(saved) = &self.tabs_saved else {
+            return;
+        };
+        let now = self.tabs_snapshot();
+        if &now == saved {
+            return;
+        }
+        backend::enqueue(
+            &mut self.editor.backend,
+            Job::project(Req::SetSetting {
+                key: TABS_KEY.to_string(),
+                value: now.clone(),
+            }),
+        );
+        self.tabs_saved = Some(now);
+    }
+
+    /// Reopen the saved tabs once both the setting and the daemon's session
+    /// list have arrived. A pane whose session is gone, or already open in a
+    /// tab, drops out; its split collapses to the pane beside it.
+    pub fn restore_tabs(&mut self) {
+        if self.tabs_saved.is_some() || !self.sessions_loaded {
+            return;
+        }
+        let Some(raw) = self.tabs_pending.take() else {
+            return;
+        };
+        let saved: Vec<SavedTab> = raw
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        for tab in saved {
+            let alive = |key: &str| self.session_by_key(key).is_some() && !self.session_placed(key);
+            let Some(layout) = tab.shape.into_layout(&alive) else {
+                continue;
+            };
+            let Some(first) = collect_panes(&layout).first().map(|p| (*p).clone()) else {
+                continue;
+            };
+            self.open_tabs.push(Tab {
+                id: tab_id(&first.session),
+                title: tab.title,
+                layout,
+                active_pane: first.id,
+                closing: false,
+            });
+        }
+        self.tabs_saved = Some(self.tabs_snapshot());
+        self.sync_selection();
+    }
+
     /// The daemon's session list is authoritative: a pane whose session is
     /// no longer listed is dropped like a deleted one.
     pub fn reconcile_panes(&mut self) {
@@ -1309,13 +1561,20 @@ impl State {
             let Some(session) = self.session_id(&key) else {
                 continue;
             };
-            let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
+            // Wait for the pane's first layout, before subscribing: the replay
+            // has to be parsed at the real grid size, and the layout asks for a
+            // frame once it has measured the pane. Subscribing first and
+            // dropping the channels made the daemon replay the session's output
+            // again on every poll for a pane never shown (a restored tab in the
+            // background), which kept the app and the daemon busy and growing.
+            let Some(&(cols, rows)) = self.pane_grids.get(&key) else {
                 continue;
             };
-            // Wait for the pane's first layout: the replay has to be parsed
-            // at the real grid size, and the layout asks for a frame once
-            // it has measured the pane.
-            let Some(&(cols, rows)) = self.pane_grids.get(&key) else {
+            #[cfg(test)]
+            {
+                self.output_subscribes += 1;
+            }
+            let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
                 continue;
             };
             // The daemon replays its retained output as soon as the stream
@@ -1373,8 +1632,14 @@ impl State {
             if !answered.is_empty() {
                 replies.push((att.term.session, answered));
             }
-            if flow && att.term.unacked() > 0 {
-                acks.push((att.term.session, att.term.next_seq));
+            if flow {
+                match att.term.ack_wait() {
+                    Some(wait) if wait.is_zero() => {
+                        acks.push((att.term.session, att.term.next_seq))
+                    }
+                    Some(wait) => tx.wake_after(wait),
+                    None => {}
+                }
             }
             // The program's own copy (OSC 52). Taken from every pane so a
             // stale one never lands later, but only a pane on screen — one
@@ -1986,24 +2251,35 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 tx.wake_after(Duration::from_millis(16));
             }
         });
-    // A program in mouse-report mode owns the pointer: presses, drags and
-    // hovers become reports, and attaching `on_drag` makes rune stand its
-    // text selection down — what a real terminal does while an app
-    // captures the mouse. With no mode the pane keeps selection and the
-    // handlers stay off entirely. Holding Shift takes the pointer back for
-    // selection, as Ghostty, kitty and Alacritty do: Claude Code and Codex
-    // both capture the mouse, so without it their panes could not select.
-    let (mouse, hover) = s
+    // The terminal owns the selection (`Terminal::select_*`), so a drag in a
+    // pane selects, reaches into the history and scrolls when it leaves the pane.
+    // A program in mouse-report mode (Claude Code and Codex both capture the
+    // mouse) still lets you select there: a click with no drag is reported to it.
+    // But a program on the alternate screen (Claude Code's fullscreen mode) keeps
+    // no history for the terminal to select or scroll through: it scrolls and
+    // selects inside its own UI, so it gets the drag, and while the pointer is
+    // held past the pane's top or bottom it is told so again and again, which is
+    // what makes it scroll. Holding Option hands the drag to any capturing
+    // program, and Shift takes the pointer back for selection, as Ghostty, kitty
+    // and Alacritty do.
+    let (mouse, hover, alt_screen) = s
         .attachments
         .get(&key)
         .filter(|_| !s.editor.modifiers.shift)
-        .map(|att| (att.term.wants_mouse(), att.term.wants_hover()))
+        .map(|att| {
+            (
+                att.term.wants_mouse(),
+                att.term.wants_hover(),
+                att.term.alt_screen(),
+            )
+        })
         .unwrap_or_default();
-    if mouse {
-        let (drag_key, sec_key) = (key.clone(), key.clone());
-        cell = cell
-            .pointer_buttons([rune::PointerButton::Middle])
-            .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+    let full = mouse && (alt_screen || s.editor.modifiers.alt);
+    let drag_key = key.clone();
+    cell = if full {
+        cell.pointer_buttons([rune::PointerButton::Middle]).on_drag(
+            move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+                s.pane_drag_held = d.phase != rune::Phase::Up;
                 let button = match tx.button() {
                     rune::PointerButton::Primary => 0,
                     rune::PointerButton::Middle => 1,
@@ -2015,8 +2291,28 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                     rune::Phase::Up => term::MouseKind::Release(button),
                 };
                 s.pane_mouse(&drag_key, kind, d.x, d.y, cell_w, line_h);
-            })
-            .on_secondary_press_local(move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+                // Held past the top or bottom: keep reporting the edge cell, so the
+                // program keeps scrolling without the pointer having to move.
+                let rows = s
+                    .attachments
+                    .get(&drag_key)
+                    .map_or(0, |att| att.term.size().1);
+                let outside = d.y < PANE_PAD || d.y > PANE_PAD + rows as f32 * line_h;
+                if outside && d.phase != rune::Phase::Up {
+                    tx.drag_repeat_after(Duration::from_millis(50));
+                }
+            },
+        )
+    } else {
+        cell.on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+            s.pane_drag_held = d.phase != rune::Phase::Up;
+            s.pane_select(&drag_key, d, tx, mouse, cell_w, line_h);
+        })
+    };
+    if mouse {
+        let sec_key = key.clone();
+        cell = cell.on_secondary_press_local(
+            move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
                 s.pane_mouse(
                     &sec_key,
                     term::MouseKind::Press(2),
@@ -2033,12 +2329,19 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                     cell_w,
                     line_h,
                 );
-            });
+            },
+        );
     }
     if hover {
         let hov_key = key.clone();
         cell = cell.on_pointer_move_local(
             move |s: &mut State, e: rune::PointerEvent, _tx: &mut Tx| {
+                // Rune hears every move, held or not. A move with the button held is
+                // the drag's to report (code 32); a bare hover (35) would tell the
+                // program no button is down and end its selection mid-drag.
+                if s.pane_drag_held {
+                    return;
+                }
                 s.pane_mouse(&hov_key, term::MouseKind::Hover, e.x, e.y, cell_w, line_h);
             },
         );
@@ -2051,24 +2354,6 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
             .min_w(0.0)
             .padding(PANE_PAD)
             .shrink()
-            .selection_group(true)
-            // Rows are padded to the grid width; copy without the padding.
-            .selection_copy(pane_selection_text)
-            // A finished drag (and any other selection) copies at once —
-            // `dragging` stays true until the press releases.
-            .on_selection_change(|s: &mut State, change, tx| {
-                if change.dragging() {
-                    return;
-                }
-                let Some(sel) = change.selection() else {
-                    return;
-                };
-                let text = pane_selection_text(sel).unwrap_or_else(|| sel.text().to_string());
-                if !text.is_empty() {
-                    tx.copy(text);
-                    s.notice = Some("Copied to clipboard".into());
-                }
-            })
             .children(lines),
     );
     // The input method follows the focused, live pane's cursor: the
@@ -2183,19 +2468,6 @@ fn find_bar(find: &FindState, ink: &Ink, key: &str) -> El {
     ))
 }
 
-/// What a pane selection puts on the clipboard: each selected row trimmed
-/// of the grid's trailing padding, joined with newlines. Shared by Cmd+C
-/// (`selection_copy`) and the copy-on-release in `on_selection_change`.
-fn pane_selection_text(sel: &rune::TextSelection) -> Option<String> {
-    let rows: Vec<&str> = sel
-        .texts()
-        .iter()
-        .filter(|t| t.is_selected())
-        .map(|t| t.text().trim_end())
-        .collect();
-    Some(rows.join("\n").trim_end().to_string())
-}
-
 /// The marked text an input method is composing, over the cursor's cell.
 fn preedit_el(text: &str, ink: &Ink) -> El {
     el().fill(ink.accent.alpha(0.25))
@@ -2266,6 +2538,9 @@ fn badge_button(label: &str, tone: Color, ink: &Ink, f: impl Fn(&mut State) + 's
 
 /// Open `url` with the platform's opener, without waiting for it.
 pub(crate) fn open_url(url: &str) {
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(not(windows))]
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
@@ -2817,10 +3092,15 @@ mod tests {
         let (a, _) = tabbed_session(&mut s, "first");
         s.data.connected = true;
         assert!(!s.sync_terminals());
+        assert!(!s.sync_terminals());
         assert!(!s.attachments.contains_key(&a));
+        // Nor does it subscribe: a subscription nobody keeps makes the daemon
+        // replay the session's output into a dropped channel, every poll.
+        assert_eq!(s.output_subscribes, 0);
         s.pane_grids.insert(a.clone(), (90, 20));
         assert!(s.sync_terminals());
         assert!(s.attachments.contains_key(&a));
+        assert_eq!(s.output_subscribes, 1);
     }
 
     #[test]
@@ -2970,6 +3250,88 @@ mod tests {
         assert!(s.session_placed(&d));
         assert_eq!(s.selected_session.as_deref(), Some(b.as_str()));
         assert_eq!(s.focused_terminal_session(), s.session_id(&b));
+    }
+
+    #[test]
+    fn saved_tabs_come_back_as_the_same_split_layout() {
+        let mut s = state();
+        let (a, _) = tabbed_session(&mut s, "a");
+        let (b, _) = tabbed_session(&mut s, "b");
+        let (c, _) = tabbed_session(&mut s, "c");
+        let (d, _) = tabbed_session(&mut s, "d");
+        // Tab 0 holds a | (b over c); d stays a tab of its own.
+        s.open_tabs.truncate(1);
+        let tab = s.open_tabs[0].id.clone();
+        s.open_tabs[0].layout = Layout::Pane(new_pane(&a));
+        s.place_session(
+            &b,
+            "b",
+            Placement::Split {
+                tab: tab.clone(),
+                pane: pane_id(&a),
+                direction: Direction::SideBySide,
+            },
+        );
+        s.place_session(
+            &c,
+            "c",
+            Placement::Split {
+                tab: tab.clone(),
+                pane: pane_id(&b),
+                direction: Direction::Stacked,
+            },
+        );
+        s.place_session(&d, "d", Placement::Tab);
+        let saved = s.tabs_snapshot();
+        let shape = |s: &State| {
+            s.open_tabs
+                .iter()
+                .map(|t| serde_json::to_string(&Shape::of(&t.layout)).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let before = shape(&s);
+
+        // A restart: no tabs, the setting and the session list arrive.
+        s.open_tabs.clear();
+        s.tabs_saved = None;
+        s.tabs_pending = Some(Some(saved.clone()));
+        s.restore_tabs();
+        assert!(s.open_tabs.is_empty(), "waits for the session list");
+        s.sessions_loaded = true;
+        s.restore_tabs();
+        assert_eq!(shape(&s), before);
+        assert_eq!(s.tabs_snapshot(), saved);
+
+        // A session that is gone collapses its split onto the pane beside it.
+        s.open_tabs.clear();
+        s.tabs_saved = None;
+        s.tabs_pending = Some(Some(saved));
+        s.data.sessions.retain(|view| view.info.id != b);
+        s.restore_tabs();
+        let panes: Vec<&str> = collect_panes(&s.open_tabs[0].layout)
+            .iter()
+            .map(|p| p.session.as_str())
+            .collect();
+        assert_eq!(panes, [a.as_str(), c.as_str()]);
+    }
+
+    #[test]
+    fn moving_a_tab_reorders_it_and_keeps_the_active_tab() {
+        let mut s = state();
+        for name in ["a", "b", "c"] {
+            tabbed_session(&mut s, name);
+        }
+        let ids: Vec<String> = s.open_tabs.iter().map(|t| t.id.clone()).collect();
+        s.activate_tab(1); // b
+        s.move_tab(0, 2); // a goes last
+        let order: Vec<&str> = s.open_tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(order, [&ids[1], &ids[2], &ids[0]]);
+        assert_eq!(s.open_tabs[s.active_tab].id, ids[1], "b is still active");
+        s.move_tab(2, 0); // and back first
+        assert_eq!(s.open_tabs[0].id, ids[0]);
+        assert_eq!(s.open_tabs[s.active_tab].id, ids[1]);
+        s.move_tab(0, 9); // out of range: nothing moves
+        assert_eq!(s.open_tabs[0].id, ids[0]);
     }
 
     #[test]

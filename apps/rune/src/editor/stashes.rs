@@ -3,7 +3,7 @@
 //! desktop `EditorStashes` — no stash write actions.
 
 use rune::{El, ScrollSpec, TextStyle, Tx, col, el, row};
-use rune_kit::{Kit, ScrollBar};
+use rune_kit::{Kit, MenuItem, ScrollBar, context_menu};
 
 use crate::State;
 use crate::editor::backend::Req;
@@ -50,6 +50,25 @@ fn stashes_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
             .h_full(),
     );
 
+    // Changed-file row menu on the stash detail: a secondary press on a
+    // `changed_file_row` stores the point and the path here (the Flat host
+    // has no View choice, so the menu holds only Open File).
+    let mut layer = Vec::new();
+    if let Some(m) = &s.editor.stashes.file_menu
+        && let Some((x, y)) = m.point()
+        && let Some(open_path) = m.path().map(str::to_string)
+    {
+        let menu = context_menu("stash-files", el(), Some(rune::PointerPress { x, y }))
+            .item(
+                MenuItem::new("Open File").on_select_tx(move |st: &mut State, tx: &mut Tx| {
+                    st.editor.stashes.file_menu = None;
+                    crate::editor::files::open_doc(st, &open_path, None, tx);
+                }),
+            )
+            .on_close(|st: &mut State| st.editor.stashes.file_menu = None);
+        root = root.child(menu.build(k, &mut layer));
+    }
+
     // Auto-select the newest stash once data arrives (desktop effect); the
     // same callback records the split row's width for pane drag clamping.
     root = root.on_layout_tx(|st: &mut State, r: [f32; 4], _tx: &mut Tx| {
@@ -62,7 +81,7 @@ fn stashes_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
             enqueue_stash_diff(st, &id);
         }
     });
-    root
+    rune_kit::root(root, layer)
 }
 
 fn enqueue_stash_diff(s: &mut State, id: &str) {

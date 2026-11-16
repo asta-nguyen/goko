@@ -9,6 +9,9 @@
 //! - Results: `session.create`, `session.get`, `session.stop` return the `SessionInfo`;
 //!   `session.list` returns `{"sessions": [SessionInfo]}`; `terminal.subscribe` returns
 //!   `{"replay_from", "next_seq"}`; every other request returns `{}`.
+//! - Responses carry the request's `id` and are matched by it. A `terminal.write` is
+//!   answered once its bytes reached the PTY: one session's writes are answered in
+//!   order, but later requests are not held behind a write the child has not read.
 //! - After `events.subscribe` the connection receives `session.updated` for every state
 //!   change and `session.exited` when a process ends.
 //! - After `terminal.subscribe` the connection receives kind-1 frames: the retained output
@@ -20,7 +23,8 @@
 //!   socket, so frames never interleave.
 
 use crate::auth::Token;
-use crate::paths::{remove_if_exists, Paths};
+use crate::net;
+use crate::paths::Paths;
 use crate::pty::{PtyError, PtyProcess, Snapshot, StreamItem, FLOW_WINDOW};
 use crate::session::{CreateSpec, SessionError, SessionManager};
 use base64::engine::general_purpose::STANDARD;
@@ -34,17 +38,13 @@ use protocol::PROTOCOL_VERSION;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, warn};
@@ -53,6 +53,9 @@ use tracing::{debug, warn};
 const OUTGOING_QUEUE: usize = 64;
 /// Retained output goes out in frames of at most this many bytes.
 const SNAPSHOT_PIECE: usize = 64 * 1024;
+/// How long a new connection has to send its hello before it is closed, so a
+/// client that connects and says nothing does not hold a socket for good.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct State {
     token: Token,
@@ -62,19 +65,17 @@ struct State {
     shutdown: mpsc::UnboundedSender<()>,
 }
 
-/// Replace any stale `daemon.sock` and bind a fresh one with mode 0600. The caller must
-/// hold the instance lock, which proves no live daemon owns the old socket.
-pub fn bind(paths: &Paths) -> io::Result<UnixListener> {
-    remove_if_exists(&paths.socket())?;
-    let listener = UnixListener::bind(paths.socket())?;
-    fs::set_permissions(paths.socket(), Permissions::from_mode(0o600))?;
-    Ok(listener)
+/// Bind the daemon's transport (`daemon.sock` on Unix, its named pipe on
+/// Windows). The caller must hold the instance lock, which proves no live
+/// daemon owns the old endpoint.
+pub fn bind(paths: &Paths) -> io::Result<net::Listener> {
+    net::Listener::bind(paths)
 }
 
 /// Accept clients until `shutdown` completes. Open connections are dropped on return;
 /// the sessions keep running until the caller shuts the manager down.
 pub async fn serve(
-    listener: UnixListener,
+    mut listener: net::Listener,
     token: Token,
     sessions: Arc<SessionManager>,
     worktree_operations_lock: PathBuf,
@@ -95,7 +96,7 @@ pub async fn serve(
         tokio::select! {
             () = &mut shutdown => return Ok(()),
             accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+                Ok(stream) => {
                     connections.spawn(handle(stream, Arc::clone(&state)));
                 }
                 Err(error) => {
@@ -108,20 +109,13 @@ pub async fn serve(
     }
 }
 
+/// Take the shared session-launch lock a worktree removal takes exclusively.
+/// Unix keeps the `flock`; Windows uses the std shared file lock, which the
+/// worktree-removal side takes exclusively.
 async fn acquire_session_launch_lock(path: PathBuf) -> Result<File, ProtoError> {
     let file = tokio::task::spawn_blocking(move || -> io::Result<File> {
-        let mut options = OpenOptions::new();
-        options
-            .create(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW);
-        let file = options.open(path)?;
-        // SAFETY: `file` stays open while the shared lock protects PTY creation.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        let file = open_launch_lock(&path)?;
+        lock_shared(&file)?;
         Ok(file)
     })
     .await
@@ -138,7 +132,49 @@ async fn acquire_session_launch_lock(path: PathBuf) -> Result<File, ProtoError> 
     Ok(file)
 }
 
-async fn handle(stream: UnixStream, state: Arc<State>) {
+#[cfg(unix)]
+fn open_launch_lock(path: &std::path::Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = OpenOptions::new();
+    options
+        .create(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn lock_shared(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` stays open while the shared lock protects PTY creation.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_launch_lock(path: &std::path::Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn lock_shared(file: &File) -> io::Result<()> {
+    use std::fs::TryLockError;
+    file.try_lock_shared().map_err(|error| match error {
+        TryLockError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        TryLockError::Error(error) => error,
+    })
+}
+
+async fn handle(stream: net::Stream, state: Arc<State>) {
     if let Err(error) = connection(stream, &state).await {
         match error.kind() {
             io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset => {
@@ -149,8 +185,16 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
     }
 }
 
-async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
-    let payload = match next_control(&mut stream).await? {
+async fn connection(mut stream: net::Stream, state: &State) -> io::Result<()> {
+    let first = match tokio::time::timeout(HELLO_TIMEOUT, next_control(&mut stream)).await {
+        Ok(first) => first?,
+        Err(_) => {
+            let message = format!("no hello within {} s", HELLO_TIMEOUT.as_secs());
+            let reply = error_response(0, ErrorCode::Malformed, message);
+            return send_final(&mut stream, Some(reply)).await;
+        }
+    };
+    let payload = match first {
         Next::Payload(payload) => payload,
         Next::Finished(reply) => return send_final(&mut stream, reply).await,
     };
@@ -179,7 +223,7 @@ async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
     };
     stream.write_all(&encode_control(&hello_ok)?).await?;
 
-    let (mut reader, writer) = stream.into_split();
+    let (mut reader, writer) = tokio::io::split(stream);
     let (outgoing, queued) = mpsc::channel(OUTGOING_QUEUE);
     let writer = tokio::spawn(write_frames(writer, queued));
     let mut client = Client {
@@ -187,6 +231,7 @@ async fn connection(mut stream: UnixStream, state: &State) -> io::Result<()> {
         outgoing,
         events: None,
         terminals: HashMap::new(),
+        writers: HashMap::new(),
     };
     let served = client.serve(&mut reader).await;
     // Stop the subscription tasks and drop our sender so the writer flushes what is
@@ -205,12 +250,28 @@ struct Client<'a> {
     outgoing: mpsc::Sender<Vec<u8>>,
     events: Option<JoinHandle<()>>,
     terminals: HashMap<SessionId, JoinHandle<()>>,
+    /// Each session's input queue. A session's writes go out in order on its
+    /// own task, so input a child does not read never holds up the requests
+    /// behind it on this connection.
+    writers: HashMap<SessionId, InputWriter>,
+}
+
+/// The queue of `(request id, bytes)` one session's writer task answers.
+struct InputWriter {
+    queue: mpsc::UnboundedSender<(u64, Vec<u8>)>,
+    task: JoinHandle<()>,
 }
 
 impl Drop for Client<'_> {
     /// A disconnect ends the subscriptions and never touches a session.
     fn drop(&mut self) {
-        for task in self.events.iter().chain(self.terminals.values()) {
+        let writers = self.writers.values().map(|writer| &writer.task);
+        for task in self
+            .events
+            .iter()
+            .chain(self.terminals.values())
+            .chain(writers)
+        {
             task.abort();
         }
     }
@@ -270,11 +331,14 @@ impl Client<'_> {
         };
 
         let (outcome, output, shutdown) = self.dispatch(request).await;
-        let outcome = match outcome {
-            Ok(result) => ResponseOutcome::Result { result },
-            Err(error) => ResponseOutcome::Error { error },
-        };
-        self.send(&Response { id, outcome }).await?;
+        // `None`: a queued write, answered by its session's writer task.
+        if let Some(outcome) = outcome {
+            let outcome = match outcome {
+                Ok(result) => ResponseOutcome::Result { result },
+                Err(error) => ResponseOutcome::Error { error },
+            };
+            self.send(&Response { id, outcome }).await?;
+        }
         // The response goes first: the client learns `next_seq` before any frame arrives.
         if let Some(output) = output {
             let session_id = output.session_id;
@@ -287,7 +351,7 @@ impl Client<'_> {
     async fn dispatch(
         &mut self,
         request: Request,
-    ) -> (Result<Value, ProtoError>, Option<Output>, bool) {
+    ) -> (Option<Result<Value, ProtoError>>, Option<Output>, bool) {
         let sessions = &self.state.sessions;
         let shutdown = matches!(&request, Request::SystemShutdown { .. });
         let outcome = match request {
@@ -348,14 +412,22 @@ impl Client<'_> {
                         task.abort();
                         let _ = task.await;
                     }
+                    // Closing the queue lets the writer answer what is left (the
+                    // process has exited, so each write fails at once) and end.
+                    self.writers.remove(&session_id);
                 }
                 deleted
             }
             Request::TerminalWrite {
+                id,
                 session_id,
                 data_b64,
-                ..
-            } => self.terminal_write(session_id, &data_b64).await,
+            } => {
+                return match self.queue_write(id, session_id, &data_b64) {
+                    Ok(()) => (None, None, false),
+                    Err(error) => (Some(Err(error)), None, false),
+                };
+            }
             Request::TerminalResize {
                 session_id,
                 cols,
@@ -371,9 +443,9 @@ impl Client<'_> {
                 paint,
                 ..
             } => {
-                return match self.terminal_subscribe(session_id, flow, paint) {
-                    Ok((result, output)) => (Ok(result), Some(output), false),
-                    Err(error) => (Err(error), None, false),
+                return match self.terminal_subscribe(session_id, flow, paint).await {
+                    Ok((result, output)) => (Some(Ok(result)), Some(output), false),
+                    Err(error) => (Some(Err(error)), None, false),
                 };
             }
             Request::TerminalUnsubscribe { session_id, .. } => {
@@ -396,7 +468,7 @@ impl Client<'_> {
                 })
                 .map_err(session_error),
         };
-        (outcome, None, shutdown)
+        (Some(outcome), None, shutdown)
     }
 
     fn subscribe_events(&mut self) {
@@ -411,11 +483,15 @@ impl Client<'_> {
         }
     }
 
-    async fn terminal_write(
-        &self,
+    /// Queue `data_b64` on the session's writer; its task answers request `id`
+    /// once the bytes are written. A bad payload or an exited session is
+    /// answered here, at once.
+    fn queue_write(
+        &mut self,
+        id: u64,
         session_id: SessionId,
         data_b64: &str,
-    ) -> Result<Value, ProtoError> {
+    ) -> Result<(), ProtoError> {
         let bytes = STANDARD.decode(data_b64).map_err(|error| {
             proto_error(
                 ErrorCode::Malformed,
@@ -423,21 +499,31 @@ impl Client<'_> {
             )
         })?;
         let pty = self.live_pty(session_id)?;
-        // Writing can block while the child is not reading its input.
-        tokio::task::spawn_blocking(move || pty.write(&bytes))
-            .await
-            .map_err(|error| proto_error(ErrorCode::Internal, error.to_string()))?
-            .map_err(pty_error)?;
-        Ok(json!({}))
+        let outgoing = self.outgoing.clone();
+        let writer = self.writers.entry(session_id).or_insert_with(|| {
+            let (queue, jobs) = mpsc::unbounded_channel();
+            let task = tokio::spawn(write_input(outgoing, pty, jobs));
+            InputWriter { queue, task }
+        });
+        writer
+            .queue
+            .send((id, bytes))
+            .map_err(|_| proto_error(ErrorCode::Internal, "the session's input queue closed"))
     }
 
-    fn terminal_subscribe(
+    async fn terminal_subscribe(
         &mut self,
         session_id: SessionId,
         flow: bool,
         paint: bool,
     ) -> Result<(Value, Output), ProtoError> {
         let pty = self.state.sessions.pty(session_id).map_err(session_error)?;
+        // A repeat subscribe (after `terminal.lagged`) replaces the old stream. Wait
+        // for it to stop so none of its frames follows this response.
+        if let Some(old) = self.terminals.remove(&session_id) {
+            old.abort();
+            let _ = old.await;
+        }
         let (snapshot, painted, receiver, credit) = if paint {
             let (snapshot, painted, receiver) = pty.subscribe_paint(flow);
             let credit = flow.then(|| pty.acknowledged_offset());
@@ -454,10 +540,6 @@ impl Client<'_> {
             let (snapshot, receiver) = pty.subscribe();
             (snapshot, Vec::new(), receiver, None)
         };
-        // A repeat subscribe (after `terminal.lagged`) replaces the old stream.
-        if let Some(old) = self.terminals.remove(&session_id) {
-            old.abort();
-        }
         let mut result = json!({
             "replay_from": snapshot.replay_from,
             "next_seq": snapshot.next_seq,
@@ -519,6 +601,34 @@ async fn forward_events(
                     return;
                 }
             }
+        }
+    }
+}
+
+/// Write one session's queued input in order, answering each request once its
+/// bytes reached the PTY, or the write failed. A write the child does not read
+/// waits here, on a blocking thread, and only holds up that session's input.
+async fn write_input(
+    outgoing: mpsc::Sender<Vec<u8>>,
+    pty: Arc<PtyProcess>,
+    mut jobs: mpsc::UnboundedReceiver<(u64, Vec<u8>)>,
+) {
+    while let Some((id, bytes)) = jobs.recv().await {
+        let pty = Arc::clone(&pty);
+        let outcome = match tokio::task::spawn_blocking(move || pty.write(&bytes)).await {
+            Ok(Ok(())) => ResponseOutcome::Result { result: json!({}) },
+            Ok(Err(error)) => ResponseOutcome::Error {
+                error: pty_error(error),
+            },
+            Err(error) => ResponseOutcome::Error {
+                error: proto_error(ErrorCode::Internal, error.to_string()),
+            },
+        };
+        let Ok(frame) = encode_control(&Response { id, outcome }) else {
+            return;
+        };
+        if send_queued(&outgoing, frame).await.is_err() {
+            return;
         }
     }
 }
@@ -608,7 +718,7 @@ async fn send_queued(outgoing: &mpsc::Sender<Vec<u8>>, bytes: Vec<u8>) -> io::Re
 
 /// The connection's only writer: frames reach the socket whole and in queue order.
 async fn write_frames(
-    mut writer: OwnedWriteHalf,
+    mut writer: impl AsyncWrite + Unpin,
     mut queued: mpsc::Receiver<Vec<u8>>,
 ) -> io::Result<()> {
     while let Some(bytes) = queued.recv().await {

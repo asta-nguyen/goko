@@ -230,6 +230,16 @@ pub fn parse_thread_ids(text: &str) -> HashMap<u32, String> {
     threads
 }
 
+/// `CODEX_THREAD_ID` from one process's environment block, as Linux serves it
+/// in `/proc/<pid>/environ`: `KEY=VALUE` entries separated by NUL bytes.
+pub fn thread_id_in_environ(environ: &[u8]) -> Option<String> {
+    environ
+        .split(|byte| *byte == 0)
+        .find_map(|entry| entry.strip_prefix(b"CODEX_THREAD_ID="))
+        .filter(|id| !id.is_empty())
+        .map(|id| String::from_utf8_lossy(id).into_owned())
+}
+
 /// The thread id a rollout belongs to: the uuid at the end of its file stem
 /// (`rollout-<timestamp>-<uuid>.jsonl` keeps the last 36 chars). A shorter
 /// stem is skipped.
@@ -338,6 +348,16 @@ mod tests {
             started_at: 1_700_000_000_000,
             ended_at: None,
         }
+    }
+
+    #[test]
+    fn thread_id_in_environ_reads_the_nul_separated_block() {
+        let environ = b"HOME=/home/me\0CODEX_THREAD_ID=0199-abc\0PATH=/bin\0";
+        assert_eq!(thread_id_in_environ(environ).as_deref(), Some("0199-abc"));
+        // Another variable that only ends with the name is not it.
+        assert_eq!(thread_id_in_environ(b"X_CODEX_THREAD_ID=no\0"), None);
+        assert_eq!(thread_id_in_environ(b"CODEX_THREAD_ID=\0"), None);
+        assert_eq!(thread_id_in_environ(b""), None);
     }
 
     #[test]

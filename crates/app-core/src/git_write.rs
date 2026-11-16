@@ -265,6 +265,7 @@ mod tests {
     use crate::git_view::{GitViewChanges, StatusEntry};
     use crate::test_support::TempDir;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::process::Command;
@@ -308,6 +309,7 @@ mod tests {
         (dir, root)
     }
 
+    #[cfg(unix)]
     /// An empty bare repository usable as `origin`.
     fn bare_remote(label: &str) -> (TempDir, PathBuf) {
         let dir = TempDir::new(label);
@@ -316,6 +318,7 @@ mod tests {
         (dir, root)
     }
 
+    #[cfg(unix)]
     fn commit_file(root: &Path, name: &str, content: &str) {
         fs::write(root.join(name), content).unwrap();
         git_ok(root, &["add", name]);
@@ -328,6 +331,7 @@ mod tests {
             .to_owned()
     }
 
+    #[cfg(unix)]
     fn remote_head(bare: &Path) -> String {
         String::from_utf8_lossy(&git_ok(bare, &["rev-parse", "main"]))
             .trim()
@@ -433,6 +437,7 @@ mod tests {
         assert_eq!(names(&changes(&root).staged), ["a.txt"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn discard_restores_the_worktree_to_the_index() {
         let (_t, root) = repository("discard-unstaged");
@@ -585,6 +590,7 @@ mod tests {
         assert_eq!(head(&root), before);
     }
 
+    #[cfg(unix)]
     #[test]
     fn push_without_upstream_pushes_and_sets_it() {
         let (_t, root) = repository("push-new");
@@ -599,6 +605,7 @@ mod tests {
         assert_eq!(remote_head(&bare), head(&root));
     }
 
+    #[cfg(unix)]
     #[test]
     fn push_with_upstream_updates_the_remote() {
         let (_t, root) = repository("push-upstream");
@@ -614,6 +621,7 @@ mod tests {
         assert_eq!(remote_head(&bare), head(&root));
     }
 
+    #[cfg(unix)]
     #[test]
     fn push_rejects_non_fast_forward_without_forcing() {
         let (_t, root) = repository("push-nonff");

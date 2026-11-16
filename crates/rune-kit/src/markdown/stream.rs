@@ -7,7 +7,8 @@
 //!   that would still show a marker falls back to the source as written.
 //! - A link still arriving draws as a link: `[text` and `[text](https://ex` are parsed with their
 //!   `](…)` or `)` added, so its brackets never show. A `[` that turns out not to start a link
-//!   (`[x] done`, `[1]`) shows as written once the next character after its `]` says so.
+//!   (`[x] done`, `[1]`) shows as written once the next character after its `]` says so. An
+//!   image still arriving (`![alt`, `![alt](x.p`) is left out until its `)`.
 //! - A run of markers at the very end, which may yet open or close a span (`and **`), is left
 //!   out until the next character says which.
 //! - A trailing `|` line that isn't a table yet is left out until it is one, or until the line
@@ -224,6 +225,16 @@ fn close_tail(run: &str, base: usize, scope: Scope) -> Option<Patch> {
                 i += n;
             }
             _ => i += 1,
+        }
+    }
+    // An image still arriving is left out until it is whole: closed early it has no
+    // destination and draws its alt text as text, and a destination still arriving
+    // (`](x.p`) would name the wrong file.
+    if let Some(p) = stack.iter().position(|o| b[o.at] == b'!') {
+        cut = stack[p].at;
+        stack.truncate(p);
+        if code.is_some_and(|(at, _)| at >= cut) {
+            code = None;
         }
     }
     if let Some((at, n)) = code {

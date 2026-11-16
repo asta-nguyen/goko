@@ -274,6 +274,10 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
 
     if let Some(co) = &s.editor.checkout {
         bar = bar.child(crate::editor::branch::view(&s.editor, ink));
+        // The checkout path chip copies the full path on press, like the
+        // terminal header's path chip (chrome.rs).
+        let path_copy = co.display().to_string();
+        let path_key = path_copy.clone();
         bar = bar.child(
             row()
                 .w(0.0)
@@ -287,7 +291,28 @@ fn pickers(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) -> El {
                 .radius(6.0)
                 .fill(ink.panel)
                 .border(1.0, ink.border)
-                .help(co.display().to_string())
+                .cursor(rune::Cursor::Pointer)
+                .hover(ink.text.alpha(0.06))
+                .press(ink.text.alpha(0.12))
+                .key("editor-checkout-path")
+                .role("button")
+                .label(format!("Path: {path_copy}"))
+                .help(format!("{path_copy} (click to copy)"))
+                .focusable(true)
+                .focus_ring(2.0, 1.0, ink.accent)
+                .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                    tx.copy(path_copy.clone());
+                    st.notice = Some("Copied to clipboard".into());
+                })
+                .on_key(move |st: &mut State, ev: &rune::KeyEvent, tx: &mut Tx| {
+                    if crate::editor::commit_detail::activate_key(ev) {
+                        tx.copy(path_key.clone());
+                        st.notice = Some("Copied to clipboard".into());
+                        true
+                    } else {
+                        false
+                    }
+                })
                 .child(theme::ic(&theme::FOLDER, 12.0, ink.muted))
                 .child(
                     theme::txt(&co.display().to_string(), theme::T11M, ink.muted)
@@ -634,6 +659,130 @@ mod tests {
                 header.rect
             );
         }
+    }
+
+    /// One mounted header with a checkout and a known branch, ready to
+    /// click: the clipboard is the runtime's test memory clipboard.
+    fn header_runtime(
+        branch: Option<crate::editor::branch::Branch>,
+    ) -> (rune::Runtime<State>, rune::clipboard::MemoryClipboard) {
+        use rune::{Env, Runtime, clipboard};
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Editor;
+        s.editor.projects = vec![project("p", "A project", "/repo/app")];
+        s.editor.project_id = Some("p".into());
+        s.editor.checkout = Some(PathBuf::from("/repo/app"));
+        s.editor.checkout_key = Some("current".into());
+        s.editor.branch.checkout = Some("current".into());
+        s.editor.branch.data = branch;
+        let mut rt = Runtime::new(
+            s,
+            |s, _| workspace(s, &Ink::new(), &s.editor.kit),
+            (480.0, 700.0),
+            Env::new(true, 2.0),
+        );
+        let clip = clipboard::memory();
+        rt.use_clipboard(&clip);
+        rt.frame(0.0);
+        (rt, clip)
+    }
+
+    fn press(rt: &mut rune::Runtime<State>, e: &rune::ElementInfo) {
+        let (x, y) = (e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    /// Pressing the branch badge copies the branch name and shows the
+    /// shared "Copied to clipboard" notice.
+    #[test]
+    fn branch_badge_press_copies_the_branch() {
+        let (mut rt, clip) = header_runtime(Some(crate::editor::branch::Branch {
+            name: Some("feature/copy-me".into()),
+            head: "12345678".into(),
+        }));
+        let badge = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("editor-current-branch") && !e.exiting)
+            .expect("badge mounted");
+        assert_eq!(badge.role, "button");
+        press(&mut rt, &badge);
+        assert_eq!(
+            clip.text().map(|t| t.to_string()).as_deref(),
+            Some("feature/copy-me")
+        );
+        assert_eq!(rt.state.notice.as_deref(), Some("Copied to clipboard"));
+    }
+
+    /// A detached badge copies its short hash; a still-loading badge stays
+    /// inert — there is no value to copy yet.
+    #[test]
+    fn branch_badge_detached_copies_hash_and_loading_stays_inert() {
+        let (mut rt, clip) = header_runtime(Some(crate::editor::branch::Branch {
+            name: None,
+            head: "abcdef12".into(),
+        }));
+        let badge = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("editor-current-branch") && !e.exiting)
+            .expect("detached badge mounted");
+        press(&mut rt, &badge);
+        assert_eq!(
+            clip.text().map(|t| t.to_string()).as_deref(),
+            Some("abcdef12")
+        );
+
+        let (mut rt, clip) = header_runtime(None);
+        let badge = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("editor-current-branch") && !e.exiting)
+            .expect("loading badge mounted");
+        assert_eq!(badge.role, "group", "no data yet — the badge stays inert");
+        press(&mut rt, &badge);
+        assert!(clip.text().is_none(), "nothing was copied");
+
+        // An "unavailable" badge that still holds a stale read stays inert
+        // too — it must not copy a branch it no longer displays.
+        let (mut rt, clip) = header_runtime(Some(crate::editor::branch::Branch {
+            name: Some("stale-branch".into()),
+            head: "12345678".into(),
+        }));
+        rt.update(|s, _| s.editor.branch.error = Some("git failed".into()));
+        rt.frame(1.0 / 60.0);
+        let badge = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("editor-current-branch") && !e.exiting)
+            .expect("error badge mounted");
+        assert_eq!(badge.role, "group", "unavailable badge stays inert");
+        press(&mut rt, &badge);
+        assert!(clip.text().is_none(), "the stale read was not copied");
+    }
+
+    /// The checkout path chip copies the full path on press.
+    #[test]
+    fn path_chip_press_copies_the_checkout_path() {
+        let (mut rt, clip) = header_runtime(Some(crate::editor::branch::Branch {
+            name: Some("main".into()),
+            head: "12345678".into(),
+        }));
+        let chip = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Path: /repo/app") && !e.exiting)
+            .expect("path chip mounted");
+        assert_eq!(chip.role, "button");
+        press(&mut rt, &chip);
+        assert_eq!(
+            clip.text().map(|t| t.to_string()).as_deref(),
+            Some("/repo/app")
+        );
+        assert_eq!(rt.state.notice.as_deref(), Some("Copied to clipboard"));
     }
 
     #[test]

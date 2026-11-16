@@ -68,7 +68,14 @@ impl TerminalModel {
             screen_lines: usize::from(rows),
         };
         Self {
-            term: Term::new(Config::default(), &size, VoidListener),
+            term: Term::new(
+                Config {
+                    scrolling_history: protocol::SCROLLBACK_LINES,
+                    ..Config::default()
+                },
+                &size,
+                VoidListener,
+            ),
             parser: Processor::new(),
         }
     }

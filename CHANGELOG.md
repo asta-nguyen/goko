@@ -10,6 +10,96 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
+### Added
+
+- Windows support: `gokod` and the Goko app build and run on Windows x86_64
+  (10 1809 or later). The daemon serves a named pipe instead of a Unix socket,
+  drives ConPTY sessions, and stops a session by killing its whole process tree
+  through a Job Object. Install with
+  `irm https://github.com/asta-nguyen/goko/releases/latest/download/install.ps1 | iex`.
+  Stopping a session is immediate (no graceful signal), and the trash, sound,
+  in-app updater, quit veto and `ps`-based agent attribution are not available
+  on Windows yet.
+
+- Tab layout survives a restart: reopening Goko brings back your tabs and how each is
+  split (side by side or stacked) over the sessions still running. Split sizes start
+  at 50/50 again.
+- Reorder tabs: drag a tab sideways in the tab bar to move it; the other tabs step
+  aside, the active tab stays active, and tabs of other projects keep their order.
+- Open the file from a diff: every changed-file row in Changes, a commit's detail and a
+  stash has an open icon and an Open File item in its context menu, and each file's
+  header in the diff has an open button. They open the file as it is in the working tree,
+  in the editor; a file deleted or renamed since then shows as missing instead of
+  failing. Clicking the row still selects its diff.
+- Update now: Settings → Updates installs a newer release over the copy that is
+  running, so `/Applications/Goko.app` is replaced where it sits instead of a second
+  copy appearing in `~/Applications`; reopen Goko afterwards. A copy it cannot replace
+  (built from source, renamed, or in a folder you cannot write to) still offers the
+  install command to copy. `install.sh` takes `GOKO_APP_DIR` for the folder that holds
+  `Goko.app` on macOS (default `~/Applications`).
+- What's new: Settings → Updates shows what changed in the release it found, taken from
+  the release's changelog entry in `latest.json`.
+
+### Changed
+
+- Selecting text in the terminal: a plain drag selects and copies even while Claude Code,
+  Codex or vim tracks the mouse, and a click with no drag still reaches the program.
+  Dragging past the top or bottom of a pane scrolls through the history while you
+  select, double click selects a word and triple click a line, and the copy (on release,
+  or Cmd+C) holds every selected row, not just the ones on screen. Claude Code's
+  fullscreen mode keeps no history for the terminal to select in, so there a plain drag
+  goes to Claude Code and keeps reporting the edge while you hold past the top or
+  bottom, so its own selection scrolls. Hold Option to give any program the drag
+  itself; Shift always selects what is on screen.
+- A session's terminal keeps 5,000 lines of history (was 10,000), in the daemon and in
+  each pane alike, so a reattached pane shows the same history it had. That halves the
+  memory a long session holds (about 14 MB instead of 29 MB at 120 columns), and the
+  daemon hands freed memory back to the system when a session is deleted.
+- The daemon parses its copy of each session's terminal on a thread of its own, so
+  acknowledging, subscribing and `session.output` no longer wait for parsing, and a
+  flooding session streams about 15% faster.
+- The app acknowledges terminal output every 64 KiB it has parsed (and the rest once the
+  output pauses), instead of on every frame.
+- `gokod` reads a session's working directory after the session printed output or took
+  input, and every 2 s otherwise, instead of five times a second: 20 idle sessions wake
+  the daemon 11 times a second instead of 128. It also closes a connection that sends no
+  hello within 3 s.
+- The Context search index is about a third of its old size and builds in about half the
+  time (git's own repository, 4,875 files: 110 MB and 17 s before, 34 MB and 10 s after):
+  it no longer stores a second copy of every file's text. A short query such as `the` is
+  about 4 times faster, because only the results shown have their text read. Existing
+  indexes are rebuilt the next time Context search indexes the checkout.
+- History pages load about 8 times faster on a large repository after the first one
+  (git's own repository, 83,000 commits: 0.95 s a page before, 0.11 s after). A page that
+  takes over 0.3 s makes Goko write the repository's commit-graph in the background, the
+  cache `git gc` also writes, when it has none.
+- On Linux a new install keeps its data in `$XDG_STATE_HOME/goko`
+  (`~/.local/state/goko`) instead of `~/Library/Application Support/Goko`. An install
+  that already has the old folder keeps using it.
+- The bundled SQLite is 3.54.1 (`rusqlite` 0.42.0, was 0.40.2), which is past
+  RUSTSEC-2026-0459.
+
+### Fixed
+
+- Selecting in Claude Code's fullscreen mode ended as soon as the drag moved: each move
+  also went out as a plain hover (no button held), which told Claude Code the button was
+  up. A held drag now reports only its own moves.
+- A large paste into a program that was not reading its input (16 KiB or more into a
+  shell running a command) froze every terminal: the daemon answered nothing else on the
+  app's connection until the input was read, and never again if the program exited first.
+  Writes now wait on their own per-session queue, and one still waiting when the program
+  exits fails instead of hanging; `gokod` also no longer ignores SIGTERM while one waits.
+- A daemon subscribe that replaced an older stream could still send a frame of the old
+  stream after its response.
+- A terminal whose program wrote output in many small pieces could be cut off and
+  repainted while the app was behind: the daemon dropped the stream once 256 pieces were
+  waiting, long before the 256 KiB it is meant to hold back at. It now pauses reading
+  instead.
+- While markdown streams in, an image still arriving is held back until it is complete,
+  instead of showing its alt text as plain text and then replacing it.
+
 ## [0.1.3] - 2026-11-13
 
 ### Added

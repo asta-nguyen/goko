@@ -268,6 +268,33 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_tab_pill_reorders_it_and_keeps_the_active_tab() {
+        let s = scene();
+        let (first, second) = (s.open_tabs[0].id.clone(), s.open_tabs[1].id.clone());
+        let mut rt = rune::Runtime::new(s, crate::view, (1000.0, 700.0), rune::Env::new(true, 2.0));
+        rt.frame(0.0);
+        let tab = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(&format!("tab:{first}")))
+            .expect("tab mounted");
+        let (x, y) = (tab.rect[0] + 15.0, tab.rect[1] + tab.rect[3] / 2.0);
+        let far = x + tab.rect[2] + 20.0;
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 10.0, y);
+        rt.pointer_move(far, y);
+        rt.pointer_up(far, y);
+        rt.frame(1.0 / 60.0);
+        let order: Vec<&str> = rt.state.open_tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(order, [second.as_str(), first.as_str()]);
+        assert_eq!(
+            rt.state.open_tabs[rt.state.active_tab].id, first,
+            "the dragged tab stays the active one"
+        );
+    }
+
+    #[test]
     fn right_click_menu_copies_the_inactive_tab_id() {
         let s = scene();
         let tab_id = s.open_tabs[1].id.clone();

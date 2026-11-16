@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 mod common;
 
 use common::{connect, Client, Daemon, Incoming, TempDir, TestServer};

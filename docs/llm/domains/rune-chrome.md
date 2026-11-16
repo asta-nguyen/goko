@@ -416,8 +416,15 @@ on the ACP runtime, and Reset removes that agent's stored override
 by the next store read; Updates names the running version, looks for a newer
 release with a build for this machine (`latest.json` of the latest GitHub release, at startup, every six
 hours and on "Check for updates"; `GOKO_NO_UPDATE_CHECK` stops the automatic
-one) and, when one is out, says so, raises a notice toast once per version and
-offers the install command to copy. No Vim control is rendered — it is deferred by
+one) and, when one is out, says so, raises a notice toast once per version,
+shows what changed in it (the `notes` of `latest.json`, the release's
+`CHANGELOG.md` entry, when it has any) and offers "Update now": the installer
+run over this copy (the folder holding `Goko.app` on macOS, the `goko` data
+folder on Linux), after which the page says to restart Goko; a failed install
+raises a toast with the installer's last message and keeps the release available.
+A copy the installer would not replace (built from source, renamed, run from a
+disk image) or cannot write to is offered the install command to copy instead.
+No Vim control is rendered — it is deferred by
 decision D1. Every mutation rides a worker lane (backend `Req`s or the ACP
 runtime), never the UI thread.
 
