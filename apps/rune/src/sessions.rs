@@ -329,6 +329,8 @@ impl State {
                 self.data.sessions = views;
                 // A pane whose session the list no longer knows collapses.
                 self.reconcile_panes();
+                self.sessions_loaded = true;
+                self.restore_tabs();
             }
             UiEvent::Event(event) => self.apply_session_event(event),
         }

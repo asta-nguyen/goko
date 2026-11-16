@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use protocol::session::SessionId;
 use rune::{Color, El, Phase, TextStyle, Tx, col, el, row};
+use serde::{Deserialize, Serialize};
 
 use crate::State;
 use crate::data::SessionState;
@@ -52,7 +53,7 @@ const FIND_FONT: TextStyle = TextStyle::new(12.0, 400.0).mono();
 
 /// Which way a split arranges its panes: `SideBySide` is a row (left |
 /// right), `Stacked` a column (top / bottom).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Direction {
     SideBySide,
     Stacked,
@@ -270,6 +271,57 @@ impl Attachment {
 // ---------------------------------------------------------------------------
 // The layout tree — ports of stores/ui.ts's pane helpers.
 // ---------------------------------------------------------------------------
+
+/// The settings key the open tabs' layout is stored under.
+pub const TABS_KEY: &str = "rune.tabs";
+
+/// A tab as saved: its title and the shape of its panes.
+#[derive(Serialize, Deserialize)]
+struct SavedTab {
+    title: String,
+    shape: Shape,
+}
+
+/// A layout reduced to what survives a restart: the split directions and
+/// which session each pane shows.
+#[derive(Serialize, Deserialize)]
+enum Shape {
+    Pane(String),
+    Split(Direction, Box<Shape>, Box<Shape>),
+}
+
+impl Shape {
+    fn of(layout: &Layout) -> Shape {
+        match layout {
+            Layout::Pane(pane) => Shape::Pane(pane.session.clone()),
+            Layout::Split(split) => Shape::Split(
+                split.direction,
+                Box::new(Shape::of(&split.first)),
+                Box::new(Shape::of(&split.second)),
+            ),
+        }
+    }
+
+    /// The layout again at 50/50, keeping only panes whose session `alive`
+    /// accepts; `None` when none does.
+    fn into_layout(self, alive: &dyn Fn(&str) -> bool) -> Option<Layout> {
+        match self {
+            Shape::Pane(key) => alive(&key).then(|| Layout::Pane(new_pane(&key))),
+            Shape::Split(direction, first, second) => {
+                match (first.into_layout(alive), second.into_layout(alive)) {
+                    (Some(first), Some(second)) => Some(Layout::Split(Split {
+                        id: split_id(&collect_panes(&second)[0].id),
+                        direction,
+                        ratio: 0.5,
+                        first: Box::new(first),
+                        second: Box::new(second),
+                    })),
+                    (one, other) => one.or(other),
+                }
+            }
+        }
+    }
+}
 
 pub fn pane_id(key: &str) -> String {
     format!("pane-{key}")
@@ -1262,6 +1314,76 @@ impl State {
                 .unwrap_or_else(|| self.active_tab.min(self.open_tabs.len().saturating_sub(1))),
             None => self.open_tabs.len().saturating_sub(1),
         };
+        self.sync_selection();
+    }
+
+    // -- Layout across restarts ---------------------------------------------
+
+    /// The open tabs as the settings store keeps them: each tab's title and
+    /// split tree, not the ratios — a restored split starts at 50/50.
+    fn tabs_snapshot(&self) -> String {
+        let tabs: Vec<SavedTab> = self
+            .open_tabs
+            .iter()
+            .filter(|tab| !tab.closing)
+            .map(|tab| SavedTab {
+                title: tab.title.clone(),
+                shape: Shape::of(&tab.layout),
+            })
+            .collect();
+        serde_json::to_string(&tabs).unwrap_or_default()
+    }
+
+    /// Write the layout to the settings store when it changed. Idle until
+    /// the saved one has been restored, so an empty start never overwrites it.
+    pub fn save_tabs_if_changed(&mut self) {
+        let Some(saved) = &self.tabs_saved else {
+            return;
+        };
+        let now = self.tabs_snapshot();
+        if &now == saved {
+            return;
+        }
+        backend::enqueue(
+            &mut self.editor.backend,
+            Job::project(Req::SetSetting {
+                key: TABS_KEY.to_string(),
+                value: now.clone(),
+            }),
+        );
+        self.tabs_saved = Some(now);
+    }
+
+    /// Reopen the saved tabs once both the setting and the daemon's session
+    /// list have arrived. A pane whose session is gone, or already open in a
+    /// tab, drops out; its split collapses to the pane beside it.
+    pub fn restore_tabs(&mut self) {
+        if self.tabs_saved.is_some() || !self.sessions_loaded {
+            return;
+        }
+        let Some(raw) = self.tabs_pending.take() else {
+            return;
+        };
+        let saved: Vec<SavedTab> = raw
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        for tab in saved {
+            let alive = |key: &str| self.session_by_key(key).is_some() && !self.session_placed(key);
+            let Some(layout) = tab.shape.into_layout(&alive) else {
+                continue;
+            };
+            let Some(first) = collect_panes(&layout).first().map(|p| (*p).clone()) else {
+                continue;
+            };
+            self.open_tabs.push(Tab {
+                id: tab_id(&first.session),
+                title: tab.title,
+                layout,
+                active_pane: first.id,
+                closing: false,
+            });
+        }
+        self.tabs_saved = Some(self.tabs_snapshot());
         self.sync_selection();
     }
 
@@ -2998,6 +3120,69 @@ mod tests {
         assert!(s.session_placed(&d));
         assert_eq!(s.selected_session.as_deref(), Some(b.as_str()));
         assert_eq!(s.focused_terminal_session(), s.session_id(&b));
+    }
+
+    #[test]
+    fn saved_tabs_come_back_as_the_same_split_layout() {
+        let mut s = state();
+        let (a, _) = tabbed_session(&mut s, "a");
+        let (b, _) = tabbed_session(&mut s, "b");
+        let (c, _) = tabbed_session(&mut s, "c");
+        let (d, _) = tabbed_session(&mut s, "d");
+        // Tab 0 holds a | (b over c); d stays a tab of its own.
+        s.open_tabs.truncate(1);
+        let tab = s.open_tabs[0].id.clone();
+        s.open_tabs[0].layout = Layout::Pane(new_pane(&a));
+        s.place_session(
+            &b,
+            "b",
+            Placement::Split {
+                tab: tab.clone(),
+                pane: pane_id(&a),
+                direction: Direction::SideBySide,
+            },
+        );
+        s.place_session(
+            &c,
+            "c",
+            Placement::Split {
+                tab: tab.clone(),
+                pane: pane_id(&b),
+                direction: Direction::Stacked,
+            },
+        );
+        s.place_session(&d, "d", Placement::Tab);
+        let saved = s.tabs_snapshot();
+        let shape = |s: &State| {
+            s.open_tabs
+                .iter()
+                .map(|t| serde_json::to_string(&Shape::of(&t.layout)).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let before = shape(&s);
+
+        // A restart: no tabs, the setting and the session list arrive.
+        s.open_tabs.clear();
+        s.tabs_saved = None;
+        s.tabs_pending = Some(Some(saved.clone()));
+        s.restore_tabs();
+        assert!(s.open_tabs.is_empty(), "waits for the session list");
+        s.sessions_loaded = true;
+        s.restore_tabs();
+        assert_eq!(shape(&s), before);
+        assert_eq!(s.tabs_snapshot(), saved);
+
+        // A session that is gone collapses its split onto the pane beside it.
+        s.open_tabs.clear();
+        s.tabs_saved = None;
+        s.tabs_pending = Some(Some(saved));
+        s.data.sessions.retain(|view| view.info.id != b);
+        s.restore_tabs();
+        let panes: Vec<&str> = collect_panes(&s.open_tabs[0].layout)
+            .iter()
+            .map(|p| p.session.as_str())
+            .collect();
+        assert_eq!(panes, [a.as_str(), c.as_str()]);
     }
 
     #[test]

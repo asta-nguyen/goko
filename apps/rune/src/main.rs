@@ -81,6 +81,14 @@ pub struct State {
     /// tab's id is never "the tab's session".
     open_tabs: Vec<panes::Tab>,
     active_tab: usize,
+    /// The saved tab layout as read from the settings store, until it is restored
+    /// (`Some(None)`: the read found nothing).
+    tabs_pending: Option<Option<String>>,
+    /// The daemon's first session list has arrived.
+    sessions_loaded: bool,
+    /// The layout last written; `None` until the saved one is restored, which
+    /// keeps the save idle so an empty start cannot overwrite it.
+    tabs_saved: Option<String>,
     /// The tab bar's drag to reorder, in positions among the visible tabs.
     tab_reorder: rune_kit::shell::Reorder,
     /// Project id → last focused tab id; hidden tabs keep their pane layouts.
@@ -266,6 +274,9 @@ impl State {
             active_workspace: None,
             open_tabs: Vec::new(),
             active_tab: 0,
+            tabs_pending: None,
+            sessions_loaded: false,
+            tabs_saved: None,
             tab_reorder: rune_kit::shell::Reorder::new().gap(4.0),
             project_tabs: HashMap::new(),
             worktree_groups: HashMap::new(),
@@ -1030,6 +1041,14 @@ impl State {
                 }
                 return;
             }
+            backend::Req::GetSetting { key } if key == panes::TABS_KEY => {
+                self.tabs_pending = Some(match &reply.result {
+                    Ok(backend::ReplyData::Setting(raw)) => raw.clone(),
+                    _ => None,
+                });
+                self.restore_tabs();
+                return;
+            }
             backend::Req::GetSetting { key } if key == sidebar::SIDEBAR_WIDTH_KEY => {
                 if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
                     && let Ok(width) = raw.parse::<f32>()
@@ -1213,6 +1232,13 @@ fn setup(s: &mut State, waker: rune::Waker) {
             key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
         }),
     );
+    // The tabs' layout comes back once the daemon's session list is in too.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: panes::TABS_KEY.to_string(),
+        }),
+    );
     // The workspace list and the last selected workspace restore on the same
     // lane; the list is requested first so the saved id validates against it.
     s.request_workspaces();
@@ -1279,6 +1305,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         s.apply_daemon_event(event);
         changed = true;
     }
+    s.save_tabs_if_changed();
     // The replies the session requests are waiting for.
     changed |= s.drain_pending();
     // Closing panes drive their own stop→delete lifecycle.

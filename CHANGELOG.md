@@ -12,6 +12,9 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Added
 
+- Tab layout survives a restart: reopening Goko brings back your tabs and how each is
+  split (side by side or stacked) over the sessions still running. Split sizes start
+  at 50/50 again.
 - Reorder tabs: drag a tab sideways in the tab bar to move it; the other tabs step
   aside, the active tab stays active, and tabs of other projects keep their order.
 - Update now: Settings → Updates installs a newer release over the copy that is
