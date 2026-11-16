@@ -81,6 +81,8 @@ pub struct State {
     /// tab's id is never "the tab's session".
     open_tabs: Vec<panes::Tab>,
     active_tab: usize,
+    /// The tab bar's drag to reorder, in positions among the visible tabs.
+    tab_reorder: rune_kit::shell::Reorder,
     /// Project id → last focused tab id; hidden tabs keep their pane layouts.
     project_tabs: HashMap<String, String>,
     /// "Worktrees" group header open per project id; absent means open.
@@ -264,6 +266,7 @@ impl State {
             active_workspace: None,
             open_tabs: Vec::new(),
             active_tab: 0,
+            tab_reorder: rune_kit::shell::Reorder::new().gap(4.0),
             project_tabs: HashMap::new(),
             worktree_groups: HashMap::new(),
             worktrees_open: HashMap::new(),

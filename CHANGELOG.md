@@ -12,6 +12,8 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Added
 
+- Reorder tabs: drag a tab sideways in the tab bar to move it; the other tabs step
+  aside, the active tab stays active, and tabs of other projects keep their order.
 - Update now: Settings → Updates installs a newer release over the copy that is
   running, so `/Applications/Goko.app` is replaced where it sits instead of a second
   copy appearing in `~/Applications`; reopen Goko afterwards. A copy it cannot replace

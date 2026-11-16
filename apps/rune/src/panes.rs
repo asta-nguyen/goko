@@ -856,6 +856,28 @@ impl State {
         self.sync_selection();
     }
 
+    /// Move the visible tab at position `from` to position `to` among the visible
+    /// tabs. Hidden tabs keep their relative order, and the active tab stays active.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        let visible: Vec<usize> = self.visible_tabs().map(|(i, _)| i).collect();
+        let (Some(&a), Some(&b)) = (visible.get(from), visible.get(to)) else {
+            return;
+        };
+        let active = self.open_tabs.get(self.active_tab).map(|t| t.id.clone());
+        let tab = self.open_tabs.remove(a);
+        self.open_tabs.insert(b, tab);
+        if let Some(id) = active {
+            self.active_tab = self.open_tabs.iter().position(|t| t.id == id).unwrap_or(0);
+        }
+    }
+
+    /// Select the tab with `id`, as a click on it does.
+    pub fn activate_tab_id(&mut self, id: &str) {
+        if let Some(index) = self.open_tabs.iter().position(|t| t.id == id) {
+            self.activate_tab(index);
+        }
+    }
+
     /// Focus a session: its pane's tab and pane become active, opening a
     /// fresh tab when the session isn't placed yet — the desktop's
     /// `openSession`/`focusSession` path.
@@ -2976,6 +2998,25 @@ mod tests {
         assert!(s.session_placed(&d));
         assert_eq!(s.selected_session.as_deref(), Some(b.as_str()));
         assert_eq!(s.focused_terminal_session(), s.session_id(&b));
+    }
+
+    #[test]
+    fn moving_a_tab_reorders_it_and_keeps_the_active_tab() {
+        let mut s = state();
+        for name in ["a", "b", "c"] {
+            tabbed_session(&mut s, name);
+        }
+        let ids: Vec<String> = s.open_tabs.iter().map(|t| t.id.clone()).collect();
+        s.activate_tab(1); // b
+        s.move_tab(0, 2); // a goes last
+        let order: Vec<&str> = s.open_tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(order, [&ids[1], &ids[2], &ids[0]]);
+        assert_eq!(s.open_tabs[s.active_tab].id, ids[1], "b is still active");
+        s.move_tab(2, 0); // and back first
+        assert_eq!(s.open_tabs[0].id, ids[0]);
+        assert_eq!(s.open_tabs[s.active_tab].id, ids[1]);
+        s.move_tab(0, 9); // out of range: nothing moves
+        assert_eq!(s.open_tabs[0].id, ids[0]);
     }
 
     #[test]

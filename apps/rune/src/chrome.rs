@@ -474,8 +474,9 @@ const TAB: TextStyle = T12M.lh(16.0);
 
 pub fn tab_bar(s: &State, ink: &Ink) -> El {
     let mut tabs = row().grow(1.0).min_w(0.0).items_center().gap(4.0);
-    for (i, tab) in s.visible_tabs() {
-        tabs = tabs.child(tab_el(tab, i, i == s.active_tab, ink));
+    let count = s.visible_tabs().count();
+    for (pos, (i, tab)) in s.visible_tabs().enumerate() {
+        tabs = tabs.child(tab_el(tab, i, pos, count, s, ink));
     }
     // A border is drawn inside the box without shrinking the space children are
     // centred in, so a 40 pt bar with a bottom line centred its 32 pt tabs in 40 and
@@ -594,9 +595,16 @@ fn split_button(
 /// `ink.bg`: that is exactly the active fill, so a `bg` hover made a hovered inactive
 /// tab indistinguishable from the active one. Tabs carry their own id — a split tab
 /// has several sessions, so "the tab's session" does not exist.
-fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
+///
+/// Dragging a pill sideways reorders it among the visible tabs (`pos` of `count`): it
+/// follows the pointer, its neighbours step aside, and the drop moves the tab. A press
+/// that doesn't move is still a click.
+fn tab_el(tab: &Tab, index: usize, pos: usize, count: usize, s: &State, ink: &Ink) -> El {
+    let active = index == s.active_tab;
+    let lifted = s.tab_reorder.dragging() == Some(pos);
     let title = tab.title.clone();
     let tab_id = tab.id.clone();
+    let tab_id_press = tab.id.clone();
     // The close X sits in a 20 pt box with 6 pt right padding: the 12 pt glyph then
     // has 10 pt to the pill's edge, matching the title's 10 pt on the left. It owns
     // its hover (`hover_alone`), so the pill doesn't wash under the pointer too.
@@ -639,7 +647,12 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
         .pl(10.0)
         .pr(6.0)
         .radius(8.0)
-        .fill(if active { ink.bg } else { ink.bg.alpha(0.5) })
+        .fill(if active || lifted {
+            ink.bg
+        } else {
+            ink.bg.alpha(0.5)
+        })
+        .offset(s.tab_reorder.shift(pos), 0.0)
         .hover_group()
         .hover(ink.text.alpha(0.06))
         .press(ink.text.alpha(0.10))
@@ -660,7 +673,27 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             .opacity(0.6)
             .child(theme::txt("closing", theme::T11, ink.muted));
     }
+    if lifted {
+        // Follows the pointer exactly, above the tabs it passes.
+        pill = pill.raise().offset_motion(rune::Anim::INSTANT);
+    }
+    // ponytail: the target assumes every tab is as wide as the dragged one; titles vary,
+    // so a drop can land a tab off with very uneven widths. Measure neighbours if it matters.
     pill.child(close)
+        .on_drag(
+            move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| match d.phase {
+                rune::Phase::Down => {}
+                rune::Phase::Move => {
+                    tx.animated();
+                    s.tab_reorder.follow(pos, count, d.dx, d.w);
+                }
+                rune::Phase::Up => {
+                    if let Some((from, to)) = s.tab_reorder.end(d.cancelled()) {
+                        s.move_tab(from, to);
+                    }
+                }
+            },
+        )
         .on_secondary_press(move |s: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
             s.tab_menu = Some(crate::tab_debug::MenuTarget {
                 tab: tab_id.clone(),
@@ -670,7 +703,8 @@ fn tab_el(tab: &Tab, index: usize, active: bool, ink: &Ink) -> El {
             s.subagents_at = None;
         })
         .on_press_tx(move |s: &mut State, tx: &mut Tx| {
-            s.activate_tab(index);
+            // By id: a drop just before this press has moved the tab.
+            s.activate_tab_id(&tab_id_press);
             // And shows it: from the Editor the click leaves for the Terminal.
             // The tab is chosen first so a draft guard's resume lands on it.
             if s.view != View::Terminal {

@@ -32,8 +32,9 @@ impl Reorder {
         self.from.map(|_| self.to)
     }
 
-    /// The pointer moved `dy` since the press on row `index`, which is `h` tall.
-    pub(super) fn follow(&mut self, index: usize, count: usize, dy: f32, h: f32) {
+    /// The pointer moved `dy` since the press on row `index`, which is `h` tall. A horizontal
+    /// strip passes the travel and width instead.
+    pub fn follow(&mut self, index: usize, count: usize, dy: f32, h: f32) {
         if self.from.is_none() {
             if dy.abs() < SLOP {
                 return;
@@ -48,7 +49,7 @@ impl Reorder {
 
     /// The drag ended: `(from, to)` for a drop that moves a row, `None` for a cancel or a drop
     /// in place.
-    pub(super) fn end(&mut self, cancelled: bool) -> Option<(usize, usize)> {
+    pub fn end(&mut self, cancelled: bool) -> Option<(usize, usize)> {
         let from = self.from.take()?;
         self.dy = 0.0;
         (!cancelled && from != self.to).then_some((from, self.to))
@@ -56,7 +57,7 @@ impl Reorder {
 
     /// How far row `index` sits from its place: the dragged row with the pointer, and the rows
     /// between its place and its target a step toward the gap it left.
-    pub(super) fn shift(&self, index: usize) -> f32 {
+    pub fn shift(&self, index: usize) -> f32 {
         let Some(from) = self.from else { return 0.0 };
         if index == from {
             self.dy
