@@ -1,0 +1,45 @@
+crates/app-core/src/accounts.rs
+  s_e3b28812d5a93b::t_69af3d813082b3 708,716
+  s_e3b28812d5a93b::t_63066312a60739 697,819,1434
+  s_e3b28812d5a93b::t_f503b48c051307 725,1468,1492,1514,1525,1536,1547,1558,1571
+crates/app-core/src/worktrees.rs
+  s_e3b28812d5a93b::t_63066312a60739 1222,1256,1338
+crates/app-core/src/agents.rs
+  s_e3b28812d5a93b::t_63066312a60739 295,306,312,365,375,415,468
+  s_e3b28812d5a93b::t_f5fb2ec9712779 12-14
+  s_e3b28812d5a93b::t_f503b48c051307 383,436,481,522,555,586,649,712,738,766
+crates/app-core/src/platform.rs
+  s_e3b28812d5a93b::t_49ecc174f5cf35 213,223-227,231
+crates/app-core/src/lsp.rs
+  s_e3b28812d5a93b::t_f5fb2ec9712779 317-318
+  s_e3b28812d5a93b::t_63066312a60739 1659,1676,1682,1691
+  s_e3b28812d5a93b::t_f503b48c051307 1958,1984,2030
+crates/app-core/src/session_debug.rs
+  s_e3b28812d5a93b::t_f5fb2ec9712779 280
+crates/app-core/src/acp.rs
+  s_e3b28812d5a93b::t_63066312a60739 1561,1566,1571,1588,1594,1605,1615,1914,2493
+  s_e3b28812d5a93b::t_f503b48c051307 1680,1954,1969,1983,1996
+crates/app-core/src/git_write.rs
+  s_e3b28812d5a93b::t_63066312a60739 268
+crates/app-core/src/store.rs
+  s_e3b28812d5a93b::t_63066312a60739 575,653
+crates/app-core/src/code_index.rs
+  s_e3b28812d5a93b::t_63066312a60739 1021,1076,1126,1409
+  s_e3b28812d5a93b::t_f5fb2ec9712779 118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b51eda4152bfbdde521020b8d374675cd69c79c",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
