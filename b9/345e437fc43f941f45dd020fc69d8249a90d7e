@@ -1,0 +1,19 @@
+.github/workflows/release.yml
+  s_e3b28812d5a93b::t_66b79e7ac9d3b0 47-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9345e437fc43f941f45dd020fc69d8249a90d7e",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
