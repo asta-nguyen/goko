@@ -1887,17 +1887,24 @@ fn start_view(s: &State, ink: &Ink) -> El {
         .items_center()
         .justify_center()
         .gap(12.0)
-        .child(theme::txt(
-            "No terminal sessions — start one from the sidebar or New tab",
-            theme::T12,
-            ink.muted,
-        ));
+        .px(16.0)
+        .child(
+            theme::txt(
+                "No terminal sessions — start one from the sidebar or New tab",
+                theme::T12,
+                ink.muted,
+            )
+            .wrap()
+            .shrink()
+            .align(rune::Align::Center)
+            .max_w(340.0),
+        );
     let Some(target) = start_target(s) else {
         // The sidebar's own button, keyed apart so the two never share one.
         return empty.child(sidebar::add_project(ink).key("terminal-add-project"));
     };
     let connected = s.data.connected;
-    let mut buttons = row().gap(8.0).items_center();
+    let mut btn_list = Vec::new();
     // Shell gets its own button below, so the agent list leaves it out.
     for agent in s
         .data
@@ -1907,7 +1914,7 @@ fn start_view(s: &State, ink: &Ink) -> El {
     {
         let agent_id = agent.id.clone();
         let target = target.clone();
-        buttons = buttons.child(start_button(
+        btn_list.push(start_button(
             &agent.label,
             connected,
             ink,
@@ -1915,7 +1922,7 @@ fn start_view(s: &State, ink: &Ink) -> El {
         ));
     }
     let shell = target;
-    buttons = buttons.child(start_button(
+    btn_list.push(start_button(
         "Shell",
         connected,
         ink,
@@ -1930,13 +1937,25 @@ fn start_view(s: &State, ink: &Ink) -> El {
             });
         },
     ));
+
+    let mut buttons = row()
+        .w_full()
+        .max_w(340.0)
+        .flex_wrap()
+        .gap(8.0)
+        .items_center()
+        .justify_center();
+    for btn in btn_list {
+        buttons = buttons.child(btn);
+    }
     empty = empty.child(buttons);
     if !connected {
-        empty = empty.child(theme::txt(
-            "Waiting for the Goko daemon",
-            theme::T11,
-            ink.muted,
-        ));
+        empty = empty.child(
+            theme::txt("Waiting for the Goko daemon", theme::T11, ink.muted)
+                .wrap()
+                .shrink()
+                .align(rune::Align::Center),
+        );
     }
     empty
 }
@@ -2091,6 +2110,11 @@ fn split_separator(ink: &Ink, split: &Split, side: bool) -> El {
         .key(format!("split:{sid}"))
         .role("separator")
         .label("Resize terminal panes")
+        .cursor(if side {
+            rune::Cursor::ResizeColumn
+        } else {
+            rune::Cursor::ResizeRow
+        })
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent);
     sep = if side {
