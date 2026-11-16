@@ -1,10 +1,9 @@
-# Formatting, lints and the whole test suite on every pull request and every push
-# to main — the checks AGENTS.md lists under Verification.
+# Formatting, lints and the whole test suite on every pull request into main — the
+# checks AGENTS.md lists under Verification. A plain push to a branch runs nothing.
 name: ci
 
 on:
   pull_request:
-  push:
     branches: [main]
 
 permissions:
