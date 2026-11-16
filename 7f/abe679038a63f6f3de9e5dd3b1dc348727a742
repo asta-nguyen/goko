@@ -1,0 +1,21 @@
+crates/daemon/src/pty.rs
+  s_e3b28812d5a93b::t_5d1cc1e2cfbc72 1230
+crates/daemon/src/net.rs
+  s_e3b28812d5a93b::t_5d1cc1e2cfbc72 119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7fabe679038a63f6f3de9e5dd3b1dc348727a742",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
