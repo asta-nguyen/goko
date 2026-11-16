@@ -1,0 +1,19 @@
+crates/daemon/tests/windows_ipc.rs
+  s_e3b28812d5a93b::t_7a8598198ea4bf 113-115,162,194,198,200,204,206,213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "da26f88c5262861c1724a883ed455b2edc9956b7",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
