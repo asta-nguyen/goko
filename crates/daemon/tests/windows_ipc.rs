@@ -100,7 +100,11 @@ impl Harness {
         });
         self.write_control(&payload).await;
         let reply = self.read_control().await;
-        assert_eq!(reply["ok"], json!(true), "hello reply: {reply}");
+        assert_eq!(
+            reply["daemon_version"],
+            json!(env!("CARGO_PKG_VERSION")),
+            "hello reply: {reply}"
+        );
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Value {
@@ -165,7 +169,10 @@ async fn a_second_bind_on_the_same_home_is_already_running() {
     match server::bind(&paths) {
         Ok(_) => panic!("the second bind must fail while the first listener lives"),
         Err(error) => assert!(
-            error.kind() == std::io::ErrorKind::AddrInUse || error.raw_os_error() == Some(231),
+            // ERROR_ACCESS_DENIED is what FILE_FLAG_FIRST_PIPE_INSTANCE reports
+            // when the name already exists; ERROR_PIPE_BUSY (231) when all are busy.
+            error.kind() == std::io::ErrorKind::AddrInUse
+                || matches!(error.raw_os_error(), Some(5 | 231)),
             "unexpected error: {error:?}"
         ),
     }

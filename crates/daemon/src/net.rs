@@ -89,8 +89,9 @@ mod windows {
     }
 
     impl Listener {
-        /// Create the first instance. `ERROR_PIPE_BUSY` here means a live
-        /// daemon already owns the name — the caller reports `already running`.
+        /// Create the first instance. `ERROR_ACCESS_DENIED` or `ERROR_PIPE_BUSY`
+        /// here means a live daemon already owns the name — the caller reports
+        /// `already running`.
         pub fn bind(paths: &Paths) -> io::Result<Self> {
             let name = pipe_name(paths.dir());
             let current = create_instance(&name, true)?;

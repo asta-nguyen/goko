@@ -75,7 +75,8 @@ async fn run() -> io::Result<ExitCode> {
     let listener = match server::bind(&paths) {
         Ok(listener) => listener,
         Err(error)
-            if error.kind() == io::ErrorKind::AddrInUse || error.raw_os_error() == Some(231) =>
+            if error.kind() == io::ErrorKind::AddrInUse
+                || (cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 231))) =>
         {
             // Windows: a live daemon owns the pipe; Unix reaches this through
             // the instance lock above.
