@@ -1197,7 +1197,9 @@ mod win {
 
 #[cfg(test)]
 mod locale_tests {
-    use super::{resolve_utf8_locale, DEFAULT_UTF8_LOCALE};
+    use super::resolve_utf8_locale;
+    #[cfg(unix)]
+    use super::DEFAULT_UTF8_LOCALE;
 
     #[test]
     fn locale_precedence_prefers_lc_all_then_lc_ctype_then_lang() {
