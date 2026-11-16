@@ -21,19 +21,18 @@ const APPLICATION_SUPPORT: &str = "Library/Application Support/Goko";
 /// replaces that folder on every update.
 pub fn home_dir() -> Result<PathBuf, BridgeError> {
     #[cfg(windows)]
-    {
-        return home_dir_windows(
-            std::env::var_os("GOKO_HOME"),
-            std::env::var_os("LOCALAPPDATA"),
-            std::env::var_os("USERPROFILE"),
-        );
-    }
+    let dir = home_dir_windows(
+        std::env::var_os("GOKO_HOME"),
+        std::env::var_os("LOCALAPPDATA"),
+        std::env::var_os("USERPROFILE"),
+    )?;
     #[cfg(not(windows))]
-    home_dir_from(
+    let dir = home_dir_from(
         std::env::var_os("GOKO_HOME"),
         std::env::var_os("HOME"),
         std::env::var_os("XDG_STATE_HOME"),
-    )
+    )?;
+    Ok(dir)
 }
 
 /// `GOKO_HOME`, else `%LOCALAPPDATA%\Goko`, else `%USERPROFILE%\AppData\Local\Goko`.

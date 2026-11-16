@@ -161,6 +161,7 @@ fn open_launch_lock(path: &std::path::Path) -> io::Result<File> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(path)
 }
 

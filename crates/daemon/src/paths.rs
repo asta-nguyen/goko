@@ -15,19 +15,18 @@ impl Paths {
     /// created with mode 0700.
     pub fn resolve() -> io::Result<Self> {
         #[cfg(windows)]
-        {
-            return Self::at(dir_from_windows(
-                env::var_os("GOKO_HOME"),
-                env::var_os("LOCALAPPDATA"),
-                env::var_os("USERPROFILE"),
-            )?);
-        }
+        let dir = dir_from_windows(
+            env::var_os("GOKO_HOME"),
+            env::var_os("LOCALAPPDATA"),
+            env::var_os("USERPROFILE"),
+        )?;
         #[cfg(not(windows))]
-        Self::at(dir_from(
+        let dir = dir_from(
             env::var_os("GOKO_HOME"),
             env::var_os("HOME"),
             env::var_os("XDG_STATE_HOME"),
-        )?)
+        )?;
+        Self::at(dir)
     }
 
     /// Use `dir` as the support directory, creating it (and parents) with mode 0700.
@@ -161,8 +160,11 @@ fn default_dir(home: &Path, xdg_state_home: Option<OsString>, macos: bool) -> Pa
 
 #[cfg(test)]
 mod tests {
-    use super::{default_dir, dir_from, Paths, APPLICATION_SUPPORT};
+    use super::Paths;
+    #[cfg(unix)]
+    use super::{default_dir, dir_from, APPLICATION_SUPPORT};
     use crate::test_support::TempDir;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -187,6 +189,7 @@ mod tests {
         assert_eq!(paths.log(), dir.join("daemon.log"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn goko_home_wins_over_the_default_location() {
         let dir = dir_from(
@@ -198,6 +201,7 @@ mod tests {
         assert_eq!(dir, PathBuf::from("/tmp/goko-home"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn macos_default_is_under_application_support() {
         assert_eq!(
@@ -206,6 +210,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn other_platforms_default_to_the_xdg_state_folder() {
         let home = Path::new("/home/goko-no-such-user");
@@ -224,6 +229,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_existing_application_support_folder_is_kept() {
         let home = TempDir::new("paths-legacy");
@@ -235,6 +241,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_empty_goko_home_falls_back_to_the_default() {
         let dir = dir_from(
@@ -246,6 +253,7 @@ mod tests {
         assert!(dir.starts_with("/home/goko-no-such-user"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn missing_goko_home_and_home_is_an_error() {
         assert!(dir_from(None, None, None).is_err());
