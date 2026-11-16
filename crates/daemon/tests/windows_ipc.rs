@@ -110,7 +110,9 @@ impl Harness {
     async fn request(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
         let id = self.next_id;
-        let payload = json!({"id": id, "method": method, "params": params});
+        let mut payload = params;
+        payload["type"] = json!(method);
+        payload["id"] = json!(id);
         self.write_control(&payload).await;
         loop {
             let reply = self.read_control().await;
@@ -157,8 +159,7 @@ impl Drop for Harness {
 async fn pipe_round_trip_lists_sessions() {
     let mut harness = Harness::start("roundtrip").await;
     let reply = harness.request("session.list", json!({})).await;
-    assert_eq!(reply["ok"], json!(true), "reply: {reply}");
-    assert_eq!(reply["result"]["sessions"], json!([]));
+    assert_eq!(reply["result"]["sessions"], json!([]), "reply: {reply}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -190,26 +191,26 @@ async fn conpty_session_spawns_and_stop_kills_the_tree() {
                 "cwd": cwd,
                 "cols": 80,
                 "rows": 24,
+                "title": "windows-ipc",
             }),
         )
         .await;
-    assert_eq!(reply["ok"], json!(true), "create reply: {reply}");
-    let id = reply["result"]["session"]["id"]
+    let id = reply["result"]["id"]
         .as_str()
-        .expect("session id")
+        .unwrap_or_else(|| panic!("create reply: {reply}"))
         .to_owned();
 
     let stop = harness
-        .request("session.stop", json!({ "session_id": id }))
+        .request("session.stop", json!({ "session_id": id, "force": false }))
         .await;
-    assert_eq!(stop["ok"], json!(true), "stop reply: {stop}");
+    assert!(stop.get("error").is_none(), "stop reply: {stop}");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let get = harness
             .request("session.get", json!({ "session_id": id }))
             .await;
-        let state = get["result"]["session"]["state"]
+        let state = get["result"]["state"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
