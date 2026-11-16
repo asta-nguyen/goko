@@ -10,7 +10,18 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Added
+
+- Windows support: `gokod` and the Goko app build and run on Windows x86_64
+  (10 1809 or later). The daemon serves a named pipe instead of a Unix socket,
+  drives ConPTY sessions, and stops a session by killing its whole process tree
+  through a Job Object. Install with
+  `irm https://github.com/asta-nguyen/goko/releases/latest/download/install.ps1 | iex`.
+  Stopping a session is immediate (no graceful signal), and the trash, sound,
+  in-app updater, quit veto and `ps`-based agent attribution are not available
+  on Windows yet.
 
 - Tab layout survives a restart: reopening Goko brings back your tabs and how each is
   split (side by side or stacked) over the sessions still running. Split sizes start
