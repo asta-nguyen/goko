@@ -1,0 +1,19 @@
+distribution/install.ps1
+  s_e3b28812d5a93b::t_69aa23191fa0ff 23-25,27,29,31-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "820c750a488097720b271d3d199e80ac693fb244",
+  "prompts": {},
+  "sessions": {
+    "s_e3b28812d5a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "786b8e21-de5c-4829-b11c-7404aa0b4342",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
