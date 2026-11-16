@@ -1,0 +1,39 @@
+apps/rune/src/editor/branch.rs
+  s_e91da40daf9a7a::t_4d4fa724984ed9 154,156,159-160,164-172
+  s_e91da40daf9a7a::t_208a15a5a42fae 7
+  s_e91da40daf9a7a::t_0c451d95c47bce 128-132
+  s_e91da40daf9a7a::t_42effe91d8bc39 108,115,123-126,152-153,155,157-158,161-163,173-175
+  s_e91da40daf9a7a::t_4138d4fbbe2883 116-122
+apps/rune/src/editor/workspace.rs
+  s_e91da40daf9a7a::t_c759421f92e8f7 748-764
+  s_e91da40daf9a7a::t_5ae25e3d48cec0 280,294,297,301-302,306-314
+  s_e91da40daf9a7a::t_bbbf2502fa7d9b 664-747,765-787
+  s_e91da40daf9a7a::t_7c958c6ef0515d 277-279,295-296,298-300,303-305,315
+docs/llm/domains/rune-editor.md
+  s_e91da40daf9a7a::t_413c1b32482073 769-773
+  s_e91da40daf9a7a::t_70f8c502ac5b83 165-176
+  s_e91da40daf9a7a::t_731658287bbda1 307,327-331
+  s_e91da40daf9a7a::t_24accde766b390 332
+apps/rune/src/editor/commit_detail.rs
+  s_e91da40daf9a7a::t_ba387319ff666a 23
+docs/agent-devkit/INDEX.md
+  s_e91da40daf9a7a::t_eab32087e587b9 15
+docs/agent-devkit/changes/archive/2026-11-16-editor-header-copy/delta.md
+  s_e91da40daf9a7a::t_9c6fb625ce4e1f 1-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d30343118693c22b8ae646972e5454253a2c062d",
+  "prompts": {},
+  "sessions": {
+    "s_e91da40daf9a7a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pattern-ease",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
