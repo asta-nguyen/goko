@@ -70,7 +70,16 @@ pub fn snapshot(path: &str, edit: &TextEdit, dirty: bool) -> String {
 /// ⌘⇧C: copy the open document's snapshot. The code surface must hold focus
 /// so a chord in another field never copies a stale selection.
 pub fn copy(s: &mut State, tx: &mut Tx) -> bool {
-    let text = match doc_for(s, true) {
+    copy_inner(s, tx, true)
+}
+
+/// The context menu's Copy Snapshot: as ⌘⇧C, without requiring focus.
+pub fn copy_unfocused(s: &mut State, tx: &mut Tx) -> bool {
+    copy_inner(s, tx, false)
+}
+
+fn copy_inner(s: &mut State, tx: &mut Tx, require_focus: bool) -> bool {
+    let text = match doc_for(s, require_focus) {
         Ok(doc) => snapshot(&doc.path, &doc.code.edit, doc.dirty()),
         Err(message) => {
             s.notice = Some(message.into());
@@ -341,5 +350,59 @@ mod tests {
         s.editor.doc = Some(open("src/a.rs", "one\n"));
         assert!(send_chord(&mut s, &mut Tx::default()));
         assert_eq!(s.notice.as_deref(), Some("Click into the code first"));
+    }
+
+    /// A right-click on the code opens the menu; Copy Snapshot copies without
+    /// the code surface holding focus.
+    #[test]
+    fn secondary_press_on_the_code_opens_the_snapshot_menu() {
+        use crate::editor::state::{Section, checkout_key};
+        use rune::{Env, Runtime};
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Editor;
+        s.editor.project_id = Some("p1".into());
+        let co = std::path::PathBuf::from("/tmp/goko-qa-checkout");
+        s.editor.checkout_key = Some(checkout_key("p1", &co));
+        s.editor.checkout = Some(co);
+        s.editor.section = Section::Files;
+        s.editor.doc = Some(open("src/a.rs", "one\ntwo\n"));
+        let mut rt = Runtime::new(s, crate::view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let send = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Send snapshot to terminal"))
+            .expect("code surface mounted");
+        let (x, y) = (send.rect[0] - 300.0, send.rect[1] - 200.0);
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.editor.files.code_menu, Some((x, y)));
+        let labels: Vec<_> = rt.elements().into_iter().filter_map(|e| e.label).collect();
+        for want in ["Cut", "Copy", "Paste", "Select All", "Copy Snapshot"] {
+            assert!(
+                labels.iter().any(|l| l == want),
+                "{want} missing: {labels:?}"
+            );
+        }
+        let item = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Copy Snapshot"))
+            .unwrap();
+        let (cx, cy) = (
+            item.rect[0] + item.rect[2] / 2.0,
+            item.rect[1] + item.rect[3] / 2.0,
+        );
+        rt.pointer_move(cx, cy);
+        rt.pointer_down(cx, cy);
+        rt.pointer_up(cx, cy);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.editor.files.code_menu, None);
+        assert_eq!(
+            rt.state.notice.as_deref(),
+            Some("Snapshot copied to clipboard")
+        );
     }
 }

@@ -1041,18 +1041,7 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 /// the gutter re-derives line numbers from `edit.text` each frame.
 fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
     crate::editor::code::Code::<State>::new(code_get, code_get_mut)
-        .on_changed(|st: &mut State, tx: &mut Tx| {
-            // CodeState::text_edited already ran (revision/find/gutter); the
-            // draft flag only needs the OS-quit mirror refreshed, plus the
-            // syntax-highlight debounce armed for the new revision.
-            st.editor.sync_quit_dirty();
-            crate::editor::highlight::mark_edit(&mut st.editor);
-            // The blame annotations describe the file on disk — a dirty
-            // buffer hides the column until the save lands.
-            crate::editor::blame::sync_visibility(&mut st.editor);
-            crate::editor::line_changes::sync_visibility(&mut st.editor);
-            tx.wake_after(std::time::Duration::from_millis(150));
-        })
+        .on_changed(code_changed)
         .on_save(|st: &mut State, _tx: &mut Tx| {
             save_active_doc(st);
         })
@@ -1070,7 +1059,108 @@ fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
         .on_send(|st: &mut State, tx: &mut Tx| {
             crate::editor::snapshot::send(st, tx);
         })
+        .on_secondary(|st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
+            st.editor.files.code_menu = Some((p.x, p.y));
+        })
         .build(s, ink, k)
+}
+
+fn close_code_menu(st: &mut State) {
+    st.editor.files.code_menu = None;
+}
+
+/// The code surface's context menu. It replaces the field's built-in one, so
+/// it carries the edit actions too, then the snapshot actions with their chords.
+pub fn code_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
+    if s.view != crate::View::Editor {
+        return None;
+    }
+    let (x, y) = s.editor.files.code_menu?;
+    let selected = !code_get(s).edit.selected().is_empty();
+    Some(
+        context_menu(
+            "code-surface",
+            rune::el(),
+            Some(rune::PointerPress { x, y }),
+        )
+        .item(
+            MenuItem::new("Cut")
+                .shortcut("⌘X")
+                .disabled(!selected)
+                .on_select_tx(|st: &mut State, tx: &mut Tx| {
+                    close_code_menu(st);
+                    let code = code_get_mut(st);
+                    tx.copy(code.edit.selected().to_owned());
+                    code.edit.insert("");
+                    code.text_edited();
+                    code_changed(st, tx);
+                }),
+        )
+        .item(
+            MenuItem::new("Copy")
+                .shortcut("⌘C")
+                .disabled(!selected)
+                .on_select_tx(|st: &mut State, tx: &mut Tx| {
+                    close_code_menu(st);
+                    tx.copy(code_get(st).edit.selected().to_owned());
+                }),
+        )
+        .item(
+            MenuItem::new("Paste")
+                .shortcut("⌘V")
+                .on_select_tx(|st: &mut State, tx: &mut Tx| {
+                    close_code_menu(st);
+                    tx.read_clipboard(|st: &mut State, clip, tx: &mut Tx| {
+                        let code = code_get_mut(st);
+                        code.edit.insert(clip.text());
+                        code.text_edited();
+                        code_changed(st, tx);
+                    });
+                }),
+        )
+        .item(
+            MenuItem::new("Select All")
+                .shortcut("⌘A")
+                .on_select(|st: &mut State| {
+                    close_code_menu(st);
+                    let edit = &mut code_get_mut(st).edit;
+                    let end = edit.text.len();
+                    edit.set_selection(0, end);
+                }),
+        )
+        .separator()
+        .item(MenuItem::new("Copy Snapshot").shortcut("⌘⇧C").on_select_tx(
+            |st: &mut State, tx: &mut Tx| {
+                close_code_menu(st);
+                crate::editor::snapshot::copy_unfocused(st, tx);
+            },
+        ))
+        .item(
+            MenuItem::new("Send Snapshot to Terminal")
+                .shortcut("⌘⇧↵")
+                .on_select_tx(|st: &mut State, tx: &mut Tx| {
+                    close_code_menu(st);
+                    crate::editor::snapshot::send(st, tx);
+                }),
+        )
+        .on_close(close_code_menu)
+        .build(&s.editor.kit, layer),
+    )
+}
+
+/// The bookkeeping after the open code changed, whether through the field or
+/// a menu's Cut or Paste.
+fn code_changed(st: &mut State, tx: &mut Tx) {
+    // CodeState::text_edited already ran (revision/find/gutter); the
+    // draft flag only needs the OS-quit mirror refreshed, plus the
+    // syntax-highlight debounce armed for the new revision.
+    st.editor.sync_quit_dirty();
+    crate::editor::highlight::mark_edit(&mut st.editor);
+    // The blame annotations describe the file on disk — a dirty
+    // buffer hides the column until the save lands.
+    crate::editor::blame::sync_visibility(&mut st.editor);
+    crate::editor::line_changes::sync_visibility(&mut st.editor);
+    tx.wake_after(std::time::Duration::from_millis(150));
 }
 
 /// `Code` view accessors: the open document's code surface, or the scratch

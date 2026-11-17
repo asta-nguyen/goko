@@ -26,8 +26,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use rune::{
-    Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, ScrollPos, Shape, Span, TextEdit,
-    TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
+    Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, PointerPress, ScrollPos, Shape, Span,
+    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
@@ -385,6 +385,7 @@ impl CodeState {
 }
 
 /// Parent-state callback shared by the field's change/save hooks.
+type PressCallback<S> = Rc<dyn Fn(&mut S, PointerPress, &mut Tx)>;
 type StateCallback<S> = Rc<dyn Fn(&mut S, &mut Tx)>;
 /// Go-to callback: receives the clicked [`GoToRequest`].
 type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
@@ -404,6 +405,7 @@ pub struct Code<S> {
     on_indent: Option<IndentCallback<S>>,
     on_blame: Option<BlameCallback<S>>,
     on_send: Option<StateCallback<S>>,
+    on_secondary: Option<PressCallback<S>>,
 }
 
 impl<S: 'static> Code<S> {
@@ -417,6 +419,7 @@ impl<S: 'static> Code<S> {
             on_indent: None,
             on_blame: None,
             on_send: None,
+            on_secondary: None,
         }
     }
 
@@ -456,6 +459,13 @@ impl<S: 'static> Code<S> {
     /// Called when the Send chip is pressed: send the snapshot to the terminal.
     pub fn on_send(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Code<S> {
         self.on_send = Some(Rc::new(f));
+        self
+    }
+
+    /// Called on a secondary press in the code: the host opens its own menu,
+    /// which replaces the field's built-in one.
+    pub fn on_secondary(mut self, f: impl Fn(&mut S, PointerPress, &mut Tx) + 'static) -> Code<S> {
+        self.on_secondary = Some(Rc::new(f));
         self
     }
 
@@ -840,7 +850,7 @@ impl<S: 'static> Code<S> {
         let on_submit_changed = self.on_changed.clone();
         let on_changed_key = self.on_changed.clone();
         let on_save = self.on_save.clone();
-        text_input(&code.edit, CODE_STYLE)
+        let mut field = text_input(&code.edit, CODE_STYLE)
             .grow(1.0)
             .color(ink.text)
             .caret(ink.text, ink.accent.alpha(0.3))
@@ -865,7 +875,11 @@ impl<S: 'static> Code<S> {
                     code.edit.insert(&ins);
                 }
                 notify_changed(st, tx, get_mut, &on_submit_changed);
-            })
+            });
+        if let Some(cb) = self.on_secondary.clone() {
+            field = field.on_secondary_press(move |st: &mut S, p, tx: &mut Tx| cb(st, p, tx));
+        }
+        field
     }
 
     /// Transparent link overlay mounted while the go-to modifier is held:

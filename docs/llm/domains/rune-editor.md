@@ -86,6 +86,12 @@ The system SHALL let the user copy a snapshot of the Files code surface — the 
 - WHEN the snapshot is built
 - THEN its fence is longer than the longest run in the code
 
+#### Scenario: Context menu
+
+- GIVEN an editable file is open in Files
+- WHEN the user right-clicks the code
+- THEN a menu lists Cut, Copy, Paste and Select All, then Copy Snapshot (⌘⇧C) and Send Snapshot to Terminal (⌘⇧Enter), and each snapshot item acts as its chord without the code holding focus
+
 #### Scenario: Not an editable file
 
 - GIVEN the open document is binary, non-UTF-8, truncated, or read-only

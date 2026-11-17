@@ -13,6 +13,7 @@
 ## Archived changes
 
 - [Agent snapshot: copy code for the terminal](changes/archive/agent-snapshot/delta.md)
+- [Agent snapshot: code context menu](changes/archive/agent-snapshot-menu/delta.md)
 - [Windows support: port gokod + goko-rune to Windows](changes/archive/2026-11-16-29-windows-support/design.md) ([tasks](changes/archive/2026-11-16-29-windows-support/tasks.md))
 - [Editor header copy: branch and path](changes/archive/2026-11-16-editor-header-copy/delta.md)
 - [Open file from diff](changes/archive/2026-11-16-open-file-from-diff/delta.md)

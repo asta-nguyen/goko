@@ -170,6 +170,8 @@ pub struct FilesState {
     pub delete_prompt: Option<String>,
     /// The row context menu: the entry it was opened on and where.
     pub menu: Option<FileMenu>,
+    /// The code surface's context menu: where the secondary press landed.
+    pub code_menu: Option<(f32, f32)>,
 }
 
 /// A tree row's context menu, opened by a secondary press at (`x`, `y`).
@@ -633,6 +635,7 @@ impl EditorState {
                 empty_dirs: Default::default(),
                 reveal: None,
                 menu: None,
+                code_menu: None,
             },
             indexer,
             branch: Default::default(),
