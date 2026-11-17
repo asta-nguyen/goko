@@ -1,0 +1,41 @@
+apps/rune/src/main.rs
+  s_895c0b99a18b7e::t_26acd3f2f3b2f3 1194-1196
+apps/rune/src/editor/code.rs
+  s_a6d08010814c1c::t_2884596e7d560d 29-30,388,408,422,465-471,853,878-882
+apps/rune/src/editor/files.rs
+  s_a6d08010814c1c::t_86286b01ef36bd 1044,1062-1064,1068-1165
+apps/rune/src/editor/snapshot.rs
+  s_a6d08010814c1c::t_08ed8bf752f91a 73-82,354-407
+apps/rune/src/editor/state.rs
+  s_a6d08010814c1c::t_2b9affdad2dadb 173-174,638
+docs/agent-devkit/INDEX.md
+  s_a6d08010814c1c::t_7c9a36902d0239 16
+docs/agent-devkit/changes/archive/agent-snapshot-menu/delta.md
+  s_a6d08010814c1c::t_7e69f81c159395 1-23
+docs/llm/domains/rune-editor.md
+  s_a6d08010814c1c::t_d2df3510929633 89-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "631272ce1b1c9cd7f20d015f3a5737007a092a01",
+  "prompts": {},
+  "sessions": {
+    "s_895c0b99a18b7e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83d41e4c-53fb-4aaf-81ad-66505f4c76b2",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": null
+    },
+    "s_a6d08010814c1c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sugary-fanatic",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
