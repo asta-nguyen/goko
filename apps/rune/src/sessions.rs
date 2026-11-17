@@ -824,16 +824,46 @@ impl State {
     /// quota chips refresh about every five seconds; the job carries the
     /// last snapshot so a mid-write capture keeps its previous values.
     pub fn poll_usage(&mut self, now: f64) -> bool {
-        if self.usage_at.is_some_and(|at| now - at < 5.0) {
+        // A collector run that just ended wrote new records: read them now.
+        let collected = self
+            .usage_collected
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        if !collected && self.usage_at.is_some_and(|at| now - at < 5.0) {
             return false;
         }
         self.usage_at = Some(now);
-        // The open Agents dropdown also draws Omarchy's records; re-read them
-        // on the same cadence so a finished Refresh shows up.
-        if self.usage_menu.is_some() {
-            self.agent_usage = crate::chrome::read_agent_usage();
-        }
         self.request_usage()
+    }
+
+    /// Runs Goko's own usage collectors on a thread of their own: they ask
+    /// each signed-in agent's provider, which can take seconds. `force` is
+    /// the user pressing Refresh. The records they write arrive with the
+    /// next usage read.
+    pub fn collect_agent_usage(&mut self, force: bool) {
+        // Tests never reach for the real sign-ins or the network.
+        if cfg!(test) {
+            return;
+        }
+        let Ok(goko_home) = app_core::home::home_dir() else {
+            return;
+        };
+        // The active Claude account's folder; Default resolves on its own.
+        let claude_dir = self.data.accounts.as_ref().and_then(|view| {
+            let active = view
+                .claude
+                .items
+                .iter()
+                .find(|a| a.id == view.claude.active)?;
+            (!active.is_default).then(|| std::path::PathBuf::from(&active.dir))
+        });
+        let collector = self.usage_collector.clone();
+        let collected = self.usage_collected.clone();
+        std::thread::spawn(move || {
+            let env = app_core::usage_collect::Env::from_process(goko_home, claude_dir);
+            if collector.collect(&env, &app_core::usage_collect::System, force) {
+                collected.store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
     }
 
     /// One usage/accounts read, regardless of the poll cadence — account

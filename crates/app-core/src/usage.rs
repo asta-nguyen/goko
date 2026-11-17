@@ -228,7 +228,7 @@ pub fn spawn_poller(
     emit: Emit,
     accounts_source: Box<dyn Fn() -> Accounts + Send + Sync>,
 ) -> UsageState {
-    let codex_home = codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"));
+    let codex_home = codex_home_from(std::env::var_os("CODEX_HOME"), crate::home::user_home());
     let accounts = accounts_source();
     // The seven-day retention lives in `read_snapshot`, so the startup read —
     // and every tick and direct call after it — prunes each owned folder.
