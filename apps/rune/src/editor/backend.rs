@@ -355,10 +355,12 @@ pub enum ReplyData {
     Agents(Vec<AgentInfo>),
     /// The resolved launch argv of one agent.
     AgentArgv(Vec<String>),
-    /// The usage snapshot plus the accounts view read with it.
+    /// The usage snapshot plus the accounts view and the per-provider usage
+    /// records read with it.
     Usage {
         snapshot: app_core::usage::UsageSnapshot,
         accounts: app_core::accounts::AccountsView,
+        records: Vec<app_core::usage_records::UsageRecord>,
     },
     /// The accounts view after an account mutation.
     Accounts(app_core::accounts::AccountsView),
@@ -1284,14 +1286,37 @@ fn usage_snapshot(
         .map(app_core::accounts::read)
         .unwrap_or_default();
     let goko_home = agent_home();
-    let codex_home =
-        app_core::usage::codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"));
+    let codex_home = app_core::usage::codex_home_from(
+        std::env::var_os("CODEX_HOME"),
+        app_core::home::user_home(),
+    );
     let snapshot =
         app_core::usage::read_snapshot(&goko_home, codex_home.as_deref(), &accounts, previous);
     Ok(ReplyData::Usage {
         snapshot,
         accounts: app_core::accounts::view(&accounts),
+        records: app_core::usage_records::read(
+            &usage_record_dirs(&goko_home),
+            crate::data::now_ms(),
+        ),
     })
+}
+
+/// The folders usage records are read from. Tests read only the temp
+/// `GOKO_HOME`, never the developer's own state folder.
+fn usage_record_dirs(goko_home: &std::path::Path) -> Vec<PathBuf> {
+    #[cfg(not(test))]
+    {
+        app_core::usage_records::record_dirs(
+            goko_home,
+            std::env::var_os("XDG_STATE_HOME"),
+            app_core::home::user_home(),
+        )
+    }
+    #[cfg(test)]
+    {
+        app_core::usage_records::record_dirs(goko_home, None, None)
+    }
 }
 
 /// Recheck the saved snapshot on the worker before resolving the index entry.

@@ -5,6 +5,7 @@
 
 use std::f32::consts::FRAC_PI_3;
 
+use app_core::usage_records::{UsageRecord, UsageWindow};
 use rune::{El, Spring, TextStyle, Transition, Tx, col, el, row, spacer};
 
 use crate::data;
@@ -110,47 +111,9 @@ pub fn account_usage_summary(
         .join(" · ")
 }
 
-/// One limit window from Omarchy's agent usage state. `percent` is the used
-/// share as a fraction (0.42 is 42%); `resets_at` is RFC 3339, or empty.
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
-pub struct OmarchyLimit {
-    pub label: String,
-    #[serde(default)]
-    pub percent: f64,
-    #[serde(default, rename = "resetsAt")]
-    pub resets_at: Option<String>,
-    #[serde(default)]
-    pub title: Option<String>,
-}
-
-/// Reset credits info (e.g. Codex free resets).
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
-pub struct OmarchyResetCredits {
-    #[serde(default)]
-    pub available: u32,
-    #[serde(default, rename = "nextExpiresAt")]
-    pub next_expires_at: Option<String>,
-}
-
-/// One provider's complete record in ~/.local/state/omarchy/agents/usage/<id>.json.
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
-pub struct OmarchyRecord {
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default, rename = "tierLabel")]
-    pub tier_label: Option<String>,
-    #[serde(default)]
-    pub limits: Vec<OmarchyLimit>,
-    #[serde(default, rename = "resetCredits")]
-    pub reset_credits: Option<OmarchyResetCredits>,
-    #[serde(default, rename = "todaySessions")]
-    pub today_sessions: Option<u64>,
-}
-
 /// The time left until `resets_at` (RFC 3339) on the app's clock: "2d 3h",
-/// "1h 5m", "12m", "reset" once it has passed, and nothing when the provider
-/// gave no time.
+/// "1h 5m", "12m", "40s", "reset" once it has passed, and nothing when the
+/// provider gave no time.
 fn format_countdown(resets_at: Option<&str>, now_ms: i64) -> String {
     let Some(at) = resets_at.and_then(|iso| chrono::DateTime::parse_from_rfc3339(iso).ok()) else {
         return String::new();
@@ -166,62 +129,23 @@ fn format_countdown(resets_at: Option<&str>, now_ms: i64) -> String {
         format!("{days}d {hours}h")
     } else if hours > 0 {
         format!("{hours}h {mins}m")
-    } else {
+    } else if mins > 0 {
         format!("{mins}m")
+    } else {
+        format!("{diff}s")
     }
-}
-
-fn read_record(path: &std::path::Path) -> Option<OmarchyRecord> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
-}
-
-/// Omarchy's per-provider usage records
-/// (`~/.local/state/omarchy/agents/usage/<id>.json`), keeping the ones that
-/// have limits. A machine without Omarchy has none. This reads the disk, so it
-/// runs from event handlers and the usage poll, never from a view.
-pub fn read_agent_usage() -> Vec<OmarchyRecord> {
-    let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) else {
-        return Vec::new();
-    };
-    let dir = std::path::PathBuf::from(home).join(".local/state/omarchy/agents/usage");
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    // Goko's own Antigravity record, kept in its home, replaces Omarchy's
-    // while it has limits.
-    let own_agy = app_core::home::home_dir()
-        .ok()
-        .and_then(|home| read_record(&home.join("agents/usage/agy.json")))
-        .filter(|record| !record.limits.is_empty());
-    let mut records = Vec::new();
-    for path in entries.flatten().map(|entry| entry.path()) {
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(mut record) = read_record(&path) else {
-            continue;
-        };
-        if record.id == "agy"
-            && let Some(own) = &own_agy
-        {
-            record = own.clone();
-        }
-        if !record.limits.is_empty() {
-            records.push(record);
-        }
-    }
-    records
 }
 
 /// Goko's own usage snapshot as dropdown records: the active Claude and Codex
-/// accounts' windows. The snapshot does not know the plan, so there is no tier.
-fn snapshot_records(usage: &app_core::usage::UsageSnapshot) -> Vec<OmarchyRecord> {
-    let windows = |pairs: [(&str, &Option<app_core::usage::Limit>); 2]| -> Vec<OmarchyLimit> {
+/// accounts' windows, which Goko reads itself on every OS. The snapshot does
+/// not know the plan, so there is no tier.
+fn snapshot_records(usage: &app_core::usage::UsageSnapshot) -> Vec<UsageRecord> {
+    let windows = |pairs: [(&str, &Option<app_core::usage::Limit>); 2]| -> Vec<UsageWindow> {
         pairs
             .into_iter()
             .filter_map(|(title, limit)| {
                 let limit = limit.as_ref()?;
-                Some(OmarchyLimit {
+                Some(UsageWindow {
                     label: title.to_string(),
                     percent: limit.used_pct / 100.0,
                     // `Limit::resets_at` is epoch seconds.
@@ -236,6 +160,7 @@ fn snapshot_records(usage: &app_core::usage::UsageSnapshot) -> Vec<OmarchyRecord
         (
             "claude",
             "Claude Code",
+            usage.claude.updated_at,
             windows([
                 ("Session", &usage.claude.five_hour),
                 ("Weekly", &usage.claude.seven_day),
@@ -244,6 +169,7 @@ fn snapshot_records(usage: &app_core::usage::UsageSnapshot) -> Vec<OmarchyRecord
         (
             "codex",
             "Codex",
+            usage.codex.updated_at,
             windows([
                 ("Session", &usage.codex.primary),
                 ("Weekly", &usage.codex.secondary),
@@ -251,25 +177,37 @@ fn snapshot_records(usage: &app_core::usage::UsageSnapshot) -> Vec<OmarchyRecord
         ),
     ]
     .into_iter()
-    .filter(|(_, _, limits)| !limits.is_empty())
-    .map(|(id, name, limits)| OmarchyRecord {
+    .filter(|(_, _, _, limits)| !limits.is_empty())
+    .map(|(id, name, updated_at, limits)| UsageRecord {
         id: id.to_string(),
         name: name.to_string(),
         limits,
+        collected_at_ms: updated_at,
         ..Default::default()
     })
     .collect()
 }
 
-/// The dropdown's providers in a fixed order: Omarchy's records as last read
-/// (`State::agent_usage`), plus Goko's own snapshot for each provider Omarchy
-/// has no record of.
-fn usage_records(s: &State) -> Vec<OmarchyRecord> {
+/// The dropdown's providers in a fixed order: the records the collectors
+/// wrote (`State::agent_usage`), which know more than the snapshot does, plus
+/// Goko's own snapshot for each provider with no record. The snapshot also
+/// takes over a record's windows once the record has gone stale and the
+/// snapshot is the newer of the two: a provider that stopped answering must
+/// not hide what a running session reports.
+fn usage_records(s: &State) -> Vec<UsageRecord> {
     let mut records = s.agent_usage.clone();
     if let Some(usage) = &s.data.usage {
-        for record in snapshot_records(usage) {
-            if !records.iter().any(|known| known.id == record.id) {
-                records.push(record);
+        for snapshot in snapshot_records(usage) {
+            match records.iter_mut().find(|known| known.id == snapshot.id) {
+                None => records.push(snapshot),
+                Some(known)
+                    if !known.is_fresh(s.now_ms)
+                        && snapshot.collected_at_ms > known.collected_at_ms =>
+                {
+                    known.limits = snapshot.limits;
+                    known.collected_at_ms = snapshot.collected_at_ms;
+                }
+                Some(_) => {}
             }
         }
     }
@@ -302,26 +240,17 @@ fn spawn_reaped(program: impl AsRef<std::ffi::OsStr>) {
     }
 }
 
-/// Asks the usage updaters, where they are installed, to rewrite the records
-/// `read_agent_usage` reads. They finish on their own time; the usage poll
-/// re-reads the records while the dropdown is open.
+/// Asks Omarchy's collectors, on a machine that has them, to rewrite their
+/// records too: they know providers Goko has no collector for. Refresh does
+/// not depend on them; Goko's own collectors run beside this on every OS.
 fn run_usage_updaters() {
     #[cfg(target_os = "linux")]
-    {
-        // The user's own Antigravity updater, when they have one.
-        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-            let fix_agy = std::path::PathBuf::from(home).join(".local/bin/fix-agy-usage.py");
-            if fix_agy.is_file() {
-                spawn_reaped(fix_agy);
-            }
-        }
-        spawn_reaped("omarchy-agent-usage-update");
-    }
+    spawn_reaped("omarchy-agent-usage-update");
 }
 
 /// The header line under "Agents": today's sessions when a provider reports
 /// them, otherwise the sessions Goko has.
-fn sessions_line(records: &[OmarchyRecord], own_sessions: usize) -> String {
+fn sessions_line(records: &[UsageRecord], own_sessions: usize) -> String {
     let today: Vec<u64> = records.iter().filter_map(|r| r.today_sessions).collect();
     let (count, suffix) = if today.is_empty() {
         (own_sessions as u64, "")
@@ -333,7 +262,8 @@ fn sessions_line(records: &[OmarchyRecord], own_sessions: usize) -> String {
 }
 
 /// The agents usage dropdown: inspect active limits, countdowns, and accounts
-/// across providers, or jump to Settings -> Accounts, matching Omarchy's agent dropdown.
+/// across providers, or jump to Settings -> Accounts. It draws from
+/// `usage_records`, so it works wherever Goko reads usage, on any OS.
 pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
     s.usage_menu.as_ref()?;
     let ink = &s.ink;
@@ -366,8 +296,8 @@ pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
         .child(
             theme::btn_sm("Refresh", None, true, ink).on_press(|st: &mut State| {
                 st.request_usage();
+                st.collect_agent_usage(true);
                 run_usage_updaters();
-                st.agent_usage = read_agent_usage();
             }),
         );
     body = body.child(hero);
@@ -664,8 +594,9 @@ fn agents_button(open: bool, ink: &Ink) -> El {
                 s.usage_menu = None;
             } else {
                 s.usage_menu = Some("agents".to_string());
-                // Read here, not in the view: the dropdown draws from this.
-                s.agent_usage = read_agent_usage();
+                // Open on fresh numbers rather than the last poll's.
+                s.request_usage();
+                s.collect_agent_usage(false);
             }
             crate::yield_focus(s, tx);
         })
@@ -1342,11 +1273,11 @@ mod tests {
         s
     }
 
-    fn record(id: &str, percent: f64) -> OmarchyRecord {
-        OmarchyRecord {
+    fn record(id: &str, percent: f64) -> UsageRecord {
+        UsageRecord {
             id: id.to_string(),
             name: id.to_string(),
-            limits: vec![OmarchyLimit {
+            limits: vec![UsageWindow {
                 label: "Weekly".to_string(),
                 percent,
                 ..Default::default()
@@ -1364,15 +1295,18 @@ mod tests {
         assert_eq!(left(2 * 86_400 + 3 * 3_600), "2d 3h");
         assert_eq!(left(3_600 + 5 * 60), "1h 5m");
         assert_eq!(left(12 * 60), "12m");
+        assert_eq!(left(40), "40s", "under a minute is not \"0m\"");
         assert_eq!(left(-1), "reset");
         assert_eq!(format_countdown(Some(""), NOW_MS), "");
         assert_eq!(format_countdown(None, NOW_MS), "");
     }
 
-    /// `Limit::resets_at` is epoch seconds: a window an hour away must count
-    /// down, not read "reset", and the snapshot claims no plan tier.
+    /// With no collector's records at all (any OS without one), Goko's own
+    /// snapshot is the dropdown. `Limit::resets_at` is epoch seconds: a window
+    /// an hour away must count down, not read "reset", and the snapshot claims
+    /// no plan tier.
     #[test]
-    fn the_snapshot_fallback_counts_down_to_its_reset() {
+    fn the_snapshot_alone_fills_the_dropdown_and_counts_down() {
         let s = state_with_claude_window(42.0, 3_600);
         let records = usage_records(&s);
         assert_eq!(records.len(), 1, "only Claude has a window");
@@ -1386,19 +1320,31 @@ mod tests {
         );
     }
 
-    /// Omarchy knowing one provider must not hide Goko's own data for the
-    /// others, and Omarchy's record wins for a provider both know.
+    /// A record for one provider must not hide Goko's own data for the
+    /// others, and the record wins for a provider both know.
     #[test]
-    fn the_snapshot_fills_in_providers_omarchy_has_no_record_of() {
+    fn the_snapshot_fills_in_providers_with_no_record() {
         let mut s = state_with_claude_window(42.0, 3_600);
         s.agent_usage = vec![record("ollama", 0.1)];
         let ids: Vec<String> = usage_records(&s).into_iter().map(|r| r.id).collect();
         assert_eq!(ids, ["ollama", "claude"]);
 
-        s.agent_usage = vec![record("claude", 0.9)];
+        let mut collected = record("claude", 0.9);
+        collected.tier_label = Some("Max 5x".to_string());
+        collected.collected_at_ms = Some(NOW_MS - 60_000);
+        s.agent_usage = vec![collected.clone()];
         let records = usage_records(&s);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].limits[0].percent, 0.9);
+
+        // A record its collector stopped renewing gives its windows up to the
+        // newer snapshot, and keeps what only it knows.
+        collected.collected_at_ms = Some(NOW_MS - 3_600_000);
+        s.agent_usage = vec![collected];
+        let records = usage_records(&s);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].limits[0].percent, 0.42);
+        assert_eq!(records[0].tier_label.as_deref(), Some("Max 5x"));
     }
 
     #[test]

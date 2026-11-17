@@ -215,9 +215,16 @@ pub struct State {
     /// The open Agents usage dropdown (`"agents"`); it anchors to the header's
     /// Agents button.
     usage_menu: Option<String>,
-    /// Omarchy's usage records as last read from disk: when the dropdown
-    /// opens, on Refresh, and on the usage poll while it stays open.
-    agent_usage: Vec<chrome::OmarchyRecord>,
+    /// The per-provider usage records the worker last read with the usage
+    /// snapshot (`app_core::usage_records`): what Goko's own collectors and
+    /// any other collector on this machine wrote.
+    agent_usage: Vec<app_core::usage_records::UsageRecord>,
+    /// Goko's own usage collectors (`app_core::usage_collect`), run on a
+    /// thread of their own when the dropdown opens and on Refresh.
+    usage_collector: std::sync::Arc<app_core::usage_collect::Collector>,
+    /// Set by a collector run when it ends, so the next poll reads what it
+    /// wrote at once instead of on the five-second cadence.
+    usage_collected: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// What the check for a newer release found (Settings → Updates).
     update: update::Status,
     /// Where "Update now" installs over this copy; `None` when this copy can
@@ -357,6 +364,8 @@ impl State {
             usage_at: None,
             usage_menu: None,
             agent_usage: Vec::new(),
+            usage_collector: Default::default(),
+            usage_collected: Default::default(),
             update: update::Status::default(),
             update_dir: update::install_dir(),
             settings: settings::SettingsState::default(),
@@ -738,9 +747,15 @@ impl State {
             backend::Req::Usage { .. } => {
                 if let Ok(backend::ReplyData::Usage { .. }) = &reply.result {
                     // Move the payload out — the view types aren't Clone.
-                    if let Ok(backend::ReplyData::Usage { snapshot, accounts }) = reply.result {
+                    if let Ok(backend::ReplyData::Usage {
+                        snapshot,
+                        accounts,
+                        records,
+                    }) = reply.result
+                    {
                         self.data.usage = Some(snapshot);
                         self.data.accounts = Some(accounts);
+                        self.agent_usage = records;
                     }
                 }
                 return;
@@ -5142,11 +5157,17 @@ mod view_tests {
                     ..Default::default()
                 },
                 accounts: usage_view(),
+                records: vec![app_core::usage_records::UsageRecord {
+                    id: "devin".to_string(),
+                    ..Default::default()
+                }],
             }),
         ));
         assert!(s.data.usage.is_some());
         assert_eq!(s.data.usage.as_ref().unwrap().claude.updated_at, Some(42));
         assert_eq!(s.data.accounts.as_ref().unwrap().claude.items.len(), 2);
+        assert_eq!(s.agent_usage.len(), 1, "the records come with the reply");
+        assert_eq!(s.agent_usage[0].id, "devin");
     }
 
     #[test]

@@ -10,6 +10,15 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+### Added
+
+- An Agents button in the header opens your AI agents' usage: how much of
+  each quota window is spent and when it resets, for Claude Code, Codex,
+  Devin, Antigravity and OpenCode Go, on macOS, Linux and Windows. Goko reads
+  each agent's own sign-in on your machine and asks that agent's provider; no
+  extra sign-in is needed. Press Refresh for fresh numbers. It replaces the
+  usage chips in the header.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
