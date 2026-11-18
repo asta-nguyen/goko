@@ -4,6 +4,7 @@
 //! live in `state`/`draft`/`navigation`/`quit_guard`.
 
 pub mod acp;
+pub mod autorefresh;
 pub mod backend;
 pub mod blame;
 pub mod branch;
@@ -32,10 +33,12 @@ pub mod patch;
 pub mod quick_open;
 pub mod quit_guard;
 pub mod search;
+pub mod snapshot;
 pub mod stashes;
 pub mod state;
 pub mod syntax;
 pub mod table;
+pub mod tabs;
 pub mod trash;
 pub mod workspace;
 pub mod worktree_form;

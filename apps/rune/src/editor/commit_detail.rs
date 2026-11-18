@@ -5,18 +5,15 @@
 //! is selected.
 
 use app_core::git_view::GitViewCommit;
-use rune::{El, TextStyle, Tx, col, el, row};
+use rune::{El, Tx, col, el, row};
 use rune_kit::diff::DiffState;
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Kit, ScrollBar};
 
 use crate::State;
 use crate::editor::changes::{self, TreeRow};
-use crate::editor::history::{self, entry_name, format_time, ref_badge, status_label};
+use crate::editor::history::{self, entry_name, format_time, ref_badge};
 use crate::editor::state::{ListMenu, ListView, Section};
-use crate::theme::{self, Ink, T11M, T11MN_BADGE, T12, T12M, T12TN, btn_sm, txt};
-
-/// `font-mono text-xs` — changed-file paths (desktop `ChangedFiles` rows).
-const T12MONO: TextStyle = TextStyle::new(12.0, 400.0).mono();
+use crate::theme::{self, Ink, T11M, T11MN, T11MN_BADGE, T12, T12M, T12TN, btn_sm, txt};
 
 /// Enter or Space activates a focused `role("button")` element — Rune's press
 /// is pointer-only, so `on_key` covers keyboard activation.
@@ -258,9 +255,9 @@ pub(crate) fn view_for(s: &State, ink: &Ink, commit: &GitViewCommit) -> El {
         ));
     }
 
-    // Changed files metadata (status badge + name) — the patch pane renders
-    // the diff itself below. Mounted even when empty so the list's View
-    // menu still has somewhere to open.
+    // Changed files metadata (status mark + name + counts) — the patch pane
+    // renders the diff itself below. Mounted even when empty so the list's
+    // View menu still has somewhere to open.
     if let Some(p) = detail {
         body = body.child(changed_files(s, &p.files, ink, ChangedFileHost::History));
     }
@@ -343,13 +340,15 @@ pub(crate) enum ChangedFileHost {
     Flat,
 }
 
-/// Changed-file list (`ChangedFiles` in panes.tsx): mono path with the
-/// original name muted, an outline status badge in sans, and `+added` /
-/// `−removed` counts in success/danger pushed to the row's end. For
-/// `ChangedFileHost::History` the `View` (`List`/`Tree`) comes from
-/// the shared `editor.list_view` and a secondary press anywhere on the list opens its
-/// context menu; `Flat` always renders the plain list, and only its rows
-/// open a menu (Open File).
+/// Changed-file list (`ChangedFiles` in panes.tsx): the same rows the
+/// Changes section draws — file icon, tinted name, `+N −N` counts and a
+/// one-letter status mark (the full status word stays in the row's
+/// accessible description) — with the open-file icon revealed on row
+/// hover/focus. For `ChangedFileHost::History` the `View` (`List`/`Tree`)
+/// comes from the shared `editor.list_view` and a secondary press anywhere
+/// on the list opens its context menu; `Flat` always renders the plain
+/// list, and only its rows open a menu (Open File). `Tree` nests the files
+/// under shared directory rows keyed in `history.collapsed_dirs`.
 pub(crate) fn changed_files(
     s: &State,
     files: &[app_core::git_view::StatusEntry],
@@ -375,11 +374,26 @@ pub(crate) fn changed_files(
             });
         });
     }
-    list = list.child(row().w_full().items_center().py(2.0).child(txt(
+    let mut head = row().w_full().items_center().gap(6.0).py(2.0).child(txt(
         &format!("{count} changed file{}", if count == 1 { "" } else { "s" }),
         T11M,
         ink.muted,
-    )));
+    ));
+    // The group's summed counts, like a Changes group header shows.
+    if let Some((added, removed)) = changes::group_totals(files.iter()) {
+        head = head
+            .child(txt(
+                &format!("+{}", changes::grouped_num(added)),
+                T11MN,
+                ink.success,
+            ))
+            .child(txt(
+                &format!("−{}", changes::grouped_num(removed)),
+                T11MN,
+                ink.danger,
+            ));
+    }
+    list = list.child(head);
     match if history {
         s.editor.list_view
     } else {
@@ -387,7 +401,7 @@ pub(crate) fn changed_files(
     } {
         ListView::List => {
             for f in files {
-                list = list.child(changed_file_row(f, ink, 0.0, host, k));
+                list = list.child(changed_file_row(f, ink, host, k, entry_name(f), 0));
             }
         }
         ListView::Tree => {
@@ -397,9 +411,10 @@ pub(crate) fn changed_files(
                 changes::tree_rows(&entries, |p| s.editor.history.collapsed_dirs.contains(p));
             for trow in rows {
                 list = list.child(match trow {
-                    TreeRow::Dir { path, name, depth } => dir_row(s, ink, &path, &name, depth),
+                    TreeRow::Dir { path, name, depth } => dir_row(s, ink, k, &path, &name, depth),
                     TreeRow::File { entry, depth, .. } => {
-                        changed_file_row(entry, ink, depth as f32 * changes::DIR_INDENT, host, k)
+                        let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+                        changed_file_row(entry, ink, host, k, name.to_string(), depth)
                     }
                 });
             }
@@ -408,40 +423,24 @@ pub(crate) fn changed_files(
     list
 }
 
-/// A directory header row in the detail's `Tree` view: chevron + folder +
-/// last path segment; toggles `path` in `history.collapsed_dirs`.
-fn dir_row(s: &State, ink: &Ink, path: &str, name: &str, depth: usize) -> El {
+/// A directory header row in the detail's `Tree` view: the shared tree item
+/// (indent guides, chevron, folder icon) showing the dir's name — `a/b/c`
+/// when a chain of single-child dirs folded into one row. The whole row
+/// toggles `path` in `history.collapsed_dirs` — plain-path keys, not the
+/// Changes `dir:` prefix.
+fn dir_row(s: &State, ink: &Ink, k: &Kit, path: &str, name: &str, depth: usize) -> El {
     let collapsed = s.editor.history.collapsed_dirs.contains(path);
     let key = path.to_string();
-    el().key(format!("history-dir:{path}"))
-        .w_full()
-        .h(24.0)
-        .px(2.0)
-        .pl(4.0 + depth as f32 * changes::DIR_INDENT)
-        .gap(4.0)
-        .items_center()
-        .radius(6.0)
+    let trow = rune_kit::TreeRow::new(path, depth as u32).expanded(Some(!collapsed));
+    changes::dir_item(name)
+        .build(k, &trow, &changes::tree_style(k))
+        .key(format!("history-dir:{path}"))
         .hover(ink.text.alpha(0.06))
         .role("button")
         .label(format!("{path} directory"))
+        .help(path.to_string())
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
-        .child(theme::ic(
-            if collapsed {
-                &theme::CHEVRON_RIGHT
-            } else {
-                &theme::CHEVRON_DOWN
-            },
-            11.0,
-            ink.muted,
-        ))
-        .child(theme::ic(&theme::FOLDER, 12.0, ink.muted))
-        .child(
-            txt(name, T12M, ink.text)
-                .min_w(0.0)
-                .truncate_middle()
-                .help_when_truncated(path.to_string()),
-        )
         .on_press(move |st: &mut State| {
             if !st.editor.history.collapsed_dirs.remove(&key) {
                 st.editor.history.collapsed_dirs.insert(key.clone());
@@ -458,34 +457,36 @@ fn host_diff(s: &mut State, host: ChangedFileHost) -> &mut DiffState {
     }
 }
 
-/// One changed file in the commit detail: a press scrolls the patch pane to
-/// that file's diff, a secondary press opens the host's file menu scoped to
-/// the path, and the trailing icon opens the file in the editor. `indent` is
-/// the `Tree` view's extra left padding.
+/// One changed file in the commit detail: the shared file `TreeItem` as the
+/// pressable row — a press or the activate key scrolls the host's patch
+/// pane to that file's diff — plus the open-file icon revealed on row
+/// hover/focus, and the host's file menu scoped to the path on a secondary
+/// press. `display` is the visible name (the file name in `Tree`, the full
+/// path or `orig → path` in `List`, which the tooltip and accessible label
+/// always carry); `depth` is the `Tree` view's nesting level (0 in `List`).
 fn changed_file_row(
     f: &app_core::git_view::StatusEntry,
     ink: &Ink,
-    indent: f32,
     host: ChangedFileHost,
     k: &Kit,
+    display: String,
+    depth: usize,
 ) -> El {
     let path = f.path.clone();
     let key_path = f.path.clone();
     let open_path = f.path.clone();
     let menu_path = f.path.clone();
-    let mut r = row()
+    let name = entry_name(f);
+    let trow = rune_kit::TreeRow::new(&f.path, depth as u32);
+    let select = changes::file_item(f, display, ink)
+        .build(k, &trow, &changes::tree_style(k))
         .grow(1.0)
         .min_w(0.0)
-        .items_center()
-        .gap(8.0)
-        .px(6.0)
-        .pl(6.0 + indent)
-        .py(4.0)
-        .radius(4.0)
-        .cursor(rune::Cursor::Pointer)
-        .hover(ink.panel)
+        .hover(ink.text.alpha(0.06))
         .role("button")
-        .label(format!("View diff for {}", f.path))
+        .label(name.clone())
+        .description(changes::entry_description(f))
+        .help(name.clone())
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
         .on_press_tx(move |st: &mut State, tx: &mut Tx| {
@@ -505,50 +506,16 @@ fn changed_file_row(
                 false
             }
         });
-    r = r.child(
-        el().px(6.0)
-            .h(20.0)
-            .radius(10.0)
-            .items_center()
-            .justify_center()
-            .border(1.0, ink.border)
-            .label(status_label(f.status))
-            .child(txt(status_label(f.status), T11M, ink.muted)),
-    );
-    let mut name = row().min_w(0.0).grow(1.0).items_center().gap(0.0);
-    if let Some(orig) = &f.orig_path {
-        name = name.child(txt(&format!("{orig} → "), T12MONO, ink.muted));
-    }
-    name = name.child(
-        txt(&f.path, T12MONO, ink.text)
-            .min_w(0.0)
-            .grow(1.0)
-            .truncate_middle()
-            .help_when_truncated(f.path.clone())
-            .label(entry_name(f)),
-    );
-    r = r.child(name);
-    if let Some(added) = f.added {
-        r = r.child(el().grow(1.0)).child(
-            row()
-                .items_center()
-                .gap(6.0)
-                .child(txt(&format!("+{added}"), T12MONO, ink.success))
-                .child(txt(
-                    &format!("−{}", f.removed.unwrap_or(0)),
-                    T12MONO,
-                    ink.danger,
-                )),
-        );
-    }
-    // Outer shell mirrors the Changes `entry_row`: the pressable row plus
+    // The shell mirrors the Changes `entry_row`: the pressable item plus
     // the open-file icon, with a row-scoped context menu on secondary press.
     row()
         .w_full()
-        .items_center()
-        .gap(2.0)
+        .h(24.0)
         .px(2.0)
-        .child(r)
+        .gap(2.0)
+        .items_center()
+        .hover_group_focus()
+        .child(select)
         .child(
             IconButton::new(&theme::OPEN_FILE)
                 .variant(IconButtonVariant::GhostMuted)
@@ -558,7 +525,8 @@ fn changed_file_row(
                 .on_press_tx(move |st: &mut State, tx: &mut Tx| {
                     crate::editor::files::open_doc(st, &open_path, None, tx);
                 })
-                .build(k),
+                .build(k)
+                .group_opacity(0.0, 1.0),
         )
         .on_secondary_press(move |st: &mut State, p: rune::PointerPress, _tx: &mut Tx| {
             let menu = ListMenu::Point {
@@ -608,27 +576,17 @@ pub(crate) fn uncommitted_view(s: &State, ink: &Ink) -> El {
             stick_bottom: false,
         })
         .px(4.0);
+    let k = &s.editor.kit;
+    // Read-only rows: the same file `TreeItem` the List view draws (status
+    // letter or word badge, name, counts) with no press or menu handlers.
     for e in entries {
-        let mut r = row().w_full().items_center().gap(8.0).px(12.0).py(4.0);
-        r = r.child(
-            el().px(6.0)
-                .h(20.0)
-                .radius(10.0)
-                .items_center()
-                .justify_center()
-                .border(1.0, ink.muted)
-                .label(status_label(e.status))
-                .child(txt(status_label(e.status), T11MN_BADGE, ink.muted)),
+        let trow = rune_kit::TreeRow::new(&e.path, 0);
+        list = list.child(
+            changes::file_item(e, entry_name(e), ink)
+                .build(k, &trow, &changes::tree_style(k))
+                .w_full()
+                .px(6.0),
         );
-        let full_name = entry_name(e);
-        r = r.child(
-            txt(&full_name, T12TN, ink.text)
-                .min_w(0.0)
-                .grow(1.0)
-                .truncate_middle()
-                .help_when_truncated(full_name),
-        );
-        list = list.child(r);
     }
     root.child(list.scroll_bar(&s.editor.kit))
 }
@@ -1205,7 +1163,7 @@ index 1111111..2222222 100644\n\
         let row = rt
             .elements()
             .into_iter()
-            .find(|e| in_meta(e) && e.label.as_deref() == Some("View diff for src/a.rs"))
+            .find(|e| in_meta(e) && e.label.as_deref() == Some("src/a.rs"))
             .expect("changed-file row mounted");
         let (x, y) = (
             row.rect[0] + row.rect[2] / 2.0,
@@ -1314,8 +1272,15 @@ index 1111111..2222222 100644\n\
         assert!(
             rt.elements()
                 .iter()
-                .any(|e| in_meta(e) && e.label.as_deref() == Some("View diff for src/lib/a.rs")),
-            "nested file row mounted"
+                .any(|e| in_meta(e) && e.label.as_deref() == Some("src/lib/a.rs")),
+            "nested file row mounted with its full-path label"
+        );
+        // The row's visible text is only the file's name.
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| in_meta(e) && e.text.as_deref() == Some("a.rs")),
+            "nested file row shows only its name"
         );
 
         // Collapsing `src` hides both levels of children.
@@ -1335,8 +1300,189 @@ index 1111111..2222222 100644\n\
         assert!(
             !rt.elements()
                 .iter()
-                .any(|e| in_meta(e) && e.label.as_deref() == Some("View diff for src/lib/a.rs")),
+                .any(|e| in_meta(e) && e.label.as_deref() == Some("src/lib/a.rs")),
             "collapsed dir hides its files"
+        );
+    }
+
+    /// `Tree` folds a chain of single-child directories into one compact
+    /// row (`a/b/c`), like the Changes list; file rows show only the
+    /// file's name while the full path stays in the accessible label.
+    #[test]
+    fn tree_view_compacts_single_child_dirs() {
+        let (mut s, _home, _guard) = detail_scene();
+        s.editor.history.detail.as_mut().unwrap().files = vec![
+            StatusEntry {
+                path: "a/b/c/f.rs".into(),
+                orig_path: None,
+                status: "modified",
+                added: Some(3),
+                removed: Some(1),
+            },
+            StatusEntry {
+                path: "a/b/c/g.rs".into(),
+                orig_path: None,
+                status: "added",
+                added: Some(7),
+                removed: Some(0),
+            },
+        ];
+        // `Tree` is the session default and the History detail reads the
+        // shared `editor.list_view`.
+        assert_eq!(s.editor.list_view, ListView::Tree);
+        let mut rt = Runtime::new(s, crate::view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+
+        let has_label = |rt: &Runtime<State>, l: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| in_meta(e) && e.label.as_deref() == Some(l))
+        };
+        // One row for the whole `a/b/c` chain — no per-level dir rows.
+        assert!(has_label(&rt, "a/b/c directory"), "compact dir row mounted");
+        for l in ["a directory", "a/b directory"] {
+            assert!(!has_label(&rt, l), "{l} must not mount");
+        }
+        // File rows show only the file name; the full path is the label.
+        for (name, label) in [("f.rs", "a/b/c/f.rs"), ("g.rs", "a/b/c/g.rs")] {
+            assert!(has_label(&rt, label), "{label} row mounted");
+            assert!(
+                rt.elements()
+                    .iter()
+                    .any(|e| in_meta(e) && e.text.as_deref() == Some(name)),
+                "{name} is the row's visible text"
+            );
+        }
+    }
+
+    /// A file row carries its one-letter status mark and `+N −N` counts
+    /// like the Changes rows, and the caption sums the group's totals.
+    #[test]
+    fn file_row_shows_status_letter_counts_and_caption_total() {
+        let (mut s, _home, _guard) = detail_scene();
+        s.editor.history.detail.as_mut().unwrap().files = vec![StatusEntry {
+            path: "src/a.rs".into(),
+            orig_path: None,
+            status: "modified",
+            added: Some(1234),
+            removed: Some(56),
+        }];
+        s.editor.list_view = ListView::List;
+        let mut rt = Runtime::new(s, crate::view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+
+        // The mark and counts are the row's own text children.
+        let row_el = rt
+            .elements()
+            .into_iter()
+            .find(|e| in_meta(e) && e.label.as_deref() == Some("src/a.rs"))
+            .expect("file row mounted");
+        let row_path = format!("{}/", row_el.path);
+        let texts: Vec<String> = rt
+            .elements()
+            .iter()
+            .filter(|e| e.path.starts_with(&row_path))
+            .filter_map(|e| e.text.clone())
+            .collect();
+        for needle in ["M", "+1234", "−56"] {
+            assert!(
+                texts.iter().any(|t| t == needle),
+                "row missing {needle:?}: {texts:?}"
+            );
+        }
+
+        // The caption sums the group like a Changes group header — the
+        // grouped "+1,234" exists only there (rows show "+1234").
+        for needle in ["1 changed file", "+1,234", "−56"] {
+            assert!(
+                rt.elements()
+                    .iter()
+                    .any(|e| in_meta(e) && e.text.as_deref() == Some(needle)),
+                "caption {needle:?} mounted"
+            );
+        }
+    }
+
+    /// A press on a file row still scrolls the patch pane to that file, and
+    /// the open-file icon keeps its label while it stays hover-revealed.
+    #[test]
+    fn file_row_press_scrolls_diff_and_open_button_keeps_label() {
+        const TWO_FILE_DIFF: &str = "diff --git a/src/a.rs b/src/a.rs\n\
+index 1111111..2222222 100644\n\
+--- a/src/a.rs\n\
++++ b/src/a.rs\n\
+@@ -1,3 +1,4 @@\n\
+ fn main() {\n\
++    println!(\"a\");\n\
+ }\n\
+diff --git a/top.rs b/top.rs\n\
+index 3333333..4444444 100644\n\
+--- a/top.rs\n\
++++ b/top.rs\n\
+@@ -1,3 +1,4 @@\n\
+ fn top() {\n\
++    println!(\"t\");\n\
+ }\n";
+        let (mut s, _home, _guard) = detail_scene();
+        s.editor
+            .history
+            .detail
+            .as_mut()
+            .unwrap()
+            .detail
+            .as_mut()
+            .unwrap()
+            .body = String::new();
+        s.editor.history.detail.as_mut().unwrap().files = vec![
+            StatusEntry {
+                path: "src/a.rs".into(),
+                orig_path: None,
+                status: "modified",
+                added: Some(1),
+                removed: Some(0),
+            },
+            StatusEntry {
+                path: "top.rs".into(),
+                orig_path: None,
+                status: "added",
+                added: Some(2),
+                removed: Some(0),
+            },
+        ];
+        s.editor
+            .history
+            .diff
+            .set_files(rune_kit::diff::parse(TWO_FILE_DIFF));
+        s.editor.list_view = ListView::List;
+        let mut rt = Runtime::new(s, crate::view, (1512.0, 814.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+
+        // Hover-reveal keeps the icon invisible but mounted and focusable,
+        // so its label still names it.
+        let open = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Open file top.rs"))
+            .expect("open-file button mounted by label");
+        assert!(open.focusable, "open-file button stays focusable");
+
+        let row_el = rt
+            .elements()
+            .into_iter()
+            .find(|e| in_meta(e) && e.label.as_deref() == Some("top.rs"))
+            .expect("file row mounted");
+        click_el(&mut rt, &row_el);
+
+        assert_eq!(
+            rt.state.editor.history.diff.visible_file(),
+            1,
+            "pressing the row scrolls the patch pane to its file"
         );
     }
 

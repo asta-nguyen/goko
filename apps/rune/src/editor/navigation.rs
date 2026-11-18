@@ -53,6 +53,17 @@ pub enum PendingNav {
     ShowChanges { layer: String, path: String },
     /// Switch the app-level view (Terminal / Editor / Settings).
     SetView(View),
+    /// Activate the tab `path` — a parked document swaps in without a
+    /// reread. Never raises the draft guard: the active document parks.
+    SwitchTab { path: String },
+    /// Close the tab `path`. A dirty tab raises the one-file guard first;
+    /// a clean tab closes outright. Closing the active tab activates its
+    /// right neighbour, else the left one.
+    CloseTab { path: String },
+    /// Activate the tab `delta` positions away from the active one in tab
+    /// order, wrapping — the `⌘⌥→`/`⌘⌥←` (or `Ctrl+PageDown`/`Ctrl+PageUp`)
+    /// chords. Never raises the draft guard.
+    StepTab(i32),
     /// Close the window (red button / Cmd-W path).
     CloseWindow,
     /// Quit the app (Cmd-Q / Dock Quit after an OS-level veto).
@@ -65,6 +76,8 @@ pub struct Guard {
     pub pending: PendingNav,
     /// Document the guard protects (active doc at raise time).
     pub doc_path: String,
+    /// The other dirty paths a Save All still has to walk, in tab order.
+    pub queue: Vec<String>,
     /// `true` when raised by the OS quit veto rather than in-app navigation.
     pub quitting: bool,
 }
@@ -113,28 +126,165 @@ pub fn navigate(s: &mut State, pending: PendingNav, tx: &mut Tx) {
         s.editor.visited.insert(Section::Files);
         return;
     }
-    if let Some(doc) = s.editor.active_doc() {
-        if doc.dirty() {
-            s.editor.guard = Some(Guard {
-                pending,
-                doc_path: doc.path.clone(),
-                quitting: false,
-            });
-            s.editor.sync_quit_dirty();
-            return;
-        }
-        if doc.saving {
-            // A save is in flight: hold navigation until it resolves rather
-            // than race the write (the reply resumes or cancels).
+    // Within the current checkout, opening and switching tabs never asks:
+    // a dirty active document simply parks in its tab. Only a save in
+    // flight still holds the request (no tab is parked while `saving`).
+    // Closing a dirty tab is the one prompt left — for that tab alone.
+    let in_checkout = match &pending {
+        PendingNav::OpenDoc { .. }
+        | PendingNav::SwitchTab { .. }
+        | PendingNav::CloseTab { .. }
+        | PendingNav::StepTab(..) => true,
+        PendingNav::ExternalOpen {
+            project_id,
+            checkout,
+            ..
+        } => s
+            .editor
+            .checkout_key
+            .as_deref()
+            .is_some_and(|key| key == checkout_key(project_id, checkout)),
+        _ => false,
+    };
+    if in_checkout {
+        if let Some(doc) = s.editor.active_doc().filter(|d| d.saving) {
             s.editor.save_resume = Some(Guard {
                 pending,
                 doc_path: doc.path.clone(),
+                queue: Vec::new(),
                 quitting: false,
             });
             return;
         }
+        match pending {
+            PendingNav::OpenDoc { path, line } => {
+                // Already a tab: activate it — no reread — and queue the
+                // reveal. The reply path would only reload it.
+                if s.editor.tabs.is_open(&path) {
+                    s.editor.activate_tab(&path);
+                    if let (Some(line), Some(doc)) = (line, s.editor.doc.as_mut()) {
+                        doc.reveal_line = Some(line);
+                    }
+                    s.editor.section = Section::Files;
+                    s.editor.visited.insert(Section::Files);
+                    return;
+                }
+                apply(s, PendingNav::OpenDoc { path, line }, tx);
+                return;
+            }
+            PendingNav::ExternalOpen {
+                project_id,
+                checkout,
+                path,
+                line,
+            } => {
+                // Same checkout (verified above): an open tab activates,
+                // anything else opens like `apply`'s arm does.
+                if s.editor.tabs.is_open(&path) {
+                    s.editor.activate_tab(&path);
+                    if let (Some(line), Some(doc)) = (line, s.editor.doc.as_mut()) {
+                        doc.reveal_line = Some(line);
+                    }
+                    s.editor.section = Section::Files;
+                    s.editor.visited.insert(Section::Files);
+                    return;
+                }
+                apply(
+                    s,
+                    PendingNav::ExternalOpen {
+                        project_id,
+                        checkout,
+                        path,
+                        line,
+                    },
+                    tx,
+                );
+                return;
+            }
+            PendingNav::CloseTab { path } if s.editor.path_is_dirty(&path) => {
+                if s.editor.doc.as_ref().is_none_or(|d| d.path != path) {
+                    s.editor.activate_tab(&path);
+                }
+                s.editor.guard = Some(Guard {
+                    pending: PendingNav::CloseTab { path: path.clone() },
+                    doc_path: path,
+                    queue: Vec::new(),
+                    quitting: false,
+                });
+                s.editor.sync_quit_dirty();
+                return;
+            }
+            _ => apply(s, pending, tx),
+        }
+        return;
+    }
+    // Leaving the checkout, project, section or view — or the window/app:
+    // one guard covers every dirty tab.
+    if s.editor.has_dirty_doc() {
+        raise_dirty_guard(s, pending, false);
+        return;
+    }
+    if let Some(doc) = s.editor.active_doc()
+        && doc.saving
+    {
+        // A save is in flight: hold navigation until it resolves rather
+        // than race the write (the reply resumes or cancels).
+        s.editor.save_resume = Some(Guard {
+            pending,
+            doc_path: doc.path.clone(),
+            queue: Vec::new(),
+            quitting: false,
+        });
+        return;
     }
     apply(s, pending, tx);
+}
+
+/// Raise the single dirty-tab guard for `pending`: the first dirty tab in
+/// tab order activates for the dialog (unless the active doc is mid-save —
+/// a saving doc is never parked, so it fronts the list instead), `doc_path`
+/// names it and `queue` holds the rest, in tab order.
+fn raise_dirty_guard(s: &mut State, pending: PendingNav, quitting: bool) {
+    let dirty = s.editor.dirty_paths();
+    if dirty.is_empty() {
+        return;
+    }
+    let first = dirty[0].clone();
+    if !s
+        .editor
+        .doc
+        .as_ref()
+        .is_some_and(|d| d.path == first || d.saving)
+    {
+        s.editor.activate_tab(&first);
+    }
+    let doc_path = s
+        .editor
+        .doc
+        .as_ref()
+        .map(|d| d.path.clone())
+        .unwrap_or(first);
+    s.editor.guard = Some(Guard {
+        pending,
+        queue: dirty.into_iter().filter(|p| *p != doc_path).collect(),
+        doc_path,
+        quitting,
+    });
+    s.editor.sync_quit_dirty();
+}
+
+/// Revert every dirty tab — the active document and each parked one.
+/// `discard` restores the file's saved baseline as one undo group.
+fn discard_dirty_tabs(s: &mut State) {
+    for path in s.editor.dirty_paths() {
+        if s.editor.doc.as_ref().is_some_and(|d| d.path == path) {
+            if let Some(doc) = s.editor.active_doc_mut() {
+                doc.discard();
+            }
+        } else if let Some(doc) = s.editor.tabs.parked.get_mut(&path) {
+            doc.discard();
+        }
+    }
 }
 
 /// Perform the navigation once guards have passed.
@@ -192,6 +342,24 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
             // stage/unstage buttons reflect the latest data.
             crate::editor::changes::select_entry(&mut s.editor, &layer, &path);
             set_section(s, Section::Changes);
+        }
+        PendingNav::SwitchTab { path } => {
+            // Post-guard (the draft parked when this was queued): make the
+            // tab active and show it.
+            s.editor.activate_tab(&path);
+            s.editor.section = Section::Files;
+            s.editor.visited.insert(Section::Files);
+        }
+        PendingNav::CloseTab { path } => {
+            // Clean closes land here (a dirty tab went through the guard
+            // and was saved or discarded first).
+            s.editor.close_tab(&path);
+        }
+        PendingNav::StepTab(delta) => {
+            if s.editor.step_tab(delta) {
+                s.editor.section = Section::Files;
+                s.editor.visited.insert(Section::Files);
+            }
         }
         PendingNav::SetView(view) => {
             s.view = view;
@@ -310,9 +478,10 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     s.editor.checkout = Some(checkout);
     s.editor.checkout_key = Some(key.clone());
     s.editor.pending_checkout = None;
-    // Per-checkout state resets; the open doc belongs to the old checkout
-    // and is dropped (its draft was guarded before this ran).
+    // Per-checkout state resets; the open doc and every parked tab belong
+    // to the old checkout and are dropped (drafts were guarded first).
     s.editor.doc = None;
+    s.editor.tabs.clear();
     s.editor.doc_load = None;
     s.editor.doc_reload = None;
     s.editor.save_resume = None;
@@ -401,6 +570,7 @@ fn clear_checkout(s: &mut State) {
     s.editor.checkout_key = None;
     s.editor.pending_checkout = None;
     s.editor.doc = None;
+    s.editor.tabs.clear();
     s.editor.doc_load = None;
     s.editor.doc_reload = None;
     s.editor.save_resume = None;
@@ -454,15 +624,23 @@ pub fn resolve_guard(s: &mut State, action: GuardAction, tx: &mut Tx) {
             s.editor.sync_quit_dirty();
         }
         GuardAction::Discard => {
-            if let Some(doc) = s.editor.active_doc_mut()
-                && doc.path == guard.doc_path
-            {
-                doc.discard();
-            }
+            // Discard All: every dirty tab reverts, then the navigation
+            // proceeds.
+            discard_dirty_tabs(s);
             s.editor.sync_quit_dirty();
             apply(s, guard.pending, tx);
         }
         GuardAction::Save => {
+            // Save All: the active doc saves first; the other dirty paths
+            // queue behind it — `finish_save` activates and saves each in
+            // turn, then resumes `guard.pending`.
+            let mut guard = guard;
+            guard.queue = s
+                .editor
+                .dirty_paths()
+                .into_iter()
+                .filter(|p| *p != guard.doc_path)
+                .collect();
             // Enqueue the save; the reply resumes `guard.pending` on success
             // or re-raises the error and drops it on failure.
             s.editor.save_resume = Some(guard);
@@ -501,13 +679,7 @@ pub fn on_window_close(s: &mut State, tx: &mut Tx) {
         // the close proceed; workers finish their writes.
         return;
     }
-    if let Some(doc) = s.editor.active_doc() {
-        s.editor.guard = Some(Guard {
-            pending: PendingNav::CloseWindow,
-            doc_path: doc.path.clone(),
-            quitting: false,
-        });
-    }
+    raise_dirty_guard(s, PendingNav::CloseWindow, false);
     s.editor.reopen_after_close = true;
     let _ = tx;
 }
@@ -546,27 +718,20 @@ pub fn on_quit_vetoed(s: &mut State) {
         }
         return;
     }
-    if let Some(doc) = s.editor.active_doc() {
-        s.editor.guard = Some(Guard {
-            pending: PendingNav::Quit,
-            doc_path: doc.path.clone(),
-            quitting: true,
-        });
-    }
+    raise_dirty_guard(s, PendingNav::Quit, true);
     s.editor.quit_vetoed = true;
-    s.editor.sync_quit_dirty();
     // The window never closed, but make sure it's frontmost for the dialog.
     if let Some(app) = &s.editor.app {
         app.open();
     }
 }
 
-/// Discard chosen for a quit: the draft dies with the process, so clearing
-/// the dirty flag and re-issuing quit is the honest equivalent.
+/// Discard chosen for a quit: every dirty tab's draft dies with the
+/// process, so clearing the dirty flag and re-issuing quit is the honest
+/// equivalent.
 pub fn quit_discard(s: &mut State) {
-    if let Some(doc) = s.editor.doc.as_mut() {
-        doc.discard();
-    }
+    s.editor.guard = None;
+    discard_dirty_tabs(s);
     s.editor.sync_quit_dirty();
     s.editor.quit_vetoed = false;
     if let Some(app) = &s.editor.app {
@@ -575,22 +740,39 @@ pub fn quit_discard(s: &mut State) {
 }
 
 /// Save chosen for a quit: the save reply sees `PendingNav::Quit` and calls
-/// `handle.quit()` once the buffer is clean — `should_terminate` then finds
-/// no dirty flag and lets Rune's original hook terminate.
+/// `handle.quit()` once the queue of dirty tabs drained — `should_terminate`
+/// then finds no dirty flag and lets Rune's original hook terminate.
 pub fn quit_after_save(s: &mut State) {
-    if s.editor.doc.is_some() {
-        if let Some(doc) = s.editor.active_doc() {
-            s.editor.save_resume = Some(Guard {
-                pending: PendingNav::Quit,
-                doc_path: doc.path.clone(),
-                quitting: true,
-            });
+    match s.editor.guard.take() {
+        Some(mut guard) => {
+            // The dialog's own guard carries the dirty list: save the
+            // active doc, then walk `queue` like any Save All.
+            guard.pending = PendingNav::Quit;
+            guard.quitting = true;
+            guard.queue = s
+                .editor
+                .dirty_paths()
+                .into_iter()
+                .filter(|p| *p != guard.doc_path)
+                .collect();
+            s.editor.save_resume = Some(guard);
+            crate::editor::files::save_active_doc(s);
         }
-        s.editor.guard = None;
-        crate::editor::files::save_active_doc(s);
-    } else {
-        if let Some(app) = &s.editor.app {
-            app.quit();
+        None if s.editor.doc.is_some() => {
+            if let Some(doc) = s.editor.active_doc() {
+                s.editor.save_resume = Some(Guard {
+                    pending: PendingNav::Quit,
+                    doc_path: doc.path.clone(),
+                    queue: Vec::new(),
+                    quitting: true,
+                });
+            }
+            crate::editor::files::save_active_doc(s);
+        }
+        None => {
+            if let Some(app) = &s.editor.app {
+                app.quit();
+            }
         }
     }
 }
@@ -701,16 +883,22 @@ pub fn request_doc_reload(s: &mut State) {
 /// the navigation a successful save should resume. A refused enqueue clears
 /// `saving` immediately so the doc never sticks on "save in flight".
 pub fn enqueue_save(s: &mut State) {
-    let Some(doc) = s.editor.doc.as_ref() else {
+    enqueue_save_ed(&mut s.editor);
+}
+
+/// `enqueue_save` on the editor state — the Save All continuation in
+/// `backend/apply.rs` has no `State` to pass.
+pub(crate) fn enqueue_save_ed(ed: &mut EditorState) {
+    let Some(doc) = ed.doc.as_ref() else {
         return;
     };
-    let Some(checkout) = s.editor.checkout.clone() else {
+    let Some(checkout) = ed.checkout.clone() else {
         return;
     };
-    let Some(key) = s.editor.checkout_key.clone() else {
+    let Some(key) = ed.checkout_key.clone() else {
         return;
     };
-    let Some(pid) = s.editor.project_id.clone() else {
+    let Some(pid) = ed.project_id.clone() else {
         return;
     };
     let path = doc.path.clone();
@@ -720,23 +908,23 @@ pub fn enqueue_save(s: &mut State) {
     // normalization can grow it past the limit.
     let new_text = doc.text_for_save();
     if new_text.len() > crate::editor::draft::TEXT_CAP {
-        if let Some(doc) = s.editor.doc.as_mut() {
+        if let Some(doc) = ed.doc.as_mut() {
             doc.save_error = Some("the file exceeds the 1 MiB save limit".into());
         }
-        s.editor.save_resume = None;
-        s.editor.sync_quit_dirty();
+        ed.save_resume = None;
+        ed.sync_quit_dirty();
         return;
     }
     if new_text.contains('\0') {
-        if let Some(doc) = s.editor.doc.as_mut() {
+        if let Some(doc) = ed.doc.as_mut() {
             doc.save_error = Some("the file contains a NUL byte".into());
         }
-        s.editor.save_resume = None;
-        s.editor.sync_quit_dirty();
+        ed.save_resume = None;
+        ed.sync_quit_dirty();
         return;
     }
     let ok = backend::enqueue(
-        &mut s.editor.backend,
+        &mut ed.backend,
         backend::Job::write(
             &pid,
             checkout,
@@ -748,7 +936,7 @@ pub fn enqueue_save(s: &mut State) {
             },
         ),
     );
-    if let Some(doc) = s.editor.doc.as_mut() {
+    if let Some(doc) = ed.doc.as_mut() {
         doc.saving = ok;
         doc.save_error = if ok {
             None
@@ -767,6 +955,67 @@ pub fn enqueue_save(s: &mut State) {
     if !ok {
         // The navigation this save was resuming must not hang waiting for a
         // reply that will never come.
+        ed.save_resume = None;
+    }
+    ed.sync_quit_dirty();
+}
+
+/// The "File changed on disk" row's Overwrite: the same guarded save as
+/// `enqueue_save`, except the worker re-reads the disk file and uses it as
+/// the expected text — the buffer wins over the drift while the atomic
+/// replace keeps its checks. Same validation, busy flag, queue-full
+/// unwind and `save_resume` handling.
+pub fn enqueue_overwrite(s: &mut State) {
+    if let Some(err) = s.editor.doc.as_ref().and_then(|d| d.validate_save()) {
+        if let Some(doc) = s.editor.doc.as_mut() {
+            doc.save_error = Some(err);
+        }
+        s.editor.save_resume = None;
+        s.editor.sync_quit_dirty();
+        return;
+    }
+    let Some(doc) = s.editor.doc.as_ref() else {
+        return;
+    };
+    let Some(checkout) = s.editor.checkout.clone() else {
+        return;
+    };
+    let Some(key) = s.editor.checkout_key.clone() else {
+        return;
+    };
+    let Some(pid) = s.editor.project_id.clone() else {
+        return;
+    };
+    let path = doc.path.clone();
+    // The buffer text is what wins — the same normalized payload a save
+    // sends; the worker supplies the expected side from disk.
+    let new_text = doc.text_for_save();
+    let ok = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::write(
+            &pid,
+            checkout,
+            key,
+            backend::Req::OverwriteFile {
+                path,
+                text: new_text,
+            },
+        ),
+    );
+    if let Some(doc) = s.editor.doc.as_mut() {
+        doc.saving = ok;
+        doc.save_error = if ok {
+            None
+        } else {
+            Some("the editor queue is full; save not sent".into())
+        };
+        if ok {
+            // Freeze edits while the write is in flight, exactly like a
+            // save; `finish_save` restores the flag on every outcome.
+            doc.code.read_only = true;
+        }
+    }
+    if !ok {
         s.editor.save_resume = None;
     }
     s.editor.sync_quit_dirty();
@@ -1110,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn other_file_open_raises_guard_on_dirty_draft() {
+    fn other_file_open_never_interrupts_a_dirty_draft() {
         let mut s = checkout_state();
         dirty_doc(&mut s);
         let mut tx = Tx::default();
@@ -1122,10 +1371,10 @@ mod tests {
             },
             &mut tx,
         );
-        let guard = s.editor.guard.as_ref().unwrap();
-        assert_eq!(guard.doc_path, "a.txt");
-        assert!(matches!(guard.pending, PendingNav::OpenDoc { ref path, .. } if path == "b.txt"));
-        // The draft is untouched while the dialog is up.
+        // Opening another file in the same checkout no longer asks: the
+        // load is issued and the dirty doc stays put until it parks.
+        assert!(s.editor.guard.is_none(), "in-checkout opens never prompt");
+        assert!(s.editor.doc_load.is_some(), "the file load was armed");
         assert!(s.editor.doc.as_ref().unwrap().dirty());
     }
 
@@ -2230,5 +2479,605 @@ mod tests {
         );
         assert_eq!(s.editor.files.search.mode, SearchMode::Concept);
         assert!(s.editor.pending_apply.is_some());
+    }
+
+    // -- Editor tabs -----------------------------------------------------------
+
+    fn tab_file(path: &str, text: &str) -> GitViewFile {
+        GitViewFile {
+            path: path.into(),
+            kind: "text",
+            text: Some(text.into()),
+            truncated: false,
+            size: text.len() as u64,
+        }
+    }
+
+    /// Install `path` as a tab — the same slot bookkeeping `install_doc`
+    /// runs when its load reply lands.
+    fn open_tab(s: &mut State, path: &str, text: &str) {
+        s.editor
+            .tabs
+            .open(&mut s.editor.doc, OpenDoc::new(path, &tab_file(path, text)));
+    }
+
+    /// Make `path`'s buffer differ from its baseline, wherever the doc lives.
+    fn make_dirty(s: &mut State, path: &str, text: &str) {
+        if s.editor.doc.as_ref().is_some_and(|d| d.path == path) {
+            s.editor.doc.as_mut().unwrap().code.edit.text = text.into();
+        } else {
+            s.editor.tabs.parked.get_mut(path).unwrap().code.edit.text = text.into();
+        }
+    }
+
+    /// The buffer text of `path`, active or parked.
+    fn buffer(s: &State, path: &str) -> String {
+        if s.editor.doc.as_ref().is_some_and(|d| d.path == path) {
+            s.editor.doc.as_ref().unwrap().code.edit.text.clone()
+        } else {
+            s.editor
+                .tabs
+                .parked
+                .get(path)
+                .unwrap()
+                .code
+                .edit
+                .text
+                .clone()
+        }
+    }
+
+    fn save_reply_for(
+        s: &State,
+        path: &str,
+        result: Result<GitViewFile, String>,
+    ) -> backend::Reply {
+        backend::Reply {
+            req: backend::Req::SaveFile {
+                path: path.into(),
+                expected: "orig".into(),
+                text: "edited".into(),
+            },
+            generation: 0,
+            checkout_key: s.editor.checkout_key.clone(),
+            result: result.map(backend::ReplyData::Saved),
+        }
+    }
+
+    /// Two dirty tabs — `a.txt` then `b.txt` in tab order, `b.txt` active.
+    fn two_dirty_tabs() -> State {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        make_dirty(&mut s, "a.txt", "edited-a");
+        make_dirty(&mut s, "b.txt", "edited-b");
+        s
+    }
+
+    fn switch_checkout() -> PendingNav {
+        PendingNav::SelectCheckout {
+            project_id: "p1".into(),
+            checkout: PathBuf::from("/tmp/co2"),
+        }
+    }
+
+    #[test]
+    fn opening_a_second_file_parks_the_dirty_draft() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        make_dirty(&mut s, "a.txt", "edited");
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::OpenDoc {
+                path: "b.txt".into(),
+                line: None,
+            },
+            &mut tx,
+        );
+        assert!(s.editor.guard.is_none());
+        // The load lands: the dirty doc parks, the new file activates.
+        let load_token = s.editor.doc_load.as_ref().unwrap().0;
+        s.editor.apply_reply(backend::Reply {
+            req: backend::Req::File {
+                path: "b.txt".into(),
+                token: load_token,
+                line: None,
+            },
+            generation: s.editor.req_gens.get("file").copied().unwrap(),
+            checkout_key: s.editor.checkout_key.clone(),
+            result: Ok(backend::ReplyData::File(tab_file("b.txt", "fresh"))),
+        });
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        assert_eq!(s.editor.tabs.order, vec!["a.txt", "b.txt"]);
+        let parked = s.editor.tabs.parked.get("a.txt").unwrap();
+        assert!(parked.dirty());
+        assert_eq!(parked.code.edit.text, "edited");
+    }
+
+    #[test]
+    fn opening_an_open_tab_activates_it_without_a_reload() {
+        let mut s = checkout_state();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::OpenDoc {
+                path: "a.txt".into(),
+                line: Some(4),
+            },
+            &mut tx,
+        );
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "a.txt");
+        assert_eq!(s.editor.doc.as_ref().unwrap().reveal_line, Some(4));
+        assert!(s.editor.doc_load.is_none(), "no read issued");
+        let reqs: Vec<_> = jobs.try_iter().collect();
+        assert!(
+            !reqs
+                .iter()
+                .any(|j| matches!(j.req, backend::Req::File { .. })),
+            "no Req::File: {reqs:?}"
+        );
+        assert_eq!(
+            reqs.iter()
+                .filter(|j| matches!(j.req, backend::Req::CheckFile { .. }))
+                .count(),
+            1,
+            "one disk probe re-checks the reactivated doc: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn tab_switch_waits_for_an_in_flight_save_and_drops_when_it_fails() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "orig2");
+        make_dirty(&mut s, "b.txt", "edited");
+        s.editor.doc.as_mut().unwrap().saving = true;
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::SwitchTab {
+                path: "a.txt".into(),
+            },
+            &mut tx,
+        );
+        // Held, not applied: a save in flight is never parked mid-write.
+        assert!(matches!(
+            s.editor.save_resume.as_ref().unwrap().pending,
+            PendingNav::SwitchTab { ref path } if path == "a.txt"
+        ));
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        // The save fails: the draft is kept, the held switch is dropped.
+        s.editor
+            .apply_reply(save_reply_for(&s, "b.txt", Err("disk full".into())));
+        assert!(s.editor.save_resume.is_none());
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        assert!(s.editor.doc.as_ref().unwrap().dirty());
+        assert!(s.editor.pending_apply.is_none());
+    }
+
+    #[test]
+    fn opening_the_same_path_twice_keeps_one_tab() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        s.editor.doc_seq += 1;
+        let token = s.editor.doc_seq;
+        s.editor.doc_load = Some((token, "a.txt".into()));
+        s.editor.apply_reply(backend::Reply {
+            req: backend::Req::File {
+                path: "a.txt".into(),
+                token,
+                line: None,
+            },
+            generation: 0,
+            checkout_key: s.editor.checkout_key.clone(),
+            result: Ok(backend::ReplyData::File(tab_file("a.txt", "reloaded"))),
+        });
+        assert_eq!(s.editor.tabs.order, vec!["a.txt"]);
+        assert_eq!(s.editor.doc.as_ref().unwrap().code.edit.text, "orig");
+    }
+
+    #[test]
+    fn a_load_reply_for_an_open_tab_keeps_the_parked_buffer() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        make_dirty(&mut s, "a.txt", "edited");
+        // A late File reply for the parked path must not replace the draft.
+        s.editor.doc_seq += 1;
+        let token = s.editor.doc_seq;
+        s.editor.doc_load = Some((token, "a.txt".into()));
+        s.editor.apply_reply(backend::Reply {
+            req: backend::Req::File {
+                path: "a.txt".into(),
+                token,
+                line: None,
+            },
+            generation: 0,
+            checkout_key: s.editor.checkout_key.clone(),
+            result: Ok(backend::ReplyData::File(tab_file("a.txt", "disk copy"))),
+        });
+        assert_eq!(buffer(&s, "a.txt"), "edited", "the parked draft wins");
+        assert_eq!(
+            s.editor.doc.as_ref().unwrap().path,
+            "a.txt",
+            "the open tab activates"
+        );
+        assert_eq!(s.editor.tabs.order, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_raises_the_dialog_for_that_tab() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        make_dirty(&mut s, "a.txt", "edited");
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::CloseTab {
+                path: "a.txt".into(),
+            },
+            &mut tx,
+        );
+        // The dirty tab activated so the one-file dialog names it.
+        let guard = s.editor.guard.as_ref().unwrap();
+        assert_eq!(guard.doc_path, "a.txt");
+        assert!(guard.queue.is_empty(), "one dirty tab → the single dialog");
+        assert!(matches!(
+            guard.pending,
+            PendingNav::CloseTab { ref path } if path == "a.txt"
+        ));
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "a.txt");
+        resolve_guard(&mut s, GuardAction::Cancel, &mut tx);
+        assert!(s.editor.guard.is_none());
+        assert_eq!(buffer(&s, "a.txt"), "edited", "the draft survives Cancel");
+        assert!(s.editor.tabs.is_open("a.txt"));
+    }
+
+    #[test]
+    fn closing_a_clean_tab_never_asks() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        let mut tx = Tx::default();
+        navigate(
+            &mut s,
+            PendingNav::CloseTab {
+                path: "b.txt".into(),
+            },
+            &mut tx,
+        );
+        assert!(s.editor.guard.is_none());
+        assert_eq!(
+            s.editor.doc.as_ref().unwrap().path,
+            "a.txt",
+            "left neighbour"
+        );
+        assert_eq!(s.editor.tabs.order, vec!["a.txt"]);
+    }
+
+    #[test]
+    fn two_dirty_tabs_raise_one_guard_for_a_checkout_switch() {
+        let mut s = two_dirty_tabs();
+        let mut tx = Tx::default();
+        navigate(&mut s, switch_checkout(), &mut tx);
+        let guard = s.editor.guard.as_ref().unwrap();
+        // One dialog for both: the first dirty tab in tab order activated
+        // and fronts it; the other waits in the queue.
+        assert_eq!(guard.doc_path, "a.txt");
+        assert_eq!(guard.queue, vec!["b.txt".to_string()]);
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "a.txt");
+        assert!(matches!(guard.pending, PendingNav::SelectCheckout { .. }));
+    }
+
+    #[test]
+    fn save_all_saves_every_dirty_tab_in_tab_order_then_navigates() {
+        let mut s = two_dirty_tabs();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        let mut tx = Tx::default();
+        navigate(&mut s, switch_checkout(), &mut tx);
+        assert!(s.editor.guard.is_some());
+        resolve_guard(&mut s, GuardAction::Save, &mut tx);
+        // a.txt (the fronted tab) saves first.
+        let save_a = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "a.txt"))
+            .expect("a.txt saves first");
+        s.editor.apply_reply(backend::Reply {
+            req: save_a.req,
+            generation: save_a.generation,
+            checkout_key: save_a.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("a.txt", "edited-a"))),
+        });
+        // The queue walked on: b.txt activated and its save went out.
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        assert!(s.editor.doc.as_ref().unwrap().saving);
+        let save_b = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "b.txt"))
+            .expect("b.txt saves second");
+        s.editor.apply_reply(backend::Reply {
+            req: save_b.req,
+            generation: save_b.generation,
+            checkout_key: save_b.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("b.txt", "edited-b"))),
+        });
+        // Queue drained → the checkout switch resumes.
+        let nav = s.editor.pending_apply.take().unwrap();
+        navigate(&mut s, nav, &mut tx);
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/tmp/co2")),
+            "the guarded navigation applied"
+        );
+        assert!(
+            s.editor.tabs.order.is_empty(),
+            "tabs belong to the checkout"
+        );
+    }
+
+    #[test]
+    fn a_failing_second_save_stops_save_all_with_that_tab_active() {
+        let mut s = two_dirty_tabs();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        let mut tx = Tx::default();
+        navigate(&mut s, switch_checkout(), &mut tx);
+        resolve_guard(&mut s, GuardAction::Save, &mut tx);
+        let save_a = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "a.txt"))
+            .unwrap();
+        s.editor.apply_reply(backend::Reply {
+            req: save_a.req,
+            generation: save_a.generation,
+            checkout_key: save_a.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("a.txt", "edited-a"))),
+        });
+        s.editor
+            .apply_reply(save_reply_for(&s, "b.txt", Err("disk full".into())));
+        // The failing tab stays active with its error; the first stayed
+        // saved; the checkout switch never applied.
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        assert_eq!(
+            s.editor.doc.as_ref().unwrap().save_error.as_deref(),
+            Some("disk full")
+        );
+        assert!(s.editor.doc.as_ref().unwrap().dirty());
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/tmp/co"))
+        );
+        assert!(s.editor.pending_apply.is_none());
+        assert!(!s.editor.tabs.parked.get("a.txt").unwrap().dirty());
+    }
+
+    #[test]
+    fn discard_all_reverts_every_dirty_tab_and_navigates() {
+        let mut s = two_dirty_tabs();
+        let mut tx = Tx::default();
+        navigate(&mut s, PendingNav::SetSection(Section::History), &mut tx);
+        assert!(s.editor.guard.is_some());
+        resolve_guard(&mut s, GuardAction::Discard, &mut tx);
+        assert_eq!(s.editor.section, Section::History);
+        assert_eq!(buffer(&s, "a.txt"), "orig");
+        assert_eq!(buffer(&s, "b.txt"), "two");
+        assert!(s.editor.dirty_paths().is_empty());
+    }
+
+    #[test]
+    fn cancel_keeps_every_dirty_tab_and_the_checkout() {
+        let mut s = two_dirty_tabs();
+        let mut tx = Tx::default();
+        navigate(&mut s, switch_checkout(), &mut tx);
+        assert!(s.editor.guard.is_some());
+        resolve_guard(&mut s, GuardAction::Cancel, &mut tx);
+        assert_eq!(
+            s.editor.checkout.as_deref(),
+            Some(std::path::Path::new("/tmp/co"))
+        );
+        assert_eq!(buffer(&s, "a.txt"), "edited-a");
+        assert_eq!(buffer(&s, "b.txt"), "edited-b");
+        assert_eq!(s.editor.tabs.order, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn save_all_skips_a_tab_that_turned_clean() {
+        let mut s = two_dirty_tabs();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        let mut tx = Tx::default();
+        navigate(&mut s, switch_checkout(), &mut tx);
+        assert!(s.editor.guard.is_some());
+        // b's buffer reverts while the dialog is up (its own save landed).
+        s.editor
+            .tabs
+            .parked
+            .get_mut("b.txt")
+            .unwrap()
+            .code
+            .edit
+            .text = "two".into();
+        resolve_guard(&mut s, GuardAction::Save, &mut tx);
+        let save_a = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "a.txt"))
+            .unwrap();
+        s.editor.apply_reply(backend::Reply {
+            req: save_a.req,
+            generation: save_a.generation,
+            checkout_key: save_a.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("a.txt", "edited-a"))),
+        });
+        // b needed no save: the queue was recomputed dirty-only, so the
+        // pending navigation resumes straight away.
+        assert!(matches!(
+            s.editor.pending_apply,
+            Some(PendingNav::SelectCheckout { .. })
+        ));
+        assert!(
+            !jobs
+                .try_iter()
+                .any(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "b.txt")),
+            "the clean tab is never saved"
+        );
+    }
+
+    #[test]
+    fn checkout_switch_clears_the_tabs() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        let mut tx = Tx::default();
+        navigate(&mut s, switch_checkout(), &mut tx);
+        assert!(s.editor.tabs.order.is_empty());
+        assert!(s.editor.tabs.parked.is_empty());
+        assert!(s.editor.doc.is_none());
+    }
+
+    // -- Quit and window close with several dirty tabs -------------------------
+
+    #[test]
+    fn a_dirty_parked_tab_vetoes_quit_and_window_close_alike() {
+        let mut s = checkout_state();
+        open_tab(&mut s, "a.txt", "orig");
+        open_tab(&mut s, "b.txt", "two");
+        make_dirty(&mut s, "a.txt", "edited");
+        s.editor.sync_quit_dirty();
+        // Only the parked tab is dirty — the flag and both guards see it.
+        assert!(s.editor.has_dirty_doc());
+        assert!(
+            s.editor
+                .quit_dirty
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+
+        let mut tx = Tx::default();
+        on_window_close(&mut s, &mut tx);
+        let guard = s.editor.guard.as_ref().unwrap();
+        assert!(matches!(guard.pending, PendingNav::CloseWindow));
+        assert_eq!(guard.doc_path, "a.txt", "the dirty tab fronts the dialog");
+        assert_eq!(
+            s.editor.doc.as_ref().unwrap().path,
+            "a.txt",
+            "it activated for the dialog"
+        );
+        resolve_guard(&mut s, GuardAction::Cancel, &mut tx);
+        assert!(s.editor.guard.is_none());
+
+        on_quit_vetoed(&mut s);
+        let guard = s.editor.guard.as_ref().unwrap();
+        assert!(guard.quitting);
+        assert!(matches!(guard.pending, PendingNav::Quit));
+        assert!(s.editor.quit_vetoed);
+    }
+
+    #[test]
+    fn save_all_lets_the_quit_proceed_after_every_save_lands() {
+        let mut s = two_dirty_tabs();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        on_quit_vetoed(&mut s);
+        // One dialog for both dirty tabs.
+        let guard = s.editor.guard.as_ref().unwrap();
+        assert!(guard.quitting);
+        assert_eq!(guard.doc_path, "a.txt");
+        assert_eq!(guard.queue, vec!["b.txt".to_string()]);
+
+        quit_after_save(&mut s);
+        let save_a = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "a.txt"))
+            .expect("a.txt saves first");
+        s.editor.apply_reply(backend::Reply {
+            req: save_a.req,
+            generation: save_a.generation,
+            checkout_key: save_a.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("a.txt", "edited-a"))),
+        });
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        let save_b = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "b.txt"))
+            .expect("b.txt saves second");
+        s.editor.apply_reply(backend::Reply {
+            req: save_b.req,
+            generation: save_b.generation,
+            checkout_key: save_b.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("b.txt", "edited-b"))),
+        });
+        // Both saves landed → the quit resumes.
+        assert!(matches!(s.editor.pending_apply, Some(PendingNav::Quit)));
+        assert!(
+            !s.editor
+                .quit_dirty
+                .load(std::sync::atomic::Ordering::Acquire),
+            "all tabs clean → the OS quit flag is clear"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_during_quit_cancels_it_and_keeps_the_draft() {
+        let mut s = two_dirty_tabs();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        on_quit_vetoed(&mut s);
+        quit_after_save(&mut s);
+        let save_a = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, backend::Req::SaveFile { path, .. } if path == "a.txt"))
+            .unwrap();
+        s.editor.apply_reply(backend::Reply {
+            req: save_a.req,
+            generation: save_a.generation,
+            checkout_key: save_a.checkout_key,
+            result: Ok(backend::ReplyData::Saved(tab_file("a.txt", "edited-a"))),
+        });
+        s.editor
+            .apply_reply(save_reply_for(&s, "b.txt", Err("disk full".into())));
+        // b stays active with its error and draft; the quit never resumes.
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "b.txt");
+        assert_eq!(
+            s.editor.doc.as_ref().unwrap().save_error.as_deref(),
+            Some("disk full")
+        );
+        assert!(s.editor.pending_apply.is_none());
+        assert!(s.editor.has_dirty_doc(), "b's draft remains");
+    }
+
+    #[test]
+    fn discard_all_lets_the_quit_proceed() {
+        let mut s = two_dirty_tabs();
+        on_quit_vetoed(&mut s);
+        assert!(s.editor.guard.is_some());
+        quit_discard(&mut s);
+        assert!(s.editor.guard.is_none());
+        assert!(!s.editor.quit_vetoed);
+        assert!(
+            !s.editor
+                .quit_dirty
+                .load(std::sync::atomic::Ordering::Acquire),
+            "every dirty tab reverted"
+        );
+    }
+
+    #[test]
+    fn cancelling_the_quit_guard_keeps_everything() {
+        let mut s = two_dirty_tabs();
+        let mut tx = Tx::default();
+        on_quit_vetoed(&mut s);
+        assert!(s.editor.quit_vetoed);
+        resolve_guard(&mut s, GuardAction::Cancel, &mut tx);
+        assert!(s.editor.guard.is_none());
+        assert!(!s.editor.quit_vetoed, "the veto was consumed");
+        assert!(s.editor.pending_apply.is_none(), "the quit is cancelled");
+        assert_eq!(buffer(&s, "a.txt"), "edited-a");
+        assert_eq!(buffer(&s, "b.txt"), "edited-b");
     }
 }

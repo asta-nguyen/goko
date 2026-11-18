@@ -535,11 +535,11 @@ mod tests {
     }
 
     #[test]
-    fn enter_with_dirty_doc_raises_save_guard() {
+    fn enter_with_dirty_doc_opens_without_a_guard() {
         use crate::editor::draft::OpenDoc;
         let mut rt = runtime();
-        // Dirty doc on disk-different text: opening another file must raise
-        // the existing Save/Discard/Cancel guard, not navigate silently.
+        // Dirty doc on disk-different text: opening another file in the
+        // same checkout parks the draft in its tab instead of prompting.
         let file = app_core::git_view::GitViewFile {
             path: "src/keep.rs".into(),
             kind: "text",
@@ -560,15 +560,13 @@ mod tests {
         });
         rt.frame(0.0);
         assert!(!rt.state.editor.quick_open.open, "palette closed");
-        let guard = rt
-            .state
-            .editor
-            .guard
-            .as_ref()
-            .expect("dirty draft raised the guard");
         assert!(
-            matches!(guard.pending, PendingNav::OpenDoc { .. }),
-            "guard carries the OpenDoc navigation"
+            rt.state.editor.guard.is_none(),
+            "in-checkout opens never prompt"
+        );
+        assert!(
+            rt.state.editor.doc_load.is_some(),
+            "the file load was armed"
         );
     }
 

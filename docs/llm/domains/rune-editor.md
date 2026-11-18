@@ -46,6 +46,60 @@ The system SHALL generate a commit message only when the user presses Generate: 
 
 Evidence: `apps/rune/src/editor/acp.rs`, `apps/rune/src/editor/commit.rs`, `crates/app-core/src/acp.rs`
 
+### RNE-agent-snapshot
+
+The system SHALL let the user copy a snapshot of the Files code surface — the selected lines expanded to the whole lines they touch, or the whole open file when there is no selection — carrying the checkout-relative path, its 1-based line range, the file's language, an `unsaved` marker when the buffer differs from disk, and the code in a fence longer than any backtick run in it, to the clipboard, and send that same snapshot into the focused terminal session as a bracketed paste when the program asked for one, without submitting it.
+
+#### Scenario: Copy a selection
+
+- GIVEN an editable file is open in Files with part of lines 120–148 selected
+- WHEN the user presses ⌘⇧C
+- THEN the clipboard holds `src/editor/code.rs:120-148 (rust)` followed by a rust-fenced block of those whole lines, and the "Snapshot copied to clipboard" notice shows
+
+#### Scenario: Copy the whole file
+
+- GIVEN an editable file is open with no selection
+- WHEN the user presses ⌘⇧C
+- THEN the clipboard holds the whole file under its `path:1-N` header
+
+#### Scenario: Unsaved buffer
+
+- GIVEN the open buffer differs from the file on disk
+- WHEN a snapshot is copied or sent
+- THEN it carries the buffer's text and its header marks the code unsaved
+
+#### Scenario: Send to the terminal
+
+- GIVEN the active tab has a live focused terminal session
+- WHEN the user presses ⌘⇧Enter or presses the code surface's Send chip
+- THEN the snapshot reaches that session as a bracketed paste when the program asked for one, no Enter is sent, and the notice names the session
+
+#### Scenario: No live session
+
+- GIVEN the active tab has no live focused session
+- WHEN the user sends a snapshot
+- THEN a notice says so and no bytes are written
+
+#### Scenario: Fence collision
+
+- GIVEN the selected code contains a run of backticks
+- WHEN the snapshot is built
+- THEN its fence is longer than the longest run in the code
+
+#### Scenario: Context menu
+
+- GIVEN an editable file is open in Files
+- WHEN the user right-clicks the code
+- THEN a menu lists Cut, Copy, Paste and Select All, then Copy Snapshot (⌘⇧C) and Send Snapshot to Terminal (⌘⇧Enter), and each snapshot item acts as its chord without the code holding focus
+
+#### Scenario: Not an editable file
+
+- GIVEN the open document is binary, non-UTF-8, truncated, or read-only
+- WHEN the user presses the snapshot chord
+- THEN no snapshot is copied and a notice explains why
+
+Evidence: `apps/rune/src/editor/snapshot.rs`, `apps/rune/src/editor/keyboard.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/files.rs`
+
 ### RNE-backend-isolation
 
 The system SHALL run every Git, filesystem, storage, and highlighting job on a single worker thread fed by a bounded queue of 128 pending jobs, except Context search index writes (full passes and working-tree syncs), which run on their own thread outside that queue, applying a reply only when its checkout identity and read generation still match the live state and dropping stale results entirely.
@@ -96,9 +150,39 @@ Known gap: a commit, stage or discard made from the Changes section does not re-
 
 Evidence: `apps/rune/src/editor/line_changes.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `crates/app-core/src/git_view.rs`
 
+### RNE-changes-auto-refresh
+
+The system SHALL, while the Editor view is active and the window is focused, re-read the Changes list every three seconds (less often after a slow read) while the Changes section shows and compare the open document with disk every three seconds while the Files section shows — each, and the file list, also at once when the window regains focus or the Editor view is entered — without a loading indicator and without a Changes read while a Git write is in flight, silently replacing a clean document whose disk text differs, keeping a dirty document with a notice row offering Overwrite and Reload from disk, and keeping a vanished document with a notice row.
+
+#### Scenario: Agent edits a file while Changes is open
+
+- GIVEN the Changes section is showing and an agent writes a tracked file in the checkout
+- WHEN the next three-second read lands
+- THEN the file appears in the groups and the selected diff updates without pressing Refresh
+
+#### Scenario: Open file changed on disk
+
+- GIVEN a document with no unsaved edits is open and the file changes on disk
+- WHEN the next check runs
+- THEN the editor shows the disk text
+
+#### Scenario: Unsaved edits and a changed file
+
+- GIVEN a document with unsaved edits is open and the file changes on disk
+- WHEN the next check runs or Save is refused
+- THEN the buffer is kept and "File changed on disk" offers Overwrite, which saves the buffer over the new disk text, and Reload from disk, which drops the edits
+
+#### Scenario: No read during a write
+
+- GIVEN a stage, commit or resolve is in flight
+- WHEN a poll tick arrives
+- THEN no Changes read is queued for that tick
+
+Evidence: `apps/rune/src/editor/autorefresh.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/main.rs`
+
 ### RNE-changes-git-writes
 
-The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts and per-layer diffs, staging, unstaging, discarding, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing or prompting for credentials.
+The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts, per-layer diffs and each conflict's kind (both modified, both added, deleted by us, deleted by them, both deleted, added by us, added by them), staging, unstaging, discarding, resolving conflicts, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing or prompting for credentials — and, while Git reports a merge, rebase, cherry-pick or revert in progress, showing a banner offering Abort behind a confirmation and turning Commit into Continue, which is enabled once no conflict remains (and, for a merge, the message is not blank) and either commits a merge, with Git's merge message prefilled, or runs the operation's `--continue` non-interactively.
 
 #### Scenario: Stage, commit, push
 
@@ -114,9 +198,27 @@ The system SHALL show the checkout's conflict, staged, unstaged, and untracked g
 
 #### Scenario: Write failure keeps state honest
 
-- GIVEN a stage, commit, or push fails in Git
+- GIVEN a stage, commit, push, resolve, abort or continue fails in Git
 - WHEN the error reply lands
 - THEN the message shows in the section or notice, the commit draft stays, and the checkout is left as Git left it
+
+#### Scenario: Abort an operation
+
+- GIVEN a merge stopped on conflicts
+- WHEN Changes loads
+- THEN a "Merge in progress" banner shows with Abort; confirming runs `git merge --abort`, and cancelling changes nothing
+
+#### Scenario: Finish a merge
+
+- GIVEN a merge stopped on conflicts and every conflict is resolved
+- WHEN Changes shows the commit panel
+- THEN the message is prefilled with Git's merge message once, the button reads Continue, and pressing it creates the merge commit even when nothing else is staged
+
+#### Scenario: Continue a rebase
+
+- GIVEN a rebase stopped and every conflict is resolved and staged
+- WHEN the user presses Continue
+- THEN `git rebase --continue` runs non-interactively with a 120-second limit, and Continue is disabled while any conflict remains
 
 Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
 
@@ -334,7 +436,7 @@ Evidence: `apps/rune/src/editor/branch.rs`, `apps/rune/src/editor/workspace.rs`,
 
 ### RNE-draft-guard
 
-The system SHALL route every navigation that would leave a dirty draft — opening another file, switching checkout or project, switching section or view, closing the window, and quitting — through a Save/Discard/Cancel guard, resuming the pending navigation only after a successful save, reverting on Discard, and preserving both editor and draft on Cancel or failed save.
+The system SHALL route every navigation that would leave a dirty draft — closing a dirty tab, switching checkout or project, switching section or view, closing the window, and quitting — through one Save/Discard/Cancel guard that lists every dirty tab (Save All / Discard All / Cancel when there is more than one), resuming the pending navigation only after every listed tab was saved or discarded, reverting on Discard, and preserving every tab and draft on Cancel or failed save; opening or switching to another file in the same checkout leaves a dirty draft in its tab and never prompts.
 
 #### Scenario: Guard on view switch
 
@@ -348,13 +450,25 @@ The system SHALL route every navigation that would leave a dirty draft — openi
 - WHEN the user closes the window or quits the app
 - THEN the close/quit is cancelled pending the guard on every platform for window close, and on macOS an OS-level quit is vetoed via the `applicationShouldTerminate:` swizzle; on other platforms OS-level quit remains an honest gap
 
+#### Scenario: Opening another file keeps the draft
+
+- GIVEN the active tab has unsaved edits
+- WHEN the user opens another file in the same checkout
+- THEN no dialog shows, the edited tab stays open with its draft and the new file opens as the active tab
+
+#### Scenario: Several dirty tabs
+
+- GIVEN two tabs have unsaved edits
+- WHEN the user switches checkout
+- THEN one dialog lists both files; Save All saves them in tab order and then switches, and if the second save fails the checkout does not change and the failing tab stays active with its error
+
 #### Scenario: Discard reverts
 
 - GIVEN a dirty draft and a pending navigation
 - WHEN the user chooses Discard
 - THEN the buffer reverts to the loaded original and the pending navigation proceeds
 
-Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/draft.rs`, `apps/rune/src/editor/quit_guard.rs`, `apps/rune/src/main.rs`
+Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/tabs.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/draft.rs`, `apps/rune/src/editor/quit_guard.rs`, `apps/rune/src/main.rs`
 
 ### RNE-editor-indent
 
@@ -379,6 +493,30 @@ The system SHALL resolve the indent unit per document — manual override (`auto
 - THEN Tab inserts two spaces and guides draw every two columns
 
 Evidence: `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/indent.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/store.rs`
+
+### RNE-editor-tabs
+
+The system SHALL keep the files opened from the current checkout as tabs over the editor pane — each holding its own unsaved buffer, undo history and caret, opened by every existing open-file route without a dialog, switched by click, by `⌘⌥→`/`⌘⌥←` in tab order (`Ctrl+PageDown`/`Ctrl+PageUp` off macOS) or by `⌃Tab` to the most recently used tab, closed by its × button or `⌘W`, showing the file name (with its directory when names collide) and a dirty marker, and all closed together on checkout change.
+
+#### Scenario: Edit, switch away and back
+
+- GIVEN a file is open with unsaved edits
+- WHEN the user opens a second file and then clicks the first tab
+- THEN the first file shows its unsaved text, caret and undo history
+
+#### Scenario: Close a dirty tab
+
+- GIVEN the active tab has unsaved edits
+- WHEN the user presses its × button
+- THEN the Save/Discard/Cancel guard names that file, and Cancel keeps the tab open
+
+#### Scenario: Back to the most recent tab
+
+- GIVEN three tabs are open and the user moved from the second to the third
+- WHEN the user presses `⌃Tab` twice
+- THEN the second tab activates and then the third again
+
+Evidence: `apps/rune/src/editor/tabs.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/keyboard.rs`, `apps/rune/src/editor/state.rs`
 
 ### RNE-empty-state-projects
 
@@ -528,7 +666,7 @@ Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps
 
 ### RNE-inline-conflicts
 
-The system SHALL offer inline Current, Incoming, and Both conflict resolution with undo, conflict navigation, and explicit Mark Resolved that saves and stages only the selected editable text file after all conflict markers are removed, preserving draft and disk-change guards and never committing automatically.
+The system SHALL offer inline Current, Incoming, and Both conflict resolution with undo, conflict navigation, and explicit Mark Resolved that saves and stages only the selected editable text file — asking for confirmation first while conflict markers (`<<<<<<<`, `|||||||` or `>>>>>>>` lines, never a bare `=======` line) remain — preserving draft and disk-change guards and never committing automatically, and offering explicit per-file Keep our version, Keep their version, Delete file, Use Current and Use Incoming actions, valid for the conflict's kind and refused while the file has unsaved edits, for a conflict the inline editor cannot resolve (binary, missing, non-editable) or that Git reports as deleted or added on one side.
 
 #### Scenario: Resolve a text conflict
 
@@ -542,17 +680,41 @@ The system SHALL offer inline Current, Incoming, and Both conflict resolution wi
 - WHEN the user presses Mark Resolved
 - THEN the file is saved through the expected-text guard and only that file is staged; a save or stage failure is reported without committing
 
-#### Scenario: Unsupported or incomplete conflict
+#### Scenario: Markers left
 
-- GIVEN a binary, missing, non-editable, or malformed conflict file
-- WHEN the file is opened
-- THEN the editor explains the limitation and does not offer unsafe automatic resolution or staging
+- GIVEN the selected conflicted file still contains a `<<<<<<<` or `>>>>>>>` line
+- WHEN the user presses Mark Resolved
+- THEN a dialog names the file and asks whether to stage it anyway; only confirming saves and stages it, and cancelling changes nothing
 
-Evidence: `apps/rune/src/editor/conflict.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/backend.rs`
+#### Scenario: Heading underline is not a marker
+
+- GIVEN a conflicted Markdown file whose resolved text still contains a `=======` heading underline and no `<<<<<<<` or `>>>>>>>` line
+- WHEN the user opens it and presses Mark Resolved
+- THEN no incomplete-marker notice shows and the file is staged without a dialog
+
+#### Scenario: Deleted-on-one-side conflict
+
+- GIVEN a file Git reports as deleted by them and modified by us
+- WHEN the user chooses Keep our version or Delete file
+- THEN only that path is staged (`git add`) or removed (`git rm`), Changes refreshes, and nothing is committed
+
+#### Scenario: Whole-file choice for a binary conflict
+
+- GIVEN a binary file in conflict that both sides modified
+- WHEN the user chooses Use Incoming
+- THEN that path takes the incoming version and is staged, and a stale choice not valid for the path's current kind is refused without changing it
+
+#### Scenario: Unsaved edits block a whole-file choice
+
+- GIVEN the conflicted file is open with unsaved edits
+- WHEN the user chooses Use Incoming
+- THEN a notice asks to save or discard first and the file is not changed
+
+Evidence: `apps/rune/src/editor/conflict.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
 
 ### RNE-keyboard
 
-The system SHALL handle the editor's global chords — `⌘S` save, contextual `⌘F` find and `⇧⌘F` content search, `⌘P` quick-open — from anywhere in the Editor view, offering `1`–`4` section switching (Files/Changes/History/Stashes; Servers has no digit) plus `j`/`k` highlight-cursor movement with `Enter` activation only while a checkout is selected, no editable field holds focus or an IME composition, and no modal surface owns input.
+The system SHALL handle the editor's global chords — `⌘S` save, contextual `⌘F` find and `⇧⌘F` content search, `⌘P` quick-open, `⌘W` close the active tab, `⌘⌥→`/`⌘⌥←` next and previous tab (`Ctrl+PageDown`/`Ctrl+PageUp` off macOS), `⌃Tab` the most recently used tab — from anywhere in the Editor view, offering `1`–`4` section switching (Files/Changes/History/Stashes; Servers has no digit) plus `j`/`k` highlight-cursor movement with `Enter` activation only while a checkout is selected, no editable field holds focus or an IME composition, and no modal surface owns input.
 
 #### Scenario: Chord from anywhere
 
@@ -560,17 +722,23 @@ The system SHALL handle the editor's global chords — `⌘S` save, contextual `
 - WHEN the user presses `⌘S`, `⌘F`, `⇧⌘F`, or `⌘P`
 - THEN save, find, content-search, or the quick-open palette triggers even while a field is focused
 
+#### Scenario: Tab chords
+
+- GIVEN the Editor view is active with two tabs open
+- WHEN the user presses `⌘⌥→` or `⌘W`
+- THEN the other tab activates, or the active clean tab closes and its neighbour activates; a dirty tab raises the guard
+
 #### Scenario: Guarded plain keys
 
 - GIVEN no checkout is selected, an editable field is focused, an IME composition is active, or a modal (draft guard, picker, context menu, quick-open) owns input
 - WHEN the user presses `1`–`4`, `j`, `k`, or `Enter`
 - THEN the shortcut does not fire; with a clean state `j`/`k` move only the highlight cursor and `Enter` activates through the row's existing handler
 
-Evidence: `apps/rune/src/editor/keyboard.rs`, `apps/rune/src/editor/quick_open.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/search.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/main.rs`
+Evidence: `apps/rune/src/editor/keyboard.rs`, `apps/rune/src/editor/tabs.rs`, `apps/rune/src/editor/quick_open.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/search.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/main.rs`
 
 ### RNE-language-servers
 
-The system SHALL run one stdio language-server connection per `(checkout, server)` on a dedicated runtime thread — never on the UI thread — keep the Servers section listing each merged server's command, extensions, live status, and feature summary with enable/disable, restart, and command-override controls, mirror open documents with debounced incremental `didChange` notifications bounded to the 1 MiB file cap, show a plaintext hover card after the caret settles, answer go-to-definition with a local timeout and heuristic fallback, and defer diagnostics and completion entirely.
+The system SHALL run one stdio language-server connection per `(checkout, server)` on a dedicated runtime thread — never on the UI thread — keep the Servers section listing each merged server's command, extensions, live status, and feature summary with enable/disable, restart, and command-override controls, mirror the active document with debounced incremental `didChange` notifications bounded to the 1 MiB file cap, show a plaintext hover card after the caret settles, answer go-to-definition with a local timeout and heuristic fallback, and defer diagnostics and completion entirely.
 
 #### Scenario: Configure and monitor servers
 
@@ -784,23 +952,63 @@ initial loading and failed/unqueued reads show loading or unavailable states.
 Git failures are retried by the same interval without changing documents.
 
 
-Conflict rows activate the guarded Files editor from either pointer or keyboard.
+Conflict rows activate the guarded Files editor from either pointer or keyboard
+and carry a badge naming what Git reports: Both modified, Both added, Deleted
+by us, Deleted by them, Both deleted, Added by us or Added by them ("us" is the
+`HEAD` side, the one the editor calls Current).
 Each complete marker block has Current (green) and Incoming (accent) highlights
 and Accept Current / Accept Incoming / Accept Both controls. Both concatenates
 Current then Incoming; each acceptance is one undoable native edit. Previous and
 Next conflict wrap through blocks. Standard, diff3/zdiff3, custom marker widths,
 CRLF, and a closing marker at EOF are supported; malformed/nested blocks require
-manual editing. Binary and missing conflicts remain inside Rune with a limitation
-message, including media types normally opened externally.
-
-Mark Resolved is offered only for the open conflicted file, disabled until the
-editable buffer is marker-free and no save/Git write is running. A dirty file
-first uses the existing expected-original save. Only a successful save queues
-`StageResolved`; the worker rereads the file, checks exact saved contents and
-remaining markers, and stages that one literal path. Changes then refreshes;
-no commit is created. A clean resolved file goes straight to that worker check.
-
-
+manual editing. Only `<<<<<<<`, `|||||||` and `>>>>>>>` lines count as markers: a
+bare `=======` line, such as a Markdown heading underline, never blocks staging.
+For a conflict the inline editor cannot resolve (binary, missing, non-UTF-8 or
+truncated) and for the deletion and addition kinds, where Git leaves one side's
+file on disk, the pane says "Choose how to resolve this file." and offers the
+kind's whole-file actions; the row's context menu carries the same ones: Use
+Current / Use Incoming (both modified, both added), Keep our version or Keep
+their version with Delete file (deleted or added on one side), Delete file alone
+(both deleted). Each runs `git checkout --ours|--theirs` plus `git add`,
+`git add`, or `git rm` on one literal path through the serialized write lane;
+the worker re-reads status and refuses an action the path's current kind does
+not admit, and the UI refuses while the open document for the path has unsaved
+edits. Nothing is committed.
+Mark Resolved is offered for the open conflicted file and enabled when the
+buffer can be saved and no Git write is running. With conflict markers left it
+opens a "Stage with conflict markers?" dialog first; only its Stage button sets
+`allow_markers` on the request. A dirty file first uses the existing
+expected-original save. Only a successful save queues `StageResolved`; the
+worker rereads the file, checks exact saved contents and, unless `allow_markers`
+is set, remaining markers, and stages that one literal path. Changes then
+refreshes; no commit is created. A clean resolved file goes straight to that
+worker check.
+While the Editor view is active and the window is focused, `autorefresh::poll`
+reads Changes through `Req::ChangesPoll` every three seconds while the Changes
+section shows (five times a slow read's duration when that is longer, at most
+thirty seconds), with one read in flight and none while a Git write is in
+flight. Its reply never sets the loading flag, the section error or a notice,
+replaces the data only when it differs, and then re-reads the selected diff
+once. Entering the Editor view with a checkout selected, or regaining window
+focus, re-lists the files in any section and reads the showing section at once;
+loading a document from Changes or History re-lists them when the list is
+missing. While the Files section shows a complete text document, `Req::CheckFile`
+compares it with disk on the same cadence: a clean document whose disk text
+differs is replaced (the selection is kept within the new length, undo history
+and the Markdown preview toggle reset), a dirty one keeps its buffer and shows a
+"File changed on disk" row with Overwrite (`Req::OverwriteFile`, which rereads
+the disk text and saves through the same atomic expected-text replace) and
+Reload from disk, and a missing or non-text file shows "File deleted on disk" or
+"File is no longer text" with Reload disabled. A save refused because the file
+changed on disk shows the same row.
+When `GitViewChanges.operation` names a merge, rebase, cherry-pick or revert
+(found with one `git rev-parse --git-path` call, so linked worktrees work), the
+Changes view shows a banner with Abort, behind a confirmation, running
+`<op> --abort`, and the primary commit button reads Continue. It is enabled once
+no conflict remains: for a merge it commits (the worker accepts an empty index
+while `MERGE_HEAD` exists) with the message box filled once from `MERGE_MSG`
+without its comment lines; for the others it runs `<op> --continue` with
+`GIT_EDITOR=true` and a 120-second limit.
 `main.rs` mounts `editor::workspace::workspace` as the Editor view's content
 while keeping the tab strip; the session controls strip stays terminal-only.
 Editor selection happens in two places — the workspace's project and checkout
@@ -810,7 +1018,7 @@ reading terminal session state. `EditorState` (`state.rs`) owns the
 checkout identity (`project_id` + canonical path as `checkout_key`), the
 registered-project list with its loading/error flags, the per-project
 `sidebar_worktrees` entries behind the sidebar rows, the picker's `worktrees`
-list, per-section cached state, the open document and draft, the navigation
+list, per-section cached state, the open documents and tabs, the navigation
 guard, pending external opens, request generations, the `Lsp` runtime handle,
 and modifiers.
 
@@ -827,15 +1035,17 @@ state. Section modules (`files`, `changes`, `history`, `stashes`, `commit`)
 issue their reads through `refresh_active`/`enqueue_read` and writes through
 `enqueue_write` on the same serialized lane.
 
-File opens flow `open_doc` → `navigate` (draft guard) → `Req::File` →
+File opens flow `open_doc` → `navigate` → `Req::File` →
 `install_doc`, which builds an `OpenDoc` (`draft.rs`) holding the loaded
 original, the live edit buffer, and read-only/binary/truncated restrictions.
+Opening or switching within the same checkout never guards: the previous
+document parks in `tabs` (`tabs.rs`) with its buffer, caret and undo intact.
 Edits mark the draft dirty and arm the highlight debounce (`highlight.rs`);
 saves go through `enqueue_save` with the expected-original contract.
-`navigation.rs` funnels section, checkout, project, view, document, window,
-and quit changes through `navigate`, raising the Save/Discard/Cancel guard
-for dirty drafts; `quit_guard.rs` adds the macOS `applicationShouldTerminate:`
-swizzle so OS-level quits are vetoed while a draft is dirty. `select_checkout`
+`navigation.rs` funnels section, checkout, project, view, window
+and quit changes through `navigate`, raising one Save/Discard/Cancel guard
+that lists every dirty tab; `quit_guard.rs` adds the macOS `applicationShouldTerminate:`
+swizzle so OS-level quits are vetoed while any tab is dirty. `select_checkout`
 commits post-guard only: it records the checkout as the chrome's
 `active_workspace` highlight key (`data::checkout_key`, NUL-joined), reloads
 worktrees through the shared `request_worktrees` lane when the project
@@ -855,7 +1065,7 @@ fills the commit draft only when it is unchanged.
 Language servers follow the same ownership shape (`lsp.rs` + `lsp/pos.rs` +
 `lsp/sync.rs`): one runtime thread hosts a current-thread Tokio runtime and
 the shared `app_core::lsp::LspHub`; the UI sends `LspCmd`s and drains
-`LspMsg`s from the poll loop. Document sync mirrors open files per
+`LspMsg`s from the poll loop. Document sync mirrors the active document per
 `(checkout, server)` — `didOpen` only under the 1 MiB cap, `didChange`
 debounced 120 ms as incremental UTF-16 edits — hover fires after a 400 ms
 caret settle with a 5 s local timeout, and definition requests carry a 15 s
@@ -872,6 +1082,12 @@ Conflict ranges are cached in `CodeState` and rebuilt on load/edit/undo;
 `OpenDoc::resolve_after_save` records an explicit pending resolution and is
 cleared on either save outcome. A stage failure keeps the successfully saved
 baseline, reports the Git error, and permits retrying Mark Resolved.
+`OpenDoc::stage_with_markers` carries the dialog's confirmation into the
+post-save `StageResolved` and is cleared on every Mark Resolved press;
+`OpenDoc::disk_notice` holds the changed, deleted or not-text state and is
+cleared by a save, overwrite or reload. `AutoRefresh` keeps the poll schedule and
+the view-entry/focus edge per checkout; `CommitState::merge_prefilled` records
+that the merge message was offered, until the merge ends.
 
 
 In-memory: `EditorState` holds the registered-project list
@@ -880,8 +1096,8 @@ In-memory: `EditorState` holds the registered-project list
 selection (`project_id`, `checkout`, `checkout_key`, `pending_checkout`),
 per-section state (changes data and selection, files tree/model/search,
 history commits/branches/layout/selection, stashes list/detail, LSP server
-entries/statuses/document mirrors/hover state), the open document and its
-dirty flag, the navigation guard and pending navigation, pending external
+entries/statuses/document mirrors/hover state), the open documents and their
+dirty flags (the active `doc` plus parked `tabs`), the navigation guard and pending navigation, pending external
 opens, request generations, and ACP runtime handles. A committed
 `SelectCheckout` also mirrors into the chrome's `State::active_workspace` —
 the sidebar highlight key — inside `select_checkout` post-guard, and
@@ -1022,6 +1238,16 @@ documented in `quit_guard.rs` rather than silently claimed.
   entries, disk mismatch, per-file staging, unchanged HEAD, and save/stage failure
   handling. A native app check on a temporary repository observed Accept Both
   followed by Mark Resolved saving the result and clearing the unmerged entry.
+  `git_view.rs` tests the seven conflict kinds, operation state (merge, rebase,
+  cherry-pick, linked worktree) and the merge message; `git_write.rs` tests
+  resolve, abort, continue and the merge commit on real repositories;
+  `autorefresh.rs`, `commit.rs`, `changes.rs`, `files.rs` and `backend.rs` test
+  the clock-driven poll, Continue and the prefill, the kind actions and the
+  stage-anyway dialog, the pane buttons, and the disk check with Overwrite. A
+  scratch-build check with `agent-desktop` observed the kind badges, the banner,
+  Abort and Continue, the dialog, the binary Use Incoming button and the pane's
+  Delete file and Keep their version; the row context menu, the Changes poll and
+  the open-file disk check were not driven on screen.
 
 
 - `apps/rune` carries extensive inline `#[test]`/`#[tokio::test]` cases across
@@ -1046,6 +1272,13 @@ documented in `quit_guard.rs` rather than silently claimed.
   and worktree row selection committing identity, dirty-guard
   Discard/Cancel, status rows, and real-backend fixtures driving
   cross-project selection including in-flight replies.
+- `snapshot.rs` covers selection-to-whole-line expansion, whole-file,
+  one-line and empty headers, dirty marking, CRLF normalization, fence
+  collision, unknown languages, the copy/send guards, and a live-session
+  send; `files.rs` verifies the ⌘⇧C clipboard output and the Send chip. A
+  native app check copied `AGENTS.md:1-3 (markdown)` from the real editor and
+  sent the same snapshot into a temporary shell session, which showed the
+  pasted text without executing it and the "Snapshot sent to zsh" notice.
 - `crates/app-core` carries its own inline tests plus the shared
   `tests/fixtures/fake_acp_agent.py` driving ACP connect/generate/cancel/
   permission-denial coverage — the same fixture the desktop page cites — and
@@ -1077,6 +1310,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/sidebar.rs`
 - `apps/rune/src/editor/mod.rs`
 - `apps/rune/src/editor/state.rs`
+- `apps/rune/src/editor/tabs.rs`
 - `apps/rune/src/editor/backend.rs`
 - `apps/rune/src/editor/backend/apply.rs`
 - `apps/rune/src/editor/workspace.rs`
@@ -1084,9 +1318,11 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/editor/draft.rs`
 - `apps/rune/src/editor/quit_guard.rs`
 - `apps/rune/src/editor/files.rs`
+- `apps/rune/src/editor/snapshot.rs`
 - `apps/rune/src/editor/code.rs`
 - `apps/rune/src/editor/conflict.rs`
 - `apps/rune/src/editor/blame.rs`
+- `apps/rune/src/editor/autorefresh.rs`
 - `apps/rune/src/editor/branch.rs`
 - `apps/rune/src/editor/indent.rs`
 - `apps/rune/src/editor/syntax.rs`

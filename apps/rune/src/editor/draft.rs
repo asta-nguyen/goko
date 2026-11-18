@@ -66,6 +66,19 @@ fn map_newlines(text: &str, mut pick: impl FnMut() -> &'static str) -> String {
     out
 }
 
+/// How the open file's disk state drifted from what the editor last saw,
+/// reported by the `Req::CheckFile` probe — the `editor_pane` warning row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiskNotice {
+    /// Disk text differs from the baseline and the buffer is dirty:
+    /// Overwrite or Reload from disk.
+    Changed,
+    /// The file is gone — nothing to overwrite, reload is pointless.
+    Deleted,
+    /// The file exists but is no longer complete UTF-8 text.
+    NotText,
+}
+
 /// What a checkout file read produced; only `Text` is editable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DocKind {
@@ -112,8 +125,14 @@ pub struct OpenDoc {
     pub saving: bool,
     /// Explicit Mark Resolved waits for a successful save before staging.
     pub resolve_after_save: bool,
+    /// The "stage with markers" dialog's Stage armed `allow_markers` for the
+    /// `StageResolved` request; `stage_resolved_doc` reads and clears it.
+    pub stage_with_markers: bool,
     /// Last save failure text (disk conflict, IO, cap…).
     pub save_error: Option<String>,
+    /// The disk check's verdict while it differs from the open doc —
+    /// `None` on a fresh install/reload and after every successful save.
+    pub disk_notice: Option<DiskNotice>,
     /// Pending 1-based line reveal from a search result / open request.
     pub reveal_line: Option<u64>,
     /// `.md` preview toggle (raw markdown source ↔ rendered).
@@ -145,7 +164,9 @@ impl OpenDoc {
             size: file.size,
             saving: false,
             resolve_after_save: false,
+            stage_with_markers: false,
             save_error: None,
+            disk_notice: None,
             reveal_line: None,
             markdown_preview: false,
             highlight_dirty_at: None,
@@ -223,6 +244,7 @@ impl OpenDoc {
         }
         self.saving = false;
         self.save_error = None;
+        self.disk_notice = None;
     }
 
     /// Discard: restore the buffer to the saved text as ONE undo step —

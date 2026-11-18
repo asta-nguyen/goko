@@ -1216,6 +1216,7 @@ fn small_button(label: &str, tone: Color, ink: &Ink, action: impl Fn(&mut State)
 pub fn separator(_s: &State, ink: &Ink) -> El {
     el().w(8.0)
         .h_full()
+        .cursor(rune::Cursor::ResizeColumn)
         .role("separator")
         .label("Resize sidebar")
         .child(el().absolute(3.5, 0.0).w(1.0).h_full().fill(ink.border))

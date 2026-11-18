@@ -166,6 +166,7 @@ impl Ink {
 // `tracking` mirrors tracking-tight (-0.025em) / tracking-wider (0.05em).
 // ---------------------------------------------------------------------------
 
+pub const T10_SUB: TextStyle = TextStyle::new(10.0, 500.0);
 pub const T11: TextStyle = TextStyle::new(11.0, 400.0);
 pub const T11M: TextStyle = TextStyle::new(11.0, 500.0);
 /// Chip and pill labels on a 16 pt line box, so text sits on whole device pixels
@@ -291,6 +292,16 @@ stroke_icon!(
     "terminal",
     "<path d=\"M12 19h8\"/>",
     "<path d=\"m4 17 6-6-6-6\"/>"
+);
+stroke_icon!(
+    BOT,
+    "bot",
+    "<path d=\"M12 8V4H8\"/>",
+    "<rect width=\"16\" height=\"12\" x=\"4\" y=\"8\" rx=\"2\"/>",
+    "<path d=\"M2 14h2\"/>",
+    "<path d=\"M20 14h2\"/>",
+    "<path d=\"M15 13v2\"/>",
+    "<path d=\"M9 13v2\"/>"
 );
 // Split-pane glyphs for the tab strip's icon-only split buttons (lucide
 // columns-2 / rows-2: an 18 px frame with one divider).
@@ -482,23 +493,12 @@ pub fn count_badge(n: usize, ink: &Ink) -> El {
         .child(txt(&n.to_string(), T11MN_BADGE, ink.text))
 }
 
-/// One window's read on a usage chip: the label (`5h`, `7d`, `wk`), the
-/// value text (`42%`, `reset`), and how much of the quota is spent.
+/// How much of a quota window is spent, as the Agents dropdown tints its meter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UsageTone {
     Muted,
     Warning,
     Danger,
-}
-
-/// One rendered quota window on a chip.
-#[derive(Clone, Debug)]
-pub struct ChipLimit {
-    pub label: String,
-    pub value: String,
-    pub tone: UsageTone,
-    /// The reset time as the tooltip reads it ("in 2h", "just now").
-    pub reset_at: String,
 }
 
 /// `usageTone()` from usage/tone.ts: >=90 danger, >=80 warning, else muted.
@@ -510,40 +510,6 @@ pub fn usage_tone(pct: f64) -> UsageTone {
     } else {
         UsageTone::Muted
     }
-}
-
-/// UsageChips' outline badge: name + per-window `label value` groups. Every
-/// child inherits the badge's 11 px / 500, so window labels and separators are
-/// medium too — only the percentage carries tnum. The `·` separators are chip
-/// children, not part of a window group, so they sit the same 6 pt from the value
-/// before them and the label after them.
-pub fn usage_chip(name: &str, limits: &[ChipLimit], ink: &Ink) -> El {
-    let mut chip = row()
-        .h(20.0)
-        .px(8.0)
-        .gap(6.0)
-        .items_center()
-        .radius(10.0)
-        .border(1.0, ink.border)
-        .child(txt(name, T11M_LH, ink.text));
-    for (i, limit) in limits.iter().enumerate() {
-        let tone = match limit.tone {
-            UsageTone::Danger => ink.danger,
-            UsageTone::Warning => ink.warning,
-            UsageTone::Muted => ink.muted,
-        };
-        if i > 0 {
-            chip = chip.child(txt("·", T11M_LH, ink.muted));
-        }
-        chip = chip.child(
-            row()
-                .gap(4.0)
-                .items_center()
-                .child(txt(&limit.label, T11M_LH, ink.muted))
-                .child(txt(&limit.value, T11MN_BADGE, tone)),
-        );
-    }
-    chip
 }
 
 /// Badge variant="warning" with the AlertTriangle icon — CheckoutStatus's

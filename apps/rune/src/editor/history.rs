@@ -144,14 +144,6 @@ pub(crate) fn ref_badge(r: &str) -> (String, bool, bool) {
     }
 }
 
-pub(crate) fn status_label(status: &str) -> &str {
-    if status == "typechange" {
-        "type changed"
-    } else {
-        status
-    }
-}
-
 pub(crate) fn entry_name(entry: &app_core::git_view::StatusEntry) -> String {
     match &entry.orig_path {
         Some(orig) => format!("{orig} → {}", entry.path),

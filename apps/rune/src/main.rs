@@ -212,9 +212,19 @@ pub struct State {
     /// When the usage/accounts read was last issued; the worker re-reads
     /// the sources about every five seconds.
     usage_at: Option<f64>,
-    /// The open usage-chip account menu: the agent it belongs to; the kit
-    /// menu anchors to that chip.
+    /// The open Agents usage dropdown (`"agents"`); it anchors to the header's
+    /// Agents button.
     usage_menu: Option<String>,
+    /// The per-provider usage records the worker last read with the usage
+    /// snapshot (`app_core::usage_records`): what Goko's own collectors and
+    /// any other collector on this machine wrote.
+    agent_usage: Vec<app_core::usage_records::UsageRecord>,
+    /// Goko's own usage collectors (`app_core::usage_collect`), run on a
+    /// thread of their own when the dropdown opens and on Refresh.
+    usage_collector: std::sync::Arc<app_core::usage_collect::Collector>,
+    /// Set by a collector run when it ends, so the next poll reads what it
+    /// wrote at once instead of on the five-second cadence.
+    usage_collected: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// What the check for a newer release found (Settings → Updates).
     update: update::Status,
     /// Where "Update now" installs over this copy; `None` when this copy can
@@ -353,6 +363,9 @@ impl State {
             subagents_at: None,
             usage_at: None,
             usage_menu: None,
+            agent_usage: Vec::new(),
+            usage_collector: Default::default(),
+            usage_collected: Default::default(),
             update: update::Status::default(),
             update_dir: update::install_dir(),
             settings: settings::SettingsState::default(),
@@ -734,9 +747,15 @@ impl State {
             backend::Req::Usage { .. } => {
                 if let Ok(backend::ReplyData::Usage { .. }) = &reply.result {
                     // Move the payload out — the view types aren't Clone.
-                    if let Ok(backend::ReplyData::Usage { snapshot, accounts }) = reply.result {
+                    if let Ok(backend::ReplyData::Usage {
+                        snapshot,
+                        accounts,
+                        records,
+                    }) = reply.result
+                    {
                         self.data.usage = Some(snapshot);
                         self.data.accounts = Some(accounts);
+                        self.agent_usage = records;
                     }
                 }
                 return;
@@ -1172,6 +1191,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(menu) = editor::files::menu_layer(s, &mut layer) {
         root = root.child(menu);
     }
+    if let Some(menu) = editor::files::code_menu_layer(s, &mut layer) {
+        root = root.child(menu);
+    }
     if let Some(prompt) = sidebar::input_layer(s, ink, &mut layer) {
         root = root.child(prompt);
     }
@@ -1361,6 +1383,13 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     changed |= terminal_branch::poll(s, now, tx);
     changed |= editor::branch::poll(&mut s.editor, s.view == View::Editor, now, tx);
+    changed |= editor::autorefresh::poll(
+        &mut s.editor,
+        s.view == View::Editor,
+        s.window_focused,
+        now,
+        tx,
+    );
     editor::highlight::poll(&mut s.editor, tx);
     // The inline-blame column's relative ages roll over once a minute.
     changed |= editor::blame::poll(&mut s.editor);
@@ -2329,6 +2358,7 @@ mod view_tests {
         s.editor.guard = Some(Guard {
             pending: PendingNav::SetSection(Section::History),
             doc_path: "src/a.rs".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
@@ -2368,6 +2398,7 @@ mod view_tests {
         s.editor.guard = Some(Guard {
             pending: PendingNav::SetSection(Section::History),
             doc_path: "src/a.rs".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         let before_text = s.editor.doc.as_ref().unwrap().code.edit.text.clone();
@@ -2397,6 +2428,7 @@ mod view_tests {
         s.editor.guard = Some(Guard {
             pending: PendingNav::SetSection(Section::History),
             doc_path: "src/a.rs".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
@@ -2479,6 +2511,8 @@ mod view_tests {
             unstaged: vec![],
             untracked: vec![],
             ahead: None,
+            operation: None,
+            merge_message: None,
         });
         s.editor.changes.checkout = s.editor.checkout_key.clone();
 
@@ -5138,11 +5172,17 @@ mod view_tests {
                     ..Default::default()
                 },
                 accounts: usage_view(),
+                records: vec![app_core::usage_records::UsageRecord {
+                    id: "devin".to_string(),
+                    ..Default::default()
+                }],
             }),
         ));
         assert!(s.data.usage.is_some());
         assert_eq!(s.data.usage.as_ref().unwrap().claude.updated_at, Some(42));
         assert_eq!(s.data.accounts.as_ref().unwrap().claude.items.len(), 2);
+        assert_eq!(s.agent_usage.len(), 1, "the records come with the reply");
+        assert_eq!(s.agent_usage[0].id, "devin");
     }
 
     #[test]
@@ -5494,12 +5534,17 @@ mod view_tests {
         assert_eq!(Theme::Dracula.resolve(false), Theme::Dracula);
     }
 
+    /// The Agents dropdown mounts only while it is open, and needs neither an
+    /// accounts view nor usage data to do so.
     #[test]
-    fn the_usage_menu_needs_an_account_view() {
+    fn the_agents_usage_dropdown_mounts_only_while_open() {
         let mut s = State::new(test_handle());
-        s.usage_menu = Some("claude".to_string());
         let mut layer = Vec::new();
         assert!(chrome::usage_menu_layer(&s, &mut layer).is_none());
+        assert!(layer.is_empty());
+        s.usage_menu = Some("agents".to_string());
+        assert!(chrome::usage_menu_layer(&s, &mut layer).is_some());
+        assert!(!layer.is_empty(), "the popover goes on the overlay layer");
         s.data.accounts = Some(usage_view());
         assert!(chrome::usage_menu_layer(&s, &mut layer).is_some());
     }

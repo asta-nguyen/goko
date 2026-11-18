@@ -211,6 +211,8 @@ pub enum Req {
     },
     // reads (all take the job's checkout)
     Changes,
+    /// the background Changes read: same as `Changes`, applied without a loading indicator
+    ChangesPoll,
     CurrentBranch,
     /// `layer` is a git_view layer (`staged`, `unstaged`, `untracked`,
     /// `conflict`, `commit`); `commit` carries the sha for `layer == "commit"`
@@ -270,6 +272,14 @@ pub enum Req {
         token: u64,
         revision: u64,
     },
+    /// The autorefresh probe's quiet re-read of the open doc's file (the
+    /// same `git_view::file` read as `File`). The reply only ever adjusts
+    /// the doc's disk notice — or a clean buffer, silently — while
+    /// `revision` still matches the `CodeState` it was issued at.
+    CheckFile {
+        path: String,
+        revision: u64,
+    },
     Stashes,
     StashDiff {
         stash: String,
@@ -300,6 +310,14 @@ pub enum Req {
         expected: String,
         text: String,
     },
+    /// The "File changed on disk" row's Overwrite: write the buffer over a
+    /// disk drift. The worker re-reads the disk file and passes ITS text as
+    /// `save_file`'s expected original, so the atomic replace keeps its
+    /// read-only/escape checks and still refuses a second drift.
+    OverwriteFile {
+        path: String,
+        text: String,
+    },
     /// One level of an ignored directory, read from disk (the file list
     /// leaves it collapsed). Sent on the write lane: its reply must apply
     /// whatever else was clicked since, so it is never generation-gated.
@@ -321,9 +339,13 @@ pub enum Req {
         path: String,
         new_name: String,
     },
+    /// Stage a conflicted file after the worker rechecks its text against
+    /// `expected`; `allow_markers` is set only by the confirmation dialog,
+    /// never by the plain Mark Resolved flow.
     StageResolved {
         path: String,
         expected: String,
+        allow_markers: bool,
     },
     Stage {
         paths: Option<Vec<String>>,
@@ -334,6 +356,18 @@ pub enum Req {
     Discard {
         layer: String,
         path: String,
+    },
+    /// Resolve one conflicted path with a whole-file action (`current`,
+    /// `incoming`, `keep`, `delete`); the worker re-reads status and
+    /// refuses an action the path's conflict kind does not admit.
+    Resolve {
+        path: String,
+        action: String,
+    },
+    /// Abort or continue the in-progress merge, rebase, cherry-pick or
+    /// revert. Detached like Commit: `--continue` can run the repo's hooks.
+    Operation {
+        step: String,
     },
     Commit {
         message: String,
@@ -355,10 +389,12 @@ pub enum ReplyData {
     Agents(Vec<AgentInfo>),
     /// The resolved launch argv of one agent.
     AgentArgv(Vec<String>),
-    /// The usage snapshot plus the accounts view read with it.
+    /// The usage snapshot plus the accounts view and the per-provider usage
+    /// records read with it.
     Usage {
         snapshot: app_core::usage::UsageSnapshot,
         accounts: app_core::accounts::AccountsView,
+        records: Vec<app_core::usage_records::UsageRecord>,
     },
     /// The accounts view after an account mutation.
     Accounts(app_core::accounts::AccountsView),
@@ -586,6 +622,7 @@ fn is_mutating(req: &Req) -> bool {
             | Req::PruneWorktrees { .. }
             | Req::RemoveProject { .. }
             | Req::SaveFile { .. }
+            | Req::OverwriteFile { .. }
             | Req::RenamePath { .. }
             | Req::TrashPath { .. }
             | Req::CreateEntry { .. }
@@ -593,6 +630,8 @@ fn is_mutating(req: &Req) -> bool {
             | Req::Stage { .. }
             | Req::Unstage { .. }
             | Req::Discard { .. }
+            | Req::Resolve { .. }
+            | Req::Operation { .. }
             | Req::Commit { .. }
             | Req::Push
     )
@@ -646,10 +685,11 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
 const DETACHED_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Git writes that last as long as a network or a hook does: `git push` (up
-/// to its two-minute limit) and `git commit` (the repository's hooks). They
-/// run on a thread of their own so every other job keeps its turn.
+/// to its two-minute limit), `git commit` and merge/rebase/cherry-pick/
+/// revert operations (the repository's hooks). They run on a thread of
+/// their own so every other job keeps its turn.
 fn detachable(req: &Req) -> bool {
-    matches!(req, Req::Push | Req::Commit { .. })
+    matches!(req, Req::Push | Req::Commit { .. } | Req::Operation { .. })
 }
 
 /// Writes to a checkout's index and refs. They keep their queue order behind
@@ -662,6 +702,8 @@ fn is_git_write(req: &Req) -> bool {
             | Req::Unstage { .. }
             | Req::Discard { .. }
             | Req::StageResolved { .. }
+            | Req::Resolve { .. }
+            | Req::Operation { .. }
             | Req::Commit { .. }
             | Req::Push
     )
@@ -801,6 +843,9 @@ fn detach_job(
                     .map_err(|e| e.to_string()),
                 Req::Commit { message } => git_write::commit(&checkout, message)
                     .map(ReplyData::Commit)
+                    .map_err(|e| e.to_string()),
+                Req::Operation { step } => git_write::operation(&checkout, step)
+                    .map(|_| ReplyData::Ok)
                     .map_err(|e| e.to_string()),
                 _ => Err("not a detachable job".to_string()),
             };
@@ -1284,26 +1329,69 @@ fn usage_snapshot(
         .map(app_core::accounts::read)
         .unwrap_or_default();
     let goko_home = agent_home();
-    let codex_home =
-        app_core::usage::codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME"));
+    let codex_home = app_core::usage::codex_home_from(
+        std::env::var_os("CODEX_HOME"),
+        app_core::home::user_home(),
+    );
     let snapshot =
         app_core::usage::read_snapshot(&goko_home, codex_home.as_deref(), &accounts, previous);
     Ok(ReplyData::Usage {
         snapshot,
         accounts: app_core::accounts::view(&accounts),
+        records: app_core::usage_records::read(
+            &usage_record_dirs(&goko_home),
+            crate::data::now_ms(),
+        ),
     })
 }
 
-/// Recheck the saved snapshot on the worker before resolving the index entry.
-fn stage_resolved(checkout: &Path, path: &str, expected: &str) -> Result<(), String> {
+/// The folders usage records are read from. Tests read only the temp
+/// `GOKO_HOME`, never the developer's own state folder.
+fn usage_record_dirs(goko_home: &std::path::Path) -> Vec<PathBuf> {
+    #[cfg(not(test))]
+    {
+        app_core::usage_records::record_dirs(
+            goko_home,
+            std::env::var_os("XDG_STATE_HOME"),
+            app_core::home::user_home(),
+        )
+    }
+    #[cfg(test)]
+    {
+        app_core::usage_records::record_dirs(goko_home, None, None)
+    }
+}
+
+/// Recheck the saved snapshot on the worker before resolving the index
+/// entry. Leftover conflict markers are refused unless the request carries
+/// the dialog's `allow_markers` confirmation.
+fn stage_resolved(
+    checkout: &Path,
+    path: &str,
+    expected: &str,
+    allow_markers: bool,
+) -> Result<(), String> {
     let file = git_view::file(checkout, path).map_err(|e| e.to_string())?;
     if file.kind != "text" || file.truncated || file.text.as_deref() != Some(expected) {
         return Err("the file changed on disk; reload it before marking resolved".into());
     }
-    if crate::editor::conflict::has_markers(expected) {
+    if !allow_markers && crate::editor::conflict::has_markers(expected) {
         return Err("resolve all conflict markers before staging".into());
     }
     git_write::stage(checkout, Some(&[path.to_string()])).map_err(|e| e.to_string())
+}
+
+/// The Overwrite button's write: re-read the disk file so `save_file`'s
+/// expected-text guard compares the buffer against what is really there —
+/// a second drift between this read and the replace still refuses, and
+/// anything that is no longer a complete text file refuses up front.
+fn overwrite_file(checkout: &Path, path: &str, text: &str) -> Result<GitViewFile, String> {
+    let disk = git_view::file(checkout, path).map_err(|e| e.to_string())?;
+    let expected = match (disk.kind, disk.truncated, disk.text) {
+        ("text", false, Some(text)) => text,
+        _ => return Err("the file is no longer text".into()),
+    };
+    git_view::save_file(checkout, path, &expected, text).map_err(|e| e.to_string())
 }
 
 /// Resolve the job's checkout identity against the registered project list
@@ -1323,7 +1411,7 @@ fn run_checkout(
     let checkout = &checkout;
     match req {
         Req::CurrentBranch => crate::editor::branch::read(checkout).map(ReplyData::CurrentBranch),
-        Req::Changes => git_view::changes(checkout)
+        Req::Changes | Req::ChangesPoll => git_view::changes(checkout)
             .map(ReplyData::Changes)
             .map_err(|e| e.to_string()),
         Req::Diff {
@@ -1333,9 +1421,11 @@ fn run_checkout(
         } => git_view::diff(checkout, layer, path.as_deref(), commit.as_deref())
             .map(ReplyData::Diff)
             .map_err(|e| e.to_string()),
-        Req::File { path, .. } | Req::ReloadFile { path, .. } => git_view::file(checkout, path)
-            .map(ReplyData::File)
-            .map_err(|e| e.to_string()),
+        Req::File { path, .. } | Req::ReloadFile { path, .. } | Req::CheckFile { path, .. } => {
+            git_view::file(checkout, path)
+                .map(ReplyData::File)
+                .map_err(|e| e.to_string())
+        }
         Req::History { skip, branch } => git_view::history(checkout, *skip, branch.as_deref())
             .map(ReplyData::History)
             .map_err(|e| e.to_string()),
@@ -1380,6 +1470,9 @@ fn run_checkout(
         } => git_view::save_file(checkout, path, expected, text)
             .map(ReplyData::Saved)
             .map_err(|e| e.to_string()),
+        Req::OverwriteFile { path, text } => {
+            overwrite_file(checkout, path, text).map(ReplyData::Saved)
+        }
         Req::IgnoredChildren { dir } => git_view::ignored_children(checkout, dir)
             .map(ReplyData::IgnoredChildren)
             .map_err(|e| e.to_string()),
@@ -1395,9 +1488,17 @@ fn run_checkout(
         Req::RenamePath { path, new_name } => git_view::rename_path(checkout, path, new_name)
             .map(ReplyData::Renamed)
             .map_err(|e| e.to_string()),
-        Req::StageResolved { path, expected } => {
-            stage_resolved(checkout, path, expected).map(|_| ReplyData::Ok)
-        }
+        Req::StageResolved {
+            path,
+            expected,
+            allow_markers,
+        } => stage_resolved(checkout, path, expected, *allow_markers).map(|_| ReplyData::Ok),
+        Req::Resolve { path, action } => git_write::resolve(checkout, path, action)
+            .map(|_| ReplyData::Ok)
+            .map_err(|e| e.to_string()),
+        Req::Operation { step } => git_write::operation(checkout, step)
+            .map(|_| ReplyData::Ok)
+            .map_err(|e| e.to_string()),
         Req::Stage { paths } => git_write::stage(checkout, paths.as_deref())
             .map(|_| ReplyData::Ok)
             .map_err(|e| e.to_string()),
@@ -1590,26 +1691,46 @@ impl EditorState {
     /// Files became the active surface: any in-flight ACP generate belonged
     /// to the Changes commit panel, so cancel it with the CURRENT (still
     /// pre-transition) project/checkout identity before the section flips.
+    /// Then kick the section's reads — a file opened from Changes or
+    /// History lands here without a file list, and `refresh_active` only
+    /// enqueues `Req::FileList` when the cached list is missing or belongs
+    /// to another checkout.
     fn activate_files(&mut self) {
         if self.section == Section::Changes {
             self.acp.cancel(&self.project_id, &self.checkout);
         }
         self.section = Section::Files;
         self.visited.insert(Section::Files);
+        self.refresh_active();
     }
 
     fn install_doc(&mut self, path: String, file: GitViewFile, line: Option<u64>) {
         // Same file already open → just queue the reveal, no reload
         // (external open-file contract). The doc is untouched, so a pending
-        // reload stays valid.
-        if self.doc.as_ref().is_some_and(|d| d.path == path) {
-            if let (Some(line), Some(doc)) = (line, self.doc.as_mut()) {
-                doc.reveal_line = Some(line);
+        // reload stays valid. A reply for a path that is already a parked
+        // tab is dropped the same way — the parked buffer wins over a
+        // second copy of the disk file.
+        if self.doc.as_ref().is_some_and(|d| d.path == path) || self.tabs.is_open(&path) {
+            if let Some(line) = line {
+                if let Some(doc) = self.doc.as_mut().filter(|d| d.path == path) {
+                    doc.reveal_line = Some(line);
+                } else if let Some(doc) = self.tabs.parked.get_mut(&path) {
+                    doc.reveal_line = Some(line);
+                }
+            }
+            // A write owns the active slot until its reply lands: the tab
+            // is already open, so the reveal just waits with it.
+            if !self
+                .doc
+                .as_ref()
+                .is_some_and(|d| d.path == path || d.saving)
+            {
+                self.activate_tab(&path);
             }
             self.activate_files();
             return;
         }
-        let mut doc = crate::editor::draft::OpenDoc::new(path, &file);
+        let mut doc = crate::editor::draft::OpenDoc::new(path.clone(), &file);
         doc.code.set_indent_choice(self.indent_choice);
         doc.reveal_line = line;
         // Fresh document: arm the highlight debounce so the initial text is
@@ -1621,11 +1742,26 @@ impl EditorState {
             doc.media =
                 crate::editor::media::Media::open(&doc.path, &checkout.join(&doc.path), host);
         }
-        // The draft guard already resolved before this reply was applied, so
-        // replacing the slot here cannot drop unsaved work. A pending reload
-        // targeted the OLD doc — never let it land on the new one.
+        if self.doc.as_ref().is_some_and(|d| d.saving) {
+            // No tab is parked while its save is in flight: the write owns
+            // the active slot until the reply lands, so the new document
+            // joins as an inactive tab and activates like any parked doc.
+            self.doc_reload = None;
+            self.tabs.parked.insert(path.clone(), doc);
+            if !self.tabs.order.contains(&path) {
+                self.tabs.order.push(path.clone());
+            }
+            self.tabs.recent.retain(|p| p != &path);
+            self.tabs.recent.insert(1.min(self.tabs.recent.len()), path);
+            self.activate_files();
+            return;
+        }
+        // The draft guard already resolved before this reply was applied,
+        // and opening a file parks rather than drops the previous document,
+        // so nothing unsaved leaves. A pending reload targeted the OLD doc —
+        // never let it land on the new one.
         self.doc_reload = None;
-        self.doc = Some(doc);
+        self.tabs.open(&mut self.doc, doc);
         self.activate_files();
         // The blame annotations describe the file on disk — ask for them
         // now that the document is open.
@@ -1633,6 +1769,82 @@ impl EditorState {
         crate::editor::blame::request(self);
         crate::editor::line_changes::sync_visibility(self);
         crate::editor::line_changes::request(self);
+    }
+
+    /// Make the parked tab `path` the active document; `true` when the tab
+    /// switched. The active-only pipelines re-arm around the swap —
+    /// parked tabs receive no highlight, blame, line-change or disk-check
+    /// results, so activation re-requests them.
+    pub fn activate_tab(&mut self, path: &str) -> bool {
+        if !self.tabs.activate(&mut self.doc, path) {
+            return false;
+        }
+        self.after_active_change();
+        true
+    }
+
+    /// Activate the tab `delta` positions away in open order, wrapping —
+    /// the next/previous-tab chords. `false` with fewer than two tabs.
+    pub fn step_tab(&mut self, delta: i32) -> bool {
+        if self.tabs.step(&mut self.doc, delta).is_none() {
+            return false;
+        }
+        self.after_active_change();
+        true
+    }
+
+    /// Close the tab `path`; the caller guards dirty tabs first. The active
+    /// tab's right neighbour activates, else the left one, else no document
+    /// stays open. Closing a parked tab changes nothing for the active
+    /// document, so it re-requests nothing.
+    pub fn close_tab(&mut self, path: &str) {
+        let was_active = self.doc.as_ref().is_some_and(|d| d.path == path);
+        self.tabs.close(&mut self.doc, path);
+        if was_active && self.doc.as_ref().is_some_and(|d| d.path == path) {
+            // The active doc was never registered as a tab (a direct
+            // install): drop it and fall back to the first surviving tab.
+            self.doc = None;
+            if let Some(next) = self.tabs.order.first().cloned() {
+                self.tabs.activate(&mut self.doc, &next);
+            }
+        }
+        if was_active {
+            self.after_active_change();
+        }
+    }
+
+    /// The active-document slot changed (tab switch, close-neighbour,
+    /// guard activation): re-arm the highlight debounce, re-request blame
+    /// and line changes — they follow the active doc — and probe the file
+    /// on disk the way the autorefresh lane's `Req::CheckFile` does.
+    fn after_active_change(&mut self) {
+        if let Some(doc) = self.doc.as_mut() {
+            doc.highlight_dirty_at = Some(std::time::Instant::now());
+            doc.highlight_inflight = false;
+        }
+        crate::editor::blame::sync_visibility(self);
+        crate::editor::blame::request(self);
+        crate::editor::line_changes::sync_visibility(self);
+        crate::editor::line_changes::request(self);
+        let checkable = self.doc.as_ref().is_some_and(|doc| {
+            doc.kind == crate::editor::draft::DocKind::Text && !doc.truncated && !doc.saving
+        });
+        if checkable
+            && self.doc_reload.is_none()
+            && !self.autorefresh.check_pending
+            && let (Some(checkout), Some(key), Some(doc)) = (
+                self.checkout.clone(),
+                self.checkout_key.clone(),
+                self.doc.as_ref(),
+            )
+        {
+            let req = Req::CheckFile {
+                path: doc.path.clone(),
+                revision: doc.code.revision,
+            };
+            self.autorefresh.check_pending = self.enqueue_read(checkout, key, req);
+        }
+        self.sync_quit_dirty();
     }
 
     /// `Req::ReloadFile` reply — the guard dialog's "Reload from disk":
@@ -1673,6 +1885,73 @@ impl EditorState {
         crate::editor::blame::request(self);
         crate::editor::line_changes::sync_visibility(self);
         crate::editor::line_changes::request(self);
+    }
+
+    /// `Req::CheckFile` reply — the autorefresh probe. Applies only while
+    /// the doc it probed is still the open one (path), untouched since the
+    /// request (revision — an edit during the flight bumps it and drops the
+    /// reply), and no save or reload owns the next state. The probe never
+    /// writes the buffer for a dirty doc or for a file that stopped being
+    /// complete text: those only move `disk_notice`.
+    fn apply_check(&mut self, path: &str, revision: u64, file: GitViewFile) {
+        if self.doc_reload.is_some() {
+            return;
+        }
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        if doc.path != path || doc.code.revision != revision || doc.saving {
+            return;
+        }
+        enum Check {
+            Gone,
+            NotText,
+            Same,
+            Dirty,
+            Replace,
+        }
+        let check = match (file.kind, file.truncated, file.text.as_deref()) {
+            ("missing", ..) => Check::Gone,
+            ("text", false, Some(text)) if text == doc.original => Check::Same,
+            ("text", false, Some(_)) if doc.dirty() => Check::Dirty,
+            ("text", false, Some(_)) => Check::Replace,
+            _ => Check::NotText,
+        };
+        match check {
+            Check::Gone => doc.disk_notice = Some(crate::editor::draft::DiskNotice::Deleted),
+            Check::NotText => doc.disk_notice = Some(crate::editor::draft::DiskNotice::NotText),
+            Check::Dirty => doc.disk_notice = Some(crate::editor::draft::DiskNotice::Changed),
+            Check::Same => doc.disk_notice = None,
+            Check::Replace => {
+                // Clean doc, disk moved: take the disk text silently —
+                // baseline AND buffer — keeping the caret where the new
+                // length allows. Built like `apply_reload`: `CodeState`
+                // has no swap-text-and-keep-the-caret method.
+                let (anchor, focus) = (doc.code.edit.anchor, doc.code.edit.focus);
+                let (focused, reveal_line) = (doc.code.edit.focused, doc.reveal_line);
+                let mut new_doc = crate::editor::draft::OpenDoc::new(path.to_string(), &file);
+                new_doc.code.set_indent_choice(self.indent_choice);
+                new_doc.reveal_line = reveal_line;
+                new_doc.highlight_dirty_at = Some(std::time::Instant::now());
+                // Above the revision this check ran at, so a stale probe
+                // still in flight drops instead of re-entering this arm.
+                new_doc.code.revision = revision + 1;
+                let len = new_doc.code.edit.text.len();
+                new_doc
+                    .code
+                    .edit
+                    .set_selection(anchor.min(len), focus.min(len));
+                new_doc.code.edit.focused = focused;
+                self.doc = Some(new_doc);
+                self.sync_quit_dirty();
+                // The file changed on disk: its blame and bars describe
+                // the new text.
+                crate::editor::blame::sync_visibility(self);
+                crate::editor::blame::request(self);
+                crate::editor::line_changes::sync_visibility(self);
+                crate::editor::line_changes::request(self);
+            }
+        }
     }
 
     /// Kick the reads the active section needs. Called on section activation,
@@ -1946,6 +2225,9 @@ fn expanded_ids(model: &rune_kit::TreeModel<rune_kit::FileNode<FileMark>>) -> Ve
 fn kind_key(req: &Req) -> &'static str {
     match req {
         Req::Changes => "changes",
+        // Own lane: a poll must never supersede (or be superseded by) the
+        // manual `Changes` read — a dropped reply would strand its spinner.
+        Req::ChangesPoll => "changespoll",
         Req::CurrentBranch => "currentbranch",
         Req::Diff {
             commit: Some(_), ..
@@ -1961,6 +2243,9 @@ fn kind_key(req: &Req) -> &'static str {
         Req::Highlight { .. } => "highlight",
         Req::File { .. } => "file",
         Req::ReloadFile { .. } => "reloadfile",
+        // Own lane: a doc open or reload in flight must never be superseded
+        // by the disk-check probe (a dropped File reply strands `doc_load`).
+        Req::CheckFile { .. } => "checkfile",
         Req::Stashes => "stashes",
         Req::StashDiff { .. } => "stashdiff",
         Req::Blame { .. } => "blame",
@@ -2074,12 +2359,12 @@ mod tests {
         );
         let marked = fs::read_to_string(root.join("a.txt")).unwrap();
         assert!(
-            stage_resolved(&root, "a.txt", &marked)
+            stage_resolved(&root, "a.txt", &marked, false)
                 .unwrap_err()
                 .contains("markers")
         );
         assert!(
-            stage_resolved(&root, "a.txt", "resolved\n")
+            stage_resolved(&root, "a.txt", "resolved\n", false)
                 .unwrap_err()
                 .contains("changed on disk")
         );
@@ -2087,11 +2372,73 @@ mod tests {
         fs::write(root.join("a.txt"), "ours\ntheirs\n").unwrap();
         fs::write(root.join("other.txt"), "leave unstaged\n").unwrap();
         let head = git(&["rev-parse", "HEAD"]);
-        stage_resolved(&root, "a.txt", "ours\ntheirs\n").unwrap();
+        stage_resolved(&root, "a.txt", "ours\ntheirs\n", false).unwrap();
         assert!(git(&["ls-files", "-u"]).is_empty());
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "a.txt\n");
         assert_eq!(git(&["rev-parse", "HEAD"]), head);
-        assert!(stage_resolved(&root, "../outside", "").is_err());
+        assert!(stage_resolved(&root, "../outside", "", false).is_err());
+    }
+
+    #[test]
+    fn stage_resolved_with_markers_needs_allow_markers() {
+        use app_core::test_support::TempDir;
+        use std::fs;
+        use std::process::Command;
+        let temp = TempDir::new("resolve-markers");
+        let root = temp.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{:?}: {:?}", args, out);
+            String::from_utf8(out.stdout).unwrap()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "Tester"]);
+        git(&["config", "user.email", "test@example.com"]);
+        fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "side"]);
+        fs::write(root.join("a.txt"), "theirs\n").unwrap();
+        git(&["commit", "-qam", "side"]);
+        git(&["checkout", "-q", "main"]);
+        fs::write(root.join("a.txt"), "ours\n").unwrap();
+        git(&["commit", "-qam", "ours"]);
+        assert!(
+            !Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["merge", "side"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let marked = fs::read_to_string(root.join("a.txt")).unwrap();
+        assert!(crate::editor::conflict::has_markers(&marked));
+        // Markers are refused until the request carries the dialog's
+        // confirmation; a disk drift is refused either way.
+        assert!(
+            stage_resolved(&root, "a.txt", &marked, false)
+                .unwrap_err()
+                .contains("markers")
+        );
+        assert!(
+            stage_resolved(&root, "a.txt", "resolved\n", true)
+                .unwrap_err()
+                .contains("changed on disk")
+        );
+        assert!(
+            stage_resolved(&root, "a.txt", "resolved\n", false)
+                .unwrap_err()
+                .contains("changed on disk")
+        );
+        stage_resolved(&root, "a.txt", &marked, true).unwrap();
+        assert!(git(&["ls-files", "-u"]).is_empty());
     }
 
     #[test]
@@ -2127,11 +2474,12 @@ mod tests {
             Ok(ReplyData::Saved(text_file("resolved"))),
         ));
         let queued: Vec<_> = jobs.try_iter().collect();
-        assert!(queued.iter().any(|j| matches!(&j.req, Req::StageResolved { path, expected } if path == "a.txt" && expected == "resolved")));
+        assert!(queued.iter().any(|j| matches!(&j.req, Req::StageResolved { path, expected, allow_markers: false } if path == "a.txt" && expected == "resolved")));
         e.apply_reply(reply(
             Req::StageResolved {
                 path: "a.txt".into(),
                 expected: "resolved".into(),
+                allow_markers: false,
             },
             0,
             e.checkout_key.clone(),
@@ -2269,6 +2617,28 @@ mod tests {
     }
 
     #[test]
+    fn operation_reply_refreshes_changes_and_clears_busy() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        e.changes.busy = Some("resolve");
+        e.apply_reply(reply(
+            Req::Operation {
+                step: "abort".into(),
+            },
+            0,
+            e.checkout_key.clone(),
+            Ok(ReplyData::Ok),
+        ));
+        assert_eq!(e.changes.busy, None);
+        assert_eq!(e.changes.error, None);
+        // Same write follow-up as Stage: Changes is re-read.
+        let queued: Vec<_> = jobs.try_iter().collect();
+        assert!(queued.iter().any(|j| matches!(j.req, Req::Changes)));
+    }
+
+    #[test]
     fn foreign_checkout_write_reply_preserves_busy() {
         let mut e = editor();
         select(&mut e);
@@ -2362,7 +2732,7 @@ mod tests {
         let key = e.checkout_key.clone().unwrap();
         e.doc = Some(OpenDoc::new("a.txt", &text_file("orig")));
         e.doc.as_mut().unwrap().code.edit.text = "dirty edit".into();
-        e.doc_load = Some(9);
+        e.doc_load = Some((9, "a.txt".into()));
         assert!(e.enqueue_read(
             checkout,
             key.clone(),
@@ -2397,7 +2767,7 @@ mod tests {
         select(&mut e);
         let checkout = e.checkout.clone().unwrap();
         let key = e.checkout_key.clone().unwrap();
-        e.doc_load = Some(9);
+        e.doc_load = Some((9, "a.txt".into()));
         assert!(e.enqueue_read(
             checkout,
             key.clone(),
@@ -2724,6 +3094,7 @@ mod tests {
                 line: None,
             },
             doc_path: "a.txt".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         e.apply_reply(external_open_reply("p1", "/tmp/co", "a.ts", None));
@@ -2739,6 +3110,7 @@ mod tests {
                 line: None,
             },
             doc_path: "a.txt".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         e.apply_reply(external_open_reply("p1", "/tmp/co", "a.ts", None));
@@ -2962,6 +3334,170 @@ mod tests {
         );
     }
 
+    // -- Req::CheckFile ---------------------------------------------------
+
+    /// Issue a disk check exactly like `autorefresh::poll`: the read lane
+    /// under the "checkfile" generation, `check_pending` armed. Returns
+    /// the revision the request carries.
+    fn issue_check(e: &mut EditorState) -> u64 {
+        let doc = e.doc.as_ref().expect("open doc");
+        let path = doc.path.clone();
+        let revision = doc.code.revision;
+        let checkout = e.checkout.clone().unwrap();
+        let key = e.checkout_key.clone().unwrap();
+        assert!(e.enqueue_read(checkout, key, Req::CheckFile { path, revision }));
+        e.autorefresh.check_pending = true;
+        revision
+    }
+
+    fn check_reply(e: &EditorState, revision: u64, result: Result<ReplyData, String>) -> Reply {
+        reply(
+            Req::CheckFile {
+                path: e.doc.as_ref().unwrap().path.clone(),
+                revision,
+            },
+            e.req_gens["checkfile"],
+            e.checkout_key.clone(),
+            result,
+        )
+    }
+
+    #[test]
+    fn check_clean_doc_with_changed_disk_replaces_the_buffer() {
+        let mut e = editor();
+        select(&mut e);
+        // A 12-char clean buffer with the caret near its end; the new disk
+        // text is shorter, so the caret clamps to the new length.
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("orig text 12")));
+        e.doc.as_mut().unwrap().code.edit.set_caret(10);
+        let revision = issue_check(&mut e);
+        e.apply_reply(check_reply(
+            &e,
+            revision,
+            Ok(ReplyData::File(text_file("short"))),
+        ));
+        let doc = e.doc.as_ref().unwrap();
+        // A clean buffer follows the disk silently: baseline AND buffer.
+        assert_eq!(doc.code.edit.text, "short");
+        assert_eq!(doc.original, "short");
+        assert_eq!(doc.disk_notice, None);
+        assert!(doc.code.revision > revision, "a stale probe drops");
+        assert_eq!(doc.code.edit.focus, 5, "caret clamped to the new length");
+        assert!(doc.highlight_dirty_at.is_some(), "highlight re-armed");
+        assert!(!e.autorefresh.check_pending);
+    }
+
+    #[test]
+    fn check_dirty_doc_with_changed_disk_keeps_the_buffer_and_flags_it() {
+        let mut e = editor();
+        select(&mut e);
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("orig")));
+        e.doc.as_mut().unwrap().code.edit.text = "dirty edit".into();
+        let revision = issue_check(&mut e);
+        e.apply_reply(check_reply(
+            &e,
+            revision,
+            Ok(ReplyData::File(text_file("disk moved"))),
+        ));
+        let doc = e.doc.as_ref().unwrap();
+        assert_eq!(doc.code.edit.text, "dirty edit", "the draft wins");
+        assert_eq!(doc.original, "orig", "the baseline stays honest");
+        assert_eq!(
+            doc.disk_notice,
+            Some(crate::editor::draft::DiskNotice::Changed)
+        );
+        // A save losing the same race flags the same notice — and the
+        // earlier notice survives it.
+        e.apply_reply(reply(
+            Req::SaveFile {
+                path: "a.txt".into(),
+                expected: "orig".into(),
+                text: "dirty edit".into(),
+            },
+            0,
+            e.checkout_key.clone(),
+            Err("the file changed on disk; reload it before saving".into()),
+        ));
+        let doc = e.doc.as_ref().unwrap();
+        assert_eq!(
+            doc.disk_notice,
+            Some(crate::editor::draft::DiskNotice::Changed)
+        );
+        assert_eq!(
+            doc.save_error.as_deref(),
+            Some("the file changed on disk; reload it before saving")
+        );
+    }
+
+    #[test]
+    fn check_with_same_text_clears_the_notice() {
+        let mut e = editor();
+        select(&mut e);
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("orig")));
+        e.doc.as_mut().unwrap().disk_notice = Some(crate::editor::draft::DiskNotice::Changed);
+        let revision = issue_check(&mut e);
+        e.apply_reply(check_reply(
+            &e,
+            revision,
+            Ok(ReplyData::File(text_file("orig"))),
+        ));
+        let doc = e.doc.as_ref().unwrap();
+        assert_eq!(doc.disk_notice, None);
+        assert_eq!(doc.code.edit.text, "orig");
+    }
+
+    #[test]
+    fn check_vanished_or_non_text_file_sets_deleted_or_not_text() {
+        let mut e = editor();
+        select(&mut e);
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("orig")));
+        e.doc.as_mut().unwrap().code.edit.text = "dirty edit".into();
+        for (kind, notice) in [
+            ("missing", crate::editor::draft::DiskNotice::Deleted),
+            ("binary", crate::editor::draft::DiskNotice::NotText),
+        ] {
+            let revision = issue_check(&mut e);
+            let mut file = text_file("whatever");
+            file.kind = kind;
+            file.text = None;
+            e.apply_reply(check_reply(&e, revision, Ok(ReplyData::File(file))));
+            let doc = e.doc.as_ref().unwrap();
+            assert_eq!(doc.disk_notice, Some(notice), "{kind}");
+            assert_eq!(doc.code.edit.text, "dirty edit", "{kind}: buffer kept");
+            assert!(!e.autorefresh.check_pending);
+        }
+    }
+
+    #[test]
+    fn check_reply_with_a_stale_revision_or_while_saving_is_ignored() {
+        let mut e = editor();
+        select(&mut e);
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("orig")));
+        let revision = issue_check(&mut e);
+        // The user typed while the read was in flight → revision moved on.
+        let doc = e.doc.as_mut().unwrap();
+        doc.code.edit.text = "edited".into();
+        doc.code.text_edited();
+        e.apply_reply(check_reply(
+            &e,
+            revision,
+            Ok(ReplyData::File(text_file("disk"))),
+        ));
+        assert_eq!(e.doc.as_ref().unwrap().code.edit.text, "edited");
+        assert_eq!(e.doc.as_ref().unwrap().disk_notice, None);
+        // A save in flight owns the doc's next state too.
+        let revision = issue_check(&mut e);
+        e.doc.as_mut().unwrap().saving = true;
+        e.apply_reply(check_reply(
+            &e,
+            revision,
+            Ok(ReplyData::File(text_file("disk"))),
+        ));
+        assert_eq!(e.doc.as_ref().unwrap().code.edit.text, "edited");
+        assert_eq!(e.doc.as_ref().unwrap().disk_notice, None);
+        assert!(!e.autorefresh.check_pending, "the probe still released");
+    }
+
     #[test]
     fn a_binary_image_gets_a_preview_and_a_binary_blob_does_not() {
         // A 1x1 PNG.
@@ -3128,7 +3664,7 @@ mod tests {
         // Open it like the tree does.
         e.doc_seq += 1;
         let token = e.doc_seq;
-        e.doc_load = Some(token);
+        e.doc_load = Some((token, file.into()));
         let mut open = Job::read(
             &pid,
             co.clone(),
@@ -3406,7 +3942,7 @@ mod tests {
         e.doc = Some(OpenDoc::new("a.txt", &text_file("orig")));
         // A same-path File reply takes the reveal fast path — it must not
         // consume or invalidate the in-flight reload.
-        e.doc_load = Some(99);
+        e.doc_load = Some((99, "a.txt".into()));
         let file_gen = e.req_gens.get("file").copied().unwrap_or(0) + 1;
         e.req_gens.insert("file", file_gen);
         e.apply_reply(reply(
@@ -3452,6 +3988,43 @@ mod tests {
         assert_eq!(e.section, Section::Files);
         assert_eq!(e.doc.as_ref().unwrap().reveal_line, Some(2));
         assert_eq!(e.acp.generating_for, None);
+    }
+
+    /// A file opened from Changes (or History) lands in Files with no list
+    /// cached: the activation queues the `FileList` read itself instead of
+    /// leaving "No files" until a manual refresh. A list already cached
+    /// for this checkout queues nothing.
+    #[test]
+    fn opening_a_file_loads_the_file_list_when_it_is_missing() {
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        e.section = Section::Changes;
+        e.install_doc("a.txt".into(), text_file("fresh"), None);
+        assert_eq!(e.section, Section::Files);
+        let sent: Vec<Job> = jobs.try_iter().collect();
+        assert_eq!(
+            sent.iter()
+                .filter(|j| matches!(j.req, Req::FileList))
+                .count(),
+            1,
+            "an empty file list loads once: {sent:?}"
+        );
+
+        let (backend, jobs) = channel_backend();
+        let mut e = editor();
+        e.backend = backend;
+        select(&mut e);
+        e.section = Section::Changes;
+        e.files.paths = vec!["a.txt".into()];
+        e.rebuild_file_model();
+        e.install_doc("a.txt".into(), text_file("fresh"), None);
+        assert_eq!(e.section, Section::Files);
+        assert!(
+            !jobs.try_iter().any(|j| matches!(j.req, Req::FileList)),
+            "a cached list for this checkout queues no read"
+        );
     }
 
     // -- Backend::shutdown ---------------------------------------------------
@@ -3547,11 +4120,22 @@ mod tests {
                 expected: String::new(),
                 text: String::new(),
             },
+            Req::OverwriteFile {
+                path: "a".into(),
+                text: String::new(),
+            },
             Req::Stage { paths: None },
             Req::Unstage { paths: None },
             Req::Discard {
                 layer: "l".into(),
                 path: "a".into(),
+            },
+            Req::Resolve {
+                path: "a".into(),
+                action: "current".into(),
+            },
+            Req::Operation {
+                step: "abort".into(),
             },
             Req::Commit {
                 message: "m".into(),
@@ -3595,6 +4179,48 @@ mod tests {
 
     fn concept_storage(name: &str) -> (TempDir, PathBuf, Option<Storage>, String) {
         let (dir, root) = concept_repo(name);
+        let storage = Some(Storage::open(dir.path()));
+        let project = {
+            let store = storage.as_ref().unwrap().get().unwrap();
+            app_core::projects::add_project(
+                store,
+                root.to_str().unwrap(),
+                app_core::store::DEFAULT_WORKSPACE_ID,
+            )
+            .unwrap()
+        };
+        (dir, root, storage, project.project.id)
+    }
+
+    /// `concept_storage` with the merge stopped on a both-modified conflict
+    /// in `a.txt`.
+    fn conflict_storage(name: &str) -> (TempDir, PathBuf, Option<Storage>, String) {
+        let (dir, root) = concept_repo(name);
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {:?}", out);
+        };
+        git(&["checkout", "-qb", "side"]);
+        std::fs::write(root.join("a.txt"), "theirs\n").unwrap();
+        git(&["commit", "-qam", "side"]);
+        git(&["checkout", "-q", "main"]);
+        std::fs::write(root.join("a.txt"), "ours\n").unwrap();
+        git(&["commit", "-qam", "ours"]);
+        assert!(
+            !std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["merge", "side"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         let storage = Some(Storage::open(dir.path()));
         let project = {
             let store = storage.as_ref().unwrap().get().unwrap();
@@ -3673,6 +4299,137 @@ mod tests {
             other => panic!("expected Search, got {other:?}"),
         }
         assert!(!storage.as_ref().unwrap().home().join("search").exists());
+    }
+
+    #[test]
+    fn resolve_job_clears_a_conflict_and_refreshes_changes() {
+        let (_dir, root, storage, project_id) = conflict_storage("backend-resolve");
+        let key = checkout_key(&project_id, &root);
+        let job = Job::write(
+            &project_id,
+            root.clone(),
+            key.clone(),
+            Req::Resolve {
+                path: "a.txt".into(),
+                action: "current".into(),
+            },
+        );
+        let reply = run_job(&storage, &job);
+        assert!(
+            matches!(reply.result, Ok(ReplyData::Ok)),
+            "resolve failed: {:?}",
+            reply.result
+        );
+        let reply = run_job(
+            &storage,
+            &Job::read(&project_id, root.clone(), key, Req::Changes),
+        );
+        match reply.result {
+            Ok(ReplyData::Changes(view)) => {
+                assert!(
+                    !view.conflicts.iter().any(|c| c.path == "a.txt"),
+                    "a.txt is still in conflict: {:?}",
+                    view.conflicts
+                );
+            }
+            other => panic!("expected Changes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_with_an_invalid_action_sets_the_section_error() {
+        let (_dir, root, storage, project_id) = conflict_storage("backend-resolve-invalid");
+        let key = checkout_key(&project_id, &root);
+        // `keep` applies to deletion/addition conflicts, not a both-modified
+        // one — the worker re-reads status and refuses.
+        let job = Job::write(
+            &project_id,
+            root.clone(),
+            key,
+            Req::Resolve {
+                path: "a.txt".into(),
+                action: "keep".into(),
+            },
+        );
+        let mut reply = run_job(&storage, &job);
+        assert!(
+            reply.result.is_err(),
+            "expected Err, got {:?}",
+            reply.result
+        );
+        let mut e = editor();
+        select(&mut e);
+        e.changes.busy = Some("resolve");
+        reply.checkout_key = e.checkout_key.clone();
+        e.apply_reply(reply);
+        assert!(e.changes.busy.is_none());
+        assert!(e.changes.error.is_some());
+        assert!(e.notice.is_some());
+    }
+
+    /// The Overwrite button's write on a real repository: the buffer lands
+    /// over the drifted disk text, and a disk file that stopped being text
+    /// refuses before the write is attempted.
+    #[test]
+    fn overwrite_saves_the_buffer_over_changed_disk_text() {
+        let (_dir, root, storage, project_id) = concept_storage("backend-overwrite");
+        let key = checkout_key(&project_id, &root);
+        let mut e = editor();
+        e.project_id = Some(project_id.clone());
+        e.checkout = Some(root.clone());
+        e.checkout_key = Some(key.clone());
+        // The doc loaded when disk still held the committed text; its
+        // buffer drifted — and then the disk moved too (the drift the
+        // notice row is armed for).
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("tracked needle\n")));
+        e.doc.as_mut().unwrap().code.edit.text = "buffer wins\n".into();
+        e.doc.as_mut().unwrap().saving = true;
+        e.doc.as_mut().unwrap().disk_notice = Some(crate::editor::draft::DiskNotice::Changed);
+        std::fs::write(root.join("a.txt"), "disk moved\n").unwrap();
+        let reply = run_job(
+            &storage,
+            &Job::write(
+                &project_id,
+                root.clone(),
+                key,
+                Req::OverwriteFile {
+                    path: "a.txt".into(),
+                    text: "buffer wins\n".into(),
+                },
+            ),
+        );
+        assert!(
+            matches!(reply.result, Ok(ReplyData::Saved(_))),
+            "overwrite failed: {:?}",
+            reply.result
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "buffer wins\n",
+            "disk holds the buffer"
+        );
+        e.apply_reply(reply);
+        let doc = e.doc.as_ref().unwrap();
+        assert_eq!(doc.original, "buffer wins\n", "baseline == buffer");
+        assert_eq!(doc.code.edit.text, "buffer wins\n");
+        assert_eq!(doc.disk_notice, None, "the notice clears");
+        assert!(!doc.saving);
+        // The expected-text guard the worker still enforces: a disk file
+        // that stopped being complete text refuses before the replace.
+        std::fs::write(root.join("a.txt"), [0xff, 0xfe]).unwrap();
+        let reply = run_job(
+            &storage,
+            &Job::write(
+                &project_id,
+                root.clone(),
+                checkout_key(&project_id, &root),
+                Req::OverwriteFile {
+                    path: "a.txt".into(),
+                    text: "buffer wins\n".into(),
+                },
+            ),
+        );
+        assert_eq!(reply.result.unwrap_err(), "the file is no longer text");
     }
 
     #[test]
@@ -4117,8 +4874,17 @@ mod tests {
         assert!(detachable(&Req::Commit {
             message: "msg".into(),
         }));
+        // Operations can run the repo's hooks, so they detach like Commit;
+        // a whole-file resolve is an ordinary quick write.
+        assert!(detachable(&Req::Operation {
+            step: "continue".into(),
+        }));
         assert!(!detachable(&Req::Changes));
         assert!(!detachable(&Req::Stage { paths: None }));
+        assert!(!detachable(&Req::Resolve {
+            path: "a".into(),
+            action: "current".into(),
+        }));
 
         for req in [
             Req::Stage { paths: None },
@@ -4130,6 +4896,14 @@ mod tests {
             Req::StageResolved {
                 path: "a".into(),
                 expected: "base".into(),
+                allow_markers: false,
+            },
+            Req::Resolve {
+                path: "a".into(),
+                action: "current".into(),
+            },
+            Req::Operation {
+                step: "abort".into(),
             },
             Req::Commit {
                 message: "m".into(),
@@ -4140,6 +4914,7 @@ mod tests {
                 is_git_write(&req),
                 "{req:?} must be recognized as a git write"
             );
+            assert!(is_mutating(&req), "{req:?} must finish on shutdown");
         }
         for req in [Req::Changes, Req::FileList, Req::Projects, Req::Workspaces] {
             assert!(!is_git_write(&req), "{req:?} is not a git write");

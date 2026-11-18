@@ -43,13 +43,15 @@ pub struct StatusEntry {
     /// Rename or copy source path, when Git reported one.
     pub orig_path: Option<String>,
     /// `modified`, `added`, `deleted`, `renamed`, `copied`, `typechange`,
-    /// `unmerged`, or `untracked`.
+    /// `untracked`, or a conflict kind: `both-modified`, `both-added`,
+    /// `deleted-by-us`, `deleted-by-them`, `both-deleted`, `added-by-us`,
+    /// `added-by-them`.
     pub status: &'static str,
-    /// Lines added, from `git diff --numstat`; `None` outside commit diffs
-    /// and for binary files.
+    /// Lines added, from `git diff --numstat`; `None` for untracked and
+    /// conflicted rows, for binary files, and in the plain `status` read.
     pub added: Option<u64>,
-    /// Lines removed, from `git diff --numstat`; `None` outside commit diffs
-    /// and for binary files.
+    /// Lines removed, from `git diff --numstat`; `None` for untracked and
+    /// conflicted rows, for binary files, and in the plain `status` read.
     pub removed: Option<u64>,
 }
 
@@ -66,6 +68,12 @@ pub struct GitViewChanges {
     /// Commits on HEAD not yet on its upstream; `None` without an upstream
     /// or before the first commit.
     pub ahead: Option<u32>,
+    /// In-progress Git operation: `merge`, `rebase`, `cherry-pick`,
+    /// `revert`, or `None`.
+    pub operation: Option<&'static str>,
+    /// `MERGE_MSG` without comment lines; `Some` only while `operation`
+    /// is `merge`.
+    pub merge_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -258,15 +266,16 @@ pub(crate) const STATUS_ARGS: [&str; 5] = [
 ];
 
 /// `git status` grouped into conflicts / staged / unstaged / untracked,
-/// without the branch, head, and ahead lookups `changes` adds.
+/// without the branch, head, ahead, and operation lookups `changes` adds.
 pub(crate) fn status(checkout: &Path) -> Result<GitViewChanges, BridgeError> {
     let out = worktrees::git(checkout, &STATUS_ARGS)?;
     Ok(parse_status(&out))
 }
 
-/// `git status` plus the branch, head, and ahead lookups.
+/// `git status` plus the branch, head, ahead, and operation-state lookups.
 pub fn changes(checkout: &Path) -> Result<GitViewChanges, BridgeError> {
     let mut view = status(checkout)?;
+    fill_counts(checkout, &mut view);
     let branch = worktrees::run(
         checkout,
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -283,7 +292,123 @@ pub fn changes(checkout: &Path) -> Result<GitViewChanges, BridgeError> {
     if ahead.status.success() {
         view.ahead = trim_str(&ahead.stdout).parse::<u32>().ok();
     }
+    let state = git_state(checkout)?;
+    view.operation = state.operation;
+    if state.operation == Some("merge") {
+        view.merge_message = std::fs::read_to_string(&state.merge_msg)
+            .ok()
+            .and_then(|raw| clean_merge_message(&raw));
+    }
     Ok(view)
+}
+
+/// `+N −N` for the staged and unstaged rows, from `git diff --numstat`.
+/// Decoration only: a failed read leaves the counts `None` and the list
+/// still loads. Like `STATUS_ARGS`, `--no-optional-locks` keeps the poll
+/// from taking `index.lock` while the user or an agent runs `git add`.
+fn fill_counts(checkout: &Path, view: &mut GitViewChanges) {
+    let layers: [(&[&str], &mut Vec<StatusEntry>); 2] = [
+        (
+            &["--no-optional-locks", "diff", "--cached", "--numstat", "-z"],
+            &mut view.staged,
+        ),
+        (
+            &["--no-optional-locks", "diff", "--numstat", "-z"],
+            &mut view.unstaged,
+        ),
+    ];
+    for (args, entries) in layers {
+        let Ok(out) = worktrees::git(checkout, args) else {
+            continue;
+        };
+        let counts = parse_numstat(&out);
+        for entry in entries {
+            if let Some(&(added, removed)) = counts.get(entry.path.as_str()) {
+                entry.added = added;
+                entry.removed = removed;
+            }
+        }
+    }
+}
+
+/// The checkout's in-progress operation and the path of its `MERGE_MSG`,
+/// probed with a single `rev-parse --git-path` run so a linked worktree
+/// resolves against its own administrative directory.
+struct GitState {
+    operation: Option<&'static str>,
+    merge_msg: PathBuf,
+}
+
+fn git_state(checkout: &Path) -> Result<GitState, BridgeError> {
+    let out = worktrees::git(
+        checkout,
+        &[
+            "rev-parse",
+            "--git-path",
+            "MERGE_HEAD",
+            "--git-path",
+            "rebase-merge",
+            "--git-path",
+            "rebase-apply",
+            "--git-path",
+            "CHERRY_PICK_HEAD",
+            "--git-path",
+            "REVERT_HEAD",
+            "--git-path",
+            "MERGE_MSG",
+        ],
+    )?;
+    // One path per `--git-path`, in argv order: relative to the checkout in
+    // a plain worktree, absolute in a linked one (joining an absolute path
+    // yields it back). An empty line maps to a path that never exists.
+    let mut lines = out.split(|b| *b == b'\n');
+    let git_path = |line: Option<&[u8]>| match line {
+        Some(line) if !line.is_empty() => checkout.join(lossy(line)),
+        _ => PathBuf::new(),
+    };
+    let merge_head = git_path(lines.next());
+    let rebase_merge = git_path(lines.next());
+    let rebase_apply = git_path(lines.next());
+    let cherry_pick_head = git_path(lines.next());
+    let revert_head = git_path(lines.next());
+    let merge_msg = git_path(lines.next());
+    // A rebase keeps its own directory even after saving MERGE_HEAD or
+    // replaying a pick, so it wins when several state paths exist.
+    let operation = if rebase_merge.exists() || rebase_apply.exists() {
+        Some("rebase")
+    } else if merge_head.exists() {
+        Some("merge")
+    } else if cherry_pick_head.exists() {
+        Some("cherry-pick")
+    } else if revert_head.exists() {
+        Some("revert")
+    } else {
+        None
+    };
+    Ok(GitState {
+        operation,
+        merge_msg,
+    })
+}
+
+/// The in-progress `merge`/`rebase`/`cherry-pick`/`revert`, for callers
+/// that need no `MERGE_MSG`.
+pub(crate) fn operation_of(checkout: &Path) -> Result<Option<&'static str>, BridgeError> {
+    Ok(git_state(checkout)?.operation)
+}
+
+/// `MERGE_MSG` without the `#` comment block Git appends or trailing blank
+/// lines; `None` when nothing is left.
+fn clean_merge_message(raw: &str) -> Option<String> {
+    let text = raw
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    match text.trim_end() {
+        "" => None,
+        text => Some(text.to_owned()),
+    }
 }
 
 /// Unified diff for one layer: `staged`, `unstaged`, `untracked`, `conflict`
@@ -1482,6 +1607,8 @@ pub(crate) fn parse_status(bytes: &[u8]) -> GitViewChanges {
         unstaged: Vec::new(),
         untracked: Vec::new(),
         ahead: None,
+        operation: None,
+        merge_message: None,
     };
     let mut i = 0;
     while i < records.len() {
@@ -1504,7 +1631,8 @@ pub(crate) fn parse_status(bytes: &[u8]) -> GitViewChanges {
         if x == b'?' && y == b'?' {
             view.untracked.push(entry(path, None, "untracked"));
         } else if is_conflict(x, y) {
-            view.conflicts.push(entry(path, orig_path, "unmerged"));
+            view.conflicts
+                .push(entry(path, orig_path, conflict_kind(x, y)));
         } else {
             if x != b' ' {
                 view.staged
@@ -1519,7 +1647,7 @@ pub(crate) fn parse_status(bytes: &[u8]) -> GitViewChanges {
 }
 
 fn is_conflict(x: u8, y: u8) -> bool {
-    // Every unmerged status pair: DD, AU, UA, DU, UD, AA, UU.
+    // Every conflict pair: DD, AU, UA, DU, UD, AA, UU.
     matches!(
         (x, y),
         (b'D', b'D')
@@ -1532,6 +1660,23 @@ fn is_conflict(x: u8, y: u8) -> bool {
     )
 }
 
+/// Conflict XY pair → the kind the Changes list displays; "us" is the
+/// `HEAD` side. `is_conflict` admits exactly these seven pairs.
+fn conflict_kind(x: u8, y: u8) -> &'static str {
+    match (x, y) {
+        (b'U', b'U') => "both-modified",
+        (b'A', b'A') => "both-added",
+        (b'D', b'U') => "deleted-by-us",
+        (b'U', b'D') => "deleted-by-them",
+        (b'D', b'D') => "both-deleted",
+        (b'A', b'U') => "added-by-us",
+        (b'U', b'A') => "added-by-them",
+        // `is_conflict` only admits the seven pairs, but odd Git output must
+        // never panic the backend worker.
+        _ => "both-modified",
+    }
+}
+
 fn status_label(code: u8) -> &'static str {
     match code {
         b'M' => "modified",
@@ -1540,7 +1685,6 @@ fn status_label(code: u8) -> &'static str {
         b'R' => "renamed",
         b'C' => "copied",
         b'T' => "typechange",
-        b'U' => "unmerged",
         _ => "modified",
     }
 }
@@ -1734,6 +1878,22 @@ mod tests {
         out.stdout
     }
 
+    /// A `git` run expected to exit non-zero — a merge, rebase, or pick
+    /// that stops on a conflict still ran, so only the status is asserted.
+    fn git_fails(root: &Path, args: &[&str]) {
+        assert!(
+            !Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git run")
+                .status
+                .success(),
+            "git {args:?} should have failed"
+        );
+    }
+
     fn repository(label: &str) -> (TempDir, PathBuf) {
         let dir = TempDir::new(label);
         let root = dir.path().canonicalize().unwrap();
@@ -1751,6 +1911,24 @@ mod tests {
         fs::write(root.join(name), content).unwrap();
         git_ok(root, &["add", name]);
         git_ok(root, &["commit", "-qm", "c"]);
+    }
+
+    #[test]
+    fn changes_counts_staged_and_unstaged_lines_but_not_untracked() {
+        let (_dir, root) = repository("changes-counts");
+        fs::write(root.join("new.txt"), "a\nb\nc\n").unwrap();
+        git_ok(&root, &["add", "new.txt"]);
+        fs::write(root.join("tracked.txt"), "changed\nmore\n").unwrap();
+        fs::write(root.join("loose.txt"), "x\n").unwrap();
+
+        let view = changes(&root).unwrap();
+        let counts = |entries: &[StatusEntry], path: &str| {
+            let e = entries.iter().find(|e| e.path == path).unwrap();
+            (e.added, e.removed)
+        };
+        assert_eq!(counts(&view.staged, "new.txt"), (Some(3), Some(0)));
+        assert_eq!(counts(&view.unstaged, "tracked.txt"), (Some(2), Some(1)));
+        assert_eq!(counts(&view.untracked, "loose.txt"), (None, None));
     }
 
     /// `git` with fixed author and committer dates, so log ordering is
@@ -1842,31 +2020,154 @@ mod tests {
     #[test]
     fn conflicts_form_their_own_group() {
         let (_t, root) = repository("conflict");
-        fs::write(root.join("f.txt"), "base\n").unwrap();
-        git_ok(&root, &["add", "f.txt"]);
-        git_ok(&root, &["commit", "-qm", "base"]);
-        git_ok(&root, &["checkout", "-qb", "side"]);
-        fs::write(root.join("f.txt"), "side\n").unwrap();
-        git_ok(&root, &["commit", "-qam", "side"]);
-        git_ok(&root, &["checkout", "-q", "main"]);
-        fs::write(root.join("f.txt"), "main\n").unwrap();
-        git_ok(&root, &["commit", "-qam", "main"]);
-        assert!(!Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["merge", "--no-edit", "side"])
-            .output()
-            .unwrap()
-            .status
-            .success());
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
 
         let view = changes(&root).unwrap();
-        assert_eq!(find(&view.conflicts, "f.txt").status, "unmerged");
+        assert_eq!(find(&view.conflicts, "f.txt").status, "both-modified");
         assert!(view.staged.is_empty());
         assert!(view.unstaged.is_empty());
         let patch = diff(&root, "conflict", Some("f.txt"), None).unwrap();
         assert_eq!(patch.label, "conflict");
         assert!(patch.patch.contains("<<<<<<<"));
+    }
+
+    #[test]
+    fn parse_status_names_every_conflict_kind() {
+        let view = parse_status(b"UU a\0AA b\0DU c\0UD d\0DD e\0AU f\0UA g\0");
+        let kinds: Vec<(&str, &str)> = view
+            .conflicts
+            .iter()
+            .map(|e| (e.path.as_str(), e.status))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("a", "both-modified"),
+                ("b", "both-added"),
+                ("c", "deleted-by-us"),
+                ("d", "deleted-by-them"),
+                ("e", "both-deleted"),
+                ("f", "added-by-us"),
+                ("g", "added-by-them"),
+            ]
+        );
+        assert_eq!(view.operation, None);
+        assert_eq!(view.merge_message, None);
+    }
+
+    /// Branches `main` and `side` diverge on the same file, then `side` is
+    /// merged into `main` — the recipe every stopped-operation test shares.
+    fn conflicting_branches(root: &Path) {
+        fs::write(root.join("f.txt"), "base\n").unwrap();
+        git_ok(root, &["add", "f.txt"]);
+        git_ok(root, &["commit", "-qm", "base"]);
+        git_ok(root, &["checkout", "-qb", "side"]);
+        fs::write(root.join("f.txt"), "side\n").unwrap();
+        git_ok(root, &["commit", "-qam", "side"]);
+        git_ok(root, &["checkout", "-q", "main"]);
+        fs::write(root.join("f.txt"), "main\n").unwrap();
+        git_ok(root, &["commit", "-qam", "main"]);
+    }
+
+    #[test]
+    fn real_merge_conflicts_report_kinds() {
+        let (_t, root) = repository("merge-kinds");
+        // `f.txt` diverges on both sides; `dropped.txt` is deleted on main
+        // and edited on side.
+        fs::write(root.join("f.txt"), "base\n").unwrap();
+        fs::write(root.join("dropped.txt"), "base\n").unwrap();
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-qm", "base"]);
+        git_ok(&root, &["checkout", "-qb", "side"]);
+        fs::write(root.join("f.txt"), "side\n").unwrap();
+        fs::write(root.join("dropped.txt"), "side\n").unwrap();
+        git_ok(&root, &["commit", "-qam", "side"]);
+        git_ok(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("f.txt"), "main\n").unwrap();
+        git_ok(&root, &["rm", "-q", "dropped.txt"]);
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-qm", "main"]);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+
+        let view = changes(&root).unwrap();
+        assert_eq!(find(&view.conflicts, "f.txt").status, "both-modified");
+        // main deleted the file; the merged-in side modified it (DU).
+        assert_eq!(find(&view.conflicts, "dropped.txt").status, "deleted-by-us");
+    }
+
+    #[test]
+    fn changes_reports_operation_and_merge_message() {
+        let (_t, root) = repository("merge-state");
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+
+        let view = changes(&root).unwrap();
+        assert_eq!(view.operation, Some("merge"));
+        assert_eq!(operation_of(&root).unwrap(), Some("merge"));
+        let message = view.merge_message.expect("a stopped merge has MERGE_MSG");
+        assert!(message.starts_with("Merge branch"), "{message}");
+        assert!(!message.contains('#'));
+
+        git_ok(&root, &["merge", "--abort"]);
+        let view = changes(&root).unwrap();
+        assert_eq!(view.operation, None);
+        assert_eq!(view.merge_message, None);
+    }
+
+    #[test]
+    fn changes_reports_rebase_and_cherry_pick() {
+        let (_t, root) = repository("op-state");
+        conflicting_branches(&root);
+
+        // Replaying main's edit on top of side conflicts and leaves
+        // `rebase-merge/` behind.
+        git_fails(&root, &["rebase", "side"]);
+        let view = changes(&root).unwrap();
+        assert_eq!(view.operation, Some("rebase"));
+        assert_eq!(view.merge_message, None);
+        git_ok(&root, &["rebase", "--abort"]);
+        assert_eq!(changes(&root).unwrap().operation, None);
+
+        // Cherry-picking side's conflicting edit stops the same way.
+        git_fails(&root, &["cherry-pick", "side"]);
+        let view = changes(&root).unwrap();
+        assert_eq!(view.operation, Some("cherry-pick"));
+        assert_eq!(view.merge_message, None);
+        git_ok(&root, &["cherry-pick", "--abort"]);
+        assert_eq!(changes(&root).unwrap().operation, None);
+    }
+
+    #[test]
+    fn operation_is_found_in_a_linked_worktree() {
+        let (_t, root) = repository("linked-op");
+        conflicting_branches(&root);
+        let linked_dir = TempDir::new("linked-op-wt");
+        git_ok(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "linked",
+                linked_dir.path().to_str().unwrap(),
+            ],
+        );
+        let linked = linked_dir.path().canonicalize().unwrap();
+        git_fails(&linked, &["merge", "--no-edit", "side"]);
+
+        assert_eq!(changes(&linked).unwrap().operation, Some("merge"));
+        assert_eq!(operation_of(&linked).unwrap(), Some("merge"));
+    }
+
+    #[test]
+    fn clean_merge_message_drops_comment_lines() {
+        assert_eq!(
+            clean_merge_message("Merge branch 'x'\n\n# Conflicts:\n#\tf\n").as_deref(),
+            Some("Merge branch 'x'")
+        );
+        assert_eq!(clean_merge_message("# only\n"), None);
+        assert_eq!(clean_merge_message(""), None);
     }
 
     #[test]

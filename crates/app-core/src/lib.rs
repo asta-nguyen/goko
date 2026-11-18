@@ -20,4 +20,6 @@ pub mod subagents;
 #[doc(hidden)]
 pub mod test_support;
 pub mod usage;
+pub mod usage_collect;
+pub mod usage_records;
 pub mod worktrees;

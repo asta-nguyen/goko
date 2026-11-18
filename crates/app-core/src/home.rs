@@ -35,6 +35,26 @@ pub fn home_dir() -> Result<PathBuf, BridgeError> {
     Ok(dir)
 }
 
+/// The user's own home folder, where the agents keep theirs (`~/.codex`,
+/// `~/.claude`): `HOME`, and on Windows `%USERPROFILE%`, since `HOME` is
+/// rarely set there.
+pub fn user_home() -> Option<OsString> {
+    user_home_from(
+        std::env::var_os("HOME"),
+        if cfg!(windows) {
+            std::env::var_os("USERPROFILE")
+        } else {
+            None
+        },
+    )
+}
+
+/// [`user_home`] from explicit values, so tests never read the environment.
+pub fn user_home_from(home: Option<OsString>, user_profile: Option<OsString>) -> Option<OsString> {
+    home.filter(|home| !home.is_empty())
+        .or_else(|| user_profile.filter(|profile| !profile.is_empty()))
+}
+
 /// `GOKO_HOME`, else `%LOCALAPPDATA%\Goko`, else `%USERPROFILE%\AppData\Local\Goko`.
 #[cfg(windows)]
 pub fn home_dir_windows(
@@ -99,6 +119,17 @@ mod tests {
         let dir = home_dir_from(Some("/tmp/goko".into()), Some("/home/me".into()), None).unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/goko"));
         assert!(home_dir_from(None, None, None).is_err());
+        // The user's home: `HOME` first, the Windows profile when it is unset
+        // or empty.
+        assert_eq!(
+            user_home_from(Some("/home/me".into()), Some("C:/Users/me".into())),
+            Some("/home/me".into())
+        );
+        assert_eq!(
+            user_home_from(Some("".into()), Some("C:/Users/me".into())),
+            Some("C:/Users/me".into())
+        );
+        assert_eq!(user_home_from(None, None), None);
         assert!(home_dir_from(Some("".into()), Some("".into()), None).is_err());
     }
 

@@ -26,8 +26,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use rune::{
-    Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, ScrollPos, Shape, Span, TextEdit,
-    TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
+    Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, PointerPress, ScrollPos, Shape, Span,
+    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
@@ -385,6 +385,7 @@ impl CodeState {
 }
 
 /// Parent-state callback shared by the field's change/save hooks.
+type PressCallback<S> = Rc<dyn Fn(&mut S, PointerPress, &mut Tx)>;
 type StateCallback<S> = Rc<dyn Fn(&mut S, &mut Tx)>;
 /// Go-to callback: receives the clicked [`GoToRequest`].
 type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
@@ -392,6 +393,9 @@ type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
 type IndentCallback<S> = Rc<dyn Fn(&mut S, UnitChoice, &mut Tx)>;
 /// Blame-toggle callback: receives the new enabled state.
 type BlameCallback<S> = Rc<dyn Fn(&mut S, bool, &mut Tx)>;
+/// First-refusal key callback: `true` consumes the key before the field's
+/// own handling sees it.
+type KeyCallback<S> = Rc<dyn Fn(&mut S, &KeyEvent, &mut Tx) -> bool>;
 
 /// The code surface view. `get`/`get_mut` reach the parent's [`CodeState`];
 /// callbacks are optional and generic over the app state `S`.
@@ -403,6 +407,9 @@ pub struct Code<S> {
     on_go_to: Option<GoToCallback<S>>,
     on_indent: Option<IndentCallback<S>>,
     on_blame: Option<BlameCallback<S>>,
+    on_send: Option<StateCallback<S>>,
+    on_secondary: Option<PressCallback<S>>,
+    preempt_key: Option<KeyCallback<S>>,
 }
 
 impl<S: 'static> Code<S> {
@@ -415,6 +422,9 @@ impl<S: 'static> Code<S> {
             on_go_to: None,
             on_indent: None,
             on_blame: None,
+            on_send: None,
+            on_secondary: None,
+            preempt_key: None,
         }
     }
 
@@ -448,6 +458,30 @@ impl<S: 'static> Code<S> {
     /// Called when the blame chip is pressed; receives the new enabled state.
     pub fn on_blame(mut self, f: impl Fn(&mut S, bool, &mut Tx) + 'static) -> Code<S> {
         self.on_blame = Some(Rc::new(f));
+        self
+    }
+
+    /// Called when the Send chip is pressed: send the snapshot to the terminal.
+    pub fn on_send(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Code<S> {
+        self.on_send = Some(Rc::new(f));
+        self
+    }
+
+    /// Called on a secondary press in the code: the host opens its own menu,
+    /// which replaces the field's built-in one.
+    pub fn on_secondary(mut self, f: impl Fn(&mut S, PointerPress, &mut Tx) + 'static) -> Code<S> {
+        self.on_secondary = Some(Rc::new(f));
+        self
+    }
+
+    /// First refusal on a key before either field's own handling: the host
+    /// takes a chord the field would otherwise claim — `Tab` indents and
+    /// `⌘⌥→` word-moves — `true` consumes the key.
+    pub fn preempt_key(
+        mut self,
+        f: impl Fn(&mut S, &KeyEvent, &mut Tx) -> bool + 'static,
+    ) -> Code<S> {
+        self.preempt_key = Some(Rc::new(f));
         self
     }
 
@@ -485,6 +519,7 @@ impl<S: 'static> Code<S> {
     fn find_bar(&self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let get_mut = self.get_mut;
+        let preempt = self.preempt_key.clone();
         let mut bar = row()
             .w_full()
             .h(34.0)
@@ -509,6 +544,9 @@ impl<S: 'static> Code<S> {
                     }
                 })
                 .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
+                    if preempt.as_ref().is_some_and(|f| f(st, ev, tx)) {
+                        return true;
+                    }
                     let code = get_mut(st);
                     match &ev.key {
                         Key::Escape => {
@@ -722,8 +760,33 @@ impl<S: 'static> Code<S> {
             .items_center()
             .justify_end()
             .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
+            .child(self.send_chip(ink))
             .child(self.blame_chip(s, ink))
             .child(self.indent_chip(s, ink))
+    }
+
+    /// The Send chip: snapshot the selection (or the whole file) into the
+    /// focused terminal session. The action reports its own outcome.
+    fn send_chip(&self, ink: &Ink) -> El {
+        let on_send = self.on_send.clone();
+        row()
+            .h(28.0)
+            .px(10.0)
+            .items_center()
+            .radius(8.0)
+            .child(theme::txt("Send", T128, ink.text))
+            .hover(ink.text.alpha(0.08))
+            .press(ink.text.alpha(0.12))
+            .press_scale(0.97)
+            .role("button")
+            .label("Send snapshot to terminal")
+            .focusable(true)
+            .focus_ring(2.0, 1.0, ink.accent)
+            .on_press_tx(move |st, tx| {
+                if let Some(cb) = &on_send {
+                    cb(st, tx);
+                }
+            })
     }
 
     /// The inline-blame toggle chip. The chip stays visible even when the
@@ -807,7 +870,8 @@ impl<S: 'static> Code<S> {
         let on_submit_changed = self.on_changed.clone();
         let on_changed_key = self.on_changed.clone();
         let on_save = self.on_save.clone();
-        text_input(&code.edit, CODE_STYLE)
+        let preempt = self.preempt_key.clone();
+        let mut field = text_input(&code.edit, CODE_STYLE)
             .grow(1.0)
             .color(ink.text)
             .caret(ink.text, ink.accent.alpha(0.3))
@@ -819,6 +883,9 @@ impl<S: 'static> Code<S> {
                 notify_changed(st, tx, get_mut, &on_changed);
             })
             .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
+                if preempt.as_ref().is_some_and(|f| f(st, ev, tx)) {
+                    return true;
+                }
                 field_key(st, ev, tx, get_mut, &on_save, &on_changed_key)
             })
             .on_submit(move |st: &mut S, tx: &mut Tx| {
@@ -832,7 +899,11 @@ impl<S: 'static> Code<S> {
                     code.edit.insert(&ins);
                 }
                 notify_changed(st, tx, get_mut, &on_submit_changed);
-            })
+            });
+        if let Some(cb) = self.on_secondary.clone() {
+            field = field.on_secondary_press(move |st: &mut S, p, tx: &mut Tx| cb(st, p, tx));
+        }
+        field
     }
 
     /// Transparent link overlay mounted while the go-to modifier is held:
@@ -972,7 +1043,9 @@ fn field_key<S: 'static>(
         }
         return true;
     }
-    if ev.key == Key::Tab {
+    // A Tab with cmd/ctrl/alt is a chord (⌃Tab switches tabs) — Shift is
+    // the only modifier indent still takes, for outdent.
+    if ev.key == Key::Tab && !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt {
         let code = get_mut(st);
         let (a, b) = code.edit.range();
         if let Some(e) = indent::plan_indent(&code.edit.text, a, b, code.indent_unit, ev.mods.shift)

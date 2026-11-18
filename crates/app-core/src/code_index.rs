@@ -1488,6 +1488,8 @@ mod tests {
                 removed: None,
             }],
             ahead: None,
+            operation: None,
+            merge_message: None,
         };
         assert_eq!(changed_paths(&changes), ["b.txt", "a.txt", "c.txt"]);
     }

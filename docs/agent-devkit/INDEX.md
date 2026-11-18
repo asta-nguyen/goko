@@ -2,6 +2,7 @@
 
 ## Changes
 
+
 - [Current branch in Terminal](changes/terminal-current-branch/delta.md)
 
 - [Daemon-owned terminal state: first paint on attach](changes/daemon-terminal-state/design.md) ([tasks](changes/daemon-terminal-state/tasks.md), [delta](changes/daemon-terminal-state/delta.md))
@@ -12,6 +13,8 @@
 
 ## Archived changes
 
+- [Agent snapshot: copy code for the terminal](changes/archive/agent-snapshot/delta.md)
+- [Agent snapshot: code context menu](changes/archive/agent-snapshot-menu/delta.md)
 - [Windows support: port gokod + goko-rune to Windows](changes/archive/2026-11-16-29-windows-support/design.md) ([tasks](changes/archive/2026-11-16-29-windows-support/tasks.md))
 - [Editor header copy: branch and path](changes/archive/2026-11-16-editor-header-copy/delta.md)
 - [Open file from diff](changes/archive/2026-11-16-open-file-from-diff/delta.md)
@@ -60,3 +63,5 @@
 - [Stop Goko-owned processes when the app exits](changes/archive/2026-11-04-stop-processes-on-exit/design.md) ([tasks](changes/archive/2026-11-04-stop-processes-on-exit/tasks.md))
 - [Editor: CodeMirror surface and content search](changes/archive/2026-11-04-editor-codemirror-search/design.md) ([tasks](changes/archive/2026-11-04-editor-codemirror-search/tasks.md))
 - [Agent usage and limit indicators](changes/archive/2026-11-04-agent-usage-limits/design.md) ([tasks](changes/archive/2026-11-04-agent-usage-limits/tasks.md))
+- [Editor sync and conflicts: background refresh, conflict kinds and resolve actions, merge Continue](changes/archive/2026-11-17-editor-sync-and-conflicts/design.md) ([tasks](changes/archive/2026-11-17-editor-sync-and-conflicts/tasks.md), [delta](changes/archive/2026-11-17-editor-sync-and-conflicts/delta.md))
+- [Editor tabs: several open files and one guard dialog](changes/archive/2026-11-17-editor-tabs/design.md) ([tasks](changes/archive/2026-11-17-editor-tabs/tasks.md), [delta](changes/archive/2026-11-17-editor-tabs/delta.md))
