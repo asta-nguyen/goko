@@ -10,6 +10,8 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Added
 
 - The file lists in Changes and History are easier to read: a folder that
