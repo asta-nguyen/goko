@@ -1,0 +1,101 @@
+CHANGELOG.md
+  s_74f851bfd6cf46::t_45042abbd6ec81 15-35,42-51
+apps/rune/src/editor/backend.rs
+  s_b8f5012fc53713::t_9588ce08370272 214-215,275-282,313-320,342-344,348,360-371,625,633-634,688-690,692,705-706,847-849,1365-1373,1378,1384-1396,1414,1424-1428,1473-1475,1491-1501,1694-1697,1704,1710-1728,1733,1745-1762,1764,1774-1849,1890-1956,2228-2230,2246-2248,2362,2367,2375,2379-2441,2477,2482,2619-2640,2735,2770,3097,3113,3337-3500,3667,3945,3993-4029,4123-4126,4133-4139,4195-4236,4304-4434,4877-4881,4884-4887,4899-4906,4917
+apps/rune/src/editor/code.rs
+  s_2db0ca064991c2::t_bf04afda399b6c 396-398,412,427,477-487,522,547-549,873,886-888,1046-1048
+apps/rune/src/editor/commit.rs
+  s_11d242ffc07e05::t_f1e4faffb6ad0b 8-13,20,26,73-88,117-135,146,148-171,258-261,441-450,547-551,559-638,813-814,851-933
+apps/rune/src/editor/commit_detail.rs
+  s_74f851bfd6cf46::t_6488ec08bc0ca3 8,14,16,258-260,343-351,377,381-396,404,414,416-417,426-431,434-437,441,460-466,472-473,479-482,485,487-489,509,513,515-518,528-529,579-581,583-588,1166,1275-1283,1303,1308-1488
+apps/rune/src/editor/files.rs
+  s_b8f5012fc53713::t_785d7f12517a5d 79,84-89,569-620,626-631,647-648,659-664,802,858-900,911,917-918,923-1051,1150-1153,1213-1245,1250-1268,1270-1298,1300-1317,1320-1353,1374-1376,2238-2239,2277-2286,2303-2306,2308-2320,2322-2327,2329-2331,2333-2334,2336-2384,2386-2409,2412-2414,2416-2438,2441-2443,2445,2447-2680,2821-2902,3378-3776
+apps/rune/src/editor/navigation.rs
+  s_2db0ca064991c2::t_3fa05100866358 56-66,79-80,129-150,154,159-238,243-289,346-363,481-482,484,573,627-629,634-643,682,721,729-731,733-734,743-744,746-759,761-775,886-892,895,898,901,911,914-915,919,922-923,927,939,958-1018,1362,1374-1377,2483-3082
+apps/rune/src/editor/tabs.rs
+  s_b8f5012fc53713::t_82085baff899fe 1-285
+apps/rune/src/editor/workspace.rs
+  s_b8f5012fc53713::t_e1131397503b1f 535-538,544-566,576-583,589-601,606,1022-1073
+apps/rune/src/main.rs
+  s_b8f5012fc53713::t_af287725e96541 1386-1392,2361,2401,2431,2514-2515
+crates/app-core/src/git_view.rs
+  s_b8f5012fc53713::t_1bb73a7e03b683 46-48,50-51,53-54,71-76,269,275,278,295-301,305-413,1610-1611,1634-1635,1650,1663-1679,1881-1896,1916-1933,2023-2061,2063-2080,2084,2088-2091,2094-2170
+crates/app-core/src/git_write.rs
+  s_985a885b680ea9::t_1a6712eccaf6bb 2-6,20-24,112-162,164-166,187-189,242-281,462-517,677-817,874-910,990-1051
+docs/agent-devkit/changes/archive/2026-11-17-editor-sync-and-conflicts/delta.md
+  s_ffb0c10ee3f669::t_18bdc7b9dc956d 1-195
+docs/agent-devkit/changes/archive/2026-11-17-editor-sync-and-conflicts/tasks.md
+  s_ffb0c10ee3f669::t_655c1e2c83a6e4 1-146
+docs/agent-devkit/changes/archive/2026-11-17-editor-tabs/delta.md
+  s_b8f5012fc53713::t_1da2914b0172a0 1-153
+docs/llm/architecture/editor.md
+  s_ffb0c10ee3f669::t_49b2cf0c7aeff3 216,247
+docs/llm/domains/rune-editor.md
+  s_2db0ca064991c2::t_bcbc6ff7700d1f 153-182,185,201,205-222,439,453-464,471,497-520,669,683-689,691-693,695-713,717,725-730,737,741,955-958,964-1011,1021,1038,1041-1042,1045-1048,1068,1085-1090,1099-1100,1241-1250,1313,1325
+apps/rune/src/editor/backend/apply.rs
+  s_7bed5cfb75d7b5::t_173c96ffdccda0 331-332,346-379,548,637-649,652,669-671,682-684,745-749,774-775,777,786-815,850-856,872-877,879-928,930,933-936,941,951-954,961,966,971-975,985-998,1000-1020,1022,1432-1657
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0e7f436a16d8b0da059f9b66c61c0f5dc742f8fb",
+  "prompts": {},
+  "sessions": {
+    "s_11d242ffc07e05": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "invited-soarer",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_2db0ca064991c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b9e8fb4-d1f0-4104-9e7f-74f7b0fa9d4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_74f851bfd6cf46": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "glittery-sombrero",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_7bed5cfb75d7b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "59c8ae28-9448-47b1-ac5e-88cb24ed4659",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_985a885b680ea9": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "petalite-ocarina",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_b8f5012fc53713": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pickle-jumpsuit",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_ffb0c10ee3f669": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a3b2cdc-7dbb-41de-9b43-39e262a51331",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
