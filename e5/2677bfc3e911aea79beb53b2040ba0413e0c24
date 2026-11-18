@@ -1,0 +1,152 @@
+apps/rune/src/editor/workspace.rs
+  s_ca34c212a6b2d2::t_841b7f12b16c82 534-535
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 429-436,446-462
+  s_ca34c212a6b2d2::t_f63b0809d61058 640
+  s_ca34c212a6b2d2::t_defc2c645f2376 463-464
+apps/rune/src/main.rs
+  s_ca34c212a6b2d2::t_f63b0809d61058 1885,3483
+  s_ca34c212a6b2d2::t_d4d79e8009b216 350-352
+  s_ca34c212a6b2d2::t_901bad20401e51 706-710,718-725,733-735
+  s_ca34c212a6b2d2::t_94c7fc524f465a 682-702
+  s_ca34c212a6b2d2::t_59a0208392492c 1645
+  s_ca34c212a6b2d2::t_862649f97f914f 191-196
+  s_ca34c212a6b2d2::t_2f404ae4deb114 711-717,726-732
+  s_ca34c212a6b2d2::t_1ba182521bfac3 1093
+  s_ca34c212a6b2d2::t_f5b4a98ee49c2b 1259-1261
+  s_ca34c212a6b2d2::t_b24cbbc1e9c639 1279
+  s_ca34c212a6b2d2::t_a069394572c3df 1450-1463
+  s_ca34c212a6b2d2::t_dbc18ac19060aa 10
+  s_ca34c212a6b2d2::t_15376280b22f53 1804
+  s_ca34c212a6b2d2::t_42434537b7870e 1547-1549
+apps/rune/src/editor/backend.rs
+  s_ca34c212a6b2d2::t_00407c6b6feadc 926-948
+  s_ca34c212a6b2d2::t_c8907be0f923f8 633
+  s_ca34c212a6b2d2::t_19fc4ceefe9bf0 789-801
+  s_ca34c212a6b2d2::t_37dab94ac5e880 917-925,3935-3939,4490,4537
+  s_ca34c212a6b2d2::t_fe45b1a6ccbc91 1164-1166
+  s_ca34c212a6b2d2::t_733b015e4169a9 1638-1639
+  s_ca34c212a6b2d2::t_6da35e488ece36 399-406
+  s_ca34c212a6b2d2::t_ba0e69803a5960 51-67
+  s_ca34c212a6b2d2::t_847a151675b0cc 1469-1497
+  s_ca34c212a6b2d2::t_f94bb6acd4105f 1509-1521,1546-1560
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 2090-2097
+  s_ca34c212a6b2d2::t_81899a5c4a042a 456-458
+  s_ca34c212a6b2d2::t_f63b0809d61058 2839
+  s_ca34c212a6b2d2::t_fde1e0ccb04f3c 4438-4489,4491-4536,4538-4623
+docs/agent-devkit/changes/archive/folder-projects/delta.md
+  s_ca34c212a6b2d2::t_358d9f99c68516 1-523
+crates/app-core/src/git_view.rs
+  s_ca34c212a6b2d2::t_39e3e1907d987d 2704-2714
+  s_ca34c212a6b2d2::t_5e7eeb4f921e34 2636-2703
+  s_ca34c212a6b2d2::t_2c411ca5a349f8 883-934
+crates/app-core/src/project_scan.rs
+  s_ca34c212a6b2d2::t_2b47a836768d7f 1-104,106-356
+  s_ca34c212a6b2d2::t_37dab94ac5e880 105
+apps/rune/src/editor/branch.rs
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 68
+docs/llm/domains/rune-chrome.md
+  s_ca34c212a6b2d2::t_8eddf593006430 155-184,1376-1380
+  s_ca34c212a6b2d2::t_6a42dbcebb768e 239,243,245,259-264,322,336-341,346,375,383-388,570,590-595,602
+  s_ca34c212a6b2d2::t_f513aab283bf11 961-986
+  s_ca34c212a6b2d2::t_099585e19b5dd5 1374-1375
+  s_ca34c212a6b2d2::t_080281d2e3736d 1338
+docs/agent-devkit/INDEX.md
+  s_ca34c212a6b2d2::t_358d9f99c68516 17
+  s_ca34c212a6b2d2::t_ba2fd70afa851f 14
+apps/rune/src/nested_import.rs
+  s_ca34c212a6b2d2::t_800a881485d60a 5
+  s_ca34c212a6b2d2::t_ad45a75ed0185b 1-4,6,8-43,50-54,56-75,81-113,124-130,132-133,136-138,140-145,147-300,306-529
+  s_ca34c212a6b2d2::t_37dab94ac5e880 44-49,76-80,301-305
+  s_ca34c212a6b2d2::t_04d671477bdb6a 7,55
+  s_ca34c212a6b2d2::t_2f404ae4deb114 114-123,131,134-135,139,146
+apps/rune/src/editor/autorefresh.rs
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 75-77
+docs/agent-devkit/changes/archive/folder-projects/tasks.md
+  s_ca34c212a6b2d2::t_6b9a17bede7bae 422
+  s_ca34c212a6b2d2::t_4219dfd4010827 1-421,423-453
+apps/rune/src/editor/backend/apply.rs
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 88,93-97
+  s_ca34c212a6b2d2::t_f63b0809d61058 1179
+  s_ca34c212a6b2d2::t_3a1977084bf77d 13
+  s_ca34c212a6b2d2::t_cf44c060c0ec60 1215-1228
+  s_ca34c212a6b2d2::t_b13e84491dec5f 1421
+  s_ca34c212a6b2d2::t_73fb46ae4f60d2 477,484
+  s_ca34c212a6b2d2::t_2f404ae4deb114 98-114
+  s_ca34c212a6b2d2::t_97433848f530dd 1214
+crates/app-core/src/lib.rs
+  s_ca34c212a6b2d2::t_1fd0f349f5b9fa 16
+apps/rune/src/project_map.rs
+  s_ca34c212a6b2d2::t_f63b0809d61058 478
+  s_ca34c212a6b2d2::t_0d42f16dd88416 510-535,539-545,547-559
+  s_ca34c212a6b2d2::t_a185c9d37d1547 31,44-47,56,58-83,89,92,95,97,105,315-321
+  s_ca34c212a6b2d2::t_1ac89003823477 536-538,546
+  s_ca34c212a6b2d2::t_0cbc0d3a5794e4 127
+  s_ca34c212a6b2d2::t_ddb6a350047f49 509
+crates/app-core/src/projects.rs
+  s_ca34c212a6b2d2::t_54bc9cb8a7c6b9 145-149
+  s_ca34c212a6b2d2::t_80a40d2285a5a5 10,14,17-18,24,28,32,37-78,80,84-87,99-144,150-175,177-284
+  s_ca34c212a6b2d2::t_37dab94ac5e880 176,547-550
+  s_ca34c212a6b2d2::t_800a881485d60a 19
+  s_ca34c212a6b2d2::t_b49ce1e197b997 478-546,551-564,566-657
+  s_ca34c212a6b2d2::t_fd16ba96f7699c 565
+  s_ca34c212a6b2d2::t_7d76ebf00d608f 344-374
+docs/llm/domains/rune-editor.md
+  s_ca34c212a6b2d2::t_6a42dbcebb768e 281,299,301-305,307,872,880-885
+  s_ca34c212a6b2d2::t_099585e19b5dd5 1386-1387
+  s_ca34c212a6b2d2::t_8eddf593006430 588-611
+  s_ca34c212a6b2d2::t_a9e3388ad6ac48 1330
+apps/rune/src/editor/blame.rs
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 126
+crates/app-core/src/store.rs
+  s_ca34c212a6b2d2::t_71dd4b74aba63f 463-469,476-482
+  s_ca34c212a6b2d2::t_cb5a43514cfef0 58-65
+  s_ca34c212a6b2d2::t_e464c47bab2d5d 82-94
+  s_ca34c212a6b2d2::t_40b247b1e2c696 614-615,618-620
+  s_ca34c212a6b2d2::t_37dab94ac5e880 239
+  s_ca34c212a6b2d2::t_3b60289e2a6f1f 356,905-1048
+  s_ca34c212a6b2d2::t_f079ec8f3c5189 216-238,240-305,321-355
+  s_ca34c212a6b2d2::t_0aa27583ab91ca 357
+apps/rune/src/editor/state.rs
+  s_ca34c212a6b2d2::t_14b3d35b4f4817 151-152
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 512-513,642
+  s_ca34c212a6b2d2::t_51efc554f34761 649
+apps/rune/src/editor/files.rs
+  s_ca34c212a6b2d2::t_37dab94ac5e880 537
+  s_ca34c212a6b2d2::t_cf44c060c0ec60 3413-3432
+  s_ca34c212a6b2d2::t_128050bfa1fca7 10-11
+  s_ca34c212a6b2d2::t_34197e0fc4af2d 38-44,482-488,529-536,538-540,543-548
+apps/rune/src/editor/search.rs
+  s_ca34c212a6b2d2::t_34197e0fc4af2d 384-387,481-484
+apps/rune/src/editor/navigation.rs
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 461-471
+  s_ca34c212a6b2d2::t_f63b0809d61058 2004
+apps/rune/src/sidebar.rs
+  s_ca34c212a6b2d2::t_f63b0809d61058 2648,2797,2916,3000,3177,3354,3391
+  s_ca34c212a6b2d2::t_5d9c4d2fee57e8 404-418,430
+  s_ca34c212a6b2d2::t_ff88d1bb17db50 2618,2623
+  s_ca34c212a6b2d2::t_fef36509a4ee9b 606-608
+  s_ca34c212a6b2d2::t_fc56211685b3c7 2553-2617,2624-2625
+  s_ca34c212a6b2d2::t_6f98b1a0a632d5 2622
+  s_ca34c212a6b2d2::t_39cbe302fda53f 106-110,431-436,445,728-731,749,755-783,1215-1222,1225,1331,1367-1368
+  s_ca34c212a6b2d2::t_37dab94ac5e880 419-429,750-754,2619-2621
+apps/rune/src/editor/line_changes.rs
+  s_ca34c212a6b2d2::t_aec2b33ecb01d4 18-20
+docs/agent-devkit/changes/archive/folder-projects/design.md
+  s_ca34c212a6b2d2::t_358d9f99c68516 1-310
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e52677bfc3e911aea79beb53b2040ba0413e0c24",
+  "prompts": {},
+  "sessions": {
+    "s_ca34c212a6b2d2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "ripple-ptarmigan",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
