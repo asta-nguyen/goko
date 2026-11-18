@@ -449,9 +449,11 @@ mod tests {
             dirs[2],
             PathBuf::from("/home/me/.local/state/omarchy/agents/usage")
         );
+        // `/state` has no drive letter, so it is not absolute on Windows.
+        let state = if cfg!(windows) { r"C:\state" } else { "/state" };
         assert_eq!(
-            record_dirs(goko, Some("/state".into()), Some("/home/me".into()))[2],
-            PathBuf::from("/state/omarchy/agents/usage")
+            record_dirs(goko, Some(state.into()), Some("/home/me".into()))[2],
+            Path::new(state).join("omarchy/agents/usage")
         );
         assert_eq!(
             record_dirs(goko, Some("relative".into()), Some("/home/me".into()))[2],

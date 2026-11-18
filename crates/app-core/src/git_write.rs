@@ -393,6 +393,9 @@ mod tests {
         git_ok(&root, &["init", "-b", "main"]);
         git_ok(&root, &["config", "user.name", "Tester"]);
         git_ok(&root, &["config", "user.email", "tester@example.com"]);
+        // Windows runners default to autocrlf=true, which turns a merged
+        // "main\n" into "main\r\n" on checkout.
+        git_ok(&root, &["config", "core.autocrlf", "false"]);
         fs::write(root.join("tracked.txt"), "tracked\n").unwrap();
         fs::write(root.join("second.txt"), "second\n").unwrap();
         fs::write(root.join("third.txt"), "third\n").unwrap();

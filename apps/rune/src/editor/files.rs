@@ -3593,16 +3593,27 @@ mod tests {
             rt.key(KeyEvent { key, mods });
             rt.frame(0.0);
         };
-        let cmd_alt = Mods {
-            cmd: true,
-            alt: true,
-            ..Mods::default()
+        // `step_chord` binds ⌘⌥←/→ on macOS and Ctrl+PageUp/PageDown elsewhere.
+        let ((next, next_mods), (prev, prev_mods)) = if cfg!(target_os = "macos") {
+            let cmd_alt = Mods {
+                cmd: true,
+                alt: true,
+                ..Mods::default()
+            };
+            ((Key::Right, cmd_alt), (Key::Left, cmd_alt))
+        } else {
+            let ctrl = Mods {
+                ctrl: true,
+                cmd: true,
+                ..Mods::default()
+            };
+            ((Key::PageDown, ctrl), (Key::PageUp, ctrl))
         };
-        chord(Key::Right, cmd_alt, &mut rt);
+        chord(next, next_mods, &mut rt);
         assert_eq!(
             rt.state.editor.doc.as_ref().unwrap().path,
             "src/a.rs",
-            "⌘⌥→ wraps from the last tab to the first"
+            "the next chord wraps from the last tab to the first"
         );
         let parked_c = rt.state.editor.tabs.parked_doc("src/c.rs").unwrap();
         assert_eq!(
@@ -3610,30 +3621,32 @@ mod tests {
             "no word-move edit"
         );
         assert_eq!(parked_c.code.edit.range(), caret, "no word-move caret");
-        chord(Key::Left, cmd_alt, &mut rt);
+        chord(prev, prev_mods, &mut rt);
         assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/c.rs");
-        // The shifted-bracket chord steps the same way, whichever glyph
-        // the key report carries.
-        chord(
-            Key::Command('}'),
-            Mods {
-                cmd: true,
-                shift: true,
-                ..Mods::default()
-            },
-            &mut rt,
-        );
-        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/a.rs");
-        chord(
-            Key::Command('['),
-            Mods {
-                cmd: true,
-                shift: true,
-                ..Mods::default()
-            },
-            &mut rt,
-        );
-        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/c.rs");
+        // The shifted-bracket chord steps the same way on macOS, whichever
+        // glyph the key report carries.
+        if cfg!(target_os = "macos") {
+            chord(
+                Key::Command('}'),
+                Mods {
+                    cmd: true,
+                    shift: true,
+                    ..Mods::default()
+                },
+                &mut rt,
+            );
+            assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/a.rs");
+            chord(
+                Key::Command('['),
+                Mods {
+                    cmd: true,
+                    shift: true,
+                    ..Mods::default()
+                },
+                &mut rt,
+            );
+            assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/c.rs");
+        }
         // A bare Tab still indents — only the chords were taken.
         chord(Key::Tab, Mods::default(), &mut rt);
         assert_ne!(
