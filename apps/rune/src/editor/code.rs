@@ -393,6 +393,9 @@ type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
 type IndentCallback<S> = Rc<dyn Fn(&mut S, UnitChoice, &mut Tx)>;
 /// Blame-toggle callback: receives the new enabled state.
 type BlameCallback<S> = Rc<dyn Fn(&mut S, bool, &mut Tx)>;
+/// First-refusal key callback: `true` consumes the key before the field's
+/// own handling sees it.
+type KeyCallback<S> = Rc<dyn Fn(&mut S, &KeyEvent, &mut Tx) -> bool>;
 
 /// The code surface view. `get`/`get_mut` reach the parent's [`CodeState`];
 /// callbacks are optional and generic over the app state `S`.
@@ -406,6 +409,7 @@ pub struct Code<S> {
     on_blame: Option<BlameCallback<S>>,
     on_send: Option<StateCallback<S>>,
     on_secondary: Option<PressCallback<S>>,
+    preempt_key: Option<KeyCallback<S>>,
 }
 
 impl<S: 'static> Code<S> {
@@ -420,6 +424,7 @@ impl<S: 'static> Code<S> {
             on_blame: None,
             on_send: None,
             on_secondary: None,
+            preempt_key: None,
         }
     }
 
@@ -469,6 +474,17 @@ impl<S: 'static> Code<S> {
         self
     }
 
+    /// First refusal on a key before either field's own handling: the host
+    /// takes a chord the field would otherwise claim — `Tab` indents and
+    /// `⌘⌥→` word-moves — `true` consumes the key.
+    pub fn preempt_key(
+        mut self,
+        f: impl Fn(&mut S, &KeyEvent, &mut Tx) -> bool + 'static,
+    ) -> Code<S> {
+        self.preempt_key = Some(Rc::new(f));
+        self
+    }
+
     pub fn build(self, s: &S, ink: &Ink, k: &Kit) -> El {
         let code = (self.get)(s);
         let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0).fill(ink.bg);
@@ -503,6 +519,7 @@ impl<S: 'static> Code<S> {
     fn find_bar(&self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let get_mut = self.get_mut;
+        let preempt = self.preempt_key.clone();
         let mut bar = row()
             .w_full()
             .h(34.0)
@@ -527,6 +544,9 @@ impl<S: 'static> Code<S> {
                     }
                 })
                 .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
+                    if preempt.as_ref().is_some_and(|f| f(st, ev, tx)) {
+                        return true;
+                    }
                     let code = get_mut(st);
                     match &ev.key {
                         Key::Escape => {
@@ -850,6 +870,7 @@ impl<S: 'static> Code<S> {
         let on_submit_changed = self.on_changed.clone();
         let on_changed_key = self.on_changed.clone();
         let on_save = self.on_save.clone();
+        let preempt = self.preempt_key.clone();
         let mut field = text_input(&code.edit, CODE_STYLE)
             .grow(1.0)
             .color(ink.text)
@@ -862,6 +883,9 @@ impl<S: 'static> Code<S> {
                 notify_changed(st, tx, get_mut, &on_changed);
             })
             .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
+                if preempt.as_ref().is_some_and(|f| f(st, ev, tx)) {
+                    return true;
+                }
                 field_key(st, ev, tx, get_mut, &on_save, &on_changed_key)
             })
             .on_submit(move |st: &mut S, tx: &mut Tx| {
@@ -1019,7 +1043,9 @@ fn field_key<S: 'static>(
         }
         return true;
     }
-    if ev.key == Key::Tab {
+    // A Tab with cmd/ctrl/alt is a chord (⌃Tab switches tabs) — Shift is
+    // the only modifier indent still takes, for outdent.
+    if ev.key == Key::Tab && !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt {
         let code = get_mut(st);
         let (a, b) = code.edit.range();
         if let Some(e) = indent::plan_indent(&code.edit.text, a, b, code.indent_unit, ev.mods.shift)

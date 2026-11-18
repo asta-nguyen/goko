@@ -5,20 +5,25 @@
 //!
 //! Enable rules mirror main: Generate needs a *connected* picked agent,
 //! staged changes and no conflicts; Commit needs staged changes, no
-//! conflicts and a non-blank message; Push stays reachable on a clean tree
-//! and is labelled `Push ↑N` / `Push new branch` like the desktop. Git writes
-//! ride `enqueue_write`; ACP generate/cancel go through the `acp` module's
+//! conflicts and a non-blank message — while a merge, rebase, cherry-pick
+//! or revert is in progress it reads Continue instead (a merge keeps the
+//! message rule but not the staged one; the rest need only a clean
+//! conflict list); Push stays reachable on a clean tree and is labelled
+//! `Push ↑N` / `Push new branch` like the desktop. Git writes ride
+//! `enqueue_write`; ACP generate/cancel go through the `acp` module's
 //! checkout-scoped wrappers (see the seam note in the module docs of
 //! `acp.rs` — the wrappers are added there because `AcpCmd` is private).
 
 use std::collections::BTreeMap;
 
 use app_core::acp::{AcpAgent, AcpStatus, AgentState};
+use app_core::git_view::GitViewChanges;
 use rune::{El, Key, Tx, col, row};
 use rune_kit::{Button, ButtonVariant, ControlSize, TextArea};
 
 use crate::State;
 use crate::editor::backend::Req;
+use crate::editor::state::CommitState;
 use crate::theme::{self, Ink, T11M_LH};
 
 // ---------------------------------------------------------------------------
@@ -65,9 +70,22 @@ pub fn can_generate(connected: bool, staged: usize, conflicts: usize, generating
 }
 
 /// Commit enable rule (desktop `canCommit`): staged work, no conflicts,
-/// non-blank message, no commit in flight.
-pub fn can_commit(staged: usize, conflicts: usize, message: &str, committing: bool) -> bool {
-    staged > 0 && conflicts == 0 && !message.trim().is_empty() && !committing
+/// non-blank message, no commit in flight. While `operation` is in
+/// progress the button is its Continue: a merge keeps the message rule
+/// but not the staged one (Git lets the merge commit stand alone); a
+/// rebase, cherry-pick or revert needs only a clean conflict list.
+pub fn can_commit(
+    staged: usize,
+    conflicts: usize,
+    message: &str,
+    committing: bool,
+    operation: Option<&str>,
+) -> bool {
+    match operation {
+        Some("merge") => conflicts == 0 && !message.trim().is_empty() && !committing,
+        Some(_) => conflicts == 0 && !committing,
+        None => staged > 0 && conflicts == 0 && !message.trim().is_empty() && !committing,
+    }
 }
 
 /// Push enable rule (desktop `canPush`): never while pushing; `ahead == None`
@@ -96,6 +114,25 @@ pub fn change_counts(s: &State) -> (usize, usize, Option<u32>) {
     }
 }
 
+/// Offer Git's own merge message once per merge: only into an untouched
+/// draft and only while `merge_prefilled` is unset — a draft the user
+/// cleared stays cleared for that merge. The flag resets when no merge is
+/// in progress, so the next merge offers again.
+pub fn prefill_merge_message(commit: &mut CommitState, data: &GitViewChanges) {
+    if data.operation != Some("merge") {
+        commit.merge_prefilled = false;
+        return;
+    }
+    let Some(message) = &data.merge_message else {
+        return;
+    };
+    if commit.merge_prefilled || !commit.message.text.trim().is_empty() {
+        return;
+    }
+    commit.message = rune::edit::TextEdit::new(message.clone());
+    commit.merge_prefilled = true;
+}
+
 // ---------------------------------------------------------------------------
 // Actions (handlers get `&mut State`)
 // ---------------------------------------------------------------------------
@@ -106,8 +143,32 @@ pub fn change_counts(s: &State) -> (usize, usize, Option<u32>) {
 /// and leaves the draft untouched.
 pub fn commit_now(s: &mut State) {
     let (staged, conflicts, _) = change_counts(s);
+    let operation = s.editor.changes.data.as_ref().and_then(|d| d.operation);
     let message = s.editor.commit.message.text.trim().to_string();
-    if !can_commit(staged, conflicts, &message, s.editor.commit.committing) {
+    if s.editor.changes.busy.is_some()
+        || !can_commit(
+            staged,
+            conflicts,
+            &message,
+            s.editor.commit.committing,
+            operation,
+        )
+    {
+        return;
+    }
+    // A rebase/cherry-pick/revert Continue rides the same serialized write
+    // lane as Resolve — `changes.busy` holds until the reply. The draft
+    // and `committing` belong to the Commit path alone.
+    if let Some(op) = operation
+        && op != "merge"
+    {
+        crate::editor::changes::write_paths(
+            &mut s.editor,
+            "continue",
+            Req::Operation {
+                step: "continue".into(),
+            },
+        );
         return;
     }
     let Some(checkout) = s.editor.checkout.clone() else {
@@ -194,6 +255,10 @@ pub fn view(s: &State) -> El {
         .is_some_and(|key| Some(key) == s.editor.checkout_key.as_deref());
     let committing = s.editor.commit.committing;
     let pushing = s.editor.commit.pushing;
+    // While an operation is in progress the primary button is its Continue;
+    // a write on the changes lane disables it like it does the row actions.
+    let operation = s.editor.changes.data.as_ref().and_then(|d| d.operation);
+    let write_busy = s.editor.changes.busy.is_some();
 
     let agents: Vec<AcpAgent> = enabled_agents(&s.editor.acp.agents)
         .into_iter()
@@ -373,12 +438,16 @@ pub fn view(s: &State) -> El {
         );
     }
     actions = actions.child(
-        Button::new("Commit")
-            .variant(ButtonVariant::Submit)
-            .control_size(ControlSize::Small)
-            .disabled(!can_commit(staged, conflicts, &message, committing))
-            .on_press(|st: &mut State| commit_now(st))
-            .build(k),
+        Button::new(if operation.is_some() {
+            "Continue"
+        } else {
+            "Commit"
+        })
+        .variant(ButtonVariant::Submit)
+        .control_size(ControlSize::Small)
+        .disabled(write_busy || !can_commit(staged, conflicts, &message, committing, operation))
+        .on_press(|st: &mut State| commit_now(st))
+        .build(k),
     );
     actions = actions.child(
         Button::new(push_label(pushing, ahead))
@@ -475,16 +544,96 @@ mod tests {
         assert!(!can_generate(false, 1, 0, false)); // not connected
         assert!(!can_generate(true, 1, 0, true)); // already generating
 
-        assert!(can_commit(1, 0, "msg", false));
-        assert!(!can_commit(1, 0, "   ", false)); // blank draft
-        assert!(!can_commit(0, 0, "msg", false));
-        assert!(!can_commit(1, 1, "msg", false));
-        assert!(!can_commit(1, 0, "msg", true));
+        assert!(can_commit(1, 0, "msg", false, None));
+        assert!(!can_commit(1, 0, "   ", false, None)); // blank draft
+        assert!(!can_commit(0, 0, "msg", false, None));
+        assert!(!can_commit(1, 1, "msg", false, None));
+        assert!(!can_commit(1, 0, "msg", true, None));
 
         assert!(can_push(false, None)); // no upstream → push new branch
         assert!(can_push(false, Some(3)));
         assert!(!can_push(false, Some(0)));
         assert!(!can_push(true, Some(3)));
+    }
+
+    /// The operation decides the Commit gate: a merge keeps the message
+    /// rule but not the staged one; the rest need only a clean conflict
+    /// list.
+    #[test]
+    fn can_commit_follows_the_operation() {
+        // No operation: the unchanged rule.
+        assert!(!can_commit(0, 0, "msg", false, None));
+        assert!(!can_commit(1, 0, "   ", false, None));
+        // Merge: nothing staged is fine, the message is still required.
+        assert!(can_commit(0, 0, "msg", false, Some("merge")));
+        assert!(!can_commit(0, 0, "   ", false, Some("merge")));
+        // Rebase/cherry-pick/revert: the message is Git's own — blank is fine.
+        assert!(can_commit(0, 0, "   ", false, Some("rebase")));
+        assert!(can_commit(0, 0, "", false, Some("cherry-pick")));
+        assert!(can_commit(0, 0, "", false, Some("revert")));
+        // Any conflict or a commit in flight blocks every shape.
+        assert!(!can_commit(0, 1, "msg", false, Some("merge")));
+        assert!(!can_commit(0, 1, "", false, Some("rebase")));
+        assert!(!can_commit(1, 1, "msg", false, None));
+        assert!(!can_commit(0, 0, "msg", true, Some("merge")));
+        assert!(!can_commit(0, 0, "", true, Some("rebase")));
+        assert!(!can_commit(1, 0, "msg", true, None));
+    }
+
+    /// The merge draft is offered once: an empty draft takes `MERGE_MSG`, a
+    /// cleared draft is not refilled, a typed draft is never replaced, and
+    /// the memory resets when the operation ends.
+    #[test]
+    fn merge_message_is_prefilled_once() {
+        let (mut s, _home, _guard) = write_scene();
+        s.editor.commit.message = rune::edit::TextEdit::new("");
+        let reply =
+            |s: &mut State, operation: Option<&'static str>, merge_message: Option<&str>| {
+                s.editor.apply_reply(crate::editor::backend::Reply {
+                    req: Req::Changes,
+                    generation: 0,
+                    checkout_key: s.editor.checkout_key.clone(),
+                    result: Ok(crate::editor::backend::ReplyData::Changes(
+                        app_core::git_view::GitViewChanges {
+                            branch: None,
+                            head: String::new(),
+                            conflicts: vec![],
+                            staged: vec![],
+                            unstaged: vec![],
+                            untracked: vec![],
+                            ahead: None,
+                            operation,
+                            merge_message: merge_message.map(Into::into),
+                        },
+                    )),
+                });
+            };
+
+        reply(&mut s, Some("merge"), Some("Merge branch 'x'"));
+        assert_eq!(s.editor.commit.message.text, "Merge branch 'x'");
+        assert!(s.editor.commit.merge_prefilled);
+
+        // A draft the user cleared during the same merge is not refilled.
+        s.editor.commit.message = rune::edit::TextEdit::new("");
+        reply(&mut s, Some("merge"), Some("Merge branch 'x'"));
+        assert!(s.editor.commit.message.text.is_empty());
+        assert!(s.editor.commit.merge_prefilled);
+
+        // The flag resets once no merge is in progress.
+        reply(&mut s, None, None);
+        assert!(!s.editor.commit.merge_prefilled);
+
+        // A typed draft is never replaced (and never arms the flag either).
+        s.editor.commit.message = rune::edit::TextEdit::new("typed");
+        reply(&mut s, Some("merge"), Some("Merge branch 'y'"));
+        assert_eq!(s.editor.commit.message.text, "typed");
+        assert!(!s.editor.commit.merge_prefilled);
+
+        // A later merge offers the message again into an empty draft.
+        s.editor.commit.message = rune::edit::TextEdit::new("");
+        reply(&mut s, Some("merge"), Some("Merge branch 'z'"));
+        assert_eq!(s.editor.commit.message.text, "Merge branch 'z'");
+        assert!(s.editor.commit.merge_prefilled);
     }
 
     #[test]
@@ -661,6 +810,8 @@ mod tests {
             unstaged: vec![],
             untracked: vec![],
             ahead: None,
+            operation: None,
+            merge_message: None,
         });
         s.editor.commit.message = rune::edit::TextEdit::new("wip");
         (s, home, guard)
@@ -695,6 +846,89 @@ mod tests {
         commit_now(&mut s);
         assert!(s.editor.commit.committing);
         assert!(s.editor.commit.error.is_none());
+    }
+
+    /// While an operation is in progress the primary button reads Continue
+    /// and an in-flight changes write disables it; without one it reads
+    /// Commit again.
+    #[test]
+    fn primary_button_reads_continue_during_an_operation() {
+        let (mut s, _home, _guard) = write_scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.editor.project_id = Some("p1".into());
+        s.editor.changes.data.as_mut().unwrap().operation = Some("rebase");
+        let mut rt = Runtime::new(s, commit_only, (400.0, 500.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let button = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.role == "button" && e.label.as_deref() == Some(label))
+        };
+        assert!(button(&rt, "Continue").is_some(), "operation → Continue");
+        assert!(button(&rt, "Commit").is_none());
+
+        // A write in flight disables the button: a disabled kit button
+        // carries no press handler, so the click reaches nothing.
+        rt.state.editor.changes.busy = Some("resolve");
+        rt.invalidate();
+        rt.frame(1.0 / 60.0);
+        let b = button(&rt, "Continue").expect("Continue mounted");
+        click(
+            &mut rt,
+            b.rect[0] + b.rect[2] / 2.0,
+            b.rect[1] + b.rect[3] / 2.0,
+        );
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "busy Continue runs nothing"
+        );
+        assert!(!rt.state.editor.commit.committing);
+
+        // The label flips back the moment the operation ends.
+        rt.state.editor.changes.busy = None;
+        rt.state.editor.changes.data.as_mut().unwrap().operation = None;
+        rt.invalidate();
+        rt.frame(1.0 / 60.0);
+        assert!(button(&rt, "Commit").is_some());
+        assert!(button(&rt, "Continue").is_none());
+    }
+
+    /// Continue on a rebase/cherry-pick/revert enqueues `Req::Operation` on
+    /// the changes write lane; on a merge it stays the ordinary Commit.
+    #[test]
+    fn continue_runs_the_operation_for_a_rebase_and_commits_for_a_merge() {
+        let (mut s, _home, _guard) = write_scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.editor.project_id = Some("p1".into());
+
+        s.editor.changes.data.as_mut().unwrap().operation = Some("rebase");
+        commit_now(&mut s);
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::Operation { step } if step == "continue")),
+            "rebase Continue enqueues the operation"
+        );
+        assert_eq!(s.editor.changes.busy, Some("continue"));
+        assert!(!s.editor.commit.committing);
+        assert_eq!(s.editor.commit.message.text, "wip", "draft untouched");
+
+        // A merge Continue is the ordinary Commit — nothing staged is fine,
+        // the message is still required. (No worker here: clear the lane
+        // the reply would clear.)
+        s.editor.changes.busy = None;
+        let d = s.editor.changes.data.as_mut().unwrap();
+        d.operation = Some("merge");
+        d.staged = vec![];
+        commit_now(&mut s);
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::Commit { message } if message == "wip")),
+            "merge Continue enqueues the commit"
+        );
+        assert!(s.editor.commit.committing);
     }
 
     // -- narrow-aside overflow: every footer control stays inside ---------

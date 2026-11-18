@@ -532,12 +532,38 @@ fn empty_state(s: &State, ink: &Ink) -> El {
 /// kit's `on_close` has no `Tx`, so dismissal routes through
 /// `navigation::cancel_guard` (identical to `resolve_guard(Cancel)`).
 fn guard_dialog(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) {
-    let quitting = s.editor.guard.as_ref().is_some_and(|g| g.quitting);
+    let Some(guard) = s.editor.guard.as_ref() else {
+        return;
+    };
+    let quitting = guard.quitting;
     let title = if quitting {
         "Save changes before quitting?"
     } else {
         "Save changes before leaving?"
     };
+    // One dirty tab gets the single-file wording; several list up to ten
+    // file names and the buttons become Save All / Discard All.
+    let mut files = vec![guard.doc_path.clone()];
+    files.extend(guard.queue.iter().cloned());
+    let description = if files.len() == 1 {
+        "The open file has unsaved edits.".to_string()
+    } else {
+        let names: Vec<&str> = files
+            .iter()
+            .take(10)
+            .map(|p| p.rsplit('/').next().unwrap_or(p.as_str()))
+            .collect();
+        let mut text = format!(
+            "Save changes to the following {} files?\n{}",
+            files.len(),
+            names.join("\n")
+        );
+        if files.len() > 10 {
+            text.push_str(&format!("\n…and {} more", files.len() - 10));
+        }
+        text
+    };
+    let multi = files.len() > 1;
     let buttons = row()
         .gap(8.0)
         .justify_end()
@@ -547,29 +573,37 @@ fn guard_dialog(s: &State, ink: &Ink, k: &Kit, layer: &mut Vec<El>) {
                 navigation::resolve_guard(st, GuardAction::Cancel, tx);
             },
         ))
-        .child(theme::btn_sm("Discard", None, true, ink).on_press_tx(
-            |st: &mut State, tx: &mut Tx| {
+        .child(
+            theme::btn_sm(
+                if multi { "Discard All" } else { "Discard" },
+                None,
+                true,
+                ink,
+            )
+            .on_press_tx(|st: &mut State, tx: &mut Tx| {
                 if st.editor.quit_vetoed {
                     navigation::quit_discard(st);
                 } else {
                     navigation::resolve_guard(st, GuardAction::Discard, tx);
                 }
-            },
-        ))
-        .child(theme::btn_sm("Save", None, false, ink).on_press_tx(
-            |st: &mut State, tx: &mut Tx| {
-                if st.editor.quit_vetoed {
-                    navigation::quit_after_save(st);
-                } else {
-                    navigation::resolve_guard(st, GuardAction::Save, tx);
-                }
-            },
-        ));
+            }),
+        )
+        .child(
+            theme::btn_sm(if multi { "Save All" } else { "Save" }, None, false, ink).on_press_tx(
+                |st: &mut State, tx: &mut Tx| {
+                    if st.editor.quit_vetoed {
+                        navigation::quit_after_save(st);
+                    } else {
+                        navigation::resolve_guard(st, GuardAction::Save, tx);
+                    }
+                },
+            ),
+        );
     rune_kit::Dialog::new("editor-guard", title)
         .open(true)
         .fit()
         .width(400.0)
-        .description("The open file has unsaved edits.")
+        .description(description)
         .on_close(|st: &mut State| navigation::cancel_guard(st))
         .child(buttons)
         .build(k, layer);
@@ -983,6 +1017,58 @@ mod tests {
 
         assert_eq!(project_rows(&rt).len(), 5);
         assert!(has_add_project(&rt));
+    }
+
+    /// Eleven dirty tabs raise one dialog listing ten file names and
+    /// "…and 1 more", with Save All / Discard All / Cancel.
+    #[test]
+    fn the_multi_file_guard_lists_ten_names_then_counts_the_rest() {
+        use rune::{Env, Runtime};
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Editor;
+        s.editor.projects = vec![project("p", "A project", "/repo/app")];
+        s.editor.project_id = Some("p".into());
+        s.editor.checkout = Some(PathBuf::from("/repo/app"));
+        s.editor.checkout_key = Some("current".into());
+        s.editor.guard = Some(navigation::Guard {
+            pending: PendingNav::CloseWindow,
+            doc_path: "dir/f00.txt".into(),
+            queue: (1..=10).map(|i| format!("dir/f{i:02}.txt")).collect(),
+            quitting: false,
+        });
+        let mut rt = Runtime::new(
+            s,
+            |s, _| workspace(s, &Ink::new(), &s.editor.kit),
+            (480.0, 700.0),
+            Env::new(true, 2.0),
+        );
+        rt.frame(0.0);
+        let els = rt.elements();
+        let texts: Vec<String> = els
+            .iter()
+            .filter_map(|e| e.text.clone().or_else(|| e.label.clone()))
+            .collect();
+        let joined = texts.join("\n");
+        assert!(
+            joined.contains("following 11 files"),
+            "one dialog for all: {joined}"
+        );
+        assert!(joined.contains("f09.txt"), "the tenth name shows: {joined}");
+        assert!(
+            joined.contains("…and 1 more"),
+            "the rest is counted: {joined}"
+        );
+        assert!(
+            !joined.contains("f10.txt"),
+            "the eleventh name is folded away: {joined}"
+        );
+        for label in ["Cancel", "Discard All", "Save All"] {
+            assert!(
+                els.iter()
+                    .any(|e| e.label.as_deref() == Some(label) || e.text.as_deref() == Some(label)),
+                "{label} button mounted"
+            );
+        }
     }
 
     #[test]

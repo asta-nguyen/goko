@@ -328,6 +328,8 @@ impl EditorState {
                 }
             }
             (Req::Changes, Ok(ReplyData::Changes(data))) => {
+                // The merge-message offer reads the reply before it lands.
+                crate::editor::commit::prefill_merge_message(&mut self.commit, &data);
                 self.changes.data = Some(data);
                 self.changes.checkout = current.clone();
                 self.changes.loading = false;
@@ -339,6 +341,40 @@ impl EditorState {
                     self.changes.error = Some(e);
                 } else {
                     self.notice = Some(stale_notice(&e));
+                }
+            }
+            (Req::ChangesPoll, result) => {
+                // The quiet lane: never `changes.loading`, `changes.error`
+                // or a notice — only the poll's own schedule and, on a
+                // change, the fresh data.
+                self.autorefresh.pending = false;
+                let took = self
+                    .autorefresh
+                    .sent
+                    .map(|sent| sent.elapsed())
+                    .unwrap_or_default();
+                let delay = match &result {
+                    Ok(_) => crate::editor::autorefresh::next_delay(took),
+                    Err(_) => {
+                        std::time::Duration::from_secs_f64(crate::editor::autorefresh::INTERVAL)
+                    }
+                };
+                self.autorefresh.next_at = self.autorefresh.sent_clock + delay.as_secs_f64();
+                if let Ok(ReplyData::Changes(data)) = result {
+                    // The merge-message offer reads the reply before it lands.
+                    crate::editor::commit::prefill_merge_message(&mut self.commit, &data);
+                    if Some(&data) != self.changes.data.as_ref() {
+                        self.changes.data = Some(data);
+                        self.changes.checkout = current.clone();
+                        // The selected diff may have shifted too: re-read it
+                        // quietly — no spinner, and the old patch stays up
+                        // until the new one lands.
+                        if let (Some(checkout), Some(key)) =
+                            (self.checkout.clone(), current.clone())
+                        {
+                            self.enqueue_patch_refresh(checkout, key);
+                        }
+                    }
                 }
             }
             (
@@ -509,7 +545,7 @@ impl EditorState {
                 });
             }
             (Req::File { path, token, line }, Ok(ReplyData::File(file)))
-                if self.doc_load == Some(*token) =>
+                if self.doc_load.as_ref().is_some_and(|(t, _)| t == token) =>
             {
                 self.doc_load = None;
                 self.install_doc(path.clone(), file, *line);
@@ -598,10 +634,22 @@ impl EditorState {
             (Req::ExternalOpen { .. }, Err(e)) => {
                 self.notice = Some(err_notice(&e));
             }
-            (Req::SaveFile { path, .. }, Ok(ReplyData::Saved(file))) => {
+            (Req::CheckFile { path, revision }, Ok(ReplyData::File(file))) => {
+                self.autorefresh.check_pending = false;
+                self.apply_check(path, *revision, file);
+            }
+            (Req::CheckFile { .. }, _) => {
+                // The quiet probe: a failed read surfaces nothing — the
+                // next tick simply tries again.
+                self.autorefresh.check_pending = false;
+            }
+            (
+                Req::SaveFile { path, .. } | Req::OverwriteFile { path, .. },
+                Ok(ReplyData::Saved(file)),
+            ) => {
                 self.finish_save(path.clone(), Ok(file));
             }
-            (Req::SaveFile { path, .. }, Err(e)) => {
+            (Req::SaveFile { path, .. } | Req::OverwriteFile { path, .. }, Err(e)) => {
                 self.finish_save(path.clone(), Err(e));
             }
             (Req::RenamePath { path, .. }, Ok(ReplyData::Renamed(to))) => {
@@ -618,7 +666,9 @@ impl EditorState {
                 Req::StageResolved { .. }
                 | Req::Stage { .. }
                 | Req::Unstage { .. }
-                | Req::Discard { .. },
+                | Req::Discard { .. }
+                | Req::Resolve { .. }
+                | Req::Operation { .. },
                 Ok(ReplyData::Ok),
             ) => {
                 self.changes.busy = None;
@@ -629,7 +679,9 @@ impl EditorState {
                 Req::StageResolved { .. }
                 | Req::Stage { .. }
                 | Req::Unstage { .. }
-                | Req::Discard { .. },
+                | Req::Discard { .. }
+                | Req::Resolve { .. }
+                | Req::Operation { .. },
                 Err(e),
             ) => {
                 self.changes.busy = None;
@@ -690,6 +742,11 @@ impl EditorState {
                 }
                 Err(e) => {
                     doc.save_error = Some(e.clone());
+                    // The guarded save raced a disk write: the notice row
+                    // offers Overwrite/Reload for exactly this failure.
+                    if e.contains("changed on disk") {
+                        doc.disk_notice = Some(crate::editor::draft::DiskNotice::Changed);
+                    }
                 }
             }
             // The save flight is over on every outcome — restore the doc's
@@ -714,15 +771,46 @@ impl EditorState {
         }
         match result {
             Ok(_) => {
-                // A successful save resumes the navigation that was waiting.
+                // A successful save resumes the navigation that was waiting
+                // — possibly after the rest of a Save All's queue.
                 if let Some(guard) = resume {
-                    self.pending_apply = Some(guard.pending);
+                    self.continue_save_queue(guard);
                 }
             }
             Err(_) => {
                 // Failed save retains the draft and cancels the navigation.
             }
         }
+    }
+
+    /// Save All's chain: the next still-dirty path in `queue` is activated
+    /// and saved under the same `save_resume`; a path that turned clean
+    /// while the guard was up is skipped. When the queue drains the pending
+    /// navigation resumes. A refused save (validation) keeps the failing
+    /// tab active and drops the pending navigation, like a failed reply.
+    fn continue_save_queue(&mut self, mut guard: crate::editor::navigation::Guard) {
+        while let Some(next) = guard.queue.first().cloned() {
+            guard.queue.remove(0);
+            if !self.path_is_dirty(&next) {
+                continue;
+            }
+            if self.doc.as_ref().is_none_or(|d| d.path != next) {
+                self.activate_tab(&next);
+            }
+            guard.doc_path = next;
+            if let Some(err) = self.doc.as_ref().and_then(|d| d.validate_save()) {
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.save_error = Some(err);
+                }
+                self.save_resume = None;
+                self.sync_quit_dirty();
+                return;
+            }
+            self.save_resume = Some(guard);
+            crate::editor::navigation::enqueue_save_ed(self);
+            return;
+        }
+        self.pending_apply = Some(guard.pending);
     }
 
     /// A validated external open request: queue it as ONE guarded pending
@@ -759,9 +847,13 @@ impl EditorState {
     /// checkout the write ran on — if the user has since switched, the
     /// replies drop on the staleness check instead of clobbering the new
     /// selection.
-    /// A file or folder was renamed on disk: the tree and Changes re-read,
-    /// and an open document under it follows to its new path — reloaded
-    /// from disk when clean, left alone (with a notice) when it holds a draft.
+    /// A file or folder was renamed on disk: the tree and Changes re-read.
+    /// Inactive clean tabs under the entry close; the active clean tab
+    /// reopens at its new path (the same reload as before tabs). A tab
+    /// that is dirty or mid-save keeps its old path with a notice — the
+    /// submit-time refusal makes that the race case only. A pending
+    /// install aimed at a moved path is dropped so its reply cannot
+    /// reopen the old name.
     fn finish_rename(&mut self, from: &str, to: String) {
         let inside = format!("{from}/");
         self.files.empty_dirs = std::mem::take(&mut self.files.empty_dirs)
@@ -777,42 +869,76 @@ impl EditorState {
         };
         self.enqueue_read(checkout.clone(), key.clone(), Req::FileList);
         self.enqueue_read(checkout.clone(), key.clone(), Req::Changes);
-        let Some(doc) = self.doc.as_ref() else {
-            return;
+        let new_of = |p: &str| {
+            if p == from {
+                Some(to.clone())
+            } else {
+                p.strip_prefix(&inside).map(|rest| format!("{to}/{rest}"))
+            }
         };
-        let new_path = if doc.path == from {
-            to
-        } else if let Some(rest) = doc.path.strip_prefix(&format!("{from}/")) {
-            format!("{to}/{rest}")
-        } else {
-            return;
-        };
-        if doc.dirty() {
-            self.notice = Some(err_notice(&format!(
-                "{} was renamed to {new_path} — the open draft still points at the old path",
-                doc.path
-            )));
-            return;
+        // Inactive tabs under the entry close — clean ones outright, a
+        // draft or a mid-save stays on its old path.
+        let inactive: Vec<String> = self
+            .tabs
+            .order
+            .iter()
+            .filter(|p| new_of(p).is_some() && self.doc.as_ref().is_none_or(|d| d.path != **p))
+            .cloned()
+            .collect();
+        let mut kept = None;
+        for p in inactive {
+            if self
+                .tabs
+                .parked
+                .get(&p)
+                .is_some_and(|d| d.dirty() || d.saving)
+            {
+                kept = kept.or(Some(p));
+                continue;
+            }
+            self.tabs.close(&mut self.doc, &p);
         }
-        self.doc = None;
-        self.doc_seq += 1;
-        let token = self.doc_seq;
-        if self.enqueue_read(
-            checkout,
-            key,
-            Req::File {
-                path: new_path,
-                token,
-                line: None,
-            },
-        ) {
-            self.doc_load = Some(token);
+        if let Some(d) = self.doc.as_ref()
+            && let Some(new) = new_of(&d.path)
+        {
+            if d.dirty() || d.saving {
+                kept = kept.or_else(|| Some(d.path.clone()));
+            } else {
+                // Reopen at the new path: the old tab entry goes first so
+                // the slot stays empty and the reload installs cleanly.
+                let old = d.path.clone();
+                self.doc = None;
+                self.tabs.close(&mut self.doc, &old);
+                self.doc_seq += 1;
+                let token = self.doc_seq;
+                if self.enqueue_read(
+                    checkout,
+                    key,
+                    Req::File {
+                        path: new.clone(),
+                        token,
+                        line: None,
+                    },
+                ) {
+                    self.doc_load = Some((token, new));
+                }
+            }
+        }
+        if let Some(old) = kept {
+            let new = new_of(&old).unwrap_or_default();
+            self.notice = Some(err_notice(&format!(
+                "{old} was renamed to {new} — the open draft still points at the old path"
+            )));
+        }
+        if let Some((_, load_path)) = &self.doc_load
+            && (*load_path == from || load_path.starts_with(&inside))
+        {
+            self.doc_load = None;
         }
     }
 
     /// A file or folder was created: the tree and Changes re-read and the
-    /// tree opens on it; a new file opens in the editor unless a draft is
-    /// open there.
+    /// tree opens on it; a new file always opens as a new editor tab.
     fn finish_create(&mut self, path: String, folder: bool) {
         let (Some(checkout), Some(key)) = (self.checkout.clone(), self.checkout_key.clone()) else {
             return;
@@ -822,26 +948,31 @@ impl EditorState {
         self.files.reveal = Some(path.clone());
         if folder {
             self.files.empty_dirs.insert(path);
-        } else if self.doc.as_ref().is_none_or(|doc| !doc.dirty()) {
-            self.doc = None;
+        } else {
+            // A created file always opens as a new tab: the load's reply
+            // installs it, parking whatever is open — draft and all —
+            // instead of dropping it.
             self.doc_seq += 1;
             let token = self.doc_seq;
             if self.enqueue_read(
                 checkout,
                 key,
                 Req::File {
-                    path,
+                    path: path.clone(),
                     token,
                     line: None,
                 },
             ) {
-                self.doc_load = Some(token);
+                self.doc_load = Some((token, path));
             }
         }
     }
 
-    /// A file or folder went to the Trash: the tree and Changes re-read, and
-    /// a clean open document under it closes (a draft is kept, with a notice).
+    /// A file or folder went to the Trash: the tree and Changes re-read and
+    /// every clean open tab under it closes — the active one through
+    /// `close_tab` (its neighbour activates and re-requests), a parked one
+    /// in place. A tab that is dirty or mid-save is kept, with a notice:
+    /// nothing unsaved or in-flight silently goes away.
     fn finish_trash(&mut self, path: &str) {
         let inside = format!("{path}/");
         self.files
@@ -851,19 +982,45 @@ impl EditorState {
             self.enqueue_read(checkout.clone(), key.clone(), Req::FileList);
             self.enqueue_read(checkout, key, Req::Changes);
         }
-        let Some(doc) = self.doc.as_ref() else {
-            return;
-        };
-        if doc.path != path && !doc.path.starts_with(&format!("{path}/")) {
-            return;
+        let mut victims: Vec<String> = self
+            .tabs
+            .order
+            .iter()
+            .filter(|p| **p == path || p.starts_with(&inside))
+            .cloned()
+            .collect();
+        // A document that never became a tab (a direct install) is a
+        // victim too.
+        if let Some(d) = self.doc.as_ref()
+            && (d.path == path || d.path.starts_with(&inside))
+            && !victims.contains(&d.path)
+        {
+            victims.push(d.path.clone());
         }
-        if doc.dirty() {
+        let mut kept = None;
+        for p in victims {
+            let (active, dirty, saving) = if let Some(d) = self.doc.as_ref().filter(|d| d.path == p)
+            {
+                (true, d.dirty(), d.saving)
+            } else if let Some(d) = self.tabs.parked.get(&p) {
+                (false, d.dirty(), d.saving)
+            } else {
+                continue;
+            };
+            if dirty || saving {
+                kept = kept.or(Some(p));
+                continue;
+            }
+            if active {
+                self.close_tab(&p);
+            } else {
+                self.tabs.close(&mut self.doc, &p);
+            }
+        }
+        if let Some(p) = kept {
             self.notice = Some(err_notice(&format!(
-                "{} was moved to the Trash — the open draft is all that is left of it",
-                doc.path
+                "{p} was moved to the Trash — the open draft is all that is left of it"
             )));
-        } else {
-            self.doc = None;
         }
     }
 
@@ -1271,5 +1428,231 @@ mod tests {
             "closed palette keeps its leftovers — open() rebuilds them"
         );
         assert_eq!(s.editor.quick_open.matched_len, 99);
+    }
+
+    // -- editor tabs: rename / trash / create / activation -------------------
+
+    fn doc_file(path: &str, text: &str) -> app_core::git_view::GitViewFile {
+        app_core::git_view::GitViewFile {
+            path: path.into(),
+            kind: "text",
+            text: Some(text.into()),
+            truncated: false,
+            size: text.len() as u64,
+        }
+    }
+
+    fn open_tab(s: &mut State, path: &str, text: &str) {
+        s.editor
+            .install_doc(path.to_string(), doc_file(path, text), None);
+    }
+
+    #[test]
+    fn activating_a_parked_tab_brings_its_state_along() {
+        let mut s = scene();
+        open_tab(&mut s, "a.txt", "orig");
+        {
+            let d = s.editor.doc.as_mut().unwrap();
+            d.code.edit.text = "edited".into(); // dirty
+            d.code.edit.set_selection(1, 2);
+            d.reveal_line = Some(7);
+            d.markdown_preview = true;
+            d.save_error = Some("kept".into());
+            d.code.line_changes = vec![app_core::git_view::GitViewLineChange {
+                start: 1,
+                count: 2,
+                kind: "added",
+            }];
+            d.code.blame_error = Some("kept".into());
+        }
+        open_tab(&mut s, "b.txt", "two"); // a parks
+        s.editor.activate_tab("a.txt");
+        let d = s.editor.doc.as_ref().unwrap();
+        assert_eq!(d.code.edit.text, "edited");
+        assert_eq!(d.code.edit.range(), (1, 2), "the caret survived");
+        assert!(d.dirty());
+        assert_eq!(d.reveal_line, Some(7));
+        assert!(d.markdown_preview);
+        assert_eq!(d.save_error.as_deref(), Some("kept"));
+        assert_eq!(d.code.line_changes.len(), 1);
+        assert_eq!(d.code.blame_error.as_deref(), Some("kept"));
+        // …while the active-doc pipelines re-arm for it.
+        assert!(d.highlight_dirty_at.is_some());
+        assert!(!d.highlight_inflight);
+    }
+
+    #[test]
+    fn a_rename_reply_closes_inactive_clean_tabs_and_reopens_the_active_one() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "d/a.txt", "a");
+        open_tab(&mut s, "other.txt", "o");
+        open_tab(&mut s, "d/c.txt", "c"); // active, under the renamed dir
+        s.editor.doc_load = Some((7, "d/new.txt".into()));
+        s.editor.apply_reply(reply(
+            Req::RenamePath {
+                path: "d".into(),
+                new_name: "e".into(),
+            },
+            Ok(ReplyData::Renamed("e".into())),
+        ));
+        // Inactive clean tabs under d/ close; the active one reloads at
+        // its new path.
+        assert!(!s.editor.tabs.is_open("d/a.txt"));
+        assert!(!s.editor.tabs.is_open("d/c.txt"));
+        assert!(s.editor.tabs.is_open("other.txt"), "outside tabs stay");
+        assert!(s.editor.doc.is_none(), "the active tab waits on its reload");
+        assert_eq!(
+            s.editor.doc_load.as_ref().map(|(_, p)| p.as_str()),
+            Some("e/c.txt"),
+            "the reload — not the stale d/ install — is armed"
+        );
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::File { path, .. } if path == "e/c.txt"))
+        );
+    }
+
+    #[test]
+    fn a_rename_reply_keeps_a_dirty_tab_under_it_with_a_notice() {
+        let mut s = scene();
+        let (backend, _jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "d/dirty.txt", "d");
+        open_tab(&mut s, "other.txt", "o"); // active, outside the rename
+        s.editor
+            .tabs
+            .parked
+            .get_mut("d/dirty.txt")
+            .unwrap()
+            .code
+            .edit
+            .insert("x");
+        s.editor.apply_reply(reply(
+            Req::RenamePath {
+                path: "d".into(),
+                new_name: "e".into(),
+            },
+            Ok(ReplyData::Renamed("e".into())),
+        ));
+        assert!(s.editor.tabs.is_open("d/dirty.txt"), "the draft is kept");
+        assert!(
+            s.editor
+                .notice
+                .as_ref()
+                .is_some_and(|n| { n.text.contains("d/dirty.txt was renamed to e/dirty.txt") })
+        );
+    }
+
+    #[test]
+    fn a_trash_reply_on_a_parked_tab_drops_it_and_requests_nothing() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "t/doomed.txt", "d");
+        open_tab(&mut s, "stay.txt", "s"); // active
+        while jobs.try_recv().is_ok() {} // drain the opens' requests
+        s.editor.apply_reply(reply(
+            Req::TrashPath { path: "t".into() },
+            Ok(ReplyData::Ok),
+        ));
+        assert!(!s.editor.tabs.is_open("t/doomed.txt"));
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "stay.txt");
+        let reqs: Vec<_> = jobs.try_iter().collect();
+        assert!(
+            !reqs.iter().any(|j| matches!(
+                j.req,
+                Req::CheckFile { .. } | Req::Blame { .. } | Req::LineChanges { .. }
+            )),
+            "a parked close re-requests no doc data: {reqs:?}"
+        );
+        assert!(
+            reqs.iter().any(|j| matches!(j.req, Req::FileList))
+                && reqs.iter().any(|j| matches!(j.req, Req::Changes)),
+            "the tree and Changes still re-read"
+        );
+    }
+
+    #[test]
+    fn a_trash_reply_on_the_active_tab_activates_the_neighbour() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "t/doomed.txt", "d");
+        open_tab(&mut s, "stay.txt", "s");
+        s.editor.activate_tab("t/doomed.txt");
+        while jobs.try_recv().is_ok() {}
+        s.editor.autorefresh.check_pending = false; // the probe's reply landed
+        s.editor.apply_reply(reply(
+            Req::TrashPath { path: "t".into() },
+            Ok(ReplyData::Ok),
+        ));
+        assert!(!s.editor.tabs.is_open("t/doomed.txt"));
+        assert_eq!(
+            s.editor.doc.as_ref().unwrap().path,
+            "stay.txt",
+            "the neighbour activates"
+        );
+        let reqs: Vec<_> = jobs.try_iter().collect();
+        assert!(
+            reqs.iter().any(|j| matches!(j.req, Req::CheckFile { .. })),
+            "the new active doc is probed on disk: {reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|j| matches!(j.req, Req::Blame { .. } | Req::LineChanges { .. })),
+            "its active-doc data re-requests: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_tab_under_the_trash_is_kept() {
+        let mut s = scene();
+        let (backend, _jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "t/dirty.txt", "d");
+        s.editor.doc.as_mut().unwrap().code.edit.text = "draft".into();
+        open_tab(&mut s, "stay.txt", "s");
+        s.editor.apply_reply(reply(
+            Req::TrashPath { path: "t".into() },
+            Ok(ReplyData::Ok),
+        ));
+        assert!(s.editor.tabs.is_open("t/dirty.txt"), "the draft is kept");
+        assert!(s.editor.notice.is_some(), "with a notice");
+    }
+
+    #[test]
+    fn a_created_file_opens_as_a_new_tab_without_dropping_the_draft() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_tab(&mut s, "draft.txt", "orig");
+        s.editor.doc.as_mut().unwrap().code.edit.text = "edited".into();
+        s.editor.apply_reply(reply(
+            Req::CreateEntry {
+                dir: "".into(),
+                name: "made.txt".into(),
+                folder: false,
+            },
+            Ok(ReplyData::Created("made.txt".into())),
+        ));
+        // The dirty doc is never dropped for the load — it stays active
+        // until the new file's reply parks it.
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "draft.txt");
+        let read = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, Req::File { path, .. } if path == "made.txt"))
+            .expect("the created file is loaded");
+        s.editor.apply_reply(reply(
+            read.req.clone(),
+            Ok(ReplyData::File(doc_file("made.txt", ""))),
+        ));
+        assert_eq!(s.editor.doc.as_ref().unwrap().path, "made.txt");
+        assert_eq!(s.editor.tabs.order, vec!["draft.txt", "made.txt"]);
+        assert!(
+            s.editor.tabs.parked.get("draft.txt").unwrap().dirty(),
+            "the draft parks intact"
+        );
     }
 }

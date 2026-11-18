@@ -12,12 +12,43 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ### Added
 
+- The file lists in Changes and History are easier to read: a folder that
+  holds only one folder is shown on a single line, files show just their name
+  with a one-letter status (the full path is in the tooltip), each file shows
+  its `+N −N` line counts and each Changes group shows its totals, and a
+  row's buttons appear when you point at the row.
+- Conflicts in Changes are named by what Git reports (Both modified, Deleted by
+  us, Deleted by them, Added by us, …). For a conflict the inline editor cannot
+  fix, such as a binary file or a file deleted on one side, the editor pane and the
+  row's right-click menu offer Use Current, Use Incoming, Keep our version, Keep
+  their version or Delete file for that one file.
+- While a merge, rebase, cherry-pick or revert is in progress, Changes shows a
+  banner with Abort (it asks first) and the Commit button reads Continue: a merge
+  commits with Git's own message already filled in, the others run Git's
+  `--continue`.
+- Mark Resolved asks before staging a file that still contains conflict markers
+  instead of refusing, and a `=======` heading underline in Markdown no longer
+  counts as a conflict marker.
+- Changes refreshes by itself every few seconds while the window is focused, and
+  the Files tree is filled right after you open a file from Changes. An open file
+  that changed on disk reloads when you have no edits in it; with edits it keeps
+  them and offers Overwrite or Reload from disk.
 - An Agents button in the header opens your AI agents' usage: how much of
   each quota window is spent and when it resets, for Claude Code, Codex,
   Devin, Antigravity and OpenCode Go, on macOS, Linux and Windows. Goko reads
   each agent's own sign-in on your machine and asks that agent's provider; no
   extra sign-in is needed. Press Refresh for fresh numbers. It replaces the
   usage chips in the header.
+- Files you open in the Editor stay open as tabs above the editor pane, each
+  keeping its own text, caret and undo history. Opening another file no
+  longer interrupts a file with unsaved edits — it just opens beside it, and
+  switching back finds the edits where you left them. Click a tab or press
+  `⌘⌥→` / `⌘⌥←` (`Ctrl+PageDown` / `Ctrl+PageUp` off macOS) to move between
+  tabs, `⌃Tab` to jump back to the one you used last, and `⌘W` or the tab's
+  × to close it. When a switch away from the checkout, the section or the
+  view — or closing the window or quitting — would lose work, one dialog now
+  lists every file with unsaved edits and offers Save All, Discard All or
+  Cancel.
 
 ## [0.2.0] - 2026-11-16
 

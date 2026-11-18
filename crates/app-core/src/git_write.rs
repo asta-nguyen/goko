@@ -1,7 +1,9 @@
 //! Git write operations for the workspace Editor: staging, unstaging,
-//! discarding worktree changes, committing, and pushing. Like `git_view`,
-//! public functions receive a checkout that `projects::git_checkout` already
-//! validated; Git runs with separate argv and never through a shell.
+//! discarding worktree changes, resolving merge conflicts, committing, and
+//! pushing, plus aborting or continuing an in-progress merge, rebase,
+//! cherry-pick or revert. Like `git_view`, public functions receive a
+//! checkout that `projects::git_checkout` already validated; Git runs with
+//! separate argv and never through a shell.
 
 use crate::error::{BridgeError, Code};
 use crate::git_view;
@@ -14,6 +16,11 @@ use std::time::Duration;
 /// A push that has not finished after two minutes is killed; terminal
 /// prompts are disabled so a missing credential fails instead of hanging.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// An `--abort` or `--continue` step that has not finished after two
+/// minutes is killed; it may run hooks, so it gets the same deadline as
+/// Push.
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GitCommitResult {
@@ -102,8 +109,61 @@ pub fn discard(checkout: &Path, layer: &str, path: &str) -> Result<(), BridgeErr
     }
 }
 
+/// Resolve one conflicted path with a whole-file action. Status is re-read,
+/// so a stale request — a path no longer in conflict, or an action the
+/// path's conflict kind does not admit — is refused before Git runs.
+/// `current`/`incoming` pick a side's content; `keep` stages the surviving
+/// file of a deletion or addition conflict; `delete` removes it. Nothing
+/// is ever committed.
+pub fn resolve(checkout: &Path, path: &str, action: &str) -> Result<(), BridgeError> {
+    let rel = git_view::relative_path(path)?;
+    let spec = literal(&rel)?;
+    let rel = git_view::rel_str(&rel)?;
+    let status = git_view::status(checkout)?;
+    let conflict = status
+        .conflicts
+        .iter()
+        .find(|entry| entry.path == rel)
+        .ok_or_else(|| git_view::invalid("the path is not in conflict"))?;
+    if !actions_for(conflict.status).contains(&action) {
+        return Err(git_view::invalid(format!(
+            "'{action}' does not apply to a {} conflict",
+            conflict.status
+        )));
+    }
+    if matches!(action, "current" | "incoming") {
+        let side = if action == "current" {
+            "--ours"
+        } else {
+            "--theirs"
+        };
+        worktrees::git(checkout, &["checkout", side, "--", spec.as_str()])?;
+    }
+    if action == "delete" {
+        worktrees::git(checkout, &["rm", "-q", "--", spec.as_str()])?;
+    } else {
+        worktrees::git(checkout, &["add", "--", spec.as_str()])?;
+    }
+    Ok(())
+}
+
+/// The whole-file resolve actions a conflict kind admits — the same list
+/// the Changes row uses to pick its buttons.
+fn actions_for(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "both-modified" | "both-added" => &["current", "incoming"],
+        "deleted-by-us" | "deleted-by-them" | "added-by-us" | "added-by-them" => {
+            &["keep", "delete"]
+        }
+        "both-deleted" => &["delete"],
+        _ => &[],
+    }
+}
+
 /// Commit the staged changes as `git commit -m <message>` — one argv entry,
-/// hooks enabled, never `--no-verify` or `--amend`.
+/// hooks enabled, never `--no-verify` or `--amend`. Unresolved conflicts
+/// are always refused; an empty index is accepted only while a merge is in
+/// progress, where the commit finishes the merge.
 pub fn commit(checkout: &Path, message: &str) -> Result<GitCommitResult, BridgeError> {
     if message.trim().is_empty() {
         return Err(git_view::invalid("the commit message is empty"));
@@ -124,7 +184,9 @@ pub fn commit(checkout: &Path, message: &str) -> Result<GitCommitResult, BridgeE
             "resolve the merge conflicts before committing",
         ));
     }
-    if view.staged.is_empty() {
+    // A resolved merge commits with nothing else staged; without one an
+    // empty index is refused.
+    if view.staged.is_empty() && git_view::operation_of(checkout)? != Some("merge") {
         return Err(git_view::invalid("nothing is staged to commit"));
     }
     worktrees::git(checkout, &["commit", "-m", message])?;
@@ -175,6 +237,46 @@ pub fn push(checkout: &Path) -> Result<GitPushResult, BridgeError> {
         summary = last_line(&out.stdout);
     }
     Ok(GitPushResult { summary })
+}
+
+/// Abort or continue the in-progress merge, rebase, cherry-pick or revert:
+/// `git <op> --abort|--continue` with the editor and terminal prompts off
+/// and a two-minute deadline like Push. A merge has no `--continue` here —
+/// finishing one is the ordinary Commit — and continuing with conflicts
+/// left is refused, as is every step while nothing is in progress.
+pub fn operation(checkout: &Path, step: &str) -> Result<(), BridgeError> {
+    if !matches!(step, "abort" | "continue") {
+        return Err(git_view::invalid("step must be 'abort' or 'continue'"));
+    }
+    let op = git_view::operation_of(checkout)?.ok_or_else(|| {
+        git_view::invalid("no merge, rebase, cherry-pick or revert is in progress")
+    })?;
+    if step == "continue" {
+        if op == "merge" {
+            return Err(git_view::invalid("finish a merge with Commit"));
+        }
+        if !git_view::status(checkout)?.conflicts.is_empty() {
+            return Err(git_view::invalid("resolve the conflicts before continuing"));
+        }
+    }
+    let flag = if step == "abort" {
+        "--abort"
+    } else {
+        "--continue"
+    };
+    let out = worktrees::run_timed(
+        checkout,
+        &[op, flag],
+        &[("GIT_EDITOR", "true"), ("GIT_TERMINAL_PROMPT", "0")],
+        OPERATION_TIMEOUT,
+    )?;
+    if out.timed_out {
+        return Err(BridgeError::new(Code::Timeout, "Operation timed out"));
+    }
+    if !out.status.success() {
+        return Err(worktrees::git_error(&out.stderr));
+    }
+    Ok(())
 }
 
 /// A validated checkout-relative path as a literal Git pathspec, so glob
@@ -357,6 +459,62 @@ mod tests {
             .unwrap_or_else(|| panic!("missing entry {path}: {entries:?}"))
     }
 
+    /// A `git` run expected to exit non-zero — a merge or rebase that
+    /// stops on a conflict still ran, so only the status is asserted.
+    fn git_fails(root: &Path, args: &[&str]) {
+        assert!(
+            !Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git run")
+                .status
+                .success(),
+            "git {args:?} should have failed"
+        );
+    }
+
+    /// Branches `main` and `side` diverge on `f.txt`; merging `side` then
+    /// stops on a both-modified conflict.
+    fn conflicting_branches(root: &Path) {
+        fs::write(root.join("f.txt"), "base\n").unwrap();
+        git_ok(root, &["add", "f.txt"]);
+        git_ok(root, &["commit", "-qm", "base"]);
+        git_ok(root, &["checkout", "-qb", "side"]);
+        fs::write(root.join("f.txt"), "side\n").unwrap();
+        git_ok(root, &["commit", "-qam", "side"]);
+        git_ok(root, &["checkout", "-q", "main"]);
+        fs::write(root.join("f.txt"), "main\n").unwrap();
+        git_ok(root, &["commit", "-qam", "main"]);
+    }
+
+    /// main deletes `dropped.txt` while `side` edits it: deleted-by-us.
+    fn deleted_by_us(root: &Path) {
+        fs::write(root.join("dropped.txt"), "base\n").unwrap();
+        git_ok(root, &["add", "dropped.txt"]);
+        git_ok(root, &["commit", "-qm", "base"]);
+        git_ok(root, &["checkout", "-qb", "side"]);
+        fs::write(root.join("dropped.txt"), "side\n").unwrap();
+        git_ok(root, &["commit", "-qam", "side"]);
+        git_ok(root, &["checkout", "-q", "main"]);
+        git_ok(root, &["rm", "-q", "dropped.txt"]);
+        git_ok(root, &["commit", "-qm", "main"]);
+    }
+
+    /// `side` deletes `dropped.txt` while main edits it: deleted-by-them.
+    fn deleted_by_them(root: &Path) {
+        fs::write(root.join("dropped.txt"), "base\n").unwrap();
+        git_ok(root, &["add", "dropped.txt"]);
+        git_ok(root, &["commit", "-qm", "base"]);
+        git_ok(root, &["checkout", "-qb", "side"]);
+        git_ok(root, &["rm", "-q", "dropped.txt"]);
+        git_ok(root, &["commit", "-qm", "side"]);
+        git_ok(root, &["checkout", "-q", "main"]);
+        fs::write(root.join("dropped.txt"), "main\n").unwrap();
+        git_ok(root, &["commit", "-qam", "main"]);
+    }
+
     #[test]
     fn stage_covers_new_modified_deleted_and_renamed_paths() {
         let (_t, root) = repository("stage-files");
@@ -517,6 +675,147 @@ mod tests {
     }
 
     #[test]
+    fn resolve_current_and_incoming_choose_a_side() {
+        let (_t, root) = repository("resolve-current");
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        assert_eq!(
+            find(&changes(&root).conflicts, "f.txt").status,
+            "both-modified"
+        );
+
+        resolve(&root, "f.txt", "current").unwrap();
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), "main\n");
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty());
+        // Our text equals HEAD, so the resolution leaves nothing staged.
+        assert!(view.staged.is_empty());
+
+        let (_t, root) = repository("resolve-incoming");
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+
+        resolve(&root, "f.txt", "incoming").unwrap();
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), "side\n");
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty());
+        assert_eq!(find(&view.staged, "f.txt").status, "modified");
+    }
+
+    #[test]
+    fn resolve_keep_and_delete_handle_deletion_conflicts() {
+        let (_t, root) = repository("resolve-keep");
+        deleted_by_us(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        assert_eq!(
+            find(&changes(&root).conflicts, "dropped.txt").status,
+            "deleted-by-us"
+        );
+
+        resolve(&root, "dropped.txt", "keep").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("dropped.txt")).unwrap(),
+            "side\n"
+        );
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty());
+        // main's HEAD lacks the file, so keeping it stages an addition.
+        assert_eq!(find(&view.staged, "dropped.txt").status, "added");
+
+        let (_t, root) = repository("resolve-delete");
+        deleted_by_them(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        assert_eq!(
+            find(&changes(&root).conflicts, "dropped.txt").status,
+            "deleted-by-them"
+        );
+
+        resolve(&root, "dropped.txt", "delete").unwrap();
+        assert!(!root.join("dropped.txt").exists());
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty());
+        assert_eq!(find(&view.staged, "dropped.txt").status, "deleted");
+    }
+
+    #[test]
+    fn resolve_handles_both_added() {
+        let (_t, root) = repository("resolve-added");
+        git_ok(&root, &["checkout", "-qb", "side"]);
+        fs::write(root.join("new.txt"), "side\n").unwrap();
+        git_ok(&root, &["add", "new.txt"]);
+        git_ok(&root, &["commit", "-qm", "side"]);
+        git_ok(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("new.txt"), "main\n").unwrap();
+        git_ok(&root, &["add", "new.txt"]);
+        git_ok(&root, &["commit", "-qm", "main"]);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        assert_eq!(
+            find(&changes(&root).conflicts, "new.txt").status,
+            "both-added"
+        );
+
+        resolve(&root, "new.txt", "incoming").unwrap();
+        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "side\n");
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty());
+        assert_eq!(find(&view.staged, "new.txt").status, "modified");
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_actions_and_paths() {
+        let (_t, root) = repository("resolve-reject");
+        // `f.txt` is both-modified; `dropped.txt` deleted-by-us.
+        fs::write(root.join("f.txt"), "base\n").unwrap();
+        fs::write(root.join("dropped.txt"), "base\n").unwrap();
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-qm", "base"]);
+        git_ok(&root, &["checkout", "-qb", "side"]);
+        fs::write(root.join("f.txt"), "side\n").unwrap();
+        fs::write(root.join("dropped.txt"), "side\n").unwrap();
+        git_ok(&root, &["commit", "-qam", "side"]);
+        git_ok(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("f.txt"), "main\n").unwrap();
+        git_ok(&root, &["rm", "-q", "dropped.txt"]);
+        git_ok(&root, &["commit", "-qam", "main"]);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        assert_eq!(changes(&root).conflicts.len(), 2);
+
+        // Picking a side does not apply to a deletion conflict.
+        assert!(resolve(&root, "dropped.txt", "incoming").is_err());
+        // `keep` does not apply to a both-modified conflict.
+        assert!(resolve(&root, "f.txt", "keep").is_err());
+        // A clean path is not in conflict.
+        assert!(resolve(&root, "tracked.txt", "current").is_err());
+        // An unknown action is rejected like an inapplicable one.
+        assert!(resolve(&root, "f.txt", "cherry").is_err());
+        // An escaping path fails validation before anything else.
+        assert!(resolve(&root, "../x", "current").is_err());
+
+        let view = changes(&root);
+        assert_eq!(view.conflicts.len(), 2);
+        assert_eq!(find(&view.conflicts, "f.txt").status, "both-modified");
+        assert_eq!(find(&view.conflicts, "dropped.txt").status, "deleted-by-us");
+        assert!(view.staged.is_empty());
+    }
+
+    #[test]
+    fn actions_for_covers_every_kind() {
+        for kind in ["both-modified", "both-added"] {
+            assert_eq!(actions_for(kind), ["current", "incoming"], "{kind}");
+        }
+        for kind in [
+            "deleted-by-us",
+            "deleted-by-them",
+            "added-by-us",
+            "added-by-them",
+        ] {
+            assert_eq!(actions_for(kind), ["keep", "delete"], "{kind}");
+        }
+        assert_eq!(actions_for("both-deleted"), ["delete"]);
+        assert!(actions_for("modified").is_empty());
+    }
+
+    #[test]
     fn commit_returns_the_new_head_and_branch() {
         let (_t, root) = repository("commit-ok");
         fs::write(root.join("new.txt"), "new\n").unwrap();
@@ -570,6 +869,43 @@ mod tests {
         stage(&root, Some(&selected(&["other.txt"]))).unwrap();
         let error = commit(&root, "during a conflict").unwrap_err();
         assert_eq!(error.code, Code::Daemon(ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn commit_finishes_a_resolved_merge_with_nothing_else_staged() {
+        let (_t, root) = repository("commit-merge");
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+
+        // `current` makes the index equal to HEAD — nothing else staged.
+        resolve(&root, "f.txt", "current").unwrap();
+        assert!(changes(&root).staged.is_empty());
+        assert_eq!(git_view::operation_of(&root).unwrap(), Some("merge"));
+
+        let result = commit(&root, "merge done").unwrap();
+        assert!(head(&root).starts_with(result.head.as_str()));
+        assert_eq!(git_view::operation_of(&root).unwrap(), None);
+        // Two parents: the commit really is the merge.
+        let parents = git_ok(&root, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert_eq!(
+            String::from_utf8_lossy(&parents).split_whitespace().count(),
+            3
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&git_ok(&root, &["log", "-1", "--format=%s"])).trim(),
+            "merge done"
+        );
+    }
+
+    #[test]
+    fn commit_still_refuses_an_empty_index_without_a_merge() {
+        let (_t, root) = repository("commit-empty");
+        let error = commit(&root, "nothing staged").unwrap_err();
+        assert!(
+            error.message.contains("nothing is staged to commit"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -650,5 +986,67 @@ mod tests {
         let (_t, root) = repository("push-noremote");
         let error = push(&root).unwrap_err();
         assert!(error.message.contains("origin"), "{}", error.message);
+    }
+
+    #[test]
+    fn operation_aborts_a_stopped_merge() {
+        let (_t, root) = repository("op-abort");
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        assert_eq!(git_view::operation_of(&root).unwrap(), Some("merge"));
+
+        operation(&root, "abort").unwrap();
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty());
+        assert!(view.staged.is_empty());
+        assert!(view.unstaged.is_empty());
+        assert!(view.untracked.is_empty());
+        assert_eq!(git_view::operation_of(&root).unwrap(), None);
+    }
+
+    #[test]
+    fn operation_continues_a_stopped_rebase() {
+        let (_t, root) = repository("op-continue");
+        conflicting_branches(&root);
+        // Replaying main's edit on top of `side` stops on the conflict.
+        git_fails(&root, &["rebase", "side"]);
+        assert_eq!(git_view::operation_of(&root).unwrap(), Some("rebase"));
+
+        let error = operation(&root, "continue").unwrap_err();
+        assert!(
+            error.message.contains("resolve the conflicts"),
+            "{}",
+            error.message
+        );
+
+        // During a rebase `--theirs` is the commit being replayed:
+        // main's edit, a real change on top of side's f.txt.
+        resolve(&root, "f.txt", "incoming").unwrap();
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), "main\n");
+
+        operation(&root, "continue").unwrap();
+        assert_eq!(git_view::operation_of(&root).unwrap(), None);
+        let view = changes(&root);
+        assert!(view.conflicts.is_empty() && view.staged.is_empty() && view.unstaged.is_empty());
+    }
+
+    #[test]
+    fn operation_rejects_continue_on_a_merge_and_when_idle() {
+        let (_t, root) = repository("op-reject");
+        // Nothing in progress yet.
+        assert!(operation(&root, "abort").is_err());
+        assert!(operation(&root, "continue").is_err());
+        assert!(operation(&root, "pick").is_err());
+
+        conflicting_branches(&root);
+        git_fails(&root, &["merge", "--no-edit", "side"]);
+        let error = operation(&root, "continue").unwrap_err();
+        assert!(error.message.contains("Commit"), "{}", error.message);
+        // The stopped merge is untouched.
+        assert_eq!(git_view::operation_of(&root).unwrap(), Some("merge"));
+        assert_eq!(
+            find(&changes(&root).conflicts, "f.txt").status,
+            "both-modified"
+        );
     }
 }

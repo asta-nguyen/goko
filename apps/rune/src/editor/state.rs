@@ -24,6 +24,7 @@ use crate::editor::indent::UnitChoice;
 use crate::editor::lsp::Lsp;
 use crate::editor::navigation::{self, Guard};
 use crate::editor::table::TableState;
+use crate::editor::tabs::Tabs;
 use crate::editor::{history_layout, quit_guard};
 
 /// Identity of one checkout inside the editor: `project_id` + canonical path.
@@ -168,6 +169,8 @@ pub struct FilesState {
     pub reveal: Option<String>,
     /// The entry awaiting a Move-to-Trash confirmation.
     pub delete_prompt: Option<String>,
+    /// The path awaiting the "stage with conflict markers" confirmation.
+    pub stage_prompt: Option<String>,
     /// The row context menu: the entry it was opened on and where.
     pub menu: Option<FileMenu>,
     /// The code surface's context menu: where the secondary press landed.
@@ -266,6 +269,7 @@ impl ChangesState {
             filter: TextEdit::new(""),
             collapsed: HashSet::new(),
             discard_prompt: None,
+            abort_prompt: None,
             busy: None,
             group: ChangeGroup::default(),
             menu: None,
@@ -306,6 +310,9 @@ pub struct ChangesState {
     pub collapsed: HashSet<String>,
     /// Discard confirmation target (layer + path).
     pub discard_prompt: Option<(String, String)>,
+    /// The in-progress operation awaiting its "Abort the {op}?"
+    /// confirmation (`merge`/`rebase`/`cherry-pick`/`revert`).
+    pub abort_prompt: Option<&'static str>,
     /// Commit message draft TextEdit lives in CommitState.
     pub busy: Option<&'static str>,
     /// `Group By` mode for the list — a session preference, so
@@ -434,6 +441,10 @@ pub struct CommitState {
     /// the draft's text snapshot when Generate was issued.
     pub gen_snapshot: Option<String>,
     pub gen_checkout: Option<String>,
+    /// "Merge message already offered" memory: set once the draft was
+    /// prefilled from `MERGE_MSG` so a draft the user then cleared is not
+    /// refilled during that merge; resets when no merge is in progress.
+    pub merge_prefilled: bool,
 }
 
 /// A go-to-definition request in flight. `Import` first tries the checkout
@@ -509,6 +520,9 @@ pub struct EditorState {
     pub indexer: crate::editor::search::Indexer,
     pub changes: ChangesState,
     pub branch: crate::editor::branch::BranchState,
+    /// The Changes section's quiet background-refresh schedule
+    /// (`autorefresh.rs`), keyed to the checkout it was armed for.
+    pub autorefresh: crate::editor::autorefresh::AutoRefresh,
     pub history: HistoryState,
     pub stashes: StashesState,
     pub commit: CommitState,
@@ -519,10 +533,12 @@ pub struct EditorState {
     pub pane_row_w: f32,
 
     // -- documents ---------------------------------------------------------
-    /// The single open document. The desktop editor keeps one active file
-    /// draft; opening another file goes through the same Save/Discard/Cancel
-    /// guard as every other navigation, then replaces this slot.
+    /// The active document — one of the open tabs. Every other open file
+    /// is parked in `tabs` with its buffer, undo history and caret intact.
     pub doc: Option<OpenDoc>,
+    /// Every open tab: open order, most-recently-used order and the parked
+    /// documents. No limit on the number of tabs.
+    pub tabs: Tabs,
     /// What a media preview needs (image cache, app waker), set in `setup`.
     pub media_host: Option<crate::editor::media::Host>,
     /// Scratch `CodeState` for the `Code` view's accessors when no document
@@ -537,8 +553,10 @@ pub struct EditorState {
     pub blame_enabled: bool,
     /// Go-to-definition resolution in flight (one at a time).
     pub go_to: Option<GoToPending>,
-    /// Token guarding an in-flight file load against stale replies.
-    pub doc_load: Option<u64>,
+    /// Token guarding an in-flight file load against stale replies, plus
+    /// the path it loads — a rename that moves the target drops the
+    /// pending install so its reply cannot reopen the old name.
+    pub doc_load: Option<(u64, String)>,
     /// Token of the in-flight "reload from disk" read (`Req::ReloadFile`);
     /// its reply replaces the doc only while this still matches.
     pub doc_reload: Option<u64>,
@@ -632,6 +650,7 @@ impl EditorState {
                 search: search_state::Search::default(),
                 ignored_open: Default::default(),
                 delete_prompt: None,
+                stage_prompt: None,
                 empty_dirs: Default::default(),
                 reveal: None,
                 menu: None,
@@ -639,6 +658,7 @@ impl EditorState {
             },
             indexer,
             branch: Default::default(),
+            autorefresh: Default::default(),
             changes: ChangesState {
                 data: None,
                 checkout: None,
@@ -653,6 +673,7 @@ impl EditorState {
                 filter: TextEdit::new(""),
                 collapsed: HashSet::new(),
                 discard_prompt: None,
+                abort_prompt: None,
                 busy: None,
                 group: ChangeGroup::default(),
                 menu: None,
@@ -712,8 +733,10 @@ impl EditorState {
                 error: None,
                 gen_snapshot: None,
                 gen_checkout: None,
+                merge_prefilled: false,
             },
             doc: None,
+            tabs: Tabs::default(),
             media_host: None,
             scratch_code: CodeState::new("", ""),
             indent_choice: UnitChoice::Auto,
@@ -745,9 +768,34 @@ impl EditorState {
         }
     }
 
-    /// `true` while the open document has unsaved edits.
+    /// `true` while any open document has unsaved edits — the active one
+    /// or a parked tab.
     pub fn has_dirty_doc(&self) -> bool {
-        self.doc.as_ref().is_some_and(|d| d.dirty())
+        self.doc.as_ref().is_some_and(|d| d.dirty()) || self.tabs.parked.values().any(|d| d.dirty())
+    }
+
+    /// Dirty tabs in tab order — the active document and the parked ones.
+    /// A doc installed without `tabs` bookkeeping (tests set `doc`
+    /// directly) still counts, appended after the ordered paths.
+    pub fn dirty_paths(&self) -> Vec<String> {
+        let mut paths = self.tabs.dirty_paths(&self.doc);
+        if let Some(d) = self.doc.as_ref().filter(|d| d.dirty())
+            && !paths.iter().any(|p| p == &d.path)
+        {
+            paths.push(d.path.clone());
+        }
+        paths
+    }
+
+    /// `true` when `path` has an open document holding unsaved edits —
+    /// active or parked — the one answer to "does this path have a draft",
+    /// so the whole-file writes (resolve actions, trash, rename) can
+    /// refuse to clobber it.
+    pub fn path_is_dirty(&self, path: &str) -> bool {
+        self.doc
+            .as_ref()
+            .is_some_and(|d| d.path == path && d.dirty())
+            || self.tabs.parked.get(path).is_some_and(|d| d.dirty())
     }
 
     /// The open document, if any. Kept as an accessor so callers don't
@@ -773,5 +821,36 @@ impl EditorState {
         if let Some(doc) = self.doc.as_mut() {
             doc.code.go_to_mod = mods.cmd;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text_file(text: &str) -> app_core::git_view::GitViewFile {
+        app_core::git_view::GitViewFile {
+            path: "x".into(),
+            kind: "text",
+            text: Some(text.into()),
+            truncated: false,
+            size: text.len() as u64,
+        }
+    }
+
+    /// A dirty parked tab counts for `has_dirty_doc` and `path_is_dirty`;
+    /// a clean or unknown path stays false.
+    #[test]
+    fn has_dirty_doc_and_path_is_dirty_see_parked_documents() {
+        let mut e = EditorState::new(Kit::neutral(true), crate::test_handle());
+        e.tabs
+            .open(&mut e.doc, OpenDoc::new("a.txt", &text_file("a")));
+        e.doc.as_mut().unwrap().code.edit.insert("x");
+        e.tabs
+            .open(&mut e.doc, OpenDoc::new("b.txt", &text_file("b")));
+        assert!(e.has_dirty_doc(), "the parked dirty tab counts");
+        assert!(e.path_is_dirty("a.txt"), "parked + dirty → true");
+        assert!(!e.path_is_dirty("b.txt"), "active but clean → false");
+        assert!(!e.path_is_dirty("c.txt"), "unknown path → false");
     }
 }

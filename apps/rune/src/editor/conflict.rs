@@ -76,8 +76,14 @@ fn lines(text: &str) -> impl Iterator<Item = (usize, usize, usize, &str)> {
     })
 }
 
+/// Start, base, and end markers count; a bare `=======` separator does not.
 pub fn has_markers(text: &str) -> bool {
-    lines(text).any(|(_, _, _, line)| marker(line).is_some())
+    lines(text).any(|(_, _, _, line)| {
+        matches!(
+            marker(line),
+            Some(Marker::Start(_) | Marker::Base(_) | Marker::End(_))
+        )
+    })
 }
 
 /// Markers outside complete parsed blocks need manual repair.
@@ -226,10 +232,34 @@ mod tests {
         assert!(!has_unparsed_markers(valid, &parse(valid)));
         for text in [
             format!("{valid}<<<<<<< incomplete"),
-            format!("=======\n{valid}"),
+            format!(">>>>>>> stray\n{valid}"),
         ] {
             assert_eq!(parse(&text).len(), 1);
             assert!(has_unparsed_markers(&text, &parse(&text)));
         }
+    }
+    #[test]
+    fn bare_separator_line_is_not_a_marker() {
+        assert!(!has_markers("Title\n=======\nbody\n"));
+    }
+    #[test]
+    fn start_base_and_end_lines_are_markers() {
+        assert!(has_markers("<<<<<<< HEAD\nx\n"));
+        assert!(has_markers("x\n||||||| base\n"));
+        assert!(has_markers("x\n>>>>>>> topic\n"));
+    }
+    #[test]
+    fn complete_block_has_no_unparsed_markers() {
+        let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> topic\n";
+        let blocks = parse(text);
+        assert_eq!(blocks.len(), 1);
+        assert!(!has_unparsed_markers(text, &blocks));
+    }
+    #[test]
+    fn setext_heading_after_a_block_is_not_unparsed() {
+        let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> topic\nTitle\n=======\nbody\n";
+        let blocks = parse(text);
+        assert_eq!(blocks.len(), 1);
+        assert!(!has_unparsed_markers(text, &blocks));
     }
 }

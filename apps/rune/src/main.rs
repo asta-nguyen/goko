@@ -1383,6 +1383,13 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     changed |= terminal_branch::poll(s, now, tx);
     changed |= editor::branch::poll(&mut s.editor, s.view == View::Editor, now, tx);
+    changed |= editor::autorefresh::poll(
+        &mut s.editor,
+        s.view == View::Editor,
+        s.window_focused,
+        now,
+        tx,
+    );
     editor::highlight::poll(&mut s.editor, tx);
     // The inline-blame column's relative ages roll over once a minute.
     changed |= editor::blame::poll(&mut s.editor);
@@ -2351,6 +2358,7 @@ mod view_tests {
         s.editor.guard = Some(Guard {
             pending: PendingNav::SetSection(Section::History),
             doc_path: "src/a.rs".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
@@ -2390,6 +2398,7 @@ mod view_tests {
         s.editor.guard = Some(Guard {
             pending: PendingNav::SetSection(Section::History),
             doc_path: "src/a.rs".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         let before_text = s.editor.doc.as_ref().unwrap().code.edit.text.clone();
@@ -2419,6 +2428,7 @@ mod view_tests {
         s.editor.guard = Some(Guard {
             pending: PendingNav::SetSection(Section::History),
             doc_path: "src/a.rs".into(),
+            queue: Vec::new(),
             quitting: false,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
@@ -2501,6 +2511,8 @@ mod view_tests {
             unstaged: vec![],
             untracked: vec![],
             ahead: None,
+            operation: None,
+            merge_message: None,
         });
         s.editor.changes.checkout = s.editor.checkout_key.clone();
 

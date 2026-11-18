@@ -11,7 +11,7 @@
 use rune::{El, Icon, Tx, col, el, row};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Menu, MenuItem,
-    ScrollBar, context_menu,
+    ScrollBar, TreeItem, TreeStyle, context_menu,
 };
 
 use crate::State;
@@ -21,7 +21,7 @@ use crate::editor::keyboard;
 use crate::editor::pane_layout;
 use crate::editor::patch::{self, Pane};
 use crate::editor::state::{ChangeGroup, EditorState, ListMenu, ListView};
-use crate::theme::{self, Ink, T11M_LH, T12, T12M};
+use crate::theme::{self, Ink, T11M_LH, T11MN, T12, T12M};
 
 // Row/header glyphs `theme` doesn't carry (lucide stroke bodies, same
 // 24-viewBox `currentColor` convention as `theme.rs`'s `stroke_icon!`).
@@ -111,10 +111,81 @@ pub fn status_label(status: &str) -> &'static str {
         "renamed" => "Renamed",
         "copied" => "Copied",
         "typechange" => "Typechange",
-        "unmerged" => "Conflict",
+        "both-modified" => "Both modified",
+        "both-added" => "Both added",
+        "deleted-by-us" => "Deleted by us",
+        "deleted-by-them" => "Deleted by them",
+        "both-deleted" => "Both deleted",
+        "added-by-us" => "Added by us",
+        "added-by-them" => "Added by them",
         "untracked" => "Untracked",
         _ => "Changed",
     }
+}
+
+/// The one-letter status mark and colour a row shows, or `None` for a
+/// conflict kind or an unknown status — those keep the readable word badge
+/// (the conflict kind must stay legible, per the wiki).
+fn status_letter(status: &str, ink: &Ink) -> Option<(&'static str, rune::Color)> {
+    Some(match status {
+        "modified" => ("M", ink.warning),
+        "added" => ("A", ink.success),
+        "deleted" => ("D", ink.danger),
+        "renamed" => ("R", ink.accent),
+        "copied" => ("C", ink.accent),
+        "untracked" => ("U", ink.success),
+        "typechange" => ("T", ink.muted),
+        _ => return None,
+    })
+}
+
+/// The statuses whose file name tints the letter's colour; renamed/copied
+/// keep the normal text colour.
+fn name_tint(status: &str) -> bool {
+    matches!(status, "modified" | "added" | "deleted" | "untracked")
+}
+
+/// What the row says after its name: the status word plus its change
+/// counts, in words (the glyphs themselves stay out of the label).
+pub(crate) fn entry_description(entry: &app_core::git_view::StatusEntry) -> String {
+    let mut d = status_label(entry.status).to_string();
+    if let Some(added) = entry.added {
+        if added > 0 {
+            d.push_str(&format!(", {added} added"));
+        }
+        if let Some(removed) = entry.removed.filter(|r| *r > 0) {
+            d.push_str(&format!(", {removed} removed"));
+        }
+    }
+    d
+}
+
+/// The summed `+added −removed` a group header shows after its count, or
+/// `None` when no listed entry carries counts.
+pub(crate) fn group_totals<'a>(
+    entries: impl IntoIterator<Item = &'a app_core::git_view::StatusEntry>,
+) -> Option<(u64, u64)> {
+    let mut sums = (0u64, 0u64);
+    let mut any = false;
+    for e in entries {
+        any |= e.added.is_some();
+        sums.0 += e.added.unwrap_or(0);
+        sums.1 += e.removed.unwrap_or(0);
+    }
+    any.then_some(sums)
+}
+
+/// `4916` → `"4,916"` — the group headers' change totals.
+pub(crate) fn grouped_num(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Display label for a rendered group header (canonical key or `tracked`).
@@ -223,8 +294,17 @@ pub(crate) fn dir_key(path: &str) -> String {
     format!("dir:{path}")
 }
 
-/// Extra left padding per nesting level of a `Tree` row.
+/// Extra left padding per nesting level of a `Tree` row — the tree rows'
+/// style indent too, so the shared constant keeps both in step.
 pub(crate) const DIR_INDENT: f32 = 14.0;
+
+/// The `Tree`-view row look, shared with the Files tree: indent guides,
+/// chevron and folder icon, standard spacing.
+pub(crate) fn tree_style(k: &Kit) -> TreeStyle {
+    let mut style = TreeStyle::from_kit(k);
+    style.indent = DIR_INDENT;
+    style
+}
 
 /// One row of a `Tree`-view changed-file list: a directory header, or a
 /// file nested `depth` directories deep carrying its caller's data.
@@ -291,18 +371,28 @@ fn tree_emit<'n, 'a, T: Copy>(
         )
     });
     for (name, child) in dirs {
+        // Compact folders: a directory holding no files and exactly one
+        // subdirectory folds into that child — one row per chain, named
+        // `a/b/c` and collapse-keyed on the deepest directory's full path.
+        let mut names = vec![name.clone()];
+        let mut leaf = child;
+        while leaf.files.is_empty() && leaf.dirs.len() == 1 {
+            let (n, next) = &leaf.dirs[0];
+            names.push(n.clone());
+            leaf = next;
+        }
         let path = if prefix.is_empty() {
-            name.clone()
+            names.join("/")
         } else {
-            format!("{prefix}/{name}")
+            format!("{prefix}/{}", names.join("/"))
         };
         out.push(TreeRow::Dir {
             path: path.clone(),
-            name: name.clone(),
+            name: names.join("/"),
             depth,
         });
         if !is_dir_collapsed(&path) {
-            tree_emit(child, &path, depth + 1, is_dir_collapsed, out);
+            tree_emit(leaf, &path, depth + 1, is_dir_collapsed, out);
         }
     }
     for (entry, data) in files {
@@ -381,6 +471,37 @@ pub fn row_kind(key: &str) -> (RowKind, bool) {
 pub fn matches_filter(name: &str, filter: &str) -> bool {
     let q = filter.trim().to_lowercase();
     q.is_empty() || name.to_lowercase().contains(&q)
+}
+
+/// The whole-file resolve actions a conflict kind admits — `(action id,
+/// button label)` pairs the row context menu and the editor pane offer.
+/// Unknown kinds offer nothing; the backend re-reads the kind and refuses
+/// anything else anyway.
+pub fn conflict_actions(kind: &str) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        "both-modified" | "both-added" => {
+            &[("current", "Use Current"), ("incoming", "Use Incoming")]
+        }
+        "deleted-by-them" | "added-by-us" => {
+            &[("keep", "Keep our version"), ("delete", "Delete file")]
+        }
+        "deleted-by-us" | "added-by-them" => {
+            &[("keep", "Keep their version"), ("delete", "Delete file")]
+        }
+        "both-deleted" => &[("delete", "Delete file")],
+        _ => &[],
+    }
+}
+
+/// Conflict kinds that resolve only as a whole-file choice, never an
+/// inline merge: deletion and addition conflicts leave at most one side's
+/// file on disk, so even an editable text file needs the `conflict_actions`
+/// buttons instead of the marker editor.
+pub fn needs_whole_file_choice(kind: &str) -> bool {
+    matches!(
+        kind,
+        "deleted-by-us" | "deleted-by-them" | "added-by-us" | "added-by-them" | "both-deleted"
+    )
 }
 
 /// Find the entry a `(layer, path)` selection points at.
@@ -529,6 +650,46 @@ pub fn cancel_discard(ed: &mut EditorState) {
     ed.changes.discard_prompt = None;
 }
 
+/// Confirm the pending operation abort: the backend detects which of
+/// merge/rebase/cherry-pick/revert is in progress. The prompt survives a
+/// refused enqueue so the dialog stays open for a retry, like discard.
+pub fn confirm_abort(ed: &mut EditorState) {
+    if ed.changes.abort_prompt.is_none() {
+        return;
+    }
+    if write_paths(
+        ed,
+        "abort",
+        Req::Operation {
+            step: "abort".into(),
+        },
+    ) {
+        ed.changes.abort_prompt = None;
+    }
+}
+
+/// One conflict action on `path` — the row menu items and the editor
+/// pane's buttons share it. A dirty open document for the path refuses:
+/// the action rewrites the file on disk and would clobber the draft.
+/// Otherwise it rides the same serialized lane as Stage/Discard.
+pub fn resolve_conflict(s: &mut State, path: &str, action: &str) {
+    if s.editor.path_is_dirty(path) {
+        s.notice = Some(format!("save or discard the changes in {path} first"));
+        return;
+    }
+    if s.editor.changes.busy.is_some() {
+        return;
+    }
+    write_paths(
+        &mut s.editor,
+        "resolve",
+        Req::Resolve {
+            path: path.to_string(),
+            action: action.to_string(),
+        },
+    );
+}
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
@@ -538,6 +699,9 @@ fn root_render(s: &State, ink: &Ink, k: &Kit) -> El {
     root = root.child(render(s, ink, k).grow(1.0).min_h(0.0));
     if s.editor.changes.discard_prompt.is_some() {
         root = root.child(discard_dialog(s, ink));
+    }
+    if s.editor.changes.abort_prompt.is_some() {
+        root = root.child(abort_dialog(s, ink));
     }
     root
 }
@@ -569,10 +733,21 @@ fn render(s: &State, ink: &Ink, k: &Kit) -> El {
             let clean = GROUPS
                 .iter()
                 .all(|(key, _)| group_entries(data, key).is_empty());
-            if clean {
+            let body = if clean {
                 clean_view(s, ink)
             } else {
                 split_view(s, ink, k, data)
+            };
+            // One shared place for the operation banner: a clean tree can
+            // still have a merge in flight, so it sits above both layouts.
+            match data.operation {
+                Some(op) => col()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .w_full()
+                    .child(operation_banner(s, ink, k, op))
+                    .child(body),
+                None => body,
             }
         }
     }
@@ -789,6 +964,7 @@ fn group_block(s: &State, ink: &Ink, k: &Kit, group: &RowGroup<'_>, filter: &str
             group.key,
             group.label,
             entries.len(),
+            group_totals(entries.iter().map(|(e, _, _)| *e)),
             collapsed,
             ink,
         ));
@@ -887,7 +1063,7 @@ fn group_block(s: &State, ink: &Ink, k: &Kit, group: &RowGroup<'_>, filter: &str
     match s.editor.list_view {
         ListView::List => {
             for &(entry, key, layer) in render.iter().chain(extras.iter()) {
-                block = block.child(entry_row(s, ink, k, key, layer, entry, 0.0));
+                block = block.child(entry_row(s, ink, k, key, layer, entry, 0));
             }
         }
         ListView::Tree => {
@@ -900,13 +1076,13 @@ fn group_block(s: &State, ink: &Ink, k: &Kit, group: &RowGroup<'_>, filter: &str
             for trow in rows {
                 block = block.child(match trow {
                     TreeRow::Dir { path, name, depth } => {
-                        dir_row(s, ink, group.key, &path, &name, depth)
+                        dir_row(s, ink, k, group.key, &path, &name, depth)
                     }
                     TreeRow::File {
                         entry,
                         data: (key, layer),
                         depth,
-                    } => entry_row(s, ink, k, key, layer, entry, depth as f32 * DIR_INDENT),
+                    } => entry_row(s, ink, k, key, layer, entry, depth),
                 });
             }
         }
@@ -932,12 +1108,58 @@ fn group_block(s: &State, ink: &Ink, k: &Kit, group: &RowGroup<'_>, filter: &str
     block
 }
 
-/// A directory header row in `Tree` view: chevron + folder icon + the dir's
-/// last segment. The whole row toggles `dir:{path}` in `changes.collapsed` —
-/// the same collapse model as the group headers, namespaced by `dir:`.
+/// A directory `TreeItem`: the folder icon and the dir's display name —
+/// `a/b/c` when a chain of single-child dirs folded into one row. The
+/// History and stash details draw the same directory rows with it.
+pub(crate) fn dir_item(name: &str) -> TreeItem {
+    TreeItem::new(name).icon(&theme::FOLDER)
+}
+
+/// A changed-file `TreeItem`: the file's icon, its display name tinted for
+/// the statuses `name_tint` covers, `+N −N` counts, and the one-letter
+/// status mark (or the word badge a conflict kind / unknown status keeps).
+/// The History and stash details draw the same file rows with it.
+pub(crate) fn file_item(
+    entry: &app_core::git_view::StatusEntry,
+    display: impl Into<String>,
+    ink: &Ink,
+) -> TreeItem {
+    let mut item = TreeItem::new(display).icon(rune_kit::file_icon(&entry.path));
+    if let Some(added) = entry.added {
+        item = item.changes(
+            u32::try_from(added).unwrap_or(u32::MAX),
+            u32::try_from(entry.removed.unwrap_or(0)).unwrap_or(u32::MAX),
+        );
+    }
+    if name_tint(entry.status)
+        && let Some((_, c)) = status_letter(entry.status, ink)
+    {
+        item = item.label_color(c);
+    }
+    item.trailing(match status_letter(entry.status, ink) {
+        Some((letter, c)) => theme::txt(letter, T11M_LH, c).a11y_hidden(),
+        // Conflict kinds and unknown statuses keep the readable word badge.
+        None => el()
+            .px(4.0)
+            .h(16.0)
+            .items_center()
+            .justify_center()
+            .radius(4.0)
+            .border(1.0, ink.border)
+            .child(theme::txt(status_label(entry.status), T11M_LH, ink.muted))
+            .a11y_hidden(),
+    })
+}
+
+/// A directory header row in `Tree` view: the standard tree row (indent
+/// guides, chevron, folder icon) showing the dir's name — `a/b/c` when a
+/// chain of single-child dirs folded into one row. The whole row toggles
+/// `dir:{path}` in `changes.collapsed` — the same collapse model as the
+/// group headers, namespaced by `dir:`.
 fn dir_row(
     s: &State,
     ink: &Ink,
+    k: &Kit,
     group_key: &'static str,
     path: &str,
     name: &str,
@@ -945,35 +1167,16 @@ fn dir_row(
 ) -> El {
     let key = dir_key(path);
     let collapsed = s.editor.changes.collapsed.contains(&key);
-    el().key(format!("change-dir:{group_key}:{path}"))
-        .w_full()
-        .h(24.0)
-        .px(2.0)
-        .pl(4.0 + depth as f32 * DIR_INDENT)
-        .gap(4.0)
-        .items_center()
-        .radius(6.0)
+    let trow = rune_kit::TreeRow::new(path, depth as u32).expanded(Some(!collapsed));
+    dir_item(name)
+        .build(k, &trow, &tree_style(k))
+        .key(format!("change-dir:{group_key}:{path}"))
         .hover(ink.text.alpha(0.06))
         .role("button")
         .label(format!("{path} directory"))
+        .help(path.to_string())
         .focusable(true)
         .focus_ring(2.0, 1.0, ink.accent)
-        .child(theme::ic(
-            if collapsed {
-                &theme::CHEVRON_RIGHT
-            } else {
-                &theme::CHEVRON_DOWN
-            },
-            11.0,
-            ink.muted,
-        ))
-        .child(theme::ic(&theme::FOLDER, 12.0, ink.muted))
-        .child(
-            theme::txt(name, T12M, ink.text)
-                .min_w(0.0)
-                .truncate_middle()
-                .help_when_truncated(path.to_string()),
-        )
         .on_press(move |st: &mut State| {
             if !st.editor.changes.collapsed.remove(&key) {
                 st.editor.changes.collapsed.insert(key.clone());
@@ -994,17 +1197,33 @@ fn list_menu(s: &State, layer: &mut Vec<El>) -> Option<El> {
         ),
         ListMenu::Anchor => Menu::new("changes-list").anchor(VIEW_MENU_KEY).open(true),
     };
-    // A menu opened on a file row leads with Open File for that row.
+    // A menu opened on a file row leads with Open File for that row; a
+    // conflicted row also offers the whole-file actions its kind admits.
     let mut menu = menu;
     if let Some(open_path) = m.path().map(str::to_string) {
-        menu = menu
-            .item(
-                MenuItem::new("Open File").on_select_tx(move |st: &mut State, tx: &mut Tx| {
+        let kind = s.editor.changes.data.as_ref().and_then(|d| {
+            d.conflicts
+                .iter()
+                .find(|e| e.path == open_path)
+                .map(|e| e.status)
+        });
+        let open = open_path.clone();
+        menu = menu.item(MenuItem::new("Open File").on_select_tx(
+            move |st: &mut State, tx: &mut Tx| {
+                st.editor.changes.menu = None;
+                crate::editor::files::open_doc(st, &open, None, tx);
+            },
+        ));
+        if let Some(kind) = kind {
+            for &(action, label) in conflict_actions(kind) {
+                let (path, act) = (open_path.clone(), action);
+                menu = menu.item(MenuItem::new(label).on_select(move |st: &mut State| {
                     st.editor.changes.menu = None;
-                    crate::editor::files::open_doc(st, &open_path, None, tx);
-                }),
-            )
-            .separator();
+                    resolve_conflict(st, &path, act);
+                }));
+            }
+        }
+        menu = menu.separator();
     }
     let view = s.editor.list_view;
     let group = s.editor.changes.group;
@@ -1041,9 +1260,18 @@ fn list_menu(s: &State, layer: &mut Vec<El>) -> Option<El> {
     )
 }
 
-/// Chevron + label + count; the whole area toggles the group.
-fn group_toggle(key: &'static str, label: &str, count: usize, collapsed: bool, ink: &Ink) -> El {
-    el().key(format!("group-toggle:{key}"))
+/// Chevron + label + count + change totals; the whole area toggles the
+/// group.
+fn group_toggle(
+    key: &'static str,
+    label: &str,
+    count: usize,
+    totals: Option<(u64, u64)>,
+    collapsed: bool,
+    ink: &Ink,
+) -> El {
+    let mut toggle = el()
+        .key(format!("group-toggle:{key}"))
         .grow(1.0)
         .min_w(0.0)
         .h(24.0)
@@ -1066,21 +1294,37 @@ fn group_toggle(key: &'static str, label: &str, count: usize, collapsed: bool, i
             ink.muted,
         ))
         .child(theme::txt(label, T12M, ink.text))
-        .child(theme::count_badge(count, ink))
-        .on_press(move |st: &mut State| {
-            if st.editor.changes.collapsed.contains(key) {
-                st.editor.changes.collapsed.remove(key);
-            } else {
-                st.editor.changes.collapsed.insert(key.to_string());
-            }
-        })
+        .child(theme::count_badge(count, ink));
+    if let Some((added, removed)) = totals {
+        toggle = toggle
+            .child(theme::txt(
+                &format!("+{}", grouped_num(added)),
+                T11MN,
+                ink.success,
+            ))
+            .child(theme::txt(
+                &format!("−{}", grouped_num(removed)),
+                T11MN,
+                ink.danger,
+            ));
+    }
+    toggle.on_press(move |st: &mut State| {
+        if st.editor.changes.collapsed.contains(key) {
+            st.editor.changes.collapsed.remove(key);
+        } else {
+            st.editor.changes.collapsed.insert(key.to_string());
+        }
+    })
 }
 
-/// One changed file: select button (file icon + path + status badge) plus
-/// sibling icon actions so a write never also selects the row. Mirrors the
-/// desktop row: the path truncates, the badge and actions never do, and the
-/// accessible name keeps the full `orig → path`. `indent` is the `Tree`
-/// view's extra left padding (0 in `List`).
+/// One changed file: the standard tree row (indent guides, file icon,
+/// name, `+N −N`, status mark) as the pressable select button, plus sibling
+/// icon actions so a write never also selects the row. In `Tree` view the
+/// row shows just the file's name — the full path (or `orig → path`) stays
+/// in the tooltip and accessible label; `List` keeps the full path as the
+/// visible text. `depth` is the `Tree` view's nesting level (0 in `List`).
+/// The action icons reveal on row hover/focus, and always on the selected
+/// or keyboard-navigated row.
 fn entry_row(
     s: &State,
     ink: &Ink,
@@ -1088,10 +1332,20 @@ fn entry_row(
     key: &'static str,
     layer: &'static str,
     entry: &app_core::git_view::StatusEntry,
-    indent: f32,
+    depth: usize,
 ) -> El {
     let path = entry.path.clone();
     let name = entry_name(entry);
+    let display = if s.editor.list_view == ListView::Tree {
+        entry
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.path)
+            .to_string()
+    } else {
+        name.clone()
+    };
     let selected = s.editor.changes.selected.as_deref() == Some(entry.path.as_str())
         && s.editor.changes.layer.as_deref() == Some(layer);
     let nav_key = keyboard::change_row_key(layer, &entry.path);
@@ -1105,55 +1359,43 @@ fn entry_row(
     let menu_path = path.clone();
     let act_path = path.clone();
     let dis_path = path.clone();
+
+    let trow = rune_kit::TreeRow::new(&entry.path, depth as u32).selected(selected);
+    let item = file_item(entry, display, ink);
+    let select = item
+        .build(k, &trow, &tree_style(k))
+        .grow(1.0)
+        .min_w(0.0)
+        .key(nav_key)
+        .fill(if nav_cur {
+            ink.accent.alpha(0.14)
+        } else if selected {
+            ink.text.alpha(0.10)
+        } else {
+            rune::Color::TRANSPARENT
+        })
+        .hover(ink.text.alpha(0.06))
+        .role("button")
+        .label(name.clone())
+        .description(entry_description(entry))
+        .help(name.clone())
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+            activate_entry(st, layer, &sel_path, tx);
+        });
+
     let mut row_el = row()
         .w_full()
         .h(24.0)
         .px(2.0)
-        .pl(2.0 + indent)
         .gap(2.0)
         .items_center()
-        .child(
-            el().grow(1.0)
-                .min_w(0.0)
-                .h(22.0)
-                .px(4.0)
-                .gap(4.0)
-                .items_center()
-                .radius(4.0)
-                .key(nav_key)
-                .fill(if nav_cur {
-                    ink.accent.alpha(0.14)
-                } else if selected {
-                    ink.text.alpha(0.10)
-                } else {
-                    rune::Color::TRANSPARENT
-                })
-                .hover(ink.text.alpha(0.06))
-                .role("button")
-                .label(&name)
-                .focusable(true)
-                .focus_ring(2.0, 1.0, ink.accent)
-                .child(theme::ic(rune_kit::file_icon(&entry.path), 12.0, ink.muted).a11y_hidden())
-                .child(
-                    theme::txt(&name, T12, ink.text)
-                        .min_w(0.0)
-                        .grow(1.0)
-                        .truncate_middle()
-                        .help_when_truncated(name.clone()),
-                )
-                .child(
-                    el().px(4.0)
-                        .h(16.0)
-                        .items_center()
-                        .justify_center()
-                        .radius(4.0)
-                        .border(1.0, ink.border)
-                        .child(theme::txt(status_label(entry.status), T11M_LH, ink.muted)),
-                )
-                .on_press_tx(move |st: &mut State, tx: &mut Tx| {
-                    activate_entry(st, layer, &sel_path, tx);
-                }),
-        );
+        .hover_group_focus()
+        .child(select);
+    // Invisible until the row is hovered or focused — and always shown on
+    // the selected or keyboard-navigated row.
+    let reveal = selected || nav_cur;
     let row_icon = |icon: &'static Icon, verb: &str, path: &str| {
         IconButton::new(icon)
             .variant(IconButtonVariant::GhostMuted)
@@ -1169,7 +1411,8 @@ fn entry_row(
             .on_press_tx(move |st: &mut State, tx: &mut Tx| {
                 crate::editor::files::open_doc(st, &open_path, None, tx);
             })
-            .build(k),
+            .build(k)
+            .group_opacity(if reveal { 1.0 } else { 0.0 }, 1.0),
     );
     match kind {
         RowKind::Stage => {
@@ -1181,7 +1424,8 @@ fn entry_row(
                         }
                         stage_paths(&mut st.editor, Some(vec![act_path.clone()]));
                     })
-                    .build(k),
+                    .build(k)
+                    .group_opacity(if reveal { 1.0 } else { 0.0 }, 1.0),
             );
         }
         RowKind::Unstage => {
@@ -1193,7 +1437,8 @@ fn entry_row(
                         }
                         unstage_paths(&mut st.editor, Some(vec![act_path.clone()]));
                     })
-                    .build(k),
+                    .build(k)
+                    .group_opacity(if reveal { 1.0 } else { 0.0 }, 1.0),
             );
         }
         RowKind::None => {}
@@ -1209,7 +1454,8 @@ fn entry_row(
                     st.editor.changes.discard_prompt =
                         Some((layer_owned.clone(), dis_path.clone()));
                 })
-                .build(k),
+                .build(k)
+                .group_opacity(if reveal { 1.0 } else { 0.0 }, 1.0),
         );
     }
     // A secondary press on the row opens the list menu scoped to this path —
@@ -1237,6 +1483,89 @@ fn patch_side(s: &State, ink: &Ink) -> El {
             ));
     }
     patch::view(s, Pane::Changes)
+}
+
+/// "{Op} in progress" + Abort above the groups — shown while
+/// `data.operation` names a merge, rebase, cherry-pick or revert.
+fn operation_banner(s: &State, ink: &Ink, k: &Kit, op: &'static str) -> El {
+    let label = match op {
+        "merge" => "Merge in progress",
+        "rebase" => "Rebase in progress",
+        "cherry-pick" => "Cherry-pick in progress",
+        "revert" => "Revert in progress",
+        _ => "Operation in progress",
+    };
+    row()
+        .w_full()
+        .px(10.0)
+        .py(6.0)
+        .gap(8.0)
+        .items_center()
+        .justify_between()
+        .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+        .child(theme::txt(label, T12M, ink.text))
+        .child(
+            Button::new("Abort")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .disabled(s.editor.changes.busy.is_some())
+                .on_press(move |st: &mut State| {
+                    if st.editor.changes.busy.is_none() {
+                        st.editor.changes.abort_prompt = Some(op);
+                    }
+                })
+                .build(k),
+        )
+}
+
+/// Abort confirmation overlay — same modal pattern as `files.rs`'s stage
+/// dialog: a named operation, trapped focus, inert background,
+/// Escape/outside-press cancels.
+fn abort_dialog(s: &State, ink: &Ink) -> El {
+    let op = s.editor.changes.abort_prompt.unwrap_or("operation");
+    let cancel = |st: &mut State| st.editor.changes.abort_prompt = None;
+    col()
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .fill(rune::Color::BLACK.alpha(0.45))
+        .items_center()
+        .justify_center()
+        .child(
+            col()
+                .role("dialog")
+                .label(format!("Abort the {op}?"))
+                .w(400.0)
+                .gap(12.0)
+                .padding(16.0)
+                .radius(12.0)
+                .fill(ink.panel)
+                .border(1.0, ink.border)
+                .child(theme::txt(&format!("Abort the {op}?"), T12M, ink.text))
+                .child(theme::txt(
+                    &format!("Abort the {op}? Resolutions made so far are lost."),
+                    T12,
+                    ink.muted,
+                ))
+                .child(
+                    row()
+                        .gap(8.0)
+                        .justify_end()
+                        .w_full()
+                        .child(theme::btn_sm("Cancel", None, true, ink).on_press(
+                            |st: &mut State| {
+                                st.editor.changes.abort_prompt = None;
+                            },
+                        ))
+                        .child(theme::btn_sm("Abort", None, false, ink).on_press(
+                            |st: &mut State| {
+                                confirm_abort(&mut st.editor);
+                            },
+                        )),
+                )
+                .modal(true, cancel)
+                .modal_click_outside(true),
+        )
 }
 
 /// Discard confirmation overlay (named file, cannot be undone) — same modal
@@ -1315,6 +1644,8 @@ mod tests {
             unstaged: vec![entry("src/b.rs", Some("src/old.rs"), "renamed")],
             untracked: vec![entry("new.txt", None, "untracked")],
             ahead: Some(2),
+            operation: None,
+            merge_message: None,
         }
     }
 
@@ -1335,9 +1666,15 @@ mod tests {
     }
 
     #[test]
-    fn status_labels_cover_git_set() {
+    fn status_label_names_every_conflict_kind() {
+        assert_eq!(status_label("both-modified"), "Both modified");
+        assert_eq!(status_label("both-added"), "Both added");
+        assert_eq!(status_label("deleted-by-us"), "Deleted by us");
+        assert_eq!(status_label("deleted-by-them"), "Deleted by them");
+        assert_eq!(status_label("both-deleted"), "Both deleted");
+        assert_eq!(status_label("added-by-us"), "Added by us");
+        assert_eq!(status_label("added-by-them"), "Added by them");
         assert_eq!(status_label("modified"), "Modified");
-        assert_eq!(status_label("unmerged"), "Conflict");
         assert_eq!(status_label("future"), "Changed");
     }
 
@@ -1356,7 +1693,7 @@ mod tests {
         }
         // Conflicts offer no group write even when non-empty.
         let mut d2 = changes();
-        d2.conflicts = vec![entry("c.rs", None, "unmerged")];
+        d2.conflicts = vec![entry("c.rs", None, "both-modified")];
         assert_eq!(
             group_action("conflicts", group_entries(&d2, "conflicts")),
             GroupAction::None
@@ -1383,7 +1720,7 @@ mod tests {
     #[test]
     fn find_entry_maps_conflict_layer() {
         let mut d = changes();
-        d.conflicts = vec![entry("c.rs", None, "unmerged")];
+        d.conflicts = vec![entry("c.rs", None, "both-modified")];
         assert!(find_entry(&d, "conflict", "c.rs").is_some());
         assert!(find_entry(&d, "staged", "src/a.rs").is_some());
         assert!(find_entry(&d, "staged", "nope").is_none());
@@ -1812,7 +2149,7 @@ mod tests {
     #[test]
     fn list_groups_tracked_untracked_keeps_row_layers() {
         let mut d = changes();
-        d.conflicts = vec![entry("c.rs", None, "unmerged")];
+        d.conflicts = vec![entry("c.rs", None, "both-modified")];
         let groups = list_groups(&d, ChangeGroup::TrackedUntracked);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].key, "tracked");
@@ -1923,6 +2260,65 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(matches!(rows[0], TreeRow::Dir { .. }));
         assert!(matches!(rows[1], TreeRow::File { .. }));
+    }
+
+    /// A chain of directories each holding no files and exactly one
+    /// subdirectory folds into one `a/b/c` row; a directory with files
+    /// keeps its own row. Collapse keys ride on the deepest path.
+    #[test]
+    fn tree_rows_compact_single_child_directories() {
+        let files = [
+            entry("x/only/deep/f.rs", None, "modified"),
+            entry("a/b/c/d.rs", None, "modified"),
+            entry("a/top.rs", None, "modified"),
+        ];
+        let refs: Vec<(&StatusEntry, ())> = files.iter().map(|e| (e, ())).collect();
+        let rows = tree_rows(&refs, |_| false);
+        let kinds: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                TreeRow::Dir { path, .. } => format!("d:{path}"),
+                TreeRow::File { entry, .. } => format!("f:{}", entry.path),
+            })
+            .collect();
+        // `a` holds `top.rs` so it stays its own row; the childless chain
+        // below it folds, as does the whole `x` chain at the top level.
+        assert_eq!(
+            kinds,
+            [
+                "d:a",
+                "d:a/b/c",
+                "f:a/b/c/d.rs",
+                "f:a/top.rs",
+                "d:x/only/deep",
+                "f:x/only/deep/f.rs"
+            ]
+        );
+        let depths: Vec<usize> = rows
+            .iter()
+            .map(|r| match r {
+                TreeRow::Dir { depth, .. } | TreeRow::File { depth, .. } => *depth,
+            })
+            .collect();
+        assert_eq!(depths, [0, 1, 2, 1, 0, 1]);
+        // The folded row's name joins only the folded segments.
+        match &rows[1] {
+            TreeRow::Dir { path, name, .. } => {
+                assert_eq!(path, "a/b/c");
+                assert_eq!(name, "b/c");
+            }
+            _ => panic!("second row is a's folded child"),
+        }
+        // Collapse consults the folded row's deepest path only.
+        let rows = tree_rows(&refs, |p| p == "x/only/deep");
+        assert_eq!(rows.len(), 5);
+        assert!(
+            !rows.iter().any(|r| matches!(
+                r,
+                TreeRow::File { entry, .. } if entry.path == "x/only/deep/f.rs"
+            )),
+            "collapsing the folded row hides its file"
+        );
     }
 
     #[test]
@@ -2197,6 +2593,8 @@ mod tests {
             unstaged: vec![],
             untracked: vec![],
             ahead: None,
+            operation: None,
+            merge_message: None,
         });
         let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
@@ -2361,5 +2759,298 @@ mod tests {
             })
             .expect("group item mounted again");
         assert!(again.item_selected, "the active group is checked");
+    }
+
+    /// Every known kind has its spec'd `(action id, label)` pairs; an
+    /// unknown kind offers nothing.
+    #[test]
+    fn conflict_actions_cover_every_kind() {
+        let pick = &[("current", "Use Current"), ("incoming", "Use Incoming")];
+        let ours = &[("keep", "Keep our version"), ("delete", "Delete file")];
+        let theirs = &[("keep", "Keep their version"), ("delete", "Delete file")];
+        let delete = &[("delete", "Delete file")];
+        assert_eq!(conflict_actions("both-modified"), pick);
+        assert_eq!(conflict_actions("both-added"), pick);
+        assert_eq!(conflict_actions("deleted-by-them"), ours);
+        assert_eq!(conflict_actions("added-by-us"), ours);
+        assert_eq!(conflict_actions("deleted-by-us"), theirs);
+        assert_eq!(conflict_actions("added-by-them"), theirs);
+        assert_eq!(conflict_actions("both-deleted"), delete);
+        assert!(conflict_actions("modified").is_empty());
+        assert!(conflict_actions("untracked").is_empty());
+        assert!(conflict_actions("something-new").is_empty());
+    }
+
+    /// The kinds whose pane shows the whole-file buttons even for an
+    /// editable file: every deletion/addition kind, and nothing else.
+    #[test]
+    fn whole_file_choice_kinds() {
+        for kind in [
+            "deleted-by-us",
+            "deleted-by-them",
+            "added-by-us",
+            "added-by-them",
+            "both-deleted",
+        ] {
+            assert!(needs_whole_file_choice(kind), "{kind}");
+        }
+        for kind in ["both-modified", "both-added", "something-new"] {
+            assert!(!needs_whole_file_choice(kind), "{kind}");
+        }
+    }
+
+    /// A conflict row's menu carries exactly the whole-file actions its
+    /// kind admits after Open File; picking one closes the menu and
+    /// enqueues `Req::Resolve` with the matching action id.
+    #[test]
+    fn conflict_row_menu_offers_the_kind_actions() {
+        let (mut s, _home, _guard) = editor_scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.editor.changes.data.as_mut().unwrap().conflicts = vec![
+            entry("src/dbt.rs", None, "deleted-by-them"),
+            entry("src/dbu.rs", None, "deleted-by-us"),
+            entry("src/bm.rs", None, "both-modified"),
+        ];
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        // Plain items only — the View/Group-By rows are checkboxes.
+        let items = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements()
+                .into_iter()
+                .filter(|e| !e.exiting && e.role == "menuitem")
+                .filter_map(|e| e.label)
+                .collect()
+        };
+        for (path, want, pick, action) in [
+            (
+                "src/dbt.rs",
+                vec!["Open File", "Keep our version", "Delete file"],
+                "Keep our version",
+                "keep",
+            ),
+            (
+                "src/dbu.rs",
+                vec!["Open File", "Keep their version", "Delete file"],
+                "Delete file",
+                "delete",
+            ),
+            (
+                "src/bm.rs",
+                vec!["Open File", "Use Current", "Use Incoming"],
+                "Use Incoming",
+                "incoming",
+            ),
+        ] {
+            rt.state.editor.changes.menu = Some(ListMenu::Point {
+                x: 100.0,
+                y: 100.0,
+                path: Some(path.into()),
+            });
+            rt.invalidate();
+            rt.frame(1.0 / 60.0);
+            assert_eq!(items(&rt), want, "{path} menu");
+            let it = rt
+                .elements()
+                .into_iter()
+                .find(|e| !e.exiting && e.role == "menuitem" && e.label.as_deref() == Some(pick))
+                .unwrap_or_else(|| panic!("{pick} mounted"));
+            click(
+                &mut rt,
+                it.rect[0] + it.rect[2] / 2.0,
+                it.rect[1] + it.rect[3] / 2.0,
+            );
+            assert!(rt.state.editor.changes.menu.is_none(), "picking closes");
+            assert!(
+                jobs.try_iter().any(|j| matches!(
+                    &j.req,
+                    Req::Resolve { path: p, action: a } if p == path && a == action
+                )),
+                "{path} → {action} enqueued"
+            );
+            // The reply arm clears busy; there is no worker here.
+            rt.state.editor.changes.busy = None;
+        }
+    }
+
+    /// The banner names the in-progress operation and its Abort asks first:
+    /// opening enqueues nothing, Cancel and Escape close without a write,
+    /// and only the dialog's Abort sends `Req::Operation`.
+    #[test]
+    fn operation_banner_shows_abort_and_only_confirming_aborts() {
+        for (op, want) in [
+            ("merge", "Merge in progress"),
+            ("rebase", "Rebase in progress"),
+            ("cherry-pick", "Cherry-pick in progress"),
+            ("revert", "Revert in progress"),
+        ] {
+            let (mut s, _home, _guard) = editor_scene();
+            s.editor.changes.data.as_mut().unwrap().operation = Some(op);
+            let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            assert!(
+                rt.elements()
+                    .iter()
+                    .any(|e| e.text.as_deref() == Some(want)),
+                "{op} banner reads {want:?}"
+            );
+            assert!(
+                rt.elements()
+                    .iter()
+                    .any(|e| e.role == "button" && e.label.as_deref() == Some("Abort")),
+                "{op} banner offers Abort"
+            );
+        }
+
+        // A clean tree can still have the operation running: the banner
+        // sits above the clean view too.
+        let (mut s, _home, _guard) = editor_scene();
+        s.editor.changes.data = Some(app_core::git_view::GitViewChanges {
+            branch: None,
+            head: String::new(),
+            conflicts: vec![],
+            staged: vec![],
+            unstaged: vec![],
+            untracked: vec![],
+            ahead: None,
+            operation: Some("merge"),
+            merge_message: None,
+        });
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("Merge in progress")),
+            "the banner sits above the clean view too"
+        );
+
+        // No operation → no banner.
+        let (s, _home, _guard) = editor_scene();
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        assert!(
+            !rt.elements().iter().any(|e| {
+                e.text
+                    .as_deref()
+                    .is_some_and(|t| t.ends_with("in progress"))
+            }),
+            "no banner without an operation"
+        );
+
+        // Open → ask → cancel → open → Escape → open → confirm.
+        let (mut s, _home, _guard) = editor_scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.editor.changes.data.as_mut().unwrap().operation = Some("merge");
+        let mut rt = Runtime::new(s, changes_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let press = |rt: &mut Runtime<State>, label: &str| {
+            let b = rt
+                .elements()
+                .into_iter()
+                .find(|e| !e.exiting && e.role == "button" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} mounted"));
+            click(rt, b.rect[0] + b.rect[2] / 2.0, b.rect[1] + b.rect[3] / 2.0);
+        };
+        press(&mut rt, "Abort");
+        assert_eq!(rt.state.editor.changes.abort_prompt, Some("merge"));
+        assert!(jobs.try_iter().next().is_none(), "opening asks first");
+
+        press(&mut rt, "Cancel");
+        assert!(rt.state.editor.changes.abort_prompt.is_none());
+        assert!(jobs.try_iter().next().is_none(), "Cancel enqueues nothing");
+
+        // The modal's Escape cancels the same way.
+        press(&mut rt, "Abort");
+        assert_eq!(rt.state.editor.changes.abort_prompt, Some("merge"));
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(
+            rt.state.editor.changes.abort_prompt.is_none(),
+            "Escape cancels"
+        );
+        assert!(jobs.try_iter().next().is_none(), "Escape enqueues nothing");
+
+        // Reopen, then the dialog's own Abort sends the write.
+        press(&mut rt, "Abort");
+        let dialog = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.role == "dialog")
+            .expect("abort dialog mounted");
+        let confirm = rt
+            .elements()
+            .into_iter()
+            .find(|e| {
+                !e.exiting
+                    && e.role == "button"
+                    && e.label.as_deref() == Some("Abort")
+                    && e.rect[0] >= dialog.rect[0] - 0.5
+                    && e.rect[1] >= dialog.rect[1] - 0.5
+                    && e.rect[0] + e.rect[2] <= dialog.rect[0] + dialog.rect[2] + 0.5
+                    && e.rect[1] + e.rect[3] <= dialog.rect[1] + dialog.rect[3] + 0.5
+            })
+            .expect("dialog Abort mounted");
+        click(
+            &mut rt,
+            confirm.rect[0] + confirm.rect[2] / 2.0,
+            confirm.rect[1] + confirm.rect[3] / 2.0,
+        );
+        assert!(rt.state.editor.changes.abort_prompt.is_none());
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(&j.req, Req::Operation { step } if step == "abort")),
+            "confirming enqueues the abort"
+        );
+    }
+
+    /// A whole-file action on the open draft's path refuses while it has
+    /// unsaved edits: nothing is enqueued and the notice names the path.
+    /// Once the draft is clean the same action goes through.
+    #[test]
+    fn conflict_action_is_refused_while_the_file_has_unsaved_edits() {
+        let (mut s, _home, _guard) = editor_scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.editor.changes.data.as_mut().unwrap().conflicts =
+            vec![entry("src/bm.rs", None, "both-modified")];
+        s.editor.doc = Some(crate::editor::draft::OpenDoc::new(
+            "src/bm.rs",
+            &app_core::git_view::GitViewFile {
+                path: "src/bm.rs".into(),
+                kind: "text",
+                text: Some("ours\n".into()),
+                truncated: false,
+                size: 5,
+            },
+        ));
+        s.editor.doc.as_mut().unwrap().code.edit.insert("dirty\n");
+        assert!(s.editor.path_is_dirty("src/bm.rs"));
+
+        resolve_conflict(&mut s, "src/bm.rs", "current");
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "refused: nothing enqueued"
+        );
+        assert_eq!(
+            s.notice.as_deref(),
+            Some("save or discard the changes in src/bm.rs first")
+        );
+
+        s.editor.doc.as_mut().unwrap().discard();
+        resolve_conflict(&mut s, "src/bm.rs", "current");
+        assert!(
+            jobs.try_iter().any(|j| matches!(
+                &j.req,
+                Req::Resolve { path, action } if path == "src/bm.rs" && action == "current"
+            )),
+            "a clean doc takes the action"
+        );
     }
 }

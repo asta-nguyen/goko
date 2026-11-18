@@ -76,10 +76,17 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
                     .min_w(pane_layout::SIBLING_MIN)
                     .h_full()
                     .min_h(0.0)
+                    .child(tab_bar(s, ink))
                     .child(doc_bar(s, ink))
                     .child(editor_pane(s, ink, k).grow(1.0).min_w(0.0).h_full()),
             ),
     );
+    // The confirmation is a modal: its members are itself plus everything
+    // after it in tree order, so it must mount last — mounted earlier the
+    // whole section would stay live and steal the dialog's presses.
+    if let Some(dialog) = stage_dialog(s, ink) {
+        root = root.child(dialog);
+    }
     root
 }
 
@@ -559,16 +566,69 @@ fn trash_dialog(s: &State, ink: &Ink) -> Option<El> {
     )
 }
 
-/// Send the delete. An open draft under the entry blocks it, so nothing
-/// unsaved goes away with the file.
+/// The "stage with conflict markers" confirmation: names the file, and
+/// the Stage button is what permits marker-containing text into the index.
+fn stage_dialog(s: &State, ink: &Ink) -> Option<El> {
+    let id = s.editor.files.stage_prompt.clone()?;
+    let name = id.rsplit('/').next().unwrap_or(&id).to_string();
+    let cancel = |st: &mut State| st.editor.files.stage_prompt = None;
+    Some(
+        col()
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .items_center()
+            .justify_center()
+            .child(
+                col()
+                    .role("dialog")
+                    .label("Stage with conflict markers?")
+                    .w(400.0)
+                    .gap(12.0)
+                    .padding(16.0)
+                    .radius(12.0)
+                    .fill(ink.panel)
+                    .border(1.0, ink.border)
+                    .child(theme::txt("Stage with conflict markers?", T12M, ink.text))
+                    .child(theme::txt(
+                        &format!("{name} still contains conflict markers. Stage it anyway?"),
+                        T12,
+                        ink.muted,
+                    ))
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .justify_end()
+                            .w_full()
+                            .child(
+                                theme::btn_sm("Cancel", None, true, ink)
+                                    .on_press(|st: &mut State| st.editor.files.stage_prompt = None),
+                            )
+                            .child(
+                                theme::btn_sm("Stage", None, false, ink)
+                                    .on_press(move |st: &mut State| confirm_stage(st)),
+                            ),
+                    )
+                    .modal(true, cancel)
+                    .modal_click_outside(true),
+            ),
+    )
+}
+
+/// Send the delete. An open draft under the entry — in any tab — blocks
+/// it, so nothing unsaved goes away with the file.
 fn submit_trash(s: &mut State, id: &str) {
     let (Some(checkout), Some(key)) = (s.editor.checkout.clone(), s.editor.checkout_key.clone())
     else {
         return;
     };
-    let blocked = s.editor.doc.as_ref().is_some_and(|doc| {
-        doc.dirty() && (doc.path == id || doc.path.starts_with(&format!("{id}/")))
-    });
+    let under = format!("{id}/");
+    let blocked = s
+        .editor
+        .dirty_paths()
+        .iter()
+        .any(|p| p == id || p.starts_with(&under));
     if blocked {
         s.notice = Some(format!(
             "save or discard the changes in {id} before deleting it"
@@ -584,7 +644,8 @@ fn submit_trash(s: &mut State, id: &str) {
 }
 
 /// Send the rename. A name that did not change closes the prompt; an open
-/// draft under the entry blocks it, so the rename never strands unsaved text.
+/// draft under the entry — in any tab — blocks it, so the rename never
+/// strands unsaved text.
 pub fn submit_rename(s: &mut State, id: &str, name: &str) {
     s.close_sidebar_input();
     let name = name.trim();
@@ -595,9 +656,12 @@ pub fn submit_rename(s: &mut State, id: &str, name: &str) {
     else {
         return;
     };
-    let blocked = s.editor.doc.as_ref().is_some_and(|doc| {
-        doc.dirty() && (doc.path == id || doc.path.starts_with(&format!("{id}/")))
-    });
+    let under = format!("{id}/");
+    let blocked = s
+        .editor
+        .dirty_paths()
+        .iter()
+        .any(|p| p == id || p.starts_with(&under));
     if blocked {
         s.notice = Some(format!(
             "save or discard the changes in {id} before renaming it"
@@ -735,7 +799,7 @@ pub fn request_doc_load(s: &mut State, path: &str, line: Option<u64>) {
         // `doc_load` is armed only for an accepted job: a refused queue
         // sends no reply, so a pre-set token would wedge every later File
         // reply behind `doc_load == Some(token)` forever.
-        s.editor.doc_load = Some(token);
+        s.editor.doc_load = Some((token, path.to_string()));
     } else {
         s.editor.doc_load = None;
         files_queue_full(s);
@@ -788,11 +852,52 @@ fn mark_resolved(s: &mut State) {
     if changed_layer(s, &doc.path) != Some("conflict")
         || doc.validate_save().is_some()
         || s.editor.changes.busy.is_some()
-        || crate::editor::conflict::has_markers(&doc.code.edit.text)
     {
         return;
     }
-    if doc.dirty() {
+    let (markers, path) = (
+        crate::editor::conflict::has_markers(&doc.code.edit.text),
+        doc.path.clone(),
+    );
+    // Only the dialog's Stage arms `allow_markers`: a flag left by a
+    // confirmed attempt whose save failed must not ride into this press.
+    if let Some(doc) = s.editor.doc.as_mut() {
+        doc.stage_with_markers = false;
+    }
+    // Leftover markers still stage, but only after the confirmation — the
+    // dialog owns it, so nothing is saved or enqueued yet.
+    if markers {
+        s.editor.files.stage_prompt = Some(path);
+        return;
+    }
+    save_then_stage(s);
+}
+
+/// The confirmation dialog's Stage: arm `allow_markers` through the doc
+/// flag, then run the same save-then-stage `mark_resolved` does.
+fn confirm_stage(s: &mut State) {
+    s.editor.files.stage_prompt = None;
+    let Some(doc) = s.editor.doc.as_ref() else {
+        return;
+    };
+    if changed_layer(s, &doc.path) != Some("conflict")
+        || doc.validate_save().is_some()
+        || s.editor.changes.busy.is_some()
+    {
+        return;
+    }
+    if let Some(doc) = s.editor.doc.as_mut() {
+        doc.stage_with_markers = true;
+    }
+    save_then_stage(s);
+}
+
+/// The tail Mark Resolved and the dialog's Stage share: a dirty draft
+/// saves first and `resolve_after_save` stages the saved file; a clean
+/// doc stages immediately. `stage_with_markers` rides into
+/// `allow_markers` on the request either way.
+fn save_then_stage(s: &mut State) {
+    if s.editor.doc.as_ref().is_some_and(|d| d.dirty()) {
         save_active_doc(s);
         if let Some(doc) = s.editor.doc.as_mut() {
             doc.resolve_after_save = doc.saving;
@@ -803,14 +908,145 @@ fn mark_resolved(s: &mut State) {
 }
 
 pub fn stage_resolved_doc(ed: &mut crate::editor::state::EditorState) {
-    let Some(doc) = ed.doc.as_ref() else {
+    let Some(doc) = ed.doc.as_mut() else {
         return;
     };
     let req = Req::StageResolved {
         path: doc.path.clone(),
         expected: doc.original.clone(),
+        // True only when the confirmation dialog's Stage armed it.
+        allow_markers: std::mem::take(&mut doc.stage_with_markers),
     };
     crate::editor::changes::write_paths(ed, "resolve", req);
+}
+
+/// The editor's tab strip: one pill per open tab in open order, hidden
+/// with no document. The strip scrolls horizontally when the tabs outgrow
+/// the column instead of wrapping — `doc_bar` below it already wraps.
+fn tab_bar(s: &State, ink: &Ink) -> El {
+    let Some(active) = s.editor.doc.as_ref() else {
+        return col().w_full().h(0.0);
+    };
+    // A document installed without a tab (never through `open_doc`, but a
+    // direct slot write) still earns the row it would have had.
+    let order = if s.editor.tabs.order.is_empty() {
+        vec![active.path.clone()]
+    } else {
+        s.editor.tabs.order.clone()
+    };
+    let mut strip = row().items_center().gap(4.0);
+    for path in &order {
+        strip = strip.child(doc_tab(s, ink, &order, path));
+    }
+    strip
+        .w_full()
+        .h(32.0)
+        .px(6.0)
+        .items_center()
+        .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+        .fill(ink.panel)
+        .scroll_x()
+}
+
+/// One tab: `•` when its document is dirty (active or parked), the file
+/// name — enough of its parent path to stay unique — and a × close button.
+/// The whole pill is the switch, the full path its help.
+fn doc_tab(s: &State, ink: &Ink, order: &[String], path: &str) -> El {
+    let active = s.editor.doc.as_ref().is_some_and(|d| d.path == *path);
+    let dirty = if active {
+        s.editor.doc.as_ref().is_some_and(|d| d.dirty())
+    } else {
+        s.editor.tabs.parked_doc(path).is_some_and(|d| d.dirty())
+    };
+    let label = tab_label(order, path);
+    let (switch, close) = (path.to_string(), path.to_string());
+    let marker = if dirty { "•" } else { "" };
+    let pill = row()
+        .key(format!("doc-tab:{path}"))
+        .h(24.0)
+        .gap(5.0)
+        .items_center()
+        .pl(9.0)
+        .pr(4.0)
+        .radius(6.0)
+        .fill(if active { ink.bg } else { ink.bg.alpha(0.5) })
+        .hover_group()
+        .hover(ink.text.alpha(0.06))
+        .press(ink.text.alpha(0.10))
+        .role("tab")
+        .label(if dirty {
+            format!("{label}, unsaved")
+        } else {
+            label.clone()
+        })
+        .help(path.to_string())
+        .focusable(true)
+        .focus_ring(2.0, 1.0, ink.accent)
+        .child(
+            theme::txt(marker, T12M, ink.warning)
+                .key(format!("doc-tab-dirty:{path}"))
+                .min_w(8.0),
+        )
+        .child(
+            theme::txt(&label, T12, if active { ink.text } else { ink.muted })
+                .max_w(200.0)
+                .truncate_middle(),
+        )
+        .child(
+            rune::el()
+                .key(format!("doc-tab-close:{path}"))
+                .size(16.0, 16.0)
+                .center()
+                .radius(4.0)
+                .role("button")
+                .label(format!("Close {label}"))
+                .help(format!("Close {path}"))
+                .hover_group()
+                .hover_alone()
+                .hover(ink.text.alpha(0.12))
+                .press(ink.text.alpha(0.18))
+                .child(theme::ic(&theme::X, 9.0, ink.muted).group_color(ink.text))
+                .on_press_tx(move |st: &mut State, tx: &mut Tx| {
+                    navigation::navigate(
+                        st,
+                        PendingNav::CloseTab {
+                            path: close.clone(),
+                        },
+                        tx,
+                    );
+                }),
+        );
+    pill.on_press_tx(move |st: &mut State, tx: &mut Tx| {
+        navigation::navigate(
+            st,
+            PendingNav::SwitchTab {
+                path: switch.clone(),
+            },
+            tx,
+        );
+    })
+}
+
+/// The label a tab shows: the file name, or the shortest tail of the path
+/// (`dir/name`, `grand/dir/name`, …) that no other open tab shares.
+fn tab_label(order: &[String], path: &str) -> String {
+    let tail = |p: &str, n: usize| {
+        p.rsplit('/')
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let mut depth = 1;
+    loop {
+        let label = tail(path, depth);
+        if order.iter().all(|p| p == path || tail(p, depth) != label) {
+            return label;
+        }
+        depth += 1;
+    }
 }
 
 /// The open file's path bar: name, dirty state, markdown preview toggle,
@@ -911,9 +1147,10 @@ fn doc_bar(s: &State, ink: &Ink) -> El {
     }
     if let Some(layer) = changed_layer(s, &doc.path) {
         if layer == "conflict" {
-            let can_resolve = doc.validate_save().is_none()
-                && s.editor.changes.busy.is_none()
-                && !crate::editor::conflict::has_markers(&doc.code.edit.text);
+            // Enabled whenever the doc can be saved and no write is in
+            // flight — leftover markers open the confirmation, not a
+            // refusal.
+            let can_resolve = doc.validate_save().is_none() && s.editor.changes.busy.is_none();
             bar = bar.child(
                 theme::btn_sm("Mark Resolved", None, true, ink)
                     .disabled(!can_resolve)
@@ -973,54 +1210,147 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
         );
     }
     if changed_layer(s, &doc.path) == Some("conflict") {
-        let message = if !doc.editable() {
-            Some(
-                "Inline resolution requires an existing, complete UTF-8 text file. Resolve binary or deletion conflicts with Git.",
-            )
+        let kind = s.editor.changes.data.as_ref().and_then(|d| {
+            d.conflicts
+                .iter()
+                .find(|e| e.path == doc.path)
+                .map(|e| e.status)
+        });
+        if !doc.editable() || kind.is_some_and(crate::editor::changes::needs_whole_file_choice) {
+            // Missing, binary, non-UTF-8 and truncated files can't be
+            // resolved inline — offer the conflict kind's whole-file
+            // actions (the same items the row's context menu carries).
+            // Deletion and addition kinds get the same row even for an
+            // editable file: Git leaves only one side on disk, so there
+            // is no merged text to edit.
+            pane = pane.child(
+                theme::txt("Choose how to resolve this file.", T12, ink.warning)
+                    .px(10.0)
+                    .py(6.0),
+            );
+            let actions = kind
+                .map(crate::editor::changes::conflict_actions)
+                .unwrap_or(&[]);
+            if !actions.is_empty() {
+                let mut buttons = row().w_full().px(10.0).pb(6.0).gap(8.0);
+                for &(action, label) in actions {
+                    let (path, act) = (doc.path.clone(), action);
+                    buttons = buttons.child(theme::btn_sm(label, None, true, ink).on_press(
+                        move |st: &mut State| {
+                            crate::editor::changes::resolve_conflict(st, &path, act);
+                        },
+                    ));
+                }
+                pane = pane.child(buttons);
+            }
         } else if crate::editor::conflict::has_unparsed_markers(
             &doc.code.edit.text,
             &doc.code.conflicts,
         ) {
-            Some(
-                "Incomplete or unsupported conflict markers: edit them manually before marking resolved.",
-            )
-        } else {
-            None
-        };
-        if let Some(message) = message {
-            pane = pane.child(theme::txt(message, T12, ink.warning).px(10.0).py(6.0));
+            pane = pane.child(
+                theme::txt(
+                    "Incomplete or unsupported conflict markers: edit them manually before marking resolved.",
+                    T12,
+                    ink.warning,
+                )
+                .px(10.0)
+                .py(6.0),
+            );
         }
     }
-    if let Some(err) = &doc.save_error {
-        pane = pane.child(
-            row()
-                .w_full()
-                .h(30.0)
-                .px(10.0)
-                .gap(8.0)
-                .items_center()
-                .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
-                .child(
-                    theme::txt(&format!("save failed: {err}"), T11M_LH, ink.danger)
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .truncate_middle(),
-                )
-                // Desktop alert row: the draft survives until the reload
-                // reply lands; the button is the escape hatch that replaces
-                // baseline AND buffer with fresh disk content.
-                .child(
-                    theme::btn_sm("Reload from disk", None, false, ink)
-                        .disabled(s.editor.doc_reload.is_some())
-                        .on_press(|st: &mut State| {
-                            // One reload in flight at a time — a second
-                            // press would only supersede the first token.
-                            if st.editor.doc_reload.is_none() {
-                                navigation::request_doc_reload(st);
-                            }
-                        }),
-                ),
+    if let Some(notice) = &doc.disk_notice {
+        // The disk-check verdict — same row style as the save failure.
+        // Overwrite exists only for a text drift: a deleted or non-text
+        // file has nothing the buffer can be written over.
+        let text = match notice {
+            draft::DiskNotice::Changed => "File changed on disk",
+            draft::DiskNotice::Deleted => "File deleted on disk",
+            draft::DiskNotice::NotText => "File is no longer text",
+        };
+        let changed = *notice == draft::DiskNotice::Changed;
+        let mut row_ = row()
+            .w_full()
+            .h(30.0)
+            .px(10.0)
+            .gap(8.0)
+            .items_center()
+            .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+            .child(
+                theme::txt(text, T11M_LH, ink.warning)
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .truncate_middle(),
+            );
+        if changed {
+            row_ = row_.child(
+                theme::btn_sm("Overwrite", None, false, ink)
+                    .disabled(doc.saving)
+                    .on_press(|st: &mut State| {
+                        // `.disabled` is ARIA-only — re-check the gate:
+                        // the write only makes sense for a text drift.
+                        let ok = st.editor.doc.as_ref().is_some_and(|d| {
+                            !d.saving && d.disk_notice == Some(draft::DiskNotice::Changed)
+                        });
+                        if ok {
+                            navigation::enqueue_overwrite(st);
+                        }
+                    }),
+            );
+        }
+        row_ = row_.child(
+            theme::btn_sm("Reload from disk", None, false, ink)
+                .disabled(!changed || s.editor.doc_reload.is_some())
+                .on_press(|st: &mut State| {
+                    // One reload in flight, and only a text drift has
+                    // disk content worth reloading.
+                    let ok = st.editor.doc_reload.is_none()
+                        && st
+                            .editor
+                            .doc
+                            .as_ref()
+                            .is_some_and(|d| d.disk_notice == Some(draft::DiskNotice::Changed));
+                    if ok {
+                        navigation::request_doc_reload(st);
+                    }
+                }),
         );
+        pane = pane.child(row_);
+    }
+    if let Some(err) = &doc.save_error {
+        // The Changed notice row already says it: one row, not two.
+        let covered =
+            doc.disk_notice == Some(draft::DiskNotice::Changed) && err.contains("changed on disk");
+        if !covered {
+            pane = pane.child(
+                row()
+                    .w_full()
+                    .h(30.0)
+                    .px(10.0)
+                    .gap(8.0)
+                    .items_center()
+                    .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+                    .child(
+                        theme::txt(&format!("save failed: {err}"), T11M_LH, ink.danger)
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .truncate_middle(),
+                    )
+                    // Desktop alert row: the draft survives until the reload
+                    // reply lands; the button is the escape hatch that replaces
+                    // baseline AND buffer with fresh disk content.
+                    .child(
+                        theme::btn_sm("Reload from disk", None, false, ink)
+                            .disabled(s.editor.doc_reload.is_some())
+                            .on_press(|st: &mut State| {
+                                // One reload in flight at a time — a second
+                                // press would only supersede the first token.
+                                if st.editor.doc_reload.is_none() {
+                                    navigation::request_doc_reload(st);
+                                }
+                            }),
+                    ),
+            );
+        }
     }
     // Desktop surface pick: rendered preview whenever the doc is markdown
     // and preview is toggled — editable or read-only — else the editable
@@ -1041,6 +1371,9 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 /// the gutter re-derives line numbers from `edit.text` each frame.
 fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
     crate::editor::code::Code::<State>::new(code_get, code_get_mut)
+        // The tab chords get first refusal: `Tab` would indent and `⌘⌥→`
+        // would word-move before `AppSpec::on_key` ever saw them.
+        .preempt_key(crate::editor::keyboard::on_key)
         .on_changed(code_changed)
         .on_save(|st: &mut State, _tx: &mut Tx| {
             save_active_doc(st);
@@ -1902,6 +2235,8 @@ mod tests {
             unstaged: vec![status("src/b.rs")],
             untracked: vec![status("new.txt")],
             ahead: None,
+            operation: None,
+            merge_message: None,
         }
     }
 
@@ -1939,7 +2274,16 @@ mod tests {
         s.editor.changes.data = Some(data);
         s.editor.changes.checkout = s.editor.checkout_key.clone();
         mark_resolved(&mut s);
-        assert!(jobs.try_recv().is_err(), "markers block resolution");
+        assert_eq!(
+            s.editor.files.stage_prompt.as_deref(),
+            Some("src/a.rs"),
+            "markers open the stage confirmation"
+        );
+        assert!(
+            jobs.try_recv().is_err(),
+            "the confirmation owns it: nothing is saved or enqueued"
+        );
+        s.editor.files.stage_prompt = None; // Cancel
         let doc = s.editor.doc.as_mut().unwrap();
         doc.code.edit.set_selection(0, doc.code.edit.text.len());
         doc.code.edit.insert("resolved\n");
@@ -1954,6 +2298,322 @@ mod tests {
             jobs.try_recv().is_err(),
             "second press while saving ignored"
         );
+    }
+
+    /// Leftover markers don't block Mark Resolved — they ask first: the
+    /// dialog opens, nothing is saved or enqueued, and Cancel dismisses
+    /// without a job. Stage then runs the same save-then-stage flow with
+    /// `allow_markers: true` on the request.
+    #[test]
+    fn mark_resolved_with_markers_opens_the_confirmation() {
+        let button = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| !e.exiting && e.role == "button" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} mounted"))
+        };
+        let press = |rt: &mut Runtime<State>, label: &str| {
+            let b = button(rt, label);
+            click(rt, b.rect[0] + b.rect[2] / 2.0, b.rect[1] + b.rect[3] / 2.0);
+        };
+
+        // A dirty draft with the markers still in: the dialog, not a refusal.
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_text_doc(
+            &mut s,
+            "src/a.rs",
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n",
+        );
+        let mut data = changes_data();
+        data.conflicts.push(status("src/a.rs"));
+        s.editor.changes.data = Some(data);
+        s.editor.changes.checkout = s.editor.checkout_key.clone();
+        s.editor.doc.as_mut().unwrap().code.edit.insert("edited\n");
+        let mut rt = kb_runtime(s);
+
+        press(&mut rt, "Mark Resolved");
+        assert_eq!(
+            rt.state.editor.files.stage_prompt.as_deref(),
+            Some("src/a.rs"),
+            "markers open the confirmation"
+        );
+        assert!(
+            jobs.try_iter().next().is_none(),
+            "nothing is saved or enqueued while the dialog is open"
+        );
+        press(&mut rt, "Cancel");
+        assert!(rt.state.editor.files.stage_prompt.is_none());
+        assert!(jobs.try_iter().next().is_none(), "cancel enqueues nothing");
+
+        // Stage: a dirty doc saves first, and the landed save stages it —
+        // with `allow_markers` carried through from the confirmation.
+        press(&mut rt, "Mark Resolved");
+        press(&mut rt, "Stage");
+        assert!(rt.state.editor.files.stage_prompt.is_none());
+        let save = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, Req::SaveFile { .. }))
+            .expect("a dirty doc saves first");
+        assert!(rt.state.editor.doc.as_ref().unwrap().resolve_after_save);
+        rt.update(|s, _| {
+            s.editor.apply_reply(crate::editor::backend::Reply {
+                req: save.req,
+                generation: save.generation,
+                checkout_key: save.checkout_key,
+                result: Ok(crate::editor::backend::ReplyData::Saved(
+                    app_core::git_view::GitViewFile {
+                        path: "src/a.rs".into(),
+                        kind: "text",
+                        text: Some(
+                            "edited\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n".into(),
+                        ),
+                        truncated: false,
+                        size: 60,
+                    },
+                )),
+            })
+        });
+        assert!(
+            jobs.try_iter().any(|j| matches!(
+                &j.req,
+                Req::StageResolved { path, allow_markers: true, .. } if path == "src/a.rs"
+            )),
+            "the confirmed stage sends allow_markers"
+        );
+
+        // A clean doc stages directly — no save — still carrying
+        // `allow_markers` from the confirmation.
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_text_doc(
+            &mut s,
+            "src/a.rs",
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n",
+        );
+        let mut data = changes_data();
+        data.conflicts.push(status("src/a.rs"));
+        s.editor.changes.data = Some(data);
+        s.editor.changes.checkout = s.editor.checkout_key.clone();
+        let mut rt = kb_runtime(s);
+        press(&mut rt, "Mark Resolved");
+        press(&mut rt, "Stage");
+        assert!(
+            jobs.try_iter().any(|j| matches!(
+                &j.req,
+                Req::StageResolved { path, allow_markers: true, .. } if path == "src/a.rs"
+            )),
+            "clean doc stages directly with allow_markers"
+        );
+    }
+
+    /// A marker-free conflict — even a `Title\n=======\n` setext heading,
+    /// which is never a marker — skips the dialog and stages with
+    /// `allow_markers: false`.
+    #[test]
+    fn mark_resolved_without_markers_needs_no_dialog() {
+        for text in ["resolved\n", "Title\n=======\nbody\n"] {
+            let mut s = scene();
+            let (backend, jobs) = crate::editor::backend::channel_backend();
+            s.editor.backend = backend;
+            open_text_doc(&mut s, "src/a.rs", text);
+            let mut data = changes_data();
+            data.conflicts.push(status("src/a.rs"));
+            s.editor.changes.data = Some(data);
+            s.editor.changes.checkout = s.editor.checkout_key.clone();
+            mark_resolved(&mut s);
+            assert!(
+                s.editor.files.stage_prompt.is_none(),
+                "marker-free text opens no dialog: {text:?}"
+            );
+            assert!(
+                jobs.try_iter().any(|j| matches!(
+                    &j.req,
+                    Req::StageResolved { path, allow_markers: false, .. } if path == "src/a.rs"
+                )),
+                "clean marker-free doc stages directly: {text:?}"
+            );
+        }
+    }
+
+    /// A missing conflict file can't be resolved inline: the pane explains
+    /// the choice and offers the kind's whole-file buttons, which enqueue
+    /// `Req::Resolve` just like the row menu items do.
+    #[test]
+    fn missing_file_conflict_shows_the_resolve_buttons_in_the_pane() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        s.editor.doc = Some(crate::editor::draft::OpenDoc::new(
+            "src/gone.rs",
+            &app_core::git_view::GitViewFile {
+                path: "src/gone.rs".into(),
+                kind: "missing",
+                text: None,
+                truncated: false,
+                size: 0,
+            },
+        ));
+        let mut data = changes_data();
+        data.conflicts.push(app_core::git_view::StatusEntry {
+            path: "src/gone.rs".into(),
+            orig_path: None,
+            status: "deleted-by-us",
+            added: None,
+            removed: None,
+        });
+        s.editor.changes.data = Some(data);
+        s.editor.changes.checkout = s.editor.checkout_key.clone();
+        let mut rt = Runtime::new(s, files_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("Choose how to resolve this file.")),
+            "the pane explains the choice"
+        );
+        let button = |rt: &Runtime<State>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| !e.exiting && e.role == "button" && e.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label} mounted"))
+        };
+        button(&rt, "Keep their version");
+        let delete = button(&rt, "Delete file");
+        click(
+            &mut rt,
+            delete.rect[0] + delete.rect[2] / 2.0,
+            delete.rect[1] + delete.rect[3] / 2.0,
+        );
+        assert!(
+            jobs.try_iter().any(|j| matches!(
+                &j.req,
+                Req::Resolve { path, action } if path == "src/gone.rs" && action == "delete"
+            )),
+            "Delete file enqueues the delete resolve"
+        );
+    }
+
+    /// A deletion/addition conflict still resolves as a whole-file choice
+    /// when the file Git left on disk is editable text: the pane explains
+    /// the choice and offers the kind's buttons, like the missing-file
+    /// case — there is no merged text to edit inline.
+    #[test]
+    fn deletion_conflict_shows_the_resolve_buttons_for_an_editable_file() {
+        for (status, keep) in [
+            ("deleted-by-them", "Keep our version"),
+            ("added-by-them", "Keep their version"),
+        ] {
+            let mut s = scene();
+            let (backend, jobs) = crate::editor::backend::channel_backend();
+            s.editor.backend = backend;
+            open_text_doc(&mut s, "src/one.rs", "the surviving side\n");
+            let mut data = changes_data();
+            data.conflicts.push(app_core::git_view::StatusEntry {
+                path: "src/one.rs".into(),
+                orig_path: None,
+                status,
+                added: None,
+                removed: None,
+            });
+            s.editor.changes.data = Some(data);
+            s.editor.changes.checkout = s.editor.checkout_key.clone();
+            let mut rt = Runtime::new(s, files_only, (900.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+
+            assert!(
+                rt.elements()
+                    .iter()
+                    .any(|e| e.text.as_deref() == Some("Choose how to resolve this file.")),
+                "{status}: the pane explains the choice"
+            );
+            let button = |rt: &Runtime<State>, label: &str| {
+                rt.elements()
+                    .into_iter()
+                    .find(|e| !e.exiting && e.role == "button" && e.label.as_deref() == Some(label))
+                    .unwrap_or_else(|| panic!("{status}: {label} mounted"))
+            };
+            button(&rt, keep);
+            let delete = button(&rt, "Delete file");
+            click(
+                &mut rt,
+                delete.rect[0] + delete.rect[2] / 2.0,
+                delete.rect[1] + delete.rect[3] / 2.0,
+            );
+            assert!(
+                jobs.try_iter().any(|j| matches!(
+                    &j.req,
+                    Req::Resolve { path, action } if path == "src/one.rs" && action == "delete"
+                )),
+                "{status}: Delete file enqueues the delete resolve"
+            );
+        }
+    }
+
+    /// An editable `both-modified` file keeps the inline editor: no
+    /// whole-file buttons and no choice line — the conflict text is what
+    /// the user edits.
+    #[test]
+    fn editable_modified_conflict_shows_no_whole_file_buttons() {
+        let mut s = scene();
+        let (backend, _jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_text_doc(
+            &mut s,
+            "src/a.rs",
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\n",
+        );
+        let mut data = changes_data();
+        data.conflicts.push(app_core::git_view::StatusEntry {
+            path: "src/a.rs".into(),
+            orig_path: None,
+            status: "both-modified",
+            added: None,
+            removed: None,
+        });
+        s.editor.changes.data = Some(data);
+        s.editor.changes.checkout = s.editor.checkout_key.clone();
+        let mut rt = Runtime::new(s, files_only, (900.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+
+        for want in [
+            "Choose how to resolve this file.",
+            "Use Current",
+            "Use Incoming",
+        ] {
+            assert!(
+                !rt.elements().iter().any(|e| {
+                    e.text.as_deref() == Some(want) || e.label.as_deref() == Some(want)
+                }),
+                "an editable both-modified pane never shows {want:?}"
+            );
+        }
+    }
+
+    /// `path_is_dirty` answers for the open document only: the same path
+    /// with a dirty draft is true; a clean doc, another path, or no doc
+    /// is false.
+    #[test]
+    fn path_is_dirty_tracks_the_active_document() {
+        let mut s = scene();
+        assert!(!s.editor.path_is_dirty("src/a.rs"), "no doc → false");
+        open_text_doc(&mut s, "src/a.rs", "fn main() {}\n");
+        assert!(!s.editor.path_is_dirty("src/a.rs"), "clean → false");
+        assert!(!s.editor.path_is_dirty("src/b.rs"), "other path → false");
+        s.editor.doc.as_mut().unwrap().code.edit.insert("edited\n");
+        assert!(s.editor.path_is_dirty("src/a.rs"), "dirty draft → true");
+        assert!(
+            !s.editor.path_is_dirty("src/b.rs"),
+            "still only the active path"
+        );
+        s.editor.doc.as_mut().unwrap().discard();
+        assert!(!s.editor.path_is_dirty("src/a.rs"), "discarded → false");
     }
 
     /// `layerFor` parity: conflict > staged > unstaged > untracked, exact
@@ -2156,6 +2816,88 @@ mod tests {
             "fn main() {}\n",
             "draft preserved until the reply"
         );
+    }
+
+    /// The disk-check row: Overwrite exists only for a text drift, Reload
+    /// is its pair there and inert on a deleted or non-text file (the
+    /// press-guard re-check is what a stray click on an ARIA-disabled
+    /// button hits). A matching save failure folds into the one row.
+    #[test]
+    fn notice_row_offers_overwrite_only_for_a_changed_file() {
+        // Text elements expose `text`, buttons `label`.
+        let shown = |rt: &Runtime<State>, want: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some(want))
+        };
+        // Changed + the matching save error: one row, Overwrite + Reload.
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        open_text_doc(&mut s, "src/a.rs", "original\n");
+        {
+            let doc = s.editor.doc.as_mut().unwrap();
+            doc.code.edit.text = "buffer wins".into();
+            doc.disk_notice = Some(draft::DiskNotice::Changed);
+            doc.save_error = Some("the file changed on disk; reload it before saving".into());
+        }
+        let mut rt = Runtime::new(s, files_only, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let ls = labels(&rt);
+        assert!(shown(&rt, "File changed on disk"), "{ls:?}");
+        assert!(ls.iter().any(|l| l == "Overwrite"), "{ls:?}");
+        assert!(ls.iter().any(|l| l == "Reload from disk"), "{ls:?}");
+        assert!(
+            !rt.elements()
+                .iter()
+                .filter_map(|e| e.text.as_deref())
+                .any(|t| t.starts_with("save failed")),
+            "the matching save error folds into the notice row: {ls:?}"
+        );
+        let btn = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Overwrite"))
+            .expect("overwrite button");
+        let r = btn.rect;
+        click(&mut rt, r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        let job = jobs
+            .try_iter()
+            .find(|j| matches!(&j.req, Req::OverwriteFile { .. }))
+            .expect("OverwriteFile enqueued");
+        assert!(
+            matches!(&job.req, Req::OverwriteFile { path, text } if path == "src/a.rs" && text == "buffer wins"),
+            "the buffer text is written, not the baseline"
+        );
+        // Deleted and no-longer-text: their text, no Overwrite, an inert
+        // Reload.
+        for (notice, want) in [
+            (draft::DiskNotice::Deleted, "File deleted on disk"),
+            (draft::DiskNotice::NotText, "File is no longer text"),
+        ] {
+            let mut s = scene();
+            let (backend, jobs) = crate::editor::backend::channel_backend();
+            s.editor.backend = backend;
+            open_text_doc(&mut s, "src/a.rs", "original\n");
+            s.editor.doc.as_mut().unwrap().disk_notice = Some(notice);
+            let mut rt = Runtime::new(s, files_only, (1100.0, 700.0), Env::new(true, 2.0));
+            rt.frame(0.0);
+            let ls = labels(&rt);
+            assert!(shown(&rt, want), "{want}: {ls:?}");
+            assert!(!ls.iter().any(|l| l == "Overwrite"), "{want}: {ls:?}");
+            let btn = rt
+                .elements()
+                .into_iter()
+                .find(|e| e.label.as_deref() == Some("Reload from disk"))
+                .expect("reload button mounted disabled");
+            let r = btn.rect;
+            click(&mut rt, r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+            assert!(
+                jobs.try_iter()
+                    .all(|j| !matches!(&j.req, Req::ReloadFile { .. })),
+                "{want}: the inert reload sends nothing"
+            );
+        }
     }
 
     /// `.MDX` (any case) gets the Preview toggle like `.md`; toggling flips
@@ -2632,5 +3374,404 @@ mod tests {
             cur.is_some() && cur.as_deref() != Some("top.txt"),
             "arrow kept native move: {cur:?}"
         );
+    }
+
+    /// A dirty draft parked in another tab blocks rename and trash of the
+    /// entry it sits under, exactly like the active document would.
+    #[test]
+    fn rename_and_trash_refuse_while_any_tab_under_them_is_dirty() {
+        let mut s = scene();
+        let (backend, jobs) = crate::editor::backend::channel_backend();
+        s.editor.backend = backend;
+        let file = |path: &str, text: &str| app_core::git_view::GitViewFile {
+            path: path.into(),
+            kind: "text",
+            text: Some(text.into()),
+            truncated: false,
+            size: text.len() as u64,
+        };
+        s.editor.tabs.open(
+            &mut s.editor.doc,
+            crate::editor::draft::OpenDoc::new("src/a.rs", &file("src/a.rs", "clean")),
+        );
+        s.editor.tabs.open(
+            &mut s.editor.doc,
+            crate::editor::draft::OpenDoc::new("top.txt", &file("top.txt", "top")),
+        );
+        s.editor
+            .tabs
+            .parked
+            .get_mut("src/a.rs")
+            .unwrap()
+            .code
+            .edit
+            .insert("dirty");
+        while jobs.try_recv().is_ok() {}
+
+        submit_rename(&mut s, "src", "src2");
+        assert!(
+            jobs.try_iter()
+                .all(|j| !matches!(j.req, Req::RenamePath { .. })),
+        );
+        assert!(
+            s.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("save or discard")),
+            "the rename explains the refusal: {:?}",
+            s.notice
+        );
+
+        s.notice = None;
+        submit_trash(&mut s, "src");
+        assert!(
+            jobs.try_iter()
+                .all(|j| !matches!(j.req, Req::TrashPath { .. })),
+        );
+        assert!(
+            s.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("save or discard")),
+            "the trash explains the refusal: {:?}",
+            s.notice
+        );
+
+        // …while a checkout with only clean tabs still submits.
+        s.editor.tabs.parked.get_mut("src/a.rs").unwrap().discard();
+        s.notice = None;
+        submit_trash(&mut s, "src");
+        assert!(
+            jobs.try_iter()
+                .any(|j| matches!(j.req, Req::TrashPath { .. })),
+            "clean tabs let the trash through"
+        );
+    }
+
+    // ---- editor tab bar --------------------------------------------------
+
+    /// Open `path` as a real tab (registered in `tabs`, parked ones kept).
+    fn open_tab_doc(s: &mut State, path: &str, text: &str) {
+        let file = app_core::git_view::GitViewFile {
+            path: path.into(),
+            kind: "text",
+            text: Some(text.into()),
+            truncated: false,
+            size: text.len() as u64,
+        };
+        let doc = crate::editor::draft::OpenDoc::new(path, &file);
+        s.editor.tabs.open(&mut s.editor.doc, doc);
+    }
+
+    fn doc_tabs(rt: &Runtime<State>) -> Vec<rune::ElementInfo> {
+        let mut v: Vec<_> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.role == "tab" && e.key.as_deref().is_some_and(|k| k.starts_with("doc-tab:"))
+            })
+            .collect();
+        v.sort_by(|a, b| a.rect[0].total_cmp(&b.rect[0]));
+        v
+    }
+
+    /// The strip paints one tab per open path in open order, marks the
+    /// dirty one, carries the full path as help, and disambiguates two
+    /// files that share a name with their parent directory.
+    #[test]
+    fn tabs_paint_in_order_with_a_dirty_marker_and_distinct_labels() {
+        let mut s = scene();
+        open_tab_doc(&mut s, "docs/mod.rs", "d\n");
+        open_tab_doc(&mut s, "src/mod.rs", "s\n");
+        open_tab_doc(&mut s, "README.md", "r\n");
+        // The parked middle tab is the dirty one.
+        s.editor
+            .tabs
+            .parked
+            .get_mut("src/mod.rs")
+            .unwrap()
+            .code
+            .edit
+            .insert("x");
+        let bg = s.ink.bg;
+        let rt = kb_runtime(s);
+
+        let tabs = doc_tabs(&rt);
+        assert_eq!(tabs.len(), 3, "one pill per open path");
+        assert_eq!(
+            tabs[0].label.as_deref(),
+            Some("docs/mod.rs"),
+            "same-named files label with their parent"
+        );
+        assert_eq!(
+            tabs[1].label.as_deref(),
+            Some("src/mod.rs, unsaved"),
+            "the dirty parked tab is marked and disambiguated"
+        );
+        assert_eq!(tabs[2].label.as_deref(), Some("README.md"));
+        assert_eq!(
+            tabs[0].help.as_deref(),
+            Some("docs/mod.rs"),
+            "the full path is the tab's help"
+        );
+        assert_eq!(tabs[2].fill, bg, "the active tab is marked");
+        let marker = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("doc-tab-dirty:src/mod.rs"))
+            .expect("the dirty marker is mounted");
+        assert_eq!(marker.text.as_deref(), Some("•"));
+        let clean_marker = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("doc-tab-dirty:README.md"))
+            .expect("the clean tab keeps its marker slot");
+        assert!(
+            clean_marker.text.as_deref().is_none_or(|t| t.is_empty()),
+            "a clean tab's marker is blank: {:?}",
+            clean_marker.text
+        );
+    }
+
+    /// Clicking a tab activates it through `SwitchTab`; the × closes its
+    /// tab through `CloseTab` without touching the active document.
+    #[test]
+    fn clicking_a_tab_activates_it_and_the_x_closes_its_tab() {
+        let mut s = scene();
+        open_tab_doc(&mut s, "src/a.rs", "a\n");
+        open_tab_doc(&mut s, "src/b.rs", "b\n");
+        open_tab_doc(&mut s, "src/c.rs", "c\n"); // active
+        let mut rt = kb_runtime(s);
+
+        let tab = doc_tabs(&rt)
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("a.rs"))
+            .unwrap();
+        click(&mut rt, tab.rect[0] + 20.0, tab.rect[1] + tab.rect[3] / 2.0);
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/a.rs");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "a\n",
+            "the parked buffer swaps in untouched"
+        );
+
+        let close = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.label.as_deref() == Some("Close b.rs"))
+            .expect("the close button mounts");
+        click(&mut rt, close.rect[0] + 8.0, close.rect[1] + 8.0);
+        assert_eq!(
+            rt.state.editor.tabs.order,
+            vec!["src/a.rs".to_string(), "src/c.rs".to_string()],
+            "the clean parked tab closed"
+        );
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().path,
+            "src/a.rs",
+            "closing another tab leaves the active document alone"
+        );
+    }
+
+    /// The next/previous chords cycle the tabs with wrap while the code
+    /// field is focused — without indenting the buffer or moving the caret
+    /// by words.
+    #[test]
+    fn the_step_chords_wrap_while_the_code_field_is_focused() {
+        let mut s = scene();
+        open_tab_doc(&mut s, "src/a.rs", "a\n");
+        open_tab_doc(&mut s, "src/b.rs", "b\n");
+        open_tab_doc(&mut s, "src/c.rs", "c text here\n"); // active
+        let mut rt = kb_runtime(s);
+        let field = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(crate::editor::code::FIELD_KEY))
+            .expect("the code field mounts");
+        click(&mut rt, field.rect[0] + 30.0, field.rect[1] + 8.0);
+        let caret = rt.state.editor.doc.as_ref().unwrap().code.edit.range();
+
+        let chord = |key: Key, mods: Mods, rt: &mut Runtime<State>| {
+            rt.key(KeyEvent { key, mods });
+            rt.frame(0.0);
+        };
+        let cmd_alt = Mods {
+            cmd: true,
+            alt: true,
+            ..Mods::default()
+        };
+        chord(Key::Right, cmd_alt, &mut rt);
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().path,
+            "src/a.rs",
+            "⌘⌥→ wraps from the last tab to the first"
+        );
+        let parked_c = rt.state.editor.tabs.parked_doc("src/c.rs").unwrap();
+        assert_eq!(
+            parked_c.code.edit.text, "c text here\n",
+            "no word-move edit"
+        );
+        assert_eq!(parked_c.code.edit.range(), caret, "no word-move caret");
+        chord(Key::Left, cmd_alt, &mut rt);
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/c.rs");
+        // The shifted-bracket chord steps the same way, whichever glyph
+        // the key report carries.
+        chord(
+            Key::Command('}'),
+            Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+            &mut rt,
+        );
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/a.rs");
+        chord(
+            Key::Command('['),
+            Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+            &mut rt,
+        );
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/c.rs");
+        // A bare Tab still indents — only the chords were taken.
+        chord(Key::Tab, Mods::default(), &mut rt);
+        assert_ne!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "c text here\n",
+            "plain Tab still reaches the field's indent"
+        );
+    }
+
+    /// `⌃Tab` toggles between the two most recently used tabs and does
+    /// nothing — consumes without an indent — with fewer than two.
+    #[test]
+    fn ctrl_tab_toggles_the_most_recent_tabs() {
+        let mut s = scene();
+        open_tab_doc(&mut s, "src/a.rs", "a\n");
+        open_tab_doc(&mut s, "src/b.rs", "b\n");
+        open_tab_doc(&mut s, "src/c.rs", "c\n"); // active; recent: c,b,a
+        let mut rt = kb_runtime(s);
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        let ctrl_tab = |rt: &mut Runtime<State>| {
+            rt.key(KeyEvent {
+                key: Key::Tab,
+                mods: ctrl,
+            });
+            rt.frame(0.0);
+        };
+        ctrl_tab(&mut rt);
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().path, "src/b.rs");
+        ctrl_tab(&mut rt);
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().path,
+            "src/c.rs",
+            "a second ⌃Tab toggles back"
+        );
+
+        // One tab: the chord is consumed and nothing happens — no indent.
+        rt.state.editor.close_tab("src/b.rs");
+        rt.state.editor.close_tab("src/a.rs");
+        assert_eq!(rt.state.editor.tabs.order.len(), 1);
+        ctrl_tab(&mut rt);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.path, "src/c.rs");
+        assert_eq!(doc.code.edit.text, "c\n", "a lone ⌃Tab inserts nothing");
+    }
+
+    /// `⌘W` closes the active clean tab outright and raises the one-file
+    /// guard for a dirty one — it never reaches the window close.
+    #[test]
+    fn cmd_w_closes_a_clean_tab_and_guards_a_dirty_one() {
+        let mut s = scene();
+        open_tab_doc(&mut s, "src/a.rs", "a\n");
+        open_tab_doc(&mut s, "src/b.rs", "b\n");
+        open_tab_doc(&mut s, "src/c.rs", "c\n"); // active
+        let mut rt = kb_runtime(s);
+        let cmd_w = |rt: &mut Runtime<State>| {
+            rt.key(KeyEvent {
+                key: Key::Command('w'),
+                mods: Mods {
+                    cmd: true,
+                    ..Mods::default()
+                },
+            });
+            rt.frame(0.0);
+        };
+        cmd_w(&mut rt);
+        assert_eq!(
+            rt.state.editor.tabs.order,
+            vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
+        );
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().path,
+            "src/b.rs",
+            "the left neighbour activates — c had no right"
+        );
+
+        rt.state.editor.doc.as_mut().unwrap().code.edit.insert("x");
+        cmd_w(&mut rt);
+        let guard = rt.state.editor.guard.as_ref().expect("dirty ⌘W guards");
+        assert!(
+            matches!(&guard.pending, PendingNav::CloseTab { path } if path == "src/b.rs"),
+            "the guard's pending nav is the close: {:?}",
+            guard.pending
+        );
+        assert_eq!(guard.doc_path, "src/b.rs");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.path, "src/b.rs");
+        assert!(doc.dirty(), "the draft survives the prompt");
+    }
+
+    /// With no document open the chords are not consumed — they fall
+    /// through to whatever owned them before tabs existed.
+    #[test]
+    fn tab_chords_fall_through_with_no_document() {
+        let mut s = scene();
+        let mut tx = Tx::default();
+        for ev in [
+            KeyEvent {
+                key: Key::Command('w'),
+                mods: Mods {
+                    cmd: true,
+                    ..Mods::default()
+                },
+            },
+            KeyEvent {
+                key: Key::Tab,
+                mods: Mods {
+                    ctrl: true,
+                    ..Mods::default()
+                },
+            },
+            KeyEvent {
+                key: Key::Right,
+                mods: Mods {
+                    cmd: true,
+                    alt: true,
+                    ..Mods::default()
+                },
+            },
+            KeyEvent {
+                key: Key::Command('}'),
+                mods: Mods {
+                    cmd: true,
+                    shift: true,
+                    ..Mods::default()
+                },
+            },
+        ] {
+            assert!(
+                !crate::editor::keyboard::on_key(&mut s, &ev, &mut tx),
+                "{ev:?} falls through with no document"
+            );
+        }
+        // And the bar itself stays hidden.
+        let mut rt = kb_runtime(s);
+        rt.frame(0.0);
+        assert!(doc_tabs(&rt).is_empty(), "no document, no tab strip");
     }
 }

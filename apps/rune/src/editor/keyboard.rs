@@ -70,6 +70,12 @@ pub fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return find(s, tx);
     }
+    // The tab chords fire wherever a document is open — even while the
+    // code field is focused, where the field's `preempt_key` consults this
+    // before its own handling (Tab indents, ⌘⌥→ word-moves).
+    if tab_chord(s, ev, tx) {
+        return true;
+    }
     if !plain_key(s, ev) {
         return false;
     }
@@ -201,6 +207,65 @@ fn plain_key(s: &State, ev: &KeyEvent) -> bool {
 pub(crate) fn preempt_tree_key(s: &State, ev: &KeyEvent) -> bool {
     plain_key(s, ev)
         && matches!(&ev.key, Key::Text(t) if t == "j" || t == "k" || (t.len() == 1 && matches!(t.as_bytes()[0], b'1'..=b'4')))
+}
+
+/// The tab-bar chords: `⌘W` closes the active tab, `⌃Tab` jumps to the
+/// most recently used other tab, and the next/previous chords step through
+/// open order. `false` with no document open — the key falls through to
+/// whatever would have taken it before tabs existed.
+fn tab_chord(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    let Some(doc) = s.editor.doc.as_ref() else {
+        return false;
+    };
+    let path = doc.path.clone();
+    if ev.is_command('w') && !ev.mods.shift && !ev.mods.alt {
+        navigation::navigate(s, PendingNav::CloseTab { path }, tx);
+        return true;
+    }
+    if ev.key == Key::Tab && ev.mods.ctrl && !ev.mods.alt && !ev.mods.logo {
+        // Nothing to do with fewer than two tabs — still ours, not an indent.
+        if let Some(path) = s.editor.tabs.previous_recent(&path) {
+            navigation::navigate(s, PendingNav::SwitchTab { path }, tx);
+        }
+        return true;
+    }
+    let Some(delta) = step_chord(ev) else {
+        return false;
+    };
+    navigation::navigate(s, PendingNav::StepTab(delta), tx);
+    true
+}
+
+/// `1` for next tab, `-1` for previous, `None` for anything else. Next and
+/// previous use the primary shortcut modifier `is_command` reports: on
+/// macOS `⌘⌥→`/`⌘⌥←` plus `⌘⇧]`/`⌘⇧[` — Rune may report the shifted
+/// bracket's glyph (`}`/`{`) or the unshifted one with `mods.shift` — and
+/// where that modifier is Ctrl, `Ctrl+PageDown`/`Ctrl+PageUp` (⌘⌥ clashes
+/// with desktop chords there).
+fn step_chord(ev: &KeyEvent) -> Option<i32> {
+    if cfg!(target_os = "macos") {
+        if ev.key == Key::Right && ev.mods.cmd && ev.mods.alt && !ev.mods.ctrl && !ev.mods.shift
+            || ev.is_command('}')
+            || ev.is_command(']') && ev.mods.shift
+        {
+            return Some(1);
+        }
+        if ev.key == Key::Left && ev.mods.cmd && ev.mods.alt && !ev.mods.ctrl && !ev.mods.shift
+            || ev.is_command('{')
+            || ev.is_command('[') && ev.mods.shift
+        {
+            return Some(-1);
+        }
+        return None;
+    }
+    if ev.mods.ctrl && ev.mods.cmd && !ev.mods.alt && !ev.mods.logo {
+        match ev.key {
+            Key::PageDown => return Some(1),
+            Key::PageUp => return Some(-1),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// ⌘F: the code surface's own find handler consumes the chord while its
@@ -843,6 +908,8 @@ mod tests {
             unstaged,
             untracked: vec![],
             ahead: None,
+            operation: None,
+            merge_message: None,
         });
         s.editor.changes.checkout = s.editor.checkout_key.clone();
         let mut rt = section_runtime(s);
