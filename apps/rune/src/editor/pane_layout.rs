@@ -84,7 +84,11 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
     // actually rendered when a restored oversized value shrinks via flex.
     let width = clamp_width(s.editor.pane_row_w, current(s, kind));
     let max = max_width(s.editor.pane_row_w);
-    col()
+    // Any list aside (Files, Changes, Stashes) shares one side; a right-docked
+    // grip sits on the aside's leading (left) edge and dragging left widens it.
+    let on_right = s.list_aside_side == crate::sidebar::Side::Right;
+    let dir: f32 = if on_right { -1.0 } else { 1.0 };
+    let mut b = col()
         .key(grip_key(kind))
         .role("separator")
         .label(label)
@@ -94,16 +98,21 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
         .items_center()
         .cursor(Cursor::ResizeColumn)
         .fill(Color::TRANSPARENT)
-        .hover(ink.border)
-        .pin(None, Some(0.0), Some(0.0), Some(0.0))
-        .child(el().w(1.0).h_full().fill(ink.border))
+        .hover(ink.border);
+    b = if on_right {
+        b.pin(Some(0.0), Some(0.0), None, Some(0.0))
+    } else {
+        b.pin(None, Some(0.0), Some(0.0), Some(0.0))
+    };
+    b.child(el().w(1.0).h_full().fill(ink.border))
         .on_drag(move |st: &mut State, d: &mut Drag, tx: &mut Tx| {
             match d.phase {
                 Phase::Down => d.data = current(st, kind),
                 Phase::Move | Phase::Up => {
                     if !d.cancelled() {
-                        // Leading pane: dragging right widens it.
-                        let w = clamp_width(st.editor.pane_row_w, d.data + d.dx);
+                        // Leading pane drags right to widen; docked right the
+                        // grip drags left to widen instead.
+                        let w = clamp_width(st.editor.pane_row_w, d.data + d.dx * dir);
                         set_width(st, kind, w);
                         tx.instant();
                     }
@@ -117,7 +126,7 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
         .on_step(move |st: &mut State, steps: i32, _tx: &mut Tx| {
             let w = clamp_width(
                 st.editor.pane_row_w,
-                current(st, kind) + steps as f32 * GRIP_STEP,
+                current(st, kind) + steps as f32 * GRIP_STEP * dir,
             );
             set_width(st, kind, w);
         })

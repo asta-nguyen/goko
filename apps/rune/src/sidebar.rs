@@ -32,11 +32,41 @@ pub const MAX_SIDEBAR_W: f32 = 480.0;
 pub const SIDEBAR_WIDTH_KEY: &str = "rune.sidebar_width";
 /// The settings key the selected workspace id is stored under.
 pub const SELECTED_WORKSPACE_KEY: &str = "rune.selected_workspace";
+/// The settings key the sidebar's docked side (left or right) is stored under.
+pub const SIDEBAR_SIDE_KEY: &str = "rune.sidebar_position";
 pub const PROJECTS_SCROLL_KEY: &str = "sidebar-projects-scroll";
 
 /// Clamp a sidebar width to the draggable range.
 pub fn clamp_width(width: f32) -> f32 {
     width.clamp(MIN_SIDEBAR_W, MAX_SIDEBAR_W)
+}
+
+/// Which edge of the window the sidebar docks against — VS Code's
+/// "Move Side Bar Left/Right". Persisted under [`SIDEBAR_SIDE_KEY`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Side {
+    #[default]
+    Left,
+    Right,
+}
+
+impl Side {
+    /// The settings-store value for each side.
+    pub fn store_value(self) -> &'static str {
+        match self {
+            Side::Left => "left",
+            Side::Right => "right",
+        }
+    }
+
+    /// Parse the stored value; anything unrecognized falls back to `Left`,
+    /// matching how the other settings fall back per field.
+    pub fn parse(raw: &str) -> Side {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "right" => Side::Right,
+            _ => Side::Left,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,14 +1243,20 @@ fn small_button(label: &str, tone: Color, ink: &Ink, action: impl Fn(&mut State)
 /// ResizableSplit separator: an 8 px zone with a 1 px border line centred,
 /// full height. Dragging it resizes the sidebar between 220 and 480 px; the
 /// width is saved when the drag ends, so it survives the next launch.
-pub fn separator(_s: &State, ink: &Ink) -> El {
+pub fn separator(s: &State, ink: &Ink) -> El {
+    // On the left the bar follows the pointer (+dx widens); on the right the
+    // separator sits on the sidebar's leading edge, so -dx widens it.
+    let dir = match s.sidebar_side {
+        Side::Left => 1.0,
+        Side::Right => -1.0,
+    };
     el().w(8.0)
         .h_full()
         .cursor(rune::Cursor::ResizeColumn)
         .role("separator")
         .label("Resize sidebar")
         .child(el().absolute(3.5, 0.0).w(1.0).h_full().fill(ink.border))
-        .on_drag(|s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+        .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
             match d.phase {
                 rune::Phase::Down => {
                     // The grab offset: the width follows the pointer from
@@ -1229,14 +1265,14 @@ pub fn separator(_s: &State, ink: &Ink) -> El {
                 }
                 rune::Phase::Move => {
                     tx.instant();
-                    s.sidebar_width = clamp_width(d.data + d.dx);
+                    s.sidebar_width = clamp_width(d.data + d.dx * dir);
                 }
                 rune::Phase::Up => s.persist_sidebar_width(),
             }
         })
         // The arrow keys resize the sidebar too, like AppKit's split views.
-        .on_step(|s: &mut State, steps, _| {
-            s.sidebar_width = clamp_width(s.sidebar_width + steps as f32 * 8.0);
+        .on_step(move |s: &mut State, steps, _| {
+            s.sidebar_width = clamp_width(s.sidebar_width + steps as f32 * 8.0 * dir);
             s.persist_sidebar_width();
         })
 }
@@ -2320,6 +2356,48 @@ mod tests {
             ))),
         });
         assert_eq!(s.sidebar_width, MAX_SIDEBAR_W);
+    }
+
+    #[test]
+    fn side_parses_stored_value_with_left_fallback() {
+        assert_eq!(Side::parse("left"), Side::Left);
+        assert_eq!(Side::parse("right"), Side::Right);
+        assert_eq!(Side::parse("Right"), Side::Right);
+        assert_eq!(Side::parse("  RIGHT  "), Side::Right);
+        assert_eq!(Side::parse("bogus"), Side::Left);
+        assert_eq!(Side::parse(""), Side::Left);
+        assert_eq!(Side::default(), Side::Left);
+    }
+
+    #[test]
+    fn a_stored_side_is_applied_on_its_getsetting_reply() {
+        let mut s = State::new(test_handle());
+        assert_eq!(s.sidebar_side, Side::Left);
+        s.apply_reply(crate::editor::backend::Reply {
+            req: crate::editor::backend::Req::GetSetting {
+                key: SIDEBAR_SIDE_KEY.to_string(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Ok(crate::editor::backend::ReplyData::Setting(Some(
+                "right".to_string(),
+            ))),
+        });
+        assert_eq!(s.sidebar_side, Side::Right);
+
+        // An unrecognized value falls back to Left.
+        let mut s = State::new(test_handle());
+        s.apply_reply(crate::editor::backend::Reply {
+            req: crate::editor::backend::Req::GetSetting {
+                key: SIDEBAR_SIDE_KEY.to_string(),
+            },
+            generation: 0,
+            checkout_key: None,
+            result: Ok(crate::editor::backend::ReplyData::Setting(Some(
+                "nonsense".to_string(),
+            ))),
+        });
+        assert_eq!(s.sidebar_side, Side::Left);
     }
 
     #[test]

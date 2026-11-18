@@ -34,21 +34,30 @@ fn stashes_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
         return history::error_pane(h.error.as_deref().unwrap_or("failed"), ink);
     }
 
+    let on_right = s.list_aside_side == crate::sidebar::Side::Right;
+    let list = aside(s, ink, k)
+        .w(pane_layout::current(s, PaneKind::StashesList))
+        .h_full()
+        .shrink()
+        .min_w(pane_layout::PANE_MIN)
+        .border_sides(
+            if on_right {
+                [0.0, 0.0, 0.0, 1.0]
+            } else {
+                [0.0, 1.0, 0.0, 0.0]
+            },
+            ink.border,
+        );
+    let detail = detail_pane(s, ink, k)
+        .grow(1.0)
+        .min_w(pane_layout::SIBLING_MIN)
+        .h_full();
     let mut root = row().grow(1.0).min_w(0.0).h_full().min_h(0.0);
-    root = root.child(
-        aside(s, ink, k)
-            .w(pane_layout::current(s, PaneKind::StashesList))
-            .h_full()
-            .shrink()
-            .min_w(pane_layout::PANE_MIN)
-            .border_sides([0.0, 1.0, 0.0, 0.0], ink.border),
-    );
-    root = root.child(
-        detail_pane(s, ink, k)
-            .grow(1.0)
-            .min_w(pane_layout::SIBLING_MIN)
-            .h_full(),
-    );
+    root = if on_right {
+        root.child(detail).child(list)
+    } else {
+        root.child(list).child(detail)
+    };
 
     // Changed-file row menu on the stash detail: a secondary press on a
     // `changed_file_row` stores the point and the path here (the Flat host
