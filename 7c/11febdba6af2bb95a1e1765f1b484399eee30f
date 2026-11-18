@@ -1,0 +1,23 @@
+apps/rune/src/editor/files.rs
+  s_13c810b7b7e4cd::t_240edf3025bca5 3596-3610,3612,3616,3624,3626-3649
+crates/app-core/src/git_write.rs
+  s_13c810b7b7e4cd::t_deaf1b7e55820c 396-398
+crates/app-core/src/usage_records.rs
+  s_13c810b7b7e4cd::t_bc2cacb202fc9a 452-453,455-456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7c11febdba6af2bb95a1e1765f1b484399eee30f",
+  "prompts": {},
+  "sessions": {
+    "s_13c810b7b7e4cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7d3bb7c-e973-4270-80b9-fcfb20b1d4af",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
