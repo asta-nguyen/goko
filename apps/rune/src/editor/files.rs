@@ -7,6 +7,8 @@
 //! column fed by the same text; the code owner's `code.rs` can later swap
 //! this surface behind the same `OpenDoc` state.
 
+use std::path::Path;
+
 use rune::{El, KeyEvent, Tx, col, row};
 use rune_kit::{
     FileNode, Kit, MenuItem, ScrollBar, Tree, TreeItem, TreeKey, TreeModel, TreeStyle, context_menu,
@@ -33,6 +35,13 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
         root = root.child(dialog);
     }
     root = root.child(toolbar(s, ink, k));
+    if s.editor.files.truncated {
+        root = root.child(theme::txt(
+            "File list limited to 20,000 entries.",
+            theme::T11,
+            ink.muted,
+        ));
+    }
     root = root.child(
         row()
             .grow(1.0)
@@ -470,6 +479,13 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                     .danger(true)
                     .on_select(move |st: &mut State| {
                         st.editor.files.menu = None;
+                        if blocks_child_root(st, &trash_id) {
+                            st.notice = Some(
+                                "This folder is a registered repository; remove it from the sidebar instead."
+                                    .into(),
+                            );
+                            return;
+                        }
                         st.editor.files.delete_prompt = Some(trash_id.clone());
                     }),
             )
@@ -510,8 +526,26 @@ fn reveal(path: &std::path::Path) {
     }
 }
 
+/// A folder-tree rename or trash may not move a registered child
+/// repository root (or an ancestor of one); the sidebar owns that row.
+fn blocks_child_root(s: &State, path: &str) -> bool {
+    let Some(checkout) = &s.editor.checkout else {
+        return false;
+    };
+    let target = checkout.join(path);
+    s.editor.projects.iter().any(|project| {
+        project.parent_project_id.is_some() && Path::new(&project.project.root).starts_with(&target)
+    })
+}
+
 /// Open the rename prompt with the entry's current name filled in.
 fn ask_for_rename(s: &mut State, id: &str) {
+    if blocks_child_root(s, id) {
+        s.notice = Some(
+            "This folder is a registered repository; remove it from the sidebar instead.".into(),
+        );
+        return;
+    }
     s.ask_for_input(crate::sidebar::SidebarInput::RenameFile { id: id.to_string() });
     let name = id.rsplit('/').next().unwrap_or(id);
     s.sidebar_text = rune::edit::TextEdit::new(name);
@@ -3374,6 +3408,26 @@ mod tests {
             cur.is_some() && cur.as_deref() != Some("top.txt"),
             "arrow kept native move: {cur:?}"
         );
+    }
+
+    #[test]
+    fn a_child_repository_root_is_protected_from_the_folder_tree() {
+        let mut s = State::new(crate::test_handle());
+        s.editor.checkout = Some(std::path::PathBuf::from("/work/folder"));
+        s.editor.projects = vec![app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: "child".into(),
+                name: "child".into(),
+                root: "/work/folder/child".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+            parent_project_id: Some("folder".into()),
+        }];
+        assert!(blocks_child_root(&s, "child"));
+        assert!(!blocks_child_root(&s, "child/deeper"));
+        assert!(!blocks_child_root(&s, "other"));
     }
 
     /// A dirty draft parked in another tab blocks rename and trash of the

@@ -13,6 +13,7 @@ pub mod git_write;
 pub mod home;
 pub mod lsp;
 pub mod platform;
+pub mod project_scan;
 pub mod projects;
 pub mod session_debug;
 pub mod store;

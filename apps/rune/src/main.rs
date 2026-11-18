@@ -7,6 +7,7 @@ mod chrome;
 mod daemon;
 mod data;
 mod editor;
+mod nested_import;
 mod panes;
 mod picker;
 mod project_map;
@@ -187,6 +188,12 @@ pub struct State {
     /// checkout `active_workspace` highlight.
     selected_workspace: Option<String>,
     project_map: project_map::ProjectMapState,
+    /// Add Project's nested-repository review dialog.
+    pub nested_import: nested_import::NestedImportState,
+    /// Monotonic token for the next nested scan/import request.
+    pub nested_import_token: u64,
+    /// Project to select once an import reply's projects are refreshed.
+    pub nested_import_select: Option<String>,
     /// The saved selection read from startup is still pending; a user choice
     /// or its reply clears it.
     workspace_restore_pending: bool,
@@ -340,6 +347,9 @@ impl State {
             workspaces_error: None,
             selected_workspace: None,
             project_map: Default::default(),
+            nested_import: Default::default(),
+            nested_import_token: 0,
+            nested_import_select: None,
             workspace_restore_pending: true,
             workspace_remove_confirm: None,
             sidebar_confirm: None,
@@ -669,9 +679,60 @@ impl State {
         )
     }
 
+    /// Sessions with no project that sit inside `project`'s root join it.
+    /// One that already belongs to a project stays put, so its tab is not
+    /// pulled out from under the project filter.
+    fn join_sessions_to_project(&mut self, project: &app_core::projects::ProjectView) {
+        let root = std::path::Path::new(&project.project.root);
+        for s in &mut self.data.sessions {
+            let cwd = std::path::Path::new(&s.info.cwd);
+            if cwd.starts_with(root)
+                && let Some(meta) = self.session_metas.get_mut(&s.info.id)
+                && meta.project_id.is_none()
+            {
+                meta.project_id = Some(project.project.id.clone());
+                s.meta = Some(meta.clone());
+                backend::enqueue(
+                    &mut self.editor.backend,
+                    backend::Job::project(backend::Req::InsertSessionMeta(meta.clone())),
+                );
+            }
+        }
+    }
+
     /// Apply one backend reply: the app-level kinds land here, the editor's
     /// own kinds in the editor state.
     pub fn apply_reply(&mut self, reply: backend::Reply) {
+        let scan_token = match &reply.req {
+            backend::Req::ScanNestedRepos { token, .. } => Some(*token),
+            _ => None,
+        };
+        if let Some(token) = scan_token {
+            match reply.result {
+                Ok(backend::ReplyData::NestedScan {
+                    token: reply_token,
+                    result,
+                }) if reply_token == token => nested_import::apply_scan(self, token, result),
+                Err(error) => nested_import::apply_error(self, token, error),
+                _ => {}
+            }
+            return;
+        }
+        let import_token = match &reply.req {
+            backend::Req::ImportNestedRepos { token, .. } => Some(*token),
+            _ => None,
+        };
+        if let Some(token) = import_token {
+            match reply.result {
+                Ok(backend::ReplyData::NestedImport {
+                    token: reply_token,
+                    result,
+                }) if reply_token == token => nested_import::apply_import(self, token, result),
+                Err(error) => nested_import::apply_error(self, token, error),
+                _ => {}
+            }
+            return;
+        }
         match &reply.req {
             backend::Req::SessionMetaList => {
                 if let Ok(backend::ReplyData::SessionMetas(rows)) = &reply.result {
@@ -1029,23 +1090,7 @@ impl State {
                     // Sessions with no project that sit in the new folder join
                     // it. One that already belongs to a project stays put, so
                     // its tab is not pulled out from under the project filter.
-                    let root = std::path::Path::new(&project.project.root);
-                    for s in &mut self.data.sessions {
-                        let cwd = std::path::Path::new(&s.info.cwd);
-                        if cwd.starts_with(root)
-                            && let Some(meta) = self.session_metas.get_mut(&s.info.id)
-                            && meta.project_id.is_none()
-                        {
-                            meta.project_id = Some(project.project.id.clone());
-                            s.meta = Some(meta.clone());
-                            backend::enqueue(
-                                &mut self.editor.backend,
-                                backend::Job::project(backend::Req::InsertSessionMeta(
-                                    meta.clone(),
-                                )),
-                            );
-                        }
-                    }
+                    self.join_sessions_to_project(project);
                 }
                 self.editor.apply_reply(reply);
                 return;
@@ -1211,6 +1256,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     for map_layer in project_map::layers(s) {
         root = root.child(map_layer);
     }
+    for import_layer in nested_import::layers(s) {
+        root = root.child(import_layer);
+    }
     // A failed call's notice: a toast the user closes, or that expires after
     // 8 s. Without it the message was recorded and never shown.
     if let Some(text) = &s.notice {
@@ -1228,6 +1276,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     rune_kit::root(root, layer).on_paste(|s: &mut State, text: &str, _tx: &mut Tx| {
         if s.view == View::Terminal
             && !s.project_map.open
+            && !s.nested_import.open
             && s.sidebar_input.is_none()
             && s.tab_menu.is_none()
             && let Some(session) = s.focused_terminal_session()
@@ -1398,6 +1447,20 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // Quick-open: rebuild matches when the path cache or checkout moved.
     changed |= editor::quick_open::poll(s);
     changed |= project_map::poll(s);
+    if let Some(project_id) = s.nested_import_select.clone()
+        && s.editor
+            .projects
+            .iter()
+            .any(|project| project.project.id == project_id)
+    {
+        s.nested_import_select = None;
+        editor::navigation::navigate(
+            s,
+            editor::navigation::PendingNav::SelectMappedProject { project_id },
+            tx,
+        );
+        changed = true;
+    }
     // A resolved LSP definition navigates through the same dirty-draft
     // guard as every other pending navigation.
     if let Some(nav) = editor::lsp::take_nav(&mut s.editor) {
@@ -1480,6 +1543,9 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     }
     if s.project_map.open {
         return project_map::key(s, ev, tx);
+    }
+    if s.nested_import.open {
+        return nested_import::key(s, ev, tx);
     }
     // The sidebar's prompt, or one of its searchable selects, owns the
     // keyboard while it is open: its field takes the typing, not the shell.
@@ -1576,6 +1642,7 @@ fn shortcut_owned(s: &State) -> bool {
         || s.workspace_remove_confirm.is_some()
         || s.sidebar_menu.is_some()
         || s.sidebar_picker_open()
+        || s.nested_import.open
         || s.editor.guard.is_some()
         || s.editor.quick_open.open
         || s.editor.project_picker.open
@@ -1734,7 +1801,7 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent, base: Option<char>) -> bool 
 /// the cursor (`Preedit`) and typed into the focused session once it is
 /// final (`Commit`) — Vietnamese Telex and the other marked-text methods.
 fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
-    if s.project_map.open || s.tab_menu.is_some() {
+    if s.project_map.open || s.nested_import.open || s.tab_menu.is_some() {
         return true;
     }
     if s.view != View::Terminal {
@@ -1815,6 +1882,7 @@ mod view_tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }
     }
 
@@ -3412,6 +3480,7 @@ mod view_tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         };
         s.apply_reply(backend::Reply {
             req: backend::Req::AddProject {

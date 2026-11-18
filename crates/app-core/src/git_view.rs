@@ -880,6 +880,58 @@ pub fn ignored_children(checkout: &Path, directory: &str) -> Result<Vec<String>,
     Ok(out)
 }
 
+/// Every regular file and symlink under `checkout`, recursively, with
+/// `/`-separated relative paths, sorted. `.git` and the scan's VCS, hidden and
+/// heavy build directories are skipped; a symlinked directory is listed but
+/// never traversed. The flag is true when the 20,000-file cap was reached.
+pub fn folder_file_list(checkout: &Path) -> Result<(Vec<String>, bool), BridgeError> {
+    const MAX_FILES: usize = 20_000;
+    let root = std::fs::read_dir(checkout)
+        .map_err(|error| invalid(format!("cannot read the folder: {error}")))?;
+    let mut folders = vec![(0u32, root)];
+    let mut paths = Vec::new();
+    let mut truncated = false;
+    while let Some((depth, entries)) = folders.pop() {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if crate::project_scan::is_skipped_dir(&name, depth + 1) {
+                    continue;
+                }
+                if let Ok(entries) = std::fs::read_dir(entry.path()) {
+                    folders.push((depth + 1, entries));
+                }
+                continue;
+            }
+            if name == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(checkout) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            if relative.is_empty() {
+                continue;
+            }
+            paths.push(relative);
+            if paths.len() >= MAX_FILES {
+                truncated = true;
+                break;
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok((paths, truncated))
+}
+
 /// Search tracked and non-ignored untracked text files without changing the checkout.
 pub fn search(checkout: &Path, query: &str) -> Result<GitViewSearch, BridgeError> {
     let query = query.trim();
@@ -2579,6 +2631,85 @@ mod tests {
                 "tracked.txt"
             ]
         );
+    }
+
+    #[test]
+    fn folder_file_list_walks_the_filesystem_and_skips_git_and_heavy_dirs() {
+        let dir = TempDir::new("folder-list");
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("child/.git")).unwrap();
+        fs::write(root.join("child/.git/HEAD"), "ref\n").unwrap();
+        fs::write(root.join("child/file.txt"), "x\n").unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        fs::write(root.join(".env"), "K=1\n").unwrap();
+        fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+        fs::write(root.join("node_modules/dep/index.js"), "x\n").unwrap();
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        fs::write(root.join(".hidden/secret"), "x\n").unwrap();
+        // A linked worktree's `.git` is a file, not a directory.
+        fs::write(root.join(".git"), "gitdir: /tmp/elsewhere\n").unwrap();
+
+        let (paths, truncated) = folder_file_list(&root).unwrap();
+        assert!(!truncated);
+        assert_eq!(
+            paths,
+            vec![".env", "a.txt", "child/file.txt", "src/main.rs"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_file_list_lists_a_symlinked_directory_but_does_not_traverse_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new("folder-list-link");
+        let root = dir.path().canonicalize().unwrap();
+        let outside = TempDir::new("folder-list-outside");
+        fs::write(outside.path().join("secret.txt"), "x\n").unwrap();
+        symlink(outside.path(), root.join("link")).unwrap();
+        fs::write(root.join("real.txt"), "x\n").unwrap();
+
+        let (paths, _) = folder_file_list(&root).unwrap();
+        assert_eq!(paths, vec!["link", "real.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_file_list_reports_an_unreadable_root_and_skips_an_unreadable_subdir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new("folder-list-perm");
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::write(root.join("locked/file.txt"), "x\n").unwrap();
+        fs::write(root.join("ok.txt"), "x\n").unwrap();
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let (paths, _) = folder_file_list(&root).unwrap();
+        assert_eq!(paths, vec!["ok.txt"]);
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = folder_file_list(&root).unwrap_err();
+        assert!(
+            error.message.contains("cannot read the folder"),
+            "{}",
+            error.message
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn folder_file_list_caps_at_twenty_thousand_files() {
+        let dir = TempDir::new("folder-list-cap");
+        let root = dir.path().canonicalize().unwrap();
+        for index in 0..20_001 {
+            fs::write(root.join(format!("f{index:05}.txt")), "").unwrap();
+        }
+        let (paths, truncated) = folder_file_list(&root).unwrap();
+        assert_eq!(paths.len(), 20_000);
+        assert!(truncated);
     }
 
     #[test]

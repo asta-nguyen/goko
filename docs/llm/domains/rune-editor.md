@@ -278,7 +278,7 @@ Evidence: `apps/rune/src/editor/workspace.rs`
 
 ### RNE-checkout-selection
 
-The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from terminal sessions.
+The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules: file jobs accept the project root or a listed worktree without requiring a Git worktree, while Git jobs additionally require a real non-bare Git worktree root, and editor selection is never derived from terminal sessions.
 
 #### Scenario: Pick project and worktree
 
@@ -296,10 +296,15 @@ The system SHALL let the user pick a registered project and one of its checkouts
 
 - GIVEN a checkout path that is not the project root or a listed worktree
 - WHEN the backend validates it for a Git or file job
-- THEN `projects::git_checkout`/`project_checkout` rejects it and no Git command runs
+- THEN `projects::file_checkout`/`git_checkout` rejects it and no Git command runs
+
+#### Scenario: Folder project file job vs Git job
+
+- GIVEN a registered folder project whose root is not a Git worktree
+- WHEN the editor issues a file job and a Git job for that root
+- THEN the file job proceeds through `projects::file_checkout` and the Git job is rejected by `projects::git_checkout` with the existing not-a-Git-worktree error
 
 Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/data.rs`, `crates/app-core/src/projects.rs`
-
 ### RNE-code-surface
 
 The system SHALL edit the open document in a rune-kit native text surface with a line-number gutter, offering `⌘S` save, `⌘F` find with match count and `⌘G`/`⇧⌘G` match navigation, `Escape` to close the find bar, `Tab`/`Shift+Tab` line indentation, `Enter` auto-indent, and read-only selectable rendering for files that cannot be edited.
@@ -580,6 +585,30 @@ The system SHALL open complete UTF-8 text files up to the shared 1 MiB cap for e
 
 Evidence: `apps/rune/src/editor/draft.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/code.rs`, `crates/app-core/src/git_view.rs`
 
+### RNE-folder-project
+
+The system SHALL treat a registered project whose root is not a non-bare Git worktree root as a folder project: its Files section is the default section and lists the folder's filesystem recursively — regular files and symlinks, excluding `.git` at every level and the scan's VCS, hidden and heavy build directories, never traversing a symlinked directory, with `/`-separated relative paths and a bounded list that reports truncation — while file open, edit, save, create, rename, trash, media preview, Quick Open and Servers work through the folder root as the checkout; Changes, History and Stashes show an honest "not a Git repository" state without issuing Git reads, and the branch badge, worktree controls, blame, change gutter, content search and concept search are unavailable with an honest message instead of a Git error.
+
+#### Scenario: browse and edit a folder project
+
+- GIVEN a folder project is selected
+- WHEN the editor opens
+- THEN Files is active, the tree shows the folder's files and child repository files with `.git` hidden, and a text file opens, edits and saves through the existing draft guard
+
+#### Scenario: Git features stay honest
+
+- GIVEN a folder project is selected
+- WHEN the user opens Changes, History or Stashes, presses the blame chip, or types in the content search box
+- THEN the section shows that the folder is not a Git repository, no Git request is issued for it, and no branch, worktree, blame, gutter or search result is fabricated
+
+#### Scenario: bounded folder list
+
+- GIVEN the folder contains more files than the list bound
+- WHEN Files loads
+- THEN the tree shows the first bounded set and a truncation notice, and the editor remains usable
+
+Evidence: `crates/app-core/src/git_view.rs`, `crates/app-core/src/projects.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/navigation.rs`
+
 ### RNE-go-to-definition
 
 The system SHALL, on `Cmd`/`Ctrl`+click in the Files editor, first offer the click to the language-server definition path when a server covers the file, and otherwise resolve an import specifier against the checkout's file list — relative paths with extension and `index.*` probing, `.js` to TypeScript source, and `tsconfig`/`jsconfig` `paths` aliases from the nearest config — or find a clicked name's unique declaration through content search, falling back to Text mode with the name as the query when no single declaration exists; an absent, failed, timed-out, or empty language-server answer falls back to the same heuristic path.
@@ -840,13 +869,19 @@ Evidence: `apps/rune/src/editor/quick_open.rs`, `apps/rune/src/editor/keyboard.r
 
 ### RNE-section-views
 
-The system SHALL present the editor as five sections — Files, Changes, History, Stashes, Servers — defaulting to Changes, render only the active section's view while retaining each section's state in `EditorState` across switches, and issue a section's reads on activation, checkout selection, or manual refresh rather than for hidden sections.
+The system SHALL present the editor as five sections — Files, Changes, History, Stashes, Servers — defaulting to Changes for a Git checkout and Files for a folder project, render only the active section's view while retaining each section's state in `EditorState` across switches, and issue a section's reads on activation, checkout selection, or manual refresh rather than for hidden sections, while a folder project's Changes, History and Stashes show the honest not-a-Git-repository state without issuing Git reads.
 
 #### Scenario: Switch sections
 
 - GIVEN a checkout is selected and Changes is active with loaded data
 - WHEN the user presses the History tab
 - THEN `section` becomes History, its reads issue through `refresh_active`, and only History's view renders; returning to Changes restores its retained selection and data from `EditorState`
+
+#### Scenario: Folder project defaults to Files
+
+- GIVEN a folder project is selected
+- WHEN the editor opens
+- THEN Files is active, and pressing Changes, History or Stashes shows the not-a-Git-repository state without a Git read
 
 #### Scenario: Hidden sections stay cold
 
@@ -855,7 +890,6 @@ The system SHALL present the editor as five sections — Files, Changes, History
 - THEN no Files, History, Stashes, or Servers reads are issued until each section is first activated
 
 Evidence: `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/lsp.rs`
-
 ### RNE-sidebar-sync
 
 The system SHALL keep the chrome sidebar's committed workspace and the editor's checkout selection in sync — activating the committed checkout when the Editor view opens, decoding `active_workspace` into project and checkout, ignoring `__unassigned__`, unregistered or vanished project ids, and an already-matching selection, through the same draft-guarded `SelectCheckout` path, and clearing the committed workspace when a project switch drops the checkout so no stale row stays highlighted.
@@ -950,7 +984,6 @@ is never shown. No probe runs while the editor is hidden; returning requests a
 fresh probe. Pending reads retain the last result with a checking tooltip, while
 initial loading and failed/unqueued reads show loading or unavailable states.
 Git failures are retried by the same interval without changing documents.
-
 
 Conflict rows activate the guarded Files editor from either pointer or keyboard
 and carry a badge naming what Git reports: Both modified, Both added, Deleted
@@ -1089,7 +1122,6 @@ cleared by a save, overwrite or reload. `AutoRefresh` keeps the poll schedule an
 the view-entry/focus edge per checkout; `CommitState::merge_prefilled` records
 that the merge message was offered, until the merge ends.
 
-
 In-memory: `EditorState` holds the registered-project list
 (`projects`/`projects_loading`/`projects_error`), per-project
 `sidebar_worktrees` entries, the picker's `worktrees` list, project/checkout
@@ -1126,7 +1158,6 @@ session state — the daemon's session lifecycle is not involved in the editor.
 
 - Current-branch probes read only Git metadata. They never switch branches,
   stage/commit, reload a file, or replace an unsaved editor draft.
-
 
 - Project metadata runs on the same worker lane as project-scoped jobs:
   `Req::Projects` lists the `goko.db` projects table, `Req::AddProject`
@@ -1222,13 +1253,11 @@ documented in `quit_guard.rs` rather than silently claimed.
   their content height and vertical scrolling; the input fills unused viewport
   space while its wrapper retains at least one code line per document line.
 
-
 - `branch.rs` covers named/unborn branches, external checkout, detached HEAD,
   invalid Git metadata, paced active-only polling, one outstanding request,
   queue refusal, and hiding foreign/failed cached values. `backend.rs` covers
   branch-reply checkout/generation guards; `workspace.rs` verifies the long-name
   branch header remains inside a 480 px editor pane across all five sections.
-
 
 - `conflict.rs` tests marker widths, diff3/base exclusion, CRLF, UTF-8, empty
   sides, EOF, nested/incomplete blocks, and malformed fragments beside valid
@@ -1248,7 +1277,6 @@ documented in `quit_guard.rs` rather than silently claimed.
   Abort and Continue, the dialog, the binary Use Incoming button and the pane's
   Delete file and Keep their version; the row context menu, the Changes poll and
   the open-file disk check were not driven on screen.
-
 
 - `apps/rune` carries extensive inline `#[test]`/`#[tokio::test]` cases across
   `src/` — the count grows with each slice, so `cargo test -p goko-rune` is
@@ -1298,6 +1326,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - [Rune chrome](rune-chrome.md) — the daemon session chrome and view switch
 - [Desktop Editor](../architecture/editor.md) — the Tauri CodeMirror/Vim editor over the same `app-core` backend
 - [Architecture overview](../architecture/overview.md)
+
 
 ## Sources
 
@@ -1354,3 +1383,5 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `crates/app-core/src/lsp.rs`
 - `crates/app-core/src/store.rs`
 - `crates/app-core/tests/fixtures/fake_acp_agent.py`
+- `crates/app-core/src/project_scan.rs`
+- `apps/rune/src/nested_import.rs`

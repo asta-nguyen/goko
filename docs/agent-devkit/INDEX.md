@@ -11,8 +11,10 @@
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))
 
+
 ## Archived changes
 
+- [Folder projects and nested repository import](changes/archive/folder-projects/design.md) ([tasks](changes/archive/folder-projects/tasks.md), [delta](changes/archive/folder-projects/delta.md))
 - [Agent snapshot: copy code for the terminal](changes/archive/agent-snapshot/delta.md)
 - [Agent snapshot: code context menu](changes/archive/agent-snapshot-menu/delta.md)
 - [Windows support: port gokod + goko-rune to Windows](changes/archive/2026-11-16-29-windows-support/design.md) ([tasks](changes/archive/2026-11-16-29-windows-support/tasks.md))

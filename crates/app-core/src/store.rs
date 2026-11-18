@@ -55,6 +55,14 @@ const MIGRATIONS: &[&str] = &[
 ",
     // A session outside any project belongs to the workspace it started in.
     "ALTER TABLE sessions ADD COLUMN workspace_id TEXT;",
+    // A folder project's child repositories. Deleting either project removes
+    // only the link; the other project keeps its row, workspace and files.
+    "
+    CREATE TABLE project_parents (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        parent_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE
+    );
+",
 ];
 
 /// A registered project row. Whether `root` still exists is computed at list time by the
@@ -69,6 +77,19 @@ pub struct Project {
     pub workspace_id: String,
     /// Unix epoch milliseconds.
     pub created_at: i64,
+}
+
+/// What linking a repository under a folder project did.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChildLink {
+    /// The project was new or had no parent and now links to this parent.
+    Added(Project),
+    /// The project already links to this parent.
+    AlreadyKnown(Project),
+    /// The project links to another parent; nothing changed.
+    OtherParent(Project),
+    /// The project is registered in another workspace; nothing changed.
+    OtherWorkspace(Project),
 }
 
 /// A named group of registered projects. The Default workspace always exists.
@@ -192,6 +213,96 @@ impl Store {
         Ok(project)
     }
 
+    /// Register a repository as a child of a folder project. A new child joins
+    /// the parent's workspace; an existing project keeps its workspace and
+    /// parent, and the result says why it was not linked.
+    pub fn add_child_project(
+        &self,
+        name: &str,
+        root: &str,
+        parent_id: &str,
+    ) -> Result<ChildLink, BridgeError> {
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| storage("cannot add the child project", error))?;
+        let parent_workspace: Option<String> = tx
+            .query_row(
+                "SELECT COALESCE(pw.workspace_id, ?2) FROM projects p \
+                 LEFT JOIN project_workspaces pw ON pw.project_id = p.id WHERE p.id = ?1",
+                params![parent_id, DEFAULT_WORKSPACE_ID],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| storage("cannot read the parent project", error))?;
+        let Some(parent_workspace) = parent_workspace else {
+            return Err(not_found(format!("no project '{parent_id}' is registered")));
+        };
+        let existing = tx
+            .query_row(
+                &format!("{} WHERE p.root = ?1", project_select()),
+                params![root],
+                |row| Ok((project(row)?, row.get::<_, Option<String>>(5)?)),
+            )
+            .optional()
+            .map_err(|error| storage("cannot read the child project", error))?;
+        let link = match existing {
+            Some((project, parent)) => {
+                if project.workspace_id != parent_workspace {
+                    ChildLink::OtherWorkspace(project)
+                } else if let Some(parent) = parent {
+                    if parent == parent_id {
+                        ChildLink::AlreadyKnown(project)
+                    } else {
+                        ChildLink::OtherParent(project)
+                    }
+                } else {
+                    tx.execute(
+                        "INSERT INTO project_parents (project_id, parent_id) VALUES (?1, ?2)",
+                        params![project.id, parent_id],
+                    )
+                    .map_err(|error| storage("cannot link the child project", error))?;
+                    ChildLink::Added(project)
+                }
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO projects (id, name, root, created_at) VALUES (?1, ?2, ?3, ?4)",
+                    params![uuid::Uuid::new_v4().to_string(), name, root, now_ms()],
+                )
+                .map_err(|error| storage("cannot add the child project", error))?;
+                let id: String = tx
+                    .query_row(
+                        "SELECT id FROM projects WHERE root = ?1",
+                        params![root],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| storage("cannot read the child project", error))?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO project_workspaces (project_id, workspace_id) VALUES (?1, ?2)",
+                    params![id, parent_workspace],
+                )
+                .map_err(|error| storage("cannot add the child project", error))?;
+                tx.execute(
+                    "INSERT INTO project_parents (project_id, parent_id) VALUES (?1, ?2)",
+                    params![id, parent_id],
+                )
+                .map_err(|error| storage("cannot link the child project", error))?;
+                let project = tx
+                    .query_row(
+                        &format!("{} WHERE p.id = ?1", project_select()),
+                        params![id],
+                        project,
+                    )
+                    .map_err(|error| storage("cannot read the child project", error))?;
+                ChildLink::Added(project)
+            }
+        };
+        tx.commit()
+            .map_err(|error| storage("cannot add the child project", error))?;
+        Ok(link)
+    }
+
     pub fn list_projects(&self) -> Result<Vec<Project>, BridgeError> {
         let conn = self.lock()?;
         let mut stmt = conn
@@ -205,6 +316,43 @@ impl Store {
             .map_err(|error| storage("cannot list the projects", error))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| storage("cannot list the projects", error))
+    }
+
+    /// Every child-project link, as `(project_id, parent_id)`.
+    pub fn list_project_parents(&self) -> Result<Vec<(String, String)>, BridgeError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT project_id, parent_id FROM project_parents")
+            .map_err(|error| storage("cannot list the project parents", error))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| storage("cannot list the project parents", error))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| storage("cannot list the project parents", error))
+    }
+
+    /// The parent id of one project, when it is a child project.
+    pub fn parent_of(&self, project_id: &str) -> Result<Option<String>, BridgeError> {
+        self.lock()?
+            .query_row(
+                "SELECT parent_id FROM project_parents WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| storage("cannot read the project parent", error))
+    }
+
+    /// One project row by root, when it is registered.
+    pub fn project_by_root(&self, root: &str) -> Result<Option<Project>, BridgeError> {
+        self.lock()?
+            .query_row(
+                &format!("{} WHERE p.root = ?1", project_select()),
+                params![root],
+                project,
+            )
+            .optional()
+            .map_err(|error| storage("cannot read the project", error))
     }
 
     /// Every workspace, Default first, then creation order.
@@ -312,10 +460,24 @@ impl Store {
             )));
         }
         require_workspace(&tx, workspace_id)?;
+        // A child moving on its own leaves its parent's group; a parent
+        // moving takes its children with it.
+        tx.execute(
+            "DELETE FROM project_parents WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|error| storage("cannot move the project", error))?;
         tx.execute(
             "INSERT INTO project_workspaces (project_id, workspace_id) VALUES (?1, ?2) \
              ON CONFLICT (project_id) DO UPDATE SET workspace_id = excluded.workspace_id",
             params![project_id, workspace_id],
+        )
+        .map_err(|error| storage("cannot move the project", error))?;
+        tx.execute(
+            "INSERT INTO project_workspaces (project_id, workspace_id) \
+             SELECT project_id, ?1 FROM project_parents WHERE parent_id = ?2 \
+             ON CONFLICT (project_id) DO UPDATE SET workspace_id = excluded.workspace_id",
+            params![workspace_id, project_id],
         )
         .map_err(|error| storage("cannot move the project", error))?;
         tx.commit()
@@ -449,11 +611,13 @@ fn migrate(conn: &mut Connection) -> Result<(), BridgeError> {
     Ok(())
 }
 
-/// The project row plus its workspace membership, one row per project.
+/// The project row plus its workspace membership and parent link, one row per
+/// project.
 fn project_select() -> String {
     format!(
-        "SELECT p.id, p.name, p.root, p.created_at, COALESCE(pw.workspace_id, '{DEFAULT_WORKSPACE_ID}') \
-         FROM projects p LEFT JOIN project_workspaces pw ON pw.project_id = p.id"
+        "SELECT p.id, p.name, p.root, p.created_at, COALESCE(pw.workspace_id, '{DEFAULT_WORKSPACE_ID}'), pp.parent_id \
+         FROM projects p LEFT JOIN project_workspaces pw ON pw.project_id = p.id \
+         LEFT JOIN project_parents pp ON pp.project_id = p.id"
     )
 }
 
@@ -736,6 +900,150 @@ mod tests {
         let metas = store.list_session_meta().unwrap();
         assert_eq!(metas[0].project_id, None);
         assert_eq!(metas[1].project_id, None);
+    }
+
+    #[test]
+    fn a_child_joins_the_parents_workspace_and_keeps_its_own_membership() {
+        let dir = TempDir::new("store-child");
+        let store = open(&dir);
+        let work = store.create_workspace("Work").unwrap();
+        let parent = store
+            .add_project("parent", "/tmp/parent", &work.id)
+            .unwrap();
+
+        let child = match store
+            .add_child_project("child", "/tmp/parent/child", &parent.id)
+            .unwrap()
+        {
+            ChildLink::Added(child) => child,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(child.workspace_id, work.id);
+        assert_eq!(
+            store.parent_of(&child.id).unwrap().as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert!(matches!(
+            store
+                .add_child_project("child", "/tmp/parent/child", &parent.id)
+                .unwrap(),
+            ChildLink::AlreadyKnown(_)
+        ));
+
+        // A project registered in another workspace is not moved.
+        let other = store.create_workspace("Other").unwrap();
+        let elsewhere = store
+            .add_project("elsewhere", "/tmp/elsewhere", &other.id)
+            .unwrap();
+        assert!(matches!(
+            store
+                .add_child_project("elsewhere", "/tmp/elsewhere", &parent.id)
+                .unwrap(),
+            ChildLink::OtherWorkspace(_)
+        ));
+        assert_eq!(elsewhere.workspace_id, other.id);
+
+        // A project under another parent is not reparented.
+        let second = store
+            .add_project("second", "/tmp/second", &work.id)
+            .unwrap();
+        let second_child = store
+            .add_child_project("second child", "/tmp/second/child", &second.id)
+            .unwrap();
+        assert!(matches!(second_child, ChildLink::Added(_)));
+        assert!(matches!(
+            store
+                .add_child_project("second child", "/tmp/second/child", &parent.id)
+                .unwrap(),
+            ChildLink::OtherParent(_)
+        ));
+        assert_eq!(store.list_project_parents().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn moving_a_parent_moves_children_and_moving_a_child_detaches() {
+        let dir = TempDir::new("store-move-parent");
+        let store = open(&dir);
+        let work = store.create_workspace("Work").unwrap();
+        let parent = store
+            .add_project("parent", "/tmp/p", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        let first = store
+            .add_child_project("first", "/tmp/p/first", &parent.id)
+            .unwrap();
+        let second = store
+            .add_child_project("second", "/tmp/p/second", &parent.id)
+            .unwrap();
+        let first = match first {
+            ChildLink::Added(project) => project,
+            other => panic!("{other:?}"),
+        };
+        let second = match second {
+            ChildLink::Added(project) => project,
+            other => panic!("{other:?}"),
+        };
+
+        store.move_project(&parent.id, &work.id).unwrap();
+        let workspace = |id: &str| {
+            store
+                .list_projects()
+                .unwrap()
+                .into_iter()
+                .find(|project| project.id == id)
+                .unwrap()
+                .workspace_id
+        };
+        assert_eq!(workspace(&parent.id), work.id);
+        assert_eq!(workspace(&first.id), work.id);
+        assert_eq!(workspace(&second.id), work.id);
+
+        store.move_project(&first.id, DEFAULT_WORKSPACE_ID).unwrap();
+        assert_eq!(store.parent_of(&first.id).unwrap(), None);
+        assert_eq!(
+            store.parent_of(&second.id).unwrap().as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(workspace(&first.id), DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn removing_a_parent_keeps_children_registered_as_roots() {
+        let dir = TempDir::new("store-remove-parent");
+        let store = open(&dir);
+        let parent = store
+            .add_project("parent", "/tmp/p", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        let child = match store
+            .add_child_project("child", "/tmp/p/child", &parent.id)
+            .unwrap()
+        {
+            ChildLink::Added(child) => child,
+            other => panic!("{other:?}"),
+        };
+
+        assert!(store.remove_project(&parent.id).unwrap());
+        assert_eq!(store.list_projects().unwrap().len(), 1);
+        assert_eq!(store.parent_of(&child.id).unwrap(), None);
+        assert!(store.remove_project(&child.id).unwrap());
+        assert!(store.list_projects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_parents_start_empty_and_survive_reopening() {
+        let dir = TempDir::new("store-parents-reopen");
+        let store = open(&dir);
+        assert!(store.list_project_parents().unwrap().is_empty());
+        let parent = store
+            .add_project("parent", "/tmp/p", DEFAULT_WORKSPACE_ID)
+            .unwrap();
+        store
+            .add_child_project("child", "/tmp/p/child", &parent.id)
+            .unwrap();
+        drop(store);
+
+        let again = open(&dir);
+        assert_eq!(again.list_project_parents().unwrap().len(), 1);
+        assert!(again.project_by_root("/tmp/p/child").unwrap().is_some());
     }
 
     #[test]

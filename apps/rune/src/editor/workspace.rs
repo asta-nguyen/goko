@@ -15,7 +15,6 @@ use rune::{El, Tx, col, row};
 use rune_kit::Kit;
 
 use crate::State;
-use crate::editor::backend::{self, Req};
 use crate::editor::navigation::{self, GuardAction, PendingNav};
 use crate::editor::state::Section;
 use crate::theme::{self, Ink};
@@ -427,6 +426,14 @@ fn notice_bar(notice: &crate::editor::state::Notice, ink: &Ink) -> El {
 /// from reply handlers and `navigation::set_section`, never the render pass.
 fn section_body(s: &State, ink: &Ink, k: &Kit) -> El {
     let _ = (ink, k);
+    if s.editor.folder_project
+        && matches!(
+            s.editor.section,
+            Section::Changes | Section::History | Section::Stashes
+        )
+    {
+        return folder_git_state(ink);
+    }
     match s.editor.section {
         Section::Files => crate::editor::files::files_view(s, ink, k),
         Section::Changes => crate::editor::changes::view(s),
@@ -434,6 +441,25 @@ fn section_body(s: &State, ink: &Ink, k: &Kit) -> El {
         Section::Stashes => crate::editor::stashes::view(s),
         Section::Servers => crate::editor::lsp::servers_view(s, ink, k),
     }
+}
+
+fn folder_git_state(ink: &Ink) -> El {
+    col()
+        .grow(1.0)
+        .w_full()
+        .items_center()
+        .justify_center()
+        .gap(6.0)
+        .child(theme::txt(
+            "This folder is not a Git repository.",
+            theme::T14M,
+            ink.text,
+        ))
+        .child(theme::txt(
+            "Git features need a repository. Use Files to browse the folder.",
+            theme::T12,
+            ink.muted,
+        ))
 }
 
 /// One pressable project in the empty Editor: its name and root path. The
@@ -505,23 +531,8 @@ fn empty_state(s: &State, ink: &Ink) -> El {
     }
     column.child(
         theme::btn_sm("Add project", Some((&theme::FOLDER_PLUS, 14.0)), true, ink).on_press_tx(
-            |_st: &mut State, tx: &mut Tx| {
-                tx.open_folder(
-                    rune::file_dialog::FileDialogOptions {
-                        title: "Choose a project folder".into(),
-                        ..Default::default()
-                    },
-                    |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| {
-                        if let Ok(Some(path)) = result {
-                            st.editor
-                                .backend
-                                .send(backend::Job::project(Req::AddProject {
-                                    path: path.display().to_string(),
-                                    workspace_id: st.workspace_id().to_string(),
-                                }));
-                        }
-                    },
-                );
+            |st: &mut State, tx: &mut Tx| {
+                crate::nested_import::start_add_project(st, tx);
             },
         ),
     )
@@ -626,6 +637,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }
     }
 

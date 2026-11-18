@@ -152,6 +152,36 @@ manual retry control.
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`
 
+### RNC-nested-repo-import
+
+The system SHALL, when Add Project selects a folder that is not a non-bare Git worktree root, scan it on a detached thread for nested non-bare Git worktree roots with bounded depth, repository count, directory count and time — skipping VCS metadata, hidden and heavy build directories, symlinks, and any directory inside an already-found repository — then show a modal review listing every candidate selected with a group-name field and the actions Import as group, Import separately and Open as Folder, revalidating each imported path on the worker for containment and worktree-root status and reporting imported, already-known and failed counts; a Git worktree root takes the existing direct Add Project path, and a plain folder with no candidates offers only Open as Folder.
+
+#### Scenario: plain parent folder with nested repositories
+
+- GIVEN a folder that is not a Git worktree root and contains two nested Git worktree roots
+- WHEN the user chooses it in Add Project
+- THEN a modal review lists both candidates selected with the folder name as the group name, and Import as group registers the folder as a folder project and both repositories as its child projects in the selected workspace
+
+#### Scenario: import separately or open the folder
+
+- GIVEN the same review is open
+- WHEN the user chooses Import separately
+- THEN both repositories are registered as top-level projects in the selected workspace and the folder is not registered; choosing Open as Folder instead registers only the folder as a folder project
+
+#### Scenario: bounded scan and partial import
+
+- GIVEN a folder whose scan reaches the repository, directory or time bound, or a selected path fails revalidation
+- WHEN the scan finishes or the import runs
+- THEN the review shows a truncation or timeout notice, successful repositories are registered, and failed or already-known paths are reported without aborting the others
+
+#### Scenario: no candidates or a Git root
+
+- GIVEN the selected folder is a Git worktree root, or is a plain folder with no nested Git worktree root
+- WHEN Add Project selects it
+- THEN a Git root is registered directly with no review, and a plain folder with no candidates offers Open as Folder or Cancel
+
+Evidence: `crates/app-core/src/project_scan.rs`, `crates/app-core/src/projects.rs`, `crates/app-core/src/store.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`
+
 ### RNC-new-tab
 
 The system SHALL create a workspace tab when New tab is pressed: it issues
@@ -206,13 +236,13 @@ Evidence: `apps/rune/src/main.rs`
 
 ### RNC-project-map
 
-The system SHALL provide a searchable, keyboard-accessible Workspace → Project map from plain `⌘K` or a sidebar button in Terminal/Editor, with workspace-only selection preserving the checkout and project selection atomically choosing its current owning workspace and root checkout through the draft guard while preserving the app view, terminal tabs and sessions.
+The system SHALL provide a searchable, keyboard-accessible Workspace → Project map from plain `⌘K` or a sidebar button in Terminal/Editor, with workspace-only selection preserving the checkout and project selection atomically choosing its current owning workspace and root checkout through the draft guard while preserving the app view, terminal tabs and sessions, and with a folder project's child repository projects shown indented under their parent project row.
 
 #### Scenario: inspect and search membership
 
-- GIVEN registered projects in Default and named workspaces, including duplicate project names
+- GIVEN registered projects in Default and named workspaces, including duplicate project names and a folder project with two child repositories
 - WHEN Project Map opens and a trimmed case-insensitive workspace name, project name or root path is entered
-- THEN matching projects appear under their owning workspace headings with distinguishing paths, a workspace-name match includes that workspace's projects, and current workspace/project markers remain distinct from the keyboard cursor
+- THEN matching projects appear under their owning workspace headings with distinguishing paths, a workspace-name or parent-project match includes that group's projects, a child match keeps its parent heading, and current workspace/project markers remain distinct from the keyboard cursor
 
 #### Scenario: select a workspace
 
@@ -225,6 +255,12 @@ The system SHALL provide a searchable, keyboard-accessible Workspace → Project
 - GIVEN a project belongs to another workspace and no dirty draft blocks selection
 - WHEN its map row is clicked or activated with Enter
 - THEN the map closes, its current owning workspace is selected, its root checkout becomes active, the sidebar reveals its row, the existing view remains unchanged, and terminal visibility and selection follow the active project as described in [RNC-project-terminals](#rnc-project-terminals)
+
+#### Scenario: jump to a child repository
+
+- GIVEN a folder project has two child repository projects and no dirty draft blocks selection
+- WHEN one child row is clicked or activated with Enter
+- THEN the map closes, the child's owning workspace and root checkout become active, and the sidebar reveals the child row under its parent
 
 #### Scenario: cancel or fail a draft save
 
@@ -251,7 +287,6 @@ The system SHALL provide a searchable, keyboard-accessible Workspace → Project
 - THEN loading/error/empty/no-results states remain distinguishable, unready initial data cannot be selected, failed reads can retry through existing refresh requests, and the shortcut does not override another input owner or open from Settings
 
 Evidence: `apps/rune/src/project_map.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`
-
 ### RNC-project-terminals
 
 The system SHALL show only the active project's session rows and terminal tabs, including its worktrees, remember its active tab in memory, preserve other projects' running sessions and tab layouts, and apply numbered tab shortcuts to the visible tabs; without an active project the existing unfiltered view remains available.
@@ -284,7 +319,7 @@ Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/si
 
 ### RNC-project-workspaces
 
-The system SHALL persist named workspaces with exactly one membership per registered project, migrate existing projects into a permanent Default workspace, and let the user select, create, rename, remove, and move projects between workspaces from the sidebar without changing project files, running sessions, tabs, or the editor checkout.
+The system SHALL persist named workspaces with exactly one membership per registered project, migrate existing projects into a permanent Default workspace, and let the user select, create, rename, remove, and move projects between workspaces from the sidebar without changing project files, running sessions, tabs, or the editor checkout; moving a folder project moves its child repository projects to the same workspace in one transaction, moving a child detaches it from its parent, and removing a workspace moves its parents and children to Default with their hierarchy preserved.
 
 #### Scenario: migrate and restore
 
@@ -298,11 +333,17 @@ The system SHALL persist named workspaces with exactly one membership per regist
 - WHEN a named workspace is created and the project is moved to it
 - THEN the new workspace is selected on creation and the project appears only in the destination after the move succeeds
 
+#### Scenario: move a folder project or child
+
+- GIVEN a folder project with two child repository projects
+- WHEN the parent is moved to another workspace
+- THEN the parent and both children appear only in the destination; when a child is moved instead, it appears in the destination as a root project and the parent keeps its other children
+
 #### Scenario: remove a workspace
 
 - GIVEN a named workspace contains projects and may be selected
 - WHEN its removal is confirmed
-- THEN its projects move to Default atomically, Default becomes selected if necessary, and project files and running sessions remain untouched
+- THEN its projects move to Default atomically, Default becomes selected if necessary, project files and running sessions remain untouched, and any parent/child hierarchy is preserved
 
 #### Scenario: invalid or failed mutation
 
@@ -311,7 +352,6 @@ The system SHALL persist named workspaces with exactly one membership per regist
 - THEN an error is shown and the existing workspace selection and membership remain intact
 
 Evidence: `crates/app-core/src/store.rs`, `crates/app-core/src/projects.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`
-
 ### RNC-prune-worktrees
 
 The system SHALL offer Prune missing worktrees in a git project's More menu only while at least one of its worktrees is `missing`, run `git worktree prune` in the project root when chosen, refresh that project's worktree list, and touch no folder or session.
@@ -332,13 +372,19 @@ Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/backend.rs`, `crates
 
 ### RNC-remove-confirm
 
-The system SHALL ask for confirmation in an inline sidebar row before Remove worktree and Remove project run: the worktree row names the folder, says whether it has uncommitted changes (refreshed when the row opens), and states how many sessions that have not ended run in it, while the project row states that only the registration is removed, its sessions become Unassigned, and its files stay; Cancel changes nothing, and running sessions are never stopped.
+The system SHALL ask for confirmation in an inline sidebar row before Remove worktree and Remove project run: the worktree row names the folder, says whether it has uncommitted changes (refreshed when the row opens), and states how many sessions that have not ended run in it, while the project row states that only the registration is removed, its sessions become Unassigned, and its files stay — adding that a folder project's child repositories stay registered without the group — Cancel changes nothing, and running sessions are never stopped.
 
 #### Scenario: confirm a dirty worktree removal
 
 - GIVEN a worktree row whose `dirty` value is true with two running sessions attached
 - WHEN Remove worktree is chosen
 - THEN an inline row names the folder, shows the uncommitted-changes line and "2 sessions", and nothing is removed until Confirm is pressed
+
+#### Scenario: confirm a folder project removal
+
+- GIVEN a folder project with two child repository projects
+- WHEN Remove project is chosen
+- THEN the confirmation states that the two child repositories stay registered without the group and that files stay; Confirm removes only the folder's registration and leaves both child rows at the top level
 
 #### Scenario: cancel
 
@@ -347,7 +393,6 @@ The system SHALL ask for confirmation in an inline sidebar row before Remove wor
 - THEN no request is enqueued and the row closes
 
 Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/main.rs`
-
 ### RNC-session-account-label
 
 The system SHALL label every Claude/Codex session row with the account it
@@ -522,7 +567,7 @@ Evidence: `apps/rune/src/sidebar.rs`
 
 ### RNC-sidebar-projects
 
-The system SHALL render the selected workspace's registered projects and per-project worktree lists from the editor backend — never mock rows — with one expandable project row (chevron, folder icon, name, missing badge, checkout status, branch label), a collapsible Worktrees group for linked checkouts, real daemon sessions nested under matching checkouts subject to the active-project filter in [RNC-project-terminals](#rnc-project-terminals), an Other sessions group for project sessions matching no checkout, honest loading/error/empty-group states, and Add Project through the native folder picker; Unassigned sessions appear only in Default when no project is active, while switching workspaces leaves existing tabs, sessions, and editor checkout intact.
+The system SHALL render the selected workspace's registered projects and per-project worktree lists from the editor backend — never mock rows — with one expandable project row (chevron, folder icon, name, missing badge, checkout status, branch label), child repository projects of a folder project indented under their parent row and expanded by the parent's chevron, a collapsible Worktrees group for linked checkouts, real daemon sessions nested under matching checkouts subject to the active-project filter in [RNC-project-terminals](#rnc-project-terminals), an Other sessions group for project sessions matching no checkout, honest loading/error/empty-group states, Add Project through the native folder picker and the nested-repository review in [RNC-nested-repo-import](#rnc-nested-repo-import), and a Rescan repositories action on a folder project's More menu; Unassigned sessions appear only in Default when no project is active, while switching workspaces leaves existing tabs, sessions, and editor checkout intact.
 
 #### Scenario: selected workspace
 
@@ -542,14 +587,19 @@ The system SHALL render the selected workspace's registered projects and per-pro
 - WHEN a new folder is registered or an existing project is explicitly moved there
 - THEN its project row appears there after the storage write succeeds; re-adding an already registered folder keeps its existing membership and reports that workspace
 
+#### Scenario: folder project with child repositories
+
+- GIVEN a folder project with two child repository projects in the selected workspace
+- WHEN its row is expanded or collapsed
+- THEN both child rows render indented under it as full project rows and collapse with it, and pressing a child row selects that child's root checkout through the shared draft guard
+
 #### Scenario: loading or storage failure
 
 - GIVEN project or workspace data is loading or fails to load
 - WHEN the sidebar renders
 - THEN it shows the loading state or error instead of fabricating project rows
 
-Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/projects.rs`, `crates/app-core/src/worktrees.rs`
-
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/projects.rs`, `crates/app-core/src/store.rs`, `crates/app-core/src/worktrees.rs`
 ### RNC-sidebar-resize
 
 The system SHALL let the user drag the sidebar's right-edge separator to
@@ -908,6 +958,32 @@ The system SHALL let terminal rows be selected by dragging — while the running
 
 Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/term.rs`, `apps/rune/src/main.rs`
 
+### RNC-terminal-splits
+
+The system SHALL let a workspace tab split into an arbitrary tree of
+terminal panes: each pane attaches its own alacritty `Terminal`
+(subscribe/replay/resize/ack lifecycle per attachment), the active pane
+receives input and the controls strip, separators drag or arrow-key the
+split ratio clamped to measured pane minimums, and closing a pane drives
+its stop→delete→collapse lifecycle with a visible, retryable failure and
+a force kill after the stop hangs.
+
+#### Scenario: split a pane
+
+- GIVEN a tab showing a session's pane
+- WHEN "Split side by side" is pressed
+- THEN a sibling pane splits the space, each side keeping its own terminal
+  attachment and both rendering live output
+
+#### Scenario: close a pane
+
+- GIVEN a pane whose session is running
+- WHEN its Close is pressed
+- THEN `session.stop` is sent, the pane collapses on delete, and a failure
+  stays visible on the pane until retried or force-killed
+
+Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/sessions.rs`
+
 ### RNC-terminal-wheel
 
 The system SHALL route terminal wheel input according to the program's mouse and
@@ -941,31 +1017,6 @@ instead of application reporting.
 
 Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`
 
-### RNC-terminal-splits
-
-The system SHALL let a workspace tab split into an arbitrary tree of
-terminal panes: each pane attaches its own alacritty `Terminal`
-(subscribe/replay/resize/ack lifecycle per attachment), the active pane
-receives input and the controls strip, separators drag or arrow-key the
-split ratio clamped to measured pane minimums, and closing a pane drives
-its stop→delete→collapse lifecycle with a visible, retryable failure and
-a force kill after the stop hangs.
-
-#### Scenario: split a pane
-
-- GIVEN a tab showing a session's pane
-- WHEN "Split side by side" is pressed
-- THEN a sibling pane splits the space, each side keeping its own terminal
-  attachment and both rendering live output
-
-#### Scenario: close a pane
-
-- GIVEN a pane whose session is running
-- WHEN its Close is pressed
-- THEN `session.stop` is sent, the pane collapses on delete, and a failure
-  stays visible on the pane until retried or force-killed
-
-Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/sessions.rs`
 
 ### RNC-usage-accounts
 
@@ -1084,7 +1135,6 @@ of the new checkout routes through the dirty-draft navigation guard.
   Retry copy re-runs only the copy
 
 Evidence: `apps/rune/src/editor/worktree_form.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/worktrees.rs`
-
 
 ## Flow
 
@@ -1285,6 +1335,7 @@ attributed tools without charging the shared server.
 - [Architecture overview](../architecture/overview.md)
 - [Rune editor](rune-editor.md)
 
+
 ## Sources
 
 - `apps/rune/src/terminal_branch.rs`
@@ -1320,3 +1371,10 @@ attributed tools without charging the shared server.
 - `crates/app-core/src/worktrees.rs`
 - `crates/protocol/src/frame.rs`
 - `crates/protocol/src/message.rs`
+- `apps/rune/src/nested_import.rs`
+- `crates/app-core/src/project_scan.rs`
+- `apps/rune/src/update.rs`
+- `crates/daemon/src/terminal.rs`
+- `crates/daemon/src/pty.rs`
+- `crates/daemon/src/server.rs`
+- `crates/daemon/tests/paint.rs`

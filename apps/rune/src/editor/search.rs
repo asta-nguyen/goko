@@ -381,6 +381,10 @@ pub fn apply_index_event(state: &mut State, tx: &mut Tx, event: IndexEvent) {
 }
 
 fn issue_concept(state: &mut State, query: String) {
+    if state.editor.folder_project {
+        state.editor.files.search.error = Some("Content search needs a Git worktree".into());
+        return;
+    }
     let Some(checkout) = state.editor.checkout.clone() else {
         return;
     };
@@ -474,6 +478,10 @@ pub fn ensure_index(state: &mut State, now: f64) -> bool {
 
 /// `AppSpec::poll` hook: expire a waiting sync, then issue the debounced query.
 pub fn poll(state: &mut State, now: f64, tx: &mut Tx) -> bool {
+    if state.editor.folder_project {
+        state.editor.files.search.error = Some("Content search needs a Git worktree".into());
+        return false;
+    }
     let mut changed = false;
     let expired = match &state.editor.files.search.sync {
         SyncState::Waiting { query, deadline } if now >= *deadline => Some(query.clone()),

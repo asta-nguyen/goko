@@ -48,6 +48,23 @@ pub enum Req {
         path: String,
         workspace_id: String,
     },
+    /// Scan a folder for nested Git worktree roots. The token ties the reply
+    /// to the dialog that asked; a dismissed scan's result is dropped.
+    ScanNestedRepos {
+        path: String,
+        token: u64,
+    },
+    /// Register the reviewed repositories of one folder (group, separate or
+    /// folder mode) in the selected workspace.
+    ImportNestedRepos {
+        parent_path: String,
+        parent_id: Option<String>,
+        group_name: String,
+        project_paths: Vec<String>,
+        mode: app_core::projects::ImportMode,
+        workspace_id: String,
+        token: u64,
+    },
     /// Every named workspace, Default first.
     Workspaces,
     /// Create a named workspace and return it.
@@ -379,6 +396,14 @@ pub enum Req {
 pub enum ReplyData {
     Projects(Vec<ProjectView>),
     Added(ProjectView),
+    NestedScan {
+        token: u64,
+        result: app_core::project_scan::NestedScanResult,
+    },
+    NestedImport {
+        token: u64,
+        result: app_core::projects::NestedImportResult,
+    },
     Workspaces(Vec<app_core::store::Workspace>),
     WorkspaceCreated(app_core::store::Workspace),
     Worktrees(WorktreeList),
@@ -428,8 +453,9 @@ pub enum ReplyData {
     Diff(GitViewDiff),
     History(GitViewHistory),
     Branches(Vec<GitViewBranch>),
-    /// Tracked + non-ignored paths, then Git's ignored entries (`dir/` collapsed).
-    FileList(Vec<String>, Vec<String>),
+    /// Tracked + non-ignored paths, then Git's ignored entries (`dir/` collapsed),
+    /// then whether a folder list hit its cap.
+    FileList(Vec<String>, Vec<String>, bool),
     Search(GitViewSearch),
     File(GitViewFile),
     Highlight(crate::editor::syntax::HighlightResult),
@@ -604,6 +630,7 @@ fn is_mutating(req: &Req) -> bool {
     matches!(
         req,
         Req::AddProject { .. }
+            | Req::ImportNestedRepos { .. }
             | Req::CreateWorkspace { .. }
             | Req::RenameWorkspace { .. }
             | Req::RemoveWorkspace { .. }
@@ -759,6 +786,19 @@ fn serve(
             });
             continue;
         }
+        // A scan walks the filesystem: run it on its own thread so file
+        // opens and saves keep their turn. It reads no store.
+        if matches!(job.req, Req::ScanNestedRepos { .. }) {
+            let inline = job.clone();
+            let post_thread = post.clone();
+            let spawned = std::thread::Builder::new()
+                .name("goko-project-scan".into())
+                .spawn(move || post_thread(run_job(&None, &job)));
+            if spawned.is_err() {
+                post(run_job(storage, &inline));
+            }
+            continue;
+        }
         let key = job.checkout_key.clone().filter(|_| is_git_write(&job.req));
         let Some(key) = key else {
             post(run_job(storage, &job));
@@ -873,6 +913,38 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
         }),
         Req::AddProject { path, workspace_id } => storage_req(storage, |store| {
             projects::add_project(store, path, workspace_id).map(ReplyData::Added)
+        }),
+        Req::ScanNestedRepos { path, token } => app_core::project_scan::scan(
+            std::path::Path::new(path),
+            app_core::project_scan::ScanOptions::default(),
+        )
+        .map(|result| ReplyData::NestedScan {
+            token: *token,
+            result,
+        })
+        .map_err(|error| error.to_string()),
+        Req::ImportNestedRepos {
+            parent_path,
+            parent_id,
+            group_name,
+            project_paths,
+            mode,
+            workspace_id,
+            token,
+        } => storage_req(storage, |store| {
+            projects::import_nested(
+                store,
+                parent_path,
+                parent_id.as_deref(),
+                group_name,
+                project_paths,
+                *mode,
+                workspace_id,
+            )
+            .map(|result| ReplyData::NestedImport {
+                token: *token,
+                result,
+            })
         }),
         Req::Workspaces => storage_req(storage, |store| {
             store.list_workspaces().map(ReplyData::Workspaces)
@@ -1089,9 +1161,9 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
             path,
             line,
         } => storage_req(storage, |store| {
-            // Same validation every checkout job gets, plus the once-only
-            // open payload — wrong project/path/checkouts fail here.
-            let checkout = projects::git_checkout(store, project_id, checkout_path)?;
+            // Same validation every file job gets, plus the once-only open
+            // payload — wrong project/path/checkouts fail here.
+            let (checkout, _) = projects::file_checkout(store, project_id, checkout_path)?;
             Ok(ReplyData::ExternalOpen {
                 checkout,
                 path: path.clone(),
@@ -1394,6 +1466,35 @@ fn overwrite_file(checkout: &Path, path: &str, text: &str) -> Result<GitViewFile
     git_view::save_file(checkout, path, &expected, text).map_err(|e| e.to_string())
 }
 
+/// Requests that need a real Git worktree. Every other checkout-scoped
+/// request is a file job and accepts a folder project's root.
+fn is_git_request(req: &Req) -> bool {
+    matches!(
+        req,
+        Req::CurrentBranch
+            | Req::Changes
+            | Req::ChangesPoll
+            | Req::Diff { .. }
+            | Req::History { .. }
+            | Req::Branches
+            | Req::Search { .. }
+            | Req::GoToSearch { .. }
+            | Req::ConceptSearch { .. }
+            | Req::Stashes
+            | Req::StashDiff { .. }
+            | Req::Blame { .. }
+            | Req::LineChanges { .. }
+            | Req::StageResolved { .. }
+            | Req::Resolve { .. }
+            | Req::Operation { .. }
+            | Req::Stage { .. }
+            | Req::Unstage { .. }
+            | Req::Discard { .. }
+            | Req::Commit { .. }
+            | Req::Push
+    )
+}
+
 /// Resolve the job's checkout identity against the registered project list
 /// immediately before the Git call: `projects::git_checkout` re-checks the
 /// project exists, canonicalizes the path (root or listed worktree) and
@@ -1405,9 +1506,19 @@ fn run_checkout(
     checkout: &Path,
     req: &Req,
 ) -> Result<ReplyData, String> {
-    let checkout = storage_req(storage, |store| {
-        projects::git_checkout(store, project_id, &checkout.display().to_string())
-    })?;
+    let checkout_path = checkout.display().to_string();
+    // File jobs accept a folder project's root; Git jobs keep the worktree
+    // requirement. Both revalidate the registered project and path.
+    let (checkout, is_git) = if is_git_request(req) {
+        let checkout = storage_req(storage, |store| {
+            projects::git_checkout(store, project_id, &checkout_path)
+        })?;
+        (checkout, true)
+    } else {
+        storage_req(storage, |store| {
+            projects::file_checkout(store, project_id, &checkout_path)
+        })?
+    };
     let checkout = &checkout;
     match req {
         Req::CurrentBranch => crate::editor::branch::read(checkout).map(ReplyData::CurrentBranch),
@@ -1432,13 +1543,21 @@ fn run_checkout(
         Req::Branches => git_view::branches(checkout)
             .map(ReplyData::Branches)
             .map_err(|e| e.to_string()),
-        Req::FileList => git_view::file_list(checkout)
-            .map(|paths| {
-                // The ignored entries only dim extra rows: a failure shows none.
-                let ignored = git_view::ignored_list(checkout).unwrap_or_default();
-                ReplyData::FileList(paths, ignored)
-            })
-            .map_err(|e| e.to_string()),
+        Req::FileList => {
+            if is_git {
+                git_view::file_list(checkout)
+                    .map(|paths| {
+                        // The ignored entries only dim extra rows: a failure shows none.
+                        let ignored = git_view::ignored_list(checkout).unwrap_or_default();
+                        ReplyData::FileList(paths, ignored, false)
+                    })
+                    .map_err(|e| e.to_string())
+            } else {
+                git_view::folder_file_list(checkout)
+                    .map(|(paths, truncated)| ReplyData::FileList(paths, Vec::new(), truncated))
+                    .map_err(|e| e.to_string())
+            }
+        }
         Req::Search { query } | Req::GoToSearch { query } => git_view::search(checkout, query)
             .map(ReplyData::Search)
             .map_err(|e| e.to_string()),
@@ -1516,6 +1635,8 @@ fn run_checkout(
             .map_err(|e| e.to_string()),
         Req::Projects
         | Req::AddProject { .. }
+        | Req::ScanNestedRepos { .. }
+        | Req::ImportNestedRepos { .. }
         | Req::Workspaces
         | Req::CreateWorkspace { .. }
         | Req::RenameWorkspace { .. }
@@ -1966,6 +2087,14 @@ impl EditorState {
         let Some(key) = self.checkout_key.clone() else {
             return;
         };
+        if self.folder_project
+            && matches!(
+                self.section,
+                Section::Changes | Section::History | Section::Stashes
+            )
+        {
+            return;
+        }
         match self.section {
             Section::Changes => {
                 self.changes.loading = true;
@@ -2707,6 +2836,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         };
         e.apply_reply(reply(
             Req::AddProject {
@@ -3802,7 +3932,11 @@ mod tests {
             Req::FileList,
             e.req_gens.get("filelist").copied().unwrap_or(0),
             Some(key.clone()),
-            Ok(ReplyData::FileList(vec!["src/a.rs".into()], Vec::new())),
+            Ok(ReplyData::FileList(
+                vec!["src/a.rs".into()],
+                Vec::new(),
+                false,
+            )),
         ));
         assert_eq!(
             e.files.model.get("src/docs").map(|n| n.data),
@@ -4299,6 +4433,192 @@ mod tests {
             other => panic!("expected Search, got {other:?}"),
         }
         assert!(!storage.as_ref().unwrap().home().join("search").exists());
+    }
+
+    fn nested_parent(name: &str) -> (TempDir, PathBuf, PathBuf, PathBuf) {
+        let dir = TempDir::new(name);
+        let parent = dir.path().canonicalize().unwrap();
+        let first = parent.join("first");
+        let second = parent.join("second");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root).unwrap();
+            for args in [
+                vec!["init", "-b", "main"],
+                vec!["config", "user.name", "Tester"],
+                vec!["config", "user.email", "tester@example.com"],
+            ] {
+                let out = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(&args)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "{args:?}: {out:?}");
+            }
+            std::fs::write(root.join("file.txt"), "hello\n").unwrap();
+            for args in [vec!["add", "-A"], vec!["commit", "-qm", "init"]] {
+                let out = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(&args)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "{args:?}: {out:?}");
+            }
+        }
+        (dir, parent, first, second)
+    }
+
+    #[test]
+    fn scan_and_import_requests_cover_group_separate_and_tokens() {
+        let (_dir, parent, first, second) = nested_parent("backend-nested-import");
+        let (storage_dir, storage) = temp_storage("backend-nested-store");
+        let _ = storage_dir;
+        let scan = run_job(
+            &storage,
+            &Job::project(Req::ScanNestedRepos {
+                path: parent.display().to_string(),
+                token: 7,
+            }),
+        );
+        let Ok(ReplyData::NestedScan { token, result }) = scan.result else {
+            panic!("expected a scan, got {:?}", scan.result);
+        };
+        assert_eq!(token, 7);
+        assert_eq!(result.repos.len(), 2);
+
+        let paths = vec![first.display().to_string(), second.display().to_string()];
+        let import = run_job(
+            &storage,
+            &Job::project(Req::ImportNestedRepos {
+                parent_path: parent.display().to_string(),
+                parent_id: None,
+                group_name: "Group".into(),
+                project_paths: paths.clone(),
+                mode: app_core::projects::ImportMode::Group,
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                token: 8,
+            }),
+        );
+        let Ok(ReplyData::NestedImport { token, result }) = import.result else {
+            panic!("expected an import, got {:?}", import.result);
+        };
+        assert_eq!(token, 8);
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.parent.unwrap().project.name, "Group");
+
+        let again = run_job(
+            &storage,
+            &Job::project(Req::ImportNestedRepos {
+                parent_path: parent.display().to_string(),
+                parent_id: None,
+                group_name: "Group".into(),
+                project_paths: paths,
+                mode: app_core::projects::ImportMode::Group,
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                token: 9,
+            }),
+        );
+        let Ok(ReplyData::NestedImport { token, result }) = again.result else {
+            panic!("expected an import, got {:?}", again.result);
+        };
+        assert_eq!(token, 9);
+        assert_eq!(result.already_known, 2);
+
+        let (_dir2, parent2, first2, second2) = nested_parent("backend-nested-separate");
+        let (storage_dir2, storage2) = temp_storage("backend-nested-store2");
+        let _ = storage_dir2;
+        let separate = run_job(
+            &storage2,
+            &Job::project(Req::ImportNestedRepos {
+                parent_path: parent2.display().to_string(),
+                parent_id: None,
+                group_name: String::new(),
+                project_paths: vec![first2.display().to_string(), second2.display().to_string()],
+                mode: app_core::projects::ImportMode::Separate,
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                token: 10,
+            }),
+        );
+        let Ok(ReplyData::NestedImport { token, result }) = separate.result else {
+            panic!("expected an import, got {:?}", separate.result);
+        };
+        assert_eq!(token, 10);
+        assert!(result.parent.is_none());
+        assert_eq!(result.imported, 2);
+    }
+
+    #[test]
+    fn file_jobs_accept_a_folder_root_and_git_jobs_still_require_a_worktree() {
+        let (_dir, parent, _first, _second) = nested_parent("backend-folder-files");
+        let (storage_dir, storage) = temp_storage("backend-folder-store");
+        let _ = storage_dir;
+        let added = run_job(
+            &storage,
+            &Job::project(Req::AddProject {
+                path: parent.display().to_string(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+            }),
+        );
+        let Ok(ReplyData::Added(project)) = added.result else {
+            panic!("expected the folder project, got {:?}", added.result);
+        };
+        let key = checkout_key(&project.project.id, &parent);
+
+        let list = run_job(
+            &storage,
+            &Job::read(
+                &project.project.id,
+                parent.clone(),
+                key.clone(),
+                Req::FileList,
+            ),
+        );
+        let Ok(ReplyData::FileList(paths, ignored, truncated)) = list.result else {
+            panic!("expected a file list, got {:?}", list.result);
+        };
+        assert!(paths.iter().any(|path| path == "first/file.txt"));
+        assert!(ignored.is_empty());
+        assert!(!truncated);
+
+        let file = run_job(
+            &storage,
+            &Job::read(
+                &project.project.id,
+                parent.clone(),
+                key.clone(),
+                Req::File {
+                    path: "first/file.txt".into(),
+                    token: 1,
+                    line: None,
+                },
+            ),
+        );
+        let Ok(ReplyData::File(file)) = file.result else {
+            panic!("expected a file, got {:?}", file.result);
+        };
+        assert_eq!(file.text.as_deref(), Some("hello\n"));
+
+        let saved = run_job(
+            &storage,
+            &Job::write(
+                &project.project.id,
+                parent.clone(),
+                key.clone(),
+                Req::SaveFile {
+                    path: "first/file.txt".into(),
+                    expected: "hello\n".into(),
+                    text: "changed\n".into(),
+                },
+            ),
+        );
+        assert!(matches!(saved.result, Ok(ReplyData::Saved(_))));
+
+        let changes = run_job(
+            &storage,
+            &Job::read(&project.project.id, parent, key, Req::Changes),
+        );
+        assert!(changes.result.is_err(), "{:?}", changes.result);
     }
 
     #[test]

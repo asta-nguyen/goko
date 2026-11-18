@@ -148,6 +148,8 @@ pub struct FilesState {
     pub paths: Vec<String>,
     /// What Git ignores (`dir/` for a collapsed directory), shown dimmed.
     pub ignored: Vec<String>,
+    /// The folder file list hit its cap; the tree shows the truncation note.
+    pub truncated: bool,
     /// The filename filter text (what the input edits).
     pub filter: TextEdit,
     /// Content-search query input (debounced into `search.pending`).
@@ -507,6 +509,8 @@ pub struct EditorState {
 
     // -- sections ----------------------------------------------------------
     pub section: Section,
+    /// The active checkout is a registered folder, not a Git worktree.
+    pub folder_project: bool,
     /// Shared changed-file layout (`List`/`Tree`) for the Changes list and
     /// the History commit detail — one session preference for both sections,
     /// not persisted and not reset by section or checkout switches.
@@ -635,12 +639,14 @@ impl EditorState {
             checkout_key: None,
             pending_checkout: None,
             section: Section::Changes,
+            folder_project: false,
             list_view: ListView::default(),
             visited: HashSet::from([Section::Changes]),
             notice: None,
             files: FilesState {
                 paths: Vec::new(),
                 ignored: Vec::new(),
+                truncated: false,
                 filter: TextEdit::new(""),
                 search_edit: TextEdit::new(""),
                 model: TreeModel::new(),

@@ -72,6 +72,9 @@ pub fn poll(
     now: f64,
     tx: &mut Tx,
 ) -> bool {
+    if ed.folder_project {
+        return false;
+    }
     let active = view_is_editor && focused;
     if !active {
         // Idle: record the flags so re-entry still edges, and release the

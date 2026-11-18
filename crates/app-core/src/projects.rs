@@ -7,35 +7,84 @@
 
 use crate::error::{BridgeError, Code};
 use crate::git_view;
-use crate::store::{Project, Store};
+use crate::store::{ChildLink, Project, Store};
 use crate::worktrees;
 use protocol::message::ErrorCode;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// A project as a frontend sees it: the stored row plus `missing`, computed at read time.
-#[derive(Debug, Serialize)]
+/// A project as a frontend sees it: the stored row plus `missing`, computed at read time,
+/// and the folder project it is nested under, when it is a child repository.
+#[derive(Clone, Debug, Serialize)]
 pub struct ProjectView {
     #[serde(flatten)]
     pub project: Project,
     pub missing: bool,
+    pub parent_project_id: Option<String>,
 }
 
 impl ProjectView {
-    fn of(project: Project) -> Self {
+    fn of(project: Project, parent_project_id: Option<String>) -> Self {
         Self {
             missing: !Path::new(&project.root).is_dir(),
             project,
+            parent_project_id,
         }
     }
 }
 
-/// Every registered project, oldest first, with `missing` computed at read time.
+/// What one selected repository did during a nested import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportStatus {
+    Imported,
+    AlreadyKnown,
+    Failed,
+}
+
+/// One selected repository's import result.
+#[derive(Debug, Serialize)]
+pub struct ImportedProject {
+    pub path: String,
+    pub project: Option<ProjectView>,
+    pub status: ImportStatus,
+    pub error: Option<String>,
+}
+
+/// How Add Project registers a reviewed folder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    /// Register the parent folder and the selected repositories under it.
+    Group,
+    /// Register the selected repositories without the parent.
+    Separate,
+    /// Register only the parent folder.
+    Folder,
+}
+
+/// The result of one reviewed import.
+#[derive(Debug, Serialize)]
+pub struct NestedImportResult {
+    pub parent: Option<ProjectView>,
+    pub projects: Vec<ImportedProject>,
+    pub imported: usize,
+    pub already_known: usize,
+    pub failed: usize,
+}
+
+/// Every registered project, oldest first, with `missing` and its parent
+/// computed at read time.
 pub fn list_projects(store: &Store) -> Result<Vec<ProjectView>, BridgeError> {
+    let parents: HashMap<String, String> = store.list_project_parents()?.into_iter().collect();
     Ok(store
         .list_projects()?
         .into_iter()
-        .map(ProjectView::of)
+        .map(|project| {
+            let parent = parents.get(&project.id).cloned();
+            ProjectView::of(project, parent)
+        })
         .collect())
 }
 
@@ -47,18 +96,193 @@ pub fn add_project(
     path: &str,
     workspace_id: &str,
 ) -> Result<ProjectView, BridgeError> {
-    let root = std::fs::canonicalize(path)
-        .map_err(|error| invalid(format!("cannot use '{path}': {error}")))?;
-    if !root.is_dir() {
-        return Err(invalid(format!("'{path}' is not a directory")));
+    let root = canonical_dir(path)?;
+    let name = folder_name(&root);
+    add_project_root(store, &root, &name, workspace_id)
+}
+
+/// Register `path` under an explicit name (the review dialog's group name),
+/// falling back to the folder name when `name` is blank.
+pub fn add_project_named(
+    store: &Store,
+    path: &str,
+    name: &str,
+    workspace_id: &str,
+) -> Result<ProjectView, BridgeError> {
+    let root = canonical_dir(path)?;
+    add_project_root(store, &root, name, workspace_id)
+}
+
+fn add_project_root(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    workspace_id: &str,
+) -> Result<ProjectView, BridgeError> {
+    let name = name.trim();
+    let name = if name.is_empty() {
+        folder_name(root)
+    } else {
+        name.to_string()
+    };
+    let project = store.add_project(&name, &root.display().to_string(), workspace_id)?;
+    let parent = store.parent_of(&project.id)?;
+    Ok(ProjectView::of(project, parent))
+}
+
+/// Register a repository under a folder project. The child joins the parent's
+/// workspace; a project already registered under another parent or workspace
+/// keeps its place and is reported as already known.
+pub fn add_child_project(
+    store: &Store,
+    parent_id: &str,
+    path: &str,
+) -> Result<(ProjectView, ImportStatus), BridgeError> {
+    let root = canonical_dir(path)?;
+    git_view::repo_checkout(&root)?;
+    let name = folder_name(&root);
+    let link = store.add_child_project(&name, &root.display().to_string(), parent_id)?;
+    let (project, status) = match link {
+        ChildLink::Added(project) => (project, ImportStatus::Imported),
+        ChildLink::AlreadyKnown(project) => (project, ImportStatus::AlreadyKnown),
+        ChildLink::OtherParent(project) => (project, ImportStatus::AlreadyKnown),
+        ChildLink::OtherWorkspace(project) => (project, ImportStatus::AlreadyKnown),
+    };
+    let parent = store.parent_of(&project.id)?;
+    let view = ProjectView::of(project, parent);
+    Ok((view, status))
+}
+
+/// Import the reviewed repositories of one folder: group them under the
+/// parent, register them separately, or register only the parent.
+#[allow(clippy::too_many_arguments)]
+pub fn import_nested(
+    store: &Store,
+    parent_path: &str,
+    parent_id: Option<&str>,
+    group_name: &str,
+    project_paths: &[String],
+    mode: ImportMode,
+    workspace_id: &str,
+) -> Result<NestedImportResult, BridgeError> {
+    let parent_root = canonical_dir(parent_path)?;
+    let parent = match mode {
+        ImportMode::Folder | ImportMode::Group => Some(match parent_id {
+            Some(id) => {
+                let project = store
+                    .list_projects()?
+                    .into_iter()
+                    .find(|project| project.id == id)
+                    .ok_or_else(|| not_found(format!("no project '{id}' is registered")))?;
+                if Path::new(&project.root) != parent_root {
+                    return Err(invalid(
+                        "the parent path does not match the registered project",
+                    ));
+                }
+                let parent = store.parent_of(&project.id)?;
+                ProjectView::of(project, parent)
+            }
+            None => add_project_root(store, &parent_root, group_name, workspace_id)?,
+        }),
+        ImportMode::Separate => None,
+    };
+
+    let mut projects = Vec::new();
+    if mode != ImportMode::Folder {
+        for path in project_paths {
+            projects.push(import_one(
+                store,
+                &parent_root,
+                path,
+                parent.as_ref(),
+                mode,
+                workspace_id,
+            ));
+        }
     }
-    let name = root.file_name().map_or_else(
-        || root.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    store
-        .add_project(&name, &root.display().to_string(), workspace_id)
-        .map(ProjectView::of)
+    let imported = projects
+        .iter()
+        .filter(|project| project.status == ImportStatus::Imported)
+        .count();
+    let already_known = projects
+        .iter()
+        .filter(|project| project.status == ImportStatus::AlreadyKnown)
+        .count();
+    let failed = projects
+        .iter()
+        .filter(|project| project.status == ImportStatus::Failed)
+        .count();
+    Ok(NestedImportResult {
+        parent,
+        projects,
+        imported,
+        already_known,
+        failed,
+    })
+}
+
+fn import_one(
+    store: &Store,
+    parent_root: &Path,
+    path: &str,
+    parent: Option<&ProjectView>,
+    mode: ImportMode,
+    workspace_id: &str,
+) -> ImportedProject {
+    let failed = |error: String| ImportedProject {
+        path: path.to_string(),
+        project: None,
+        status: ImportStatus::Failed,
+        error: Some(error),
+    };
+    let root = match canonical_dir(path) {
+        Ok(root) => root,
+        Err(error) => return failed(error.message),
+    };
+    if !root.starts_with(parent_root) {
+        return failed("the repository is outside the selected folder".into());
+    }
+    if let Err(error) = git_view::repo_checkout(&root) {
+        return failed(error.message);
+    }
+    match mode {
+        ImportMode::Group => {
+            let Some(parent) = parent else {
+                return failed("the parent folder is unavailable".into());
+            };
+            match add_child_project(store, &parent.project.id, &root.display().to_string()) {
+                Ok((project, status)) => ImportedProject {
+                    path: root.display().to_string(),
+                    project: Some(project),
+                    status,
+                    error: None,
+                },
+                Err(error) => failed(error.message),
+            }
+        }
+        ImportMode::Separate => {
+            if let Ok(Some(project)) = store.project_by_root(&root.display().to_string()) {
+                let parent = store.parent_of(&project.id).ok().flatten();
+                return ImportedProject {
+                    path: root.display().to_string(),
+                    project: Some(ProjectView::of(project, parent)),
+                    status: ImportStatus::AlreadyKnown,
+                    error: None,
+                };
+            }
+            let name = folder_name(&root);
+            match add_project_root(store, &root, &name, workspace_id) {
+                Ok(project) => ImportedProject {
+                    path: root.display().to_string(),
+                    project: Some(project),
+                    status: ImportStatus::Imported,
+                    error: None,
+                },
+                Err(error) => failed(error.message),
+            }
+        }
+        ImportMode::Folder => failed("the folder mode imports no repositories".into()),
+    }
 }
 
 /// `not_found` when no project has `id`.
@@ -115,6 +339,37 @@ pub fn git_checkout(
     let checkout = project_checkout(&root, checkout_path)?;
     git_view::repo_checkout(Path::new(&checkout))?;
     Ok(PathBuf::from(checkout))
+}
+
+/// Checkout for a file job: the registered project root or a listed Git
+/// worktree, without requiring a Git worktree. The flag says whether the
+/// canonical checkout is a non-bare Git worktree root.
+pub fn file_checkout(
+    store: &Store,
+    project_id: &str,
+    checkout_path: &str,
+) -> Result<(PathBuf, bool), BridgeError> {
+    let root = project_root(store, project_id)?;
+    let checkout = project_checkout(&root, checkout_path)?;
+    let path = PathBuf::from(&checkout);
+    let is_git = git_view::repo_checkout(&path).is_ok();
+    Ok((path, is_git))
+}
+
+fn canonical_dir(path: &str) -> Result<PathBuf, BridgeError> {
+    let root = std::fs::canonicalize(path)
+        .map_err(|error| invalid(format!("cannot use '{path}': {error}")))?;
+    if !root.is_dir() {
+        return Err(invalid(format!("'{path}' is not a directory")));
+    }
+    Ok(root)
+}
+
+fn folder_name(root: &Path) -> String {
+    root.file_name().map_or_else(
+        || root.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 fn invalid(message: impl Into<String>) -> BridgeError {
@@ -217,6 +472,186 @@ mod tests {
         let again = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
         assert_eq!(again.project.id, added.project.id);
         assert_eq!(again.project.workspace_id, work.id);
+        drop(repo_dir);
+    }
+
+    fn parent_with_repos(label: &str) -> (TempDir, PathBuf, PathBuf, PathBuf) {
+        let dir = TempDir::new(label);
+        let parent = dir.path().canonicalize().unwrap();
+        let first = parent.join("first");
+        let second = parent.join("second");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root).unwrap();
+            git_ok(root, &["init", "-b", "main"]);
+            git_ok(root, &["config", "user.name", "Tester"]);
+            git_ok(root, &["config", "user.email", "tester@example.com"]);
+            std::fs::write(root.join("file.txt"), "x\n").unwrap();
+            git_ok(root, &["add", "-A"]);
+            git_ok(root, &["commit", "-qm", "init"]);
+        }
+        (dir, parent, first, second)
+    }
+
+    #[test]
+    fn import_nested_group_registers_the_parent_and_children() {
+        let (dir, parent, first, second) = parent_with_repos("projects-import-group");
+        let store = store(&dir);
+        let result = import_nested(
+            &store,
+            parent.to_str().unwrap(),
+            None,
+            "Group",
+            &[first.display().to_string(), second.display().to_string()],
+            ImportMode::Group,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.already_known, 0);
+        assert_eq!(result.failed, 0);
+        let parent_view = result.parent.expect("the group parent");
+        assert_eq!(parent_view.project.name, "Group");
+        let listed = list_projects(&store).unwrap();
+        assert_eq!(listed.len(), 3);
+        for child in [&first, &second] {
+            let view = listed
+                .iter()
+                .find(|project| project.project.root == child.display().to_string())
+                .unwrap();
+            assert_eq!(
+                view.parent_project_id.as_deref(),
+                Some(parent_view.project.id.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn import_nested_separate_and_folder_modes() {
+        let (dir, parent, first, second) = parent_with_repos("projects-import-modes");
+        let store = store(&dir);
+        let paths = [first.display().to_string(), second.display().to_string()];
+
+        let separate = import_nested(
+            &store,
+            parent.to_str().unwrap(),
+            None,
+            "",
+            &paths,
+            ImportMode::Separate,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        assert!(separate.parent.is_none());
+        assert_eq!(separate.imported, 2);
+        assert!(list_projects(&store)
+            .unwrap()
+            .iter()
+            .all(|project| project.parent_project_id.is_none()));
+
+        let again = import_nested(
+            &store,
+            parent.to_str().unwrap(),
+            None,
+            "",
+            &paths,
+            ImportMode::Separate,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        assert_eq!(again.already_known, 2);
+
+        let folder_dir = TempDir::new("projects-import-folder");
+        let folder_store = Store::open(folder_dir.path()).unwrap();
+        let folder = import_nested(
+            &folder_store,
+            parent.to_str().unwrap(),
+            None,
+            "",
+            &[],
+            ImportMode::Folder,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        assert_eq!(folder.imported, 0);
+        assert_eq!(
+            folder.parent.unwrap().project.name,
+            parent.file_name().unwrap().to_string_lossy()
+        );
+        assert!(list_projects(&folder_store).unwrap()[0]
+            .parent_project_id
+            .is_none());
+    }
+
+    #[test]
+    fn import_nested_reports_already_known_and_failed_paths() {
+        let (dir, parent, first, second) = parent_with_repos("projects-import-fail");
+        let store = store(&dir);
+        let paths = [first.display().to_string(), second.display().to_string()];
+        let group = import_nested(
+            &store,
+            parent.to_str().unwrap(),
+            None,
+            "Group",
+            &paths,
+            ImportMode::Group,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        assert_eq!(group.imported, 2);
+
+        let again = import_nested(
+            &store,
+            parent.to_str().unwrap(),
+            None,
+            "Group",
+            &paths,
+            ImportMode::Group,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        assert_eq!(again.already_known, 2);
+
+        let plain = parent.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let outside = TempDir::new("projects-import-outside");
+        let mixed = import_nested(
+            &store,
+            parent.to_str().unwrap(),
+            None,
+            "Group",
+            &[
+                plain.display().to_string(),
+                outside.path().display().to_string(),
+                first.display().to_string(),
+            ],
+            ImportMode::Group,
+            DEFAULT_WORKSPACE_ID,
+        )
+        .unwrap();
+        assert_eq!(mixed.imported, 0);
+        assert_eq!(mixed.already_known, 1);
+        assert_eq!(mixed.failed, 2);
+    }
+
+    #[test]
+    fn file_checkout_accepts_a_folder_root_and_rejects_a_foreign_path() {
+        let (dir, parent, first, _second) = parent_with_repos("projects-file-checkout");
+        let store = store(&dir);
+        let folder = add_project(&store, parent.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
+
+        let (path, is_git) =
+            file_checkout(&store, &folder.project.id, parent.to_str().unwrap()).unwrap();
+        assert_eq!(path, parent);
+        assert!(!is_git);
+        assert!(file_checkout(&store, &folder.project.id, first.to_str().unwrap()).is_err());
+
+        let (repo_dir, root) = repo("projects-file-checkout-git");
+        let git = add_project(&store, root.to_str().unwrap(), DEFAULT_WORKSPACE_ID).unwrap();
+        let (path, is_git) =
+            file_checkout(&store, &git.project.id, root.to_str().unwrap()).unwrap();
+        assert_eq!(path, root);
+        assert!(is_git);
         drop(repo_dir);
     }
 

@@ -15,6 +15,9 @@ use crate::editor::state::EditorState;
 /// Returns `false` when nothing was queued: no document, a dirty buffer (its
 /// lines no longer match the disk), or no checkout.
 pub fn request(ed: &mut EditorState) -> bool {
+    if ed.folder_project {
+        return false;
+    }
     let Some(doc) = ed.doc.as_ref() else {
         return false;
     };

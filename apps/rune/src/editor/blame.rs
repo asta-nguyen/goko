@@ -123,7 +123,7 @@ pub fn line_label(blame: &Blame, number: u64, now_ms: u64) -> String {
 /// project, or a full queue) — the caller retries later. A dirty buffer or
 /// a disabled column asks for nothing: neither can be annotated.
 pub fn request(ed: &mut EditorState) -> bool {
-    if !ed.blame_enabled {
+    if !ed.blame_enabled || ed.folder_project {
         return false;
     }
     let Some(doc) = ed.doc.as_ref() else {

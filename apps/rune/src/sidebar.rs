@@ -17,7 +17,6 @@ use rune_kit::MenuItem;
 
 use crate::State;
 use crate::data::{self, SessionView, WorktreeInfo};
-use crate::editor::backend::{Job, Req};
 use crate::editor::navigation::{self, PendingNav};
 use crate::theme::{self, Ink, T11, T11M, T11ST, T12, T12M, T128};
 
@@ -104,7 +103,11 @@ pub enum SidebarConfirm {
         sessions: usize,
     },
     /// A registered project: only its registration goes.
-    RemoveProject { project_id: String, name: String },
+    RemoveProject {
+        project_id: String,
+        name: String,
+        children: usize,
+    },
 }
 
 /// The width of the action cell: the buttons are always there, so the row's
@@ -398,6 +401,39 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                         menu = menu
                             .item(MenuItem::new("Move to workspace").submenu(destinations, false));
                     }
+                    let is_folder = s
+                        .editor
+                        .sidebar_worktrees
+                        .get(project_id)
+                        .and_then(|entry| entry.list.as_ref())
+                        .is_some_and(|list| !list.repo);
+                    if is_folder {
+                        let pid = project_id.clone();
+                        let root = s
+                            .editor
+                            .projects
+                            .iter()
+                            .find(|p| p.project.id == *project_id)
+                            .map(|p| p.project.root.clone())
+                            .unwrap_or_default();
+                        menu = menu.item(MenuItem::new("Rescan repositories").on_select_tx(
+                            move |st: &mut State, tx: &mut Tx| {
+                                st.sidebar_menu = None;
+                                crate::nested_import::start_rescan(
+                                    st,
+                                    tx,
+                                    pid.clone(),
+                                    root.clone(),
+                                );
+                            },
+                        ));
+                    }
+                    let children = s
+                        .editor
+                        .projects
+                        .iter()
+                        .filter(|p| p.parent_project_id.as_deref() == Some(project_id.as_str()))
+                        .count();
                     let confirm = SidebarConfirm::RemoveProject {
                         project_id: project_id.clone(),
                         name: s
@@ -406,6 +442,7 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                             .iter()
                             .find(|p| p.project.id == *project_id)
                             .map_or_else(|| project_id.clone(), |p| p.project.name.clone()),
+                        children,
                     };
                     menu = menu.item(MenuItem::new("Remove project").danger(true).on_select_tx(
                         move |st: &mut State, _tx: &mut Tx| {
@@ -566,24 +603,9 @@ pub(crate) fn add_project(ink: &Ink) -> El {
         .on_press_tx(choose_project)
 }
 
-/// Ask for a project folder, then register it worker-side.
-fn choose_project(_s: &mut State, tx: &mut Tx) {
-    tx.open_folder(
-        rune::file_dialog::FileDialogOptions {
-            title: "Choose a project folder".into(),
-            ..Default::default()
-        },
-        |st: &mut State, result: rune::file_dialog::FileDialogResult, _tx: &mut Tx| match result {
-            Ok(Some(path)) => {
-                st.editor.backend.send(Job::project(Req::AddProject {
-                    path: path.display().to_string(),
-                    workspace_id: st.workspace_id().to_string(),
-                }));
-            }
-            Ok(None) => {}
-            Err(e) => st.notice = Some(e.to_string()),
-        },
-    );
+/// Ask for a project folder, then scan it for nested repositories.
+fn choose_project(s: &mut State, tx: &mut Tx) {
+    crate::nested_import::start_add_project(s, tx);
 }
 
 /// Disclosure chevron. The glyph, not a box, takes the hover (muted → text), so a
@@ -703,7 +725,10 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
     } else if let Some(err) = &s.editor.projects_error {
         list = list.child(status_row(err, ink.danger));
     }
-    for project in &visible {
+    for project in visible
+        .iter()
+        .filter(|project| project.parent_project_id.is_none())
+    {
         let sessions = if s
             .active_project_in_view()
             .is_none_or(|id| id == project.project.id)
@@ -721,7 +746,41 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
             .filter(|p| p.project.name == project.project.name)
             .count();
         let suffix = ordinal_suffix(earlier);
-        list = list.child(project_node(s, ink, project, sessions, &suffix));
+        list = list.child(project_node(s, ink, project, sessions, &suffix, false));
+        if s.expanded
+            .get(project.project.id.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            for child in visible.iter().filter(|child| {
+                child.parent_project_id.as_deref() == Some(project.project.id.as_str())
+            }) {
+                let child_sessions = if s
+                    .active_project_in_view()
+                    .is_none_or(|id| id == child.project.id)
+                {
+                    by_project
+                        .get(child.project.id.as_str())
+                        .map_or(empty, Vec::as_slice)
+                } else {
+                    empty
+                };
+                let earlier = visible
+                    .iter()
+                    .take_while(|p| p.project.id != child.project.id)
+                    .filter(|p| p.project.name == child.project.name)
+                    .count();
+                let child_suffix = ordinal_suffix(earlier);
+                list = list.child(project_node(
+                    s,
+                    ink,
+                    child,
+                    child_sessions,
+                    &child_suffix,
+                    true,
+                ));
+            }
+        }
     }
     // Terminals started outside every project belong to the workspace they
     // were started in (older ones to Default) and show there unless one of
@@ -1153,10 +1212,17 @@ fn sidebar_confirm_row(s: &State, ink: &Ink, confirm: &SidebarConfirm) -> El {
                 .child(theme::txt(&format!("Remove {name}?"), T11M, ink.text))
                 .child(theme::txt(&format!("{status} {attached}"), T11M, ink.muted));
         }
-        SidebarConfirm::RemoveProject { name, .. } => {
+        SidebarConfirm::RemoveProject { name, children, .. } => {
+            let tail = if *children == 0 {
+                String::new()
+            } else if *children == 1 {
+                " Its 1 child repository stays registered without the group.".to_string()
+            } else {
+                format!(" Its {children} child repositories stay registered without the group.")
+            };
             body = body.child(theme::txt(
                 &format!(
-                    "Remove {name}? Only its registration is removed; its sessions become Unassigned and its files stay."
+                    "Remove {name}? Only its registration is removed; its sessions become Unassigned and its files stay.{tail}"
                 ),
                 T11M,
                 ink.muted,
@@ -1262,6 +1328,7 @@ fn project_node(
     project: &ProjectView,
     sessions: &[&SessionView],
     name_suffix: &str,
+    indent: bool,
 ) -> El {
     let pid = project.project.id.as_str();
     // The accessible name: the project's name plus its repeat ordinal.
@@ -1297,7 +1364,8 @@ fn project_node(
     let mut row_el = row()
         .w_full()
         .h(row_h)
-        .px(4.0)
+        .pl(if indent { 22.0 } else { 4.0 })
+        .pr(4.0)
         .gap(2.0)
         .items_center()
         .radius(6.0)
@@ -2482,6 +2550,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn child_repositories_render_under_their_parent_and_collapse_with_it() {
+        use rune::{Cx, Env, Runtime};
+
+        fn sidebar_view(s: &State, _: &mut Cx<State>) -> El {
+            sidebar(s, &s.ink, &mut Vec::new())
+        }
+
+        let mut s = State::new(test_handle());
+        s.editor.projects = vec![
+            ProjectView {
+                project: app_core::store::Project {
+                    id: "folder".into(),
+                    name: "Folder".into(),
+                    root: "/work/folder".into(),
+                    workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                    created_at: 0,
+                },
+                missing: false,
+                parent_project_id: None,
+            },
+            ProjectView {
+                project: app_core::store::Project {
+                    id: "child".into(),
+                    name: "Child".into(),
+                    root: "/work/folder/child".into(),
+                    workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                    created_at: 0,
+                },
+                missing: false,
+                parent_project_id: Some("folder".into()),
+            },
+        ];
+        s.editor.sidebar_worktrees.insert(
+            "folder".into(),
+            crate::editor::state::SidebarWorktrees {
+                list: Some(data::WorktreeList {
+                    repo: false,
+                    worktrees: Vec::new(),
+                }),
+                loading: false,
+                error: None,
+            },
+        );
+        s.editor.sidebar_worktrees.insert(
+            "child".into(),
+            crate::editor::state::SidebarWorktrees {
+                list: Some(data::WorktreeList {
+                    repo: true,
+                    worktrees: Vec::new(),
+                }),
+                loading: false,
+                error: None,
+            },
+        );
+        let mut rt = Runtime::new(s, sidebar_view, (320.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        let keys = |rt: &Runtime<State>| {
+            rt.elements()
+                .into_iter()
+                .filter_map(|element| element.key)
+                .collect::<Vec<_>>()
+        };
+        assert!(keys(&rt).iter().any(|key| key == "sidebar-project:folder"));
+        assert!(keys(&rt).iter().any(|key| key == "sidebar-project:child"));
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|element| { element.label.as_deref() == Some("Collapse Folder") }),
+            "the parent owns the group chevron"
+        );
+    }
+
     /// A git project's branch subtitle grows its row to two lines; the wash
     /// and the active edge must cover the whole row, not the 28 pt pitch —
     /// the regression that left the branch hanging below the fill and the
@@ -2504,6 +2645,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }];
         s.editor.sidebar_worktrees.insert(
             "p1".to_string(),
@@ -2652,6 +2794,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         };
         let checkout = |name: &str, path: &str, is_root: bool| WorktreeInfo {
             name: name.into(),
@@ -2770,6 +2913,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         };
 
         let mut s = State::new(test_handle());
@@ -2853,6 +2997,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }];
         let checkout = |name: &str, path: &str, is_root, missing, dirty| WorktreeInfo {
             name: name.into(),
@@ -3029,6 +3174,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         });
         assert_eq!(s.workspace_name(), "goko");
         assert_eq!(s.workspace_label(&w2), "New workspace");
@@ -3205,6 +3351,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }];
         s.editor.project_id = Some("p1".into());
         s.editor.checkout = Some(PathBuf::from("/work/a/web"));
@@ -3241,6 +3388,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }];
         s.editor.project_id = Some("p1".into());
         s.editor.checkout = Some(PathBuf::from("/work/a/web"));
