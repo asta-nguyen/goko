@@ -1,0 +1,19 @@
+Cargo.lock
+  s_0e973f90f84ff7::t_771739f4df7293 185,1184,2669
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9257e68ceb5bf3c707bf038450a8b77321f217cb",
+  "prompts": {},
+  "sessions": {
+    "s_0e973f90f84ff7": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "productive-gemini",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
