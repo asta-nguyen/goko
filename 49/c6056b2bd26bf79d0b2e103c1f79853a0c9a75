@@ -1,0 +1,29 @@
+apps/rune/src/main.rs
+  s_ab19936d8fe1a2::t_645f0e387c828f 1357-1371
+docs/llm/domains/rune-chrome.md
+  s_ab19936d8fe1a2::t_ed5500ab509096 957-986
+apps/rune/src/term.rs
+  s_ab19936d8fe1a2::t_275b411f74b285 1564-1616
+  s_ab19936d8fe1a2::t_a926e84b44f98c 12
+  s_ab19936d8fe1a2::t_f5ef5b324908e7 1953-2019
+apps/rune/src/panes.rs
+  s_ab19936d8fe1a2::t_7a65f4b7fdef3c 923-940
+CHANGELOG.md
+  s_ab19936d8fe1a2::t_c658d37125d28b 29-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "49c6056b2bd26bf79d0b2e103c1f79853a0c9a75",
+  "prompts": {},
+  "sessions": {
+    "s_ab19936d8fe1a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b442db1c-7354-4fca-91a6-88aebbdb24d7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
