@@ -1,0 +1,43 @@
+apps/rune/src/editor/changes.rs
+  s_ab19936d8fe1a2::t_7d212984bcc1c5 819-820
+docs/llm/domains/rune-editor.md
+  s_ab19936d8fe1a2::t_4afab2ffd9ad64 806
+  s_ab19936d8fe1a2::t_9118f62946c57f 817,820-824
+  s_ab19936d8fe1a2::t_98e72aec9adf8b 825
+apps/rune/src/editor/files.rs
+  s_ab19936d8fe1a2::t_b5626e34180b52 61
+  s_ab19936d8fe1a2::t_7b1ed892d389af 3066-3067
+  s_ab19936d8fe1a2::t_4632f4a2bd61d5 3073-3076
+  s_ab19936d8fe1a2::t_eda0956387563a 3053,3055-3059,3061,3089-3090
+  s_ab19936d8fe1a2::t_57b57759ad53c7 3050-3052,3054,3060,3062-3065,3068-3072,3077-3088
+apps/rune/src/editor/stashes.rs
+  s_ab19936d8fe1a2::t_a2a66a062020b6 43-44
+CHANGELOG.md
+  s_ab19936d8fe1a2::t_9e15eb7d999eb4 11-13
+  s_ab19936d8fe1a2::t_35239f13d1120f 25
+  s_ab19936d8fe1a2::t_3947300c8c89dc 26-27
+  s_ab19936d8fe1a2::t_a631ec5fd63bf3 24
+  s_ab19936d8fe1a2::t_9bdfc149df8b1e 14
+apps/rune/src/editor/pane_layout.rs
+  s_ab19936d8fe1a2::t_4dce6dcfccc724 119-121
+  s_ab19936d8fe1a2::t_0e4c5cdecab41f 96-102
+  s_ab19936d8fe1a2::t_a2c3663e96b28c 163-165,169
+apps/rune/src/main.rs
+  s_ab19936d8fe1a2::t_42b9c14b0e98d5 1287-1295
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3fcd7622745f4eb7de14e2831258380a4973192d",
+  "prompts": {},
+  "sessions": {
+    "s_ab19936d8fe1a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b442db1c-7354-4fca-91a6-88aebbdb24d7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
