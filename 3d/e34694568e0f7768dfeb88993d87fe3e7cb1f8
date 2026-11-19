@@ -1,0 +1,29 @@
+.agents/skills/changelog/SKILL.md
+  s_ab19936d8fe1a2::t_23d57c2be8bc45 1-61
+AGENTS.md
+  s_ab19936d8fe1a2::t_57c3f9b25c3d20 55
+  s_ab19936d8fe1a2::t_c792f9a7949140 25
+.agents/skills/changelog/scripts/commits.mjs
+  s_ab19936d8fe1a2::t_bd5c1162e0c78e 20
+  s_ab19936d8fe1a2::t_a5e932dfa84034 75
+  s_ab19936d8fe1a2::t_1773e97867e6c4 1-19,21-69,71-74
+  s_ab19936d8fe1a2::t_8cbcfcd106fcba 70
+CHANGELOG.md
+  s_ab19936d8fe1a2::t_b59a5dfbf0cf11 11-16,22-28,30-31,34-35,39-41,48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3de34694568e0f7768dfeb88993d87fe3e7cb1f8",
+  "prompts": {},
+  "sessions": {
+    "s_ab19936d8fe1a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b442db1c-7354-4fca-91a6-88aebbdb24d7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
