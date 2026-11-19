@@ -8,30 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versions follow the app release version (`[workspace.package]` in `Cargo.toml`).
 Rename the `Unreleased` heading to the version and date when tagging a release.
 
-Credit a change from an outside contributor at the end of its entry, linking
-their profile and naming the PR and commits: ``Contributed by
-[@login](https://github.com/login) in #123 (`abc1234`).``
+End every entry with who made it and the commits, linking their profile:
+``By [@login](https://github.com/login) in `abc1234`.`` Give a pull request its
+number — ``Contributed by [@login](https://github.com/login) in #123
+(`abc1234`, `def5678`).`` — and credit a follow-up fix by someone else in the
+same entry. Keep each link on one line: What's new shows it as its text. The
+`changelog` skill builds this from the commits since the last release.
 
 ## [Unreleased]
 
 ### Added
 
+- Add Project now scans a folder that is not a Git worktree root for nested
+  repositories, lets you review what it found, and imports them as a group
+  under a folder project or separately. A folder project shows a Files tree,
+  while Changes, History and Stashes say it is not a Git worktree; child
+  repositories sit under it in the sidebar and Project Map, and moving or
+  removing a folder project keeps their registrations and files. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `e52677b`.
 - Pressing the blame note beside a line now opens the commit that last touched
-  it in History, loading older commits until it is found.
+  it in History, loading older commits until it is found. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `958e9a8`.
 - In History, a branch and its remote copy on the same commit share one pill
   (`main | origin`), pills sit before the commit message, and merge commits
-  read quieter so the real commits stand out.
+  read quieter so the real commits stand out. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `958e9a8`.
 - The project sidebar and the Files, Changes and Stashes lists can each dock on
   the left or the right; pick the sides under Settings → Appearance → Sidebar
   position and Settings → Editor → List position. Contributed by
-  [@iamdevtry](https://github.com/iamdevtry) in #34 (`e183612`, `e2a1aa7`).
+  [@iamdevtry](https://github.com/iamdevtry) in #34 (`e183612`, `e2a1aa7`),
+  with follow-up fixes by [@asta-nguyen](https://github.com/asta-nguyen) in
+  `3fcd762`.
 
 ### Fixed
 
 - Pasting an image into a terminal (a screenshot, Copy Image) did nothing. It
   now types the path of a saved PNG, which Claude Code, Codex and OpenCode
   attach as an image. Files copied in Finder paste as their paths instead of
-  their names.
+  their names. By [@asta-nguyen](https://github.com/asta-nguyen) in `49c6056`.
 
 ## [0.3.0] - 2026-11-18
 

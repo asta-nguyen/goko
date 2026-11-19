@@ -22,7 +22,7 @@ A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` builds macOS
 ### Cutting a release
 
 1. Bump `[workspace.package] version` in `Cargo.toml`; `cargo build` refreshes `Cargo.lock`. `gokod` has its own version in `crates/daemon/Cargo.toml`: bump it only when the app gates on a new daemon feature (`version_at_least` in `apps/rune/src/daemon.rs`).
-2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it. That entry is what users read as "What's new" when the app offers the update, so write it for them.
+2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it. That entry is what users read as "What's new" when the app offers the update, so write it for them. Build it with the `changelog` skill: every entry names its author and commits, and its `--missing` check must pass first.
 3. `cargo fmt --all -- --check` and `cargo test --workspace` pass.
 4. Merge to `main`, then tag that commit `vX.Y.Z` and push the tag. The push is what builds and publishes, so do it last and only on purpose.
 5. When the `release` workflow finishes, check that the GitHub release has the tar.gz, `latest.json` and `install.sh`.
@@ -52,6 +52,7 @@ devin -p "$(cat brief.md)" --model swe-2-max --permission-mode dangerous
 ## Skills
 
 - `brainstorm-feature`: `.agents/skills/brainstorm-feature/SKILL.md`
+- `changelog`: `.agents/skills/changelog/SKILL.md`
 - `context-handoff`: `.agents/skills/context-handoff/SKILL.md`
 - `document-wiki`: `.agents/skills/document-wiki/SKILL.md`
 - `estimate-feature`: `.agents/skills/estimate-feature/SKILL.md`
