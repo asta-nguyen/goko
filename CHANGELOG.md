@@ -26,6 +26,13 @@ their profile and naming the PR and commits: ``Contributed by
   position and Settings → Editor → List position. Contributed by
   [@iamdevtry](https://github.com/iamdevtry) in #34 (`e183612`, `e2a1aa7`).
 
+### Fixed
+
+- Pasting an image into a terminal (a screenshot, Copy Image) did nothing. It
+  now types the path of a saved PNG, which Claude Code, Codex and OpenCode
+  attach as an image. Files copied in Finder paste as their paths instead of
+  their names.
+
 ## [0.3.0] - 2026-11-18
 
 ### Added

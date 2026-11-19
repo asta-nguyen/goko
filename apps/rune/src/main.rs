@@ -1354,17 +1354,21 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         );
     }
     // Paste with no text field focused belongs to the focused terminal pane.
-    rune_kit::root(root, layer).on_paste(|s: &mut State, text: &str, _tx: &mut Tx| {
-        if s.view == View::Terminal
-            && !s.project_map.open
-            && !s.nested_import.open
-            && s.sidebar_input.is_none()
-            && s.tab_menu.is_none()
-            && let Some(session) = s.focused_terminal_session()
-        {
-            s.paste_into_terminal(session, text);
-        }
-    })
+    // It hears every clipboard form: a lone image (a screenshot, Copy Image)
+    // has no text, so a text-only handler never fired for it.
+    rune_kit::root(root, layer).on_paste_content(
+        |s: &mut State, content: &rune::ClipboardContent, _tx: &mut Tx| {
+            if s.view == View::Terminal
+                && !s.project_map.open
+                && !s.nested_import.open
+                && s.sidebar_input.is_none()
+                && s.tab_menu.is_none()
+                && let Some(session) = s.focused_terminal_session()
+            {
+                s.paste_clipboard_into_terminal(session, content);
+            }
+        },
+    )
 }
 
 /// `AppSpec::setup`: kick the initial project list, history-layout restore,

@@ -920,6 +920,24 @@ impl State {
         self.type_into_terminal(session, term::pasted_text(text, bracketed).as_bytes())
     }
 
+    /// A clipboard paste into `session`'s terminal: its text, or the paths of
+    /// copied files or of a lone image saved to disk (see
+    /// [`term::clipboard_paste_text`]). A failed image save shows a notice.
+    pub fn paste_clipboard_into_terminal(
+        &mut self,
+        session: SessionId,
+        content: &rune::ClipboardContent,
+    ) -> bool {
+        match term::clipboard_paste_text(content, term::save_pasted_image) {
+            Ok(Some(text)) => self.paste_into_terminal(session, &text),
+            Ok(None) => false,
+            Err(err) => {
+                self.notice = Some(format!("Could not save the pasted image: {err}"));
+                false
+            }
+        }
+    }
+
     /// Files dropped on a pane: focus it and type their escaped paths.
     pub fn drop_files(&mut self, tab: &str, pane: &str, key: &str, files: &[std::path::PathBuf]) {
         self.focus_pane(tab, pane);

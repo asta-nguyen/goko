@@ -954,6 +954,36 @@ The system SHALL mark http(s) URLs and file paths with line suffixes in terminal
 
 Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`
 
+### RNC-terminal-paste
+
+The system SHALL paste the clipboard into the focused terminal pane as the paths of any copied files, else its text, else — for an image with no text, such as a screenshot or Copy Image — the path of a PNG saved under `pasted-images/` in the Goko home, each path shell-escaped like a file dropped on the pane, and bracketed when the program asked for bracketed paste so a coding agent such as Claude Code, Codex or OpenCode attaches the image; it SHALL delete saved images older than a day when it saves a new one, and show a notice, pasting nothing, when the image cannot be saved.
+
+#### Scenario: paste a screenshot into an agent
+
+- GIVEN a terminal pane running a coding agent and a clipboard holding only an image
+- WHEN the user pastes
+- THEN the agent receives the saved PNG's path as a bracketed paste and attaches it as an image
+
+#### Scenario: text keeps pasting as text
+
+- GIVEN a clipboard holding text, even with an image beside it
+- WHEN the user pastes into a terminal pane
+- THEN the text is pasted and no image is saved
+
+#### Scenario: copied files paste as paths
+
+- GIVEN files copied in Finder, which may also carry a name as text
+- WHEN the user pastes into a terminal pane
+- THEN their escaped paths are pasted, not the names
+
+#### Scenario: the image cannot be saved
+
+- GIVEN a clipboard holding only an image and a Goko home that cannot be written
+- WHEN the user pastes
+- THEN a notice says the image could not be saved and nothing is typed
+
+Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`
+
 ### RNC-terminal-selection
 
 The system SHALL let terminal rows be selected by dragging — while the running program reports mouse capture a plain drag goes to the program and a Shift-held drag selects — copy the selection on release without requiring Cmd+C, trim each row's grid padding, still honor Cmd+C through the same transform, and put a program's own OSC 52 clipboard copy on the clipboard when it comes from a pane on screen and not from a replay.

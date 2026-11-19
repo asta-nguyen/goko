@@ -9,7 +9,7 @@
 use std::ops::Range;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -1561,6 +1561,59 @@ pub fn dropped_paths_text(paths: &[std::path::PathBuf]) -> String {
     text
 }
 
+/// What pasting `content` into a terminal types: the paths of copied files,
+/// else the text, else — for an image alone — the path of a PNG that `save`
+/// writes. A path is what a drop on the pane already types and what Claude
+/// Code, Codex and OpenCode attach as an image. Files come before text since a
+/// copied file can carry its name as text. `None` when there is nothing to paste.
+pub fn clipboard_paste_text(
+    content: &rune::ClipboardContent,
+    save: impl FnOnce(&[u8]) -> std::io::Result<std::path::PathBuf>,
+) -> std::io::Result<Option<String>> {
+    if !content.files().is_empty() {
+        return Ok(Some(dropped_paths_text(content.files())));
+    }
+    if !content.text().is_empty() {
+        return Ok(Some(content.text().to_owned()));
+    }
+    let Some(image) = content.image() else {
+        return Ok(None);
+    };
+    Ok(Some(dropped_paths_text(&[save(image.png())?])))
+}
+
+/// How long a pasted image stays on disk: the agent reads it when the prompt
+/// is sent, so a day outlasts any prompt while the folder cannot grow forever.
+const PASTED_IMAGE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Saves a pasted clipboard image under the Goko home and returns its path.
+pub fn save_pasted_image(png: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let home = app_core::home::home_dir().map_err(|e| std::io::Error::other(e.to_string()))?;
+    save_pasted_image_in(&home.join("pasted-images"), png)
+}
+
+/// [`save_pasted_image`] into `dir`, first deleting what is older than a day.
+fn save_pasted_image_in(dir: &std::path::Path, png: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > PASTED_IMAGE_TTL);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path = dir.join(format!("paste-{nanos}.png"));
+    std::fs::write(&path, png)?;
+    Ok(path)
+}
+
 /// The monospace cell: one character's advance and the line height, both
 /// in points, measured from the same font the lines are drawn with.
 pub fn cell_metrics() -> (f32, f32) {
@@ -1895,6 +1948,73 @@ mod tests {
             dropped_paths_text(&paths),
             "/tmp/a\\ b.txt /tmp/it\\'s\\(1\\).png "
         );
+    }
+
+    /// A 1x1 PNG: the smallest image `ClipboardImage::from_png` accepts.
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// Text pastes as itself; files, and an image with no text, paste as paths
+    /// the way a drop does, which is what lets Claude Code, Codex and OpenCode
+    /// attach them.
+    #[test]
+    fn a_clipboard_paste_types_text_or_the_paths_of_files_and_a_lone_image() {
+        let image = || rune::ClipboardImage::from_png(PNG_1X1.to_vec()).expect("a valid png");
+        let save = |png: &[u8]| {
+            assert_eq!(png, PNG_1X1, "the clipboard's png is what gets saved");
+            Ok(std::path::PathBuf::from("/tmp/p q.png"))
+        };
+        let paste = |c: &rune::ClipboardContent| clipboard_paste_text(c, save).unwrap();
+
+        // Text wins over an image that rides along (a copied table cell).
+        let c = rune::ClipboardContent::new("hi").with_image(image());
+        assert_eq!(paste(&c).as_deref(), Some("hi"));
+        // An image alone becomes its saved path, escaped like a drop.
+        let c = rune::ClipboardContent::new("").with_image(image());
+        assert_eq!(paste(&c).as_deref(), Some("/tmp/p\\ q.png "));
+        // Files become their paths even with their name beside them as text,
+        // and the icon the pasteboard carries for them is not pasted.
+        let c = rune::ClipboardContent::new("a.png")
+            .with_image(image())
+            .with_files([std::path::PathBuf::from("/x/a.png")]);
+        assert_eq!(paste(&c).as_deref(), Some("/x/a.png "));
+        // Nothing pasteable pastes nothing.
+        assert_eq!(paste(&rune::ClipboardContent::new("")), None);
+        // A save that fails is an error to show, not a silent empty paste.
+        let c = rune::ClipboardContent::new("").with_image(image());
+        let failed = clipboard_paste_text(&c, |_| Err(std::io::Error::other("disk full")));
+        assert!(failed.is_err());
+    }
+
+    #[test]
+    fn a_pasted_image_is_saved_as_a_png_and_old_ones_are_swept() {
+        let dir = std::env::temp_dir().join(format!("goko-paste-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("paste-old.png");
+        std::fs::write(&old, b"old").unwrap();
+        let two_days = Duration::from_secs(2 * 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - two_days)
+            .unwrap();
+        let fresh = dir.join("paste-fresh.png");
+        std::fs::write(&fresh, b"fresh").unwrap();
+
+        let saved = save_pasted_image_in(&dir, PNG_1X1).unwrap();
+
+        assert_eq!(saved.extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&saved).unwrap(), PNG_1X1);
+        assert!(!old.exists(), "an image older than a day is swept");
+        assert!(fresh.exists(), "a recent image is kept");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
