@@ -11,9 +11,12 @@
 //! does not reflow) and re-read after the save.
 
 use app_core::git_view::GitViewBlame;
+use rune::Tx;
 
+use crate::State;
 use crate::editor::backend::Req;
-use crate::editor::state::EditorState;
+use crate::editor::navigation::{PendingNav, navigate};
+use crate::editor::state::{EditorState, Section};
 
 /// Settings key for the inline-blame toggle (`1` on, `0` off).
 pub const BLAME_KEY: &str = "goko.editor.blame";
@@ -27,6 +30,8 @@ pub struct BlameLine {
     pub time: u64,
     /// The line was changed in the working tree but never committed.
     pub uncommitted: bool,
+    /// Full oid of the commit that last touched the line.
+    pub commit: String,
 }
 
 /// The blame of one file: one entry per line, in file order.
@@ -67,8 +72,27 @@ pub fn from_view(view: GitViewBlame) -> Blame {
         slot.author = entry.author;
         slot.time = entry.time;
         slot.uncommitted = entry.uncommitted;
+        slot.commit = entry.commit;
     }
     Blame { lines }
+}
+
+/// The commit a press on a line's annotation opens: committed lines only.
+pub fn commit_of(blame: &Blame, number: u64) -> Option<&str> {
+    blame
+        .line(number)
+        .filter(|line| !line.uncommitted && !line.commit.is_empty())
+        .map(|line| line.commit.as_str())
+}
+
+/// Show `commit` in the History graph. `jump_to` is only set once History is
+/// really the active section (a draft guard may have held the switch back), or
+/// it would fire on some later visit.
+pub fn open_commit(s: &mut State, commit: &str, tx: &mut Tx) {
+    navigate(s, PendingNav::SetSection(Section::History), tx);
+    if s.editor.section == Section::History {
+        s.editor.history.jump_to = Some(commit.to_string());
+    }
 }
 
 /// The compact age of a commit: minutes, hours, days, months, years.
@@ -328,16 +352,37 @@ mod tests {
     fn the_label_names_the_author_and_the_age() {
         let line = BlameLine {
             author: "Alice".into(),
-            time: 0,
-            uncommitted: false,
+            ..Default::default()
         };
         assert_eq!(label(&line, 60_000), "Alice · 1m");
         assert_eq!(label(&line, 3 * 24 * 3_600_000), "Alice · 3d");
         let uncommitted = BlameLine {
             author: "Not Committed Yet".into(),
-            time: 0,
             uncommitted: true,
+            ..Default::default()
         };
         assert_eq!(label(&uncommitted, 0), "uncommitted");
+    }
+
+    #[test]
+    fn only_a_committed_line_opens_its_commit() {
+        let mut v = view(&[(1, "Alice", 10), (2, "Bob", 20), (3, "", 0)]);
+        v.lines[1].uncommitted = true;
+        v.lines[2].commit.clear();
+        let blame = from_view(v);
+        assert_eq!(commit_of(&blame, 1), Some("abc"));
+        assert_eq!(commit_of(&blame, 2), None, "uncommitted has no commit");
+        assert_eq!(commit_of(&blame, 3), None, "no oid to open");
+        assert_eq!(commit_of(&blame, 9), None, "past the end");
+    }
+
+    #[test]
+    fn opening_a_commit_switches_to_history_and_queues_the_jump() {
+        let mut s = State::new(crate::test_handle());
+        s.editor.section = Section::Files;
+        let mut tx = Tx::default();
+        open_commit(&mut s, "abc", &mut tx);
+        assert_eq!(s.editor.section, Section::History);
+        assert_eq!(s.editor.history.jump_to.as_deref(), Some("abc"));
     }
 }

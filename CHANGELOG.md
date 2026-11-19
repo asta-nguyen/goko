@@ -10,6 +10,14 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 
 ## [Unreleased]
 
+### Added
+
+- Pressing the blame note beside a line now opens the commit that last touched
+  it in History, loading older commits until it is found.
+- In History, a branch and its remote copy on the same commit share one pill
+  (`main | origin`), pills sit before the commit message, and merge commits
+  read quieter so the real commits stand out.
+
 ## [0.3.0] - 2026-11-18
 
 ### Added

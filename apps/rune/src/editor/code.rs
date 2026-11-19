@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use rune::{
     Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, PointerPress, ScrollPos, Shape, Span,
-    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
+    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, el, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
@@ -393,6 +393,8 @@ type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
 type IndentCallback<S> = Rc<dyn Fn(&mut S, UnitChoice, &mut Tx)>;
 /// Blame-toggle callback: receives the new enabled state.
 type BlameCallback<S> = Rc<dyn Fn(&mut S, bool, &mut Tx)>;
+/// Blame-annotation callback: receives the oid of the commit to open.
+type BlameOpenCallback<S> = Rc<dyn Fn(&mut S, &str, &mut Tx)>;
 /// First-refusal key callback: `true` consumes the key before the field's
 /// own handling sees it.
 type KeyCallback<S> = Rc<dyn Fn(&mut S, &KeyEvent, &mut Tx) -> bool>;
@@ -407,6 +409,7 @@ pub struct Code<S> {
     on_go_to: Option<GoToCallback<S>>,
     on_indent: Option<IndentCallback<S>>,
     on_blame: Option<BlameCallback<S>>,
+    on_blame_open: Option<BlameOpenCallback<S>>,
     on_send: Option<StateCallback<S>>,
     on_secondary: Option<PressCallback<S>>,
     preempt_key: Option<KeyCallback<S>>,
@@ -422,6 +425,7 @@ impl<S: 'static> Code<S> {
             on_go_to: None,
             on_indent: None,
             on_blame: None,
+            on_blame_open: None,
             on_send: None,
             on_secondary: None,
             preempt_key: None,
@@ -458,6 +462,13 @@ impl<S: 'static> Code<S> {
     /// Called when the blame chip is pressed; receives the new enabled state.
     pub fn on_blame(mut self, f: impl Fn(&mut S, bool, &mut Tx) + 'static) -> Code<S> {
         self.on_blame = Some(Rc::new(f));
+        self
+    }
+
+    /// Called when the caret line's blame annotation is pressed; receives the
+    /// oid of the commit that last touched the line.
+    pub fn on_blame_open(mut self, f: impl Fn(&mut S, &str, &mut Tx) + 'static) -> Code<S> {
+        self.on_blame_open = Some(Rc::new(f));
         self
     }
 
@@ -510,7 +521,7 @@ impl<S: 'static> Code<S> {
         // with the code. It stays mounted while the draft is dirty (blank),
         // or the code area would jump by the column's width on the first key.
         if code.blame_enabled {
-            surface = surface.child(blame_el(code, ink));
+            surface = surface.child(blame_el(code, ink, self.on_blame_open.clone()));
         }
         root.child(surface).child(self.footer(s, ink))
     }
@@ -1193,17 +1204,35 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
 /// scroll offset the gutter uses so it lines up with its line. It is placed by
 /// line height, not by padding the text with blank rows, so building it costs
 /// the same on a 10-line and a 10 000-line file.
-fn blame_el(code: &CodeState, ink: &Ink) -> El {
+fn blame_el<S: 'static>(code: &CodeState, ink: &Ink, on_open: Option<BlameOpenCallback<S>>) -> El {
     let shift = code.gutter_shift.clone();
     let bytes = code.edit.text.as_bytes();
     let active = bytes[..code.edit.focus.min(bytes.len())]
         .iter()
         .filter(|b| **b == b'\n')
         .count();
-    let label = match code.blame.as_ref().filter(|_| code.blame_visible) {
-        Some(blame) => blame::line_label(blame, active as u64 + 1, blame::now_ms()),
+    let number = active as u64 + 1;
+    let shown = code.blame.as_ref().filter(|_| code.blame_visible);
+    let label = match shown {
+        Some(blame) => blame::line_label(blame, number, blame::now_ms()),
         None => String::new(),
     };
+    let mut line = row().w_full().h(CODE_STYLE.line_px()).child(
+        text(label)
+            .font(CODE_STYLE)
+            .color(ink.muted)
+            .pl(10.0)
+            .pr(10.0),
+    );
+    if let (Some(commit), Some(open)) = (shown.and_then(|b| blame::commit_of(b, number)), on_open) {
+        let commit = commit.to_string();
+        line = line
+            .hover(ink.text.alpha(0.08))
+            .press(ink.text.alpha(0.12))
+            .role("button")
+            .label("Open commit in History")
+            .on_press_tx(move |st: &mut S, tx| open(st, &commit, tx));
+    }
     col()
         .w(BLAME_WIDTH)
         .h_full()
@@ -1212,12 +1241,11 @@ fn blame_el(code: &CodeState, ink: &Ink) -> El {
         .clip_rounded(0.0)
         .label("Blame annotations")
         .child(
-            text(label)
-                .font(CODE_STYLE)
-                .color(ink.muted)
-                .pt(active as f32 * CODE_STYLE.line_px())
-                .pl(10.0)
-                .pr(10.0)
+            // A spacer carries the line's offset so the press area is just the
+            // line, not the column above it.
+            col()
+                .child(el().h(active as f32 * CODE_STYLE.line_px()))
+                .child(line)
                 .live_offset(&shift),
         )
 }

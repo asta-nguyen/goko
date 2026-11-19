@@ -782,19 +782,38 @@ fn ensure_changes_data(s: &mut State) -> bool {
 }
 
 fn consume_jump_to(s: &mut State, tx: &mut Tx) -> bool {
-    let Some(id) = s.editor.history.jump_to.take() else {
+    let Some(id) = s.editor.history.jump_to.clone() else {
         return false;
     };
     if id == UNCOMMITTED_ID {
+        s.editor.history.jump_to = None;
         select_uncommitted(s);
         return true;
     }
     if s.editor.history.commits.iter().any(|c| c.id == id) {
+        s.editor.history.jump_to = None;
         s.editor.history.selected = Some(id.clone());
         s.editor.history.detail = None;
         s.editor.history.table.reveal(id.clone(), tx);
         enqueue_commit_diff(s, &id);
+        return true;
     }
+    // The commit may be on a page that has not loaded (a blame jump lands on
+    // a line of any age): wait for the page in flight, then page on until it
+    // turns up or the history runs out.
+    // ponytail: under a branch filter that lacks the commit this walks the
+    // whole filtered history; cap the pages if that ever bites.
+    let h = &s.editor.history;
+    if h.loading || h.loading_more {
+        return false;
+    }
+    if h.next_skip.is_some() {
+        load_more(s);
+        if s.editor.history.loading_more {
+            return true;
+        }
+    }
+    s.editor.history.jump_to = None;
     true
 }
 
@@ -1445,6 +1464,9 @@ fn cell_content(s: &State, i: usize, col_id: &str, ctx: &CellCtx) -> Cell {
     let c = &h.commits[ci];
     let dim = matches.as_ref().is_some_and(|m| !m.contains(&c.id));
     let color = |base: Color| if dim { base.alpha(0.4) } else { base };
+    // A merge commit carries no work of its own: it reads quieter so the real
+    // commits stand out.
+    let merge = c.parents.len() > 1;
 
     // Desktop wraps each commit `<li>` in a ContextMenu ("Copy hash" /
     // "Copy subject"); the kit `Table` has no per-row element hook, so every
@@ -1458,17 +1480,9 @@ fn cell_content(s: &State, i: usize, col_id: &str, ctx: &CellCtx) -> Cell {
         "desc" => {
             let paint = palette(graph_color_at(graph, ci));
             let mut content = row().w_full().h_full().items_center().gap(4.0).min_w(0.0);
-            content = content.child(
-                txt(
-                    &c.subject,
-                    T12,
-                    color(if dim { ink.muted } else { ink.text }),
-                )
-                .min_w(96.0)
-                .grow(1.0)
-                .truncate_middle()
-                .help_when_truncated(c.subject.clone()),
-            );
+            // The pills sit beside the graph node, ahead of the subject, so
+            // branch tips line up down the column instead of hugging the far
+            // edge.
             if c.head || !c.refs.is_empty() {
                 let mut badges = row().items_center().gap(4.0).shrink();
                 if c.head {
@@ -1483,15 +1497,31 @@ fn cell_content(s: &State, i: usize, col_id: &str, ctx: &CellCtx) -> Cell {
                             .child(txt("HEAD", T11MN_BADGE, ink.white)),
                     );
                 }
-                for r in &c.refs {
-                    badges = badges.child(ref_badge_el(r, paint, ink, color));
+                for pill in fuse_refs(&c.refs) {
+                    badges = badges.child(ref_badge_el(&pill, paint, ink, color));
                 }
                 content = content.child(badges);
             }
+            content = content.child(
+                txt(
+                    &c.subject,
+                    T12,
+                    color(if dim || merge { ink.muted } else { ink.text }),
+                )
+                .min_w(96.0)
+                .grow(1.0)
+                .truncate_middle()
+                .help_when_truncated(c.subject.clone()),
+            );
             content
         }
         "date" => cell_text(format_relative(c.time, now), false, color(ink.muted), ctx),
-        "author" => cell_text(c.author.clone(), false, color(ink.text), ctx),
+        "author" => cell_text(
+            c.author.clone(),
+            false,
+            color(if merge { ink.muted } else { ink.text }),
+            ctx,
+        ),
         "commit" => cell_text(
             c.id.chars().take(8).collect(),
             true,
@@ -1528,32 +1558,89 @@ fn cell_text(t: String, mono: bool, color: Color, ctx: &CellCtx) -> El {
 /// Table ref badge: desktop colours every badge's text and border with the
 /// row's lane `paint` (its Badge variant only changes the fill — `warning`
 /// for tags, `outline` for remotes, `secondary` for locals).
-fn ref_badge_el(r: &str, paint: Color, ink: &Ink, color: impl Fn(Color) -> Color) -> El {
-    let (label, is_tag, is_remote) = ref_badge(r);
+fn ref_badge_el(pill: &RefPill, paint: Color, ink: &Ink, color: impl Fn(Color) -> Color) -> El {
+    let RefPill {
+        name,
+        label,
+        is_tag,
+        is_remote,
+        remotes,
+    } = pill;
     // Desktop `ui/badge.tsx`: 20pt rounded-full pill (HistoryTable shrinks
     // only the font). The full ref name stays on `.label` for a11y/tooltips
     // while the visible text truncates.
-    let badge = el()
+    let mut badge = row()
         .px(6.0)
         .h(20.0)
+        .gap(5.0)
         .radius(10.0)
         .items_center()
         .justify_center()
         .border(1.0, color(paint))
-        .label(r)
+        .label(name)
         .child(
-            txt(&label, T11MN_BADGE, color(paint))
+            txt(label, T11MN_BADGE, color(paint))
                 .max_w(112.0)
                 .truncate_middle()
-                .help_when_truncated(label),
+                .help_when_truncated(label.clone()),
         );
-    if is_tag {
+    // A remote-tracking twin rides on the local pill as a quieter suffix.
+    for remote in remotes {
+        badge = badge
+            .child(el().w(1.0).h(12.0).fill(color(paint.alpha(0.5))))
+            .child(txt(remote, T11MN_BADGE, color(ink.muted)));
+    }
+    if *is_tag {
         badge.fill(color(ink.warning.alpha(0.15)))
-    } else if is_remote {
+    } else if *is_remote {
         badge
     } else {
         badge.fill(color(paint.alpha(0.16)))
     }
+}
+
+/// One ref pill: a ref name, plus the remotes whose tracking ref of the same
+/// name sits on the same commit.
+struct RefPill {
+    /// The full ref as Git reports it.
+    name: String,
+    label: String,
+    is_tag: bool,
+    is_remote: bool,
+    /// Remotes fused into this local pill (`origin` for `origin/main`).
+    remotes: Vec<String>,
+}
+
+/// A commit's refs as pills. A remote-tracking ref whose local branch of the
+/// same name is on the commit too folds into that branch's pill instead of
+/// taking a second one: `main` + `origin/main` reads `main | origin`.
+fn fuse_refs(refs: &[String]) -> Vec<RefPill> {
+    let pill = |name: &String| {
+        let (label, is_tag, is_remote) = ref_badge(name);
+        RefPill {
+            name: name.clone(),
+            label,
+            is_tag,
+            is_remote,
+            remotes: Vec::new(),
+        }
+    };
+    // Locals and tags first, so every remote can find its local twin.
+    let (remotes, mut pills): (Vec<_>, Vec<_>) =
+        refs.iter().map(pill).partition(|pill| pill.is_remote);
+    for remote in remotes {
+        let twin = remote.label.split_once('/').and_then(|(origin, branch)| {
+            pills
+                .iter_mut()
+                .find(|p| !p.is_tag && p.label == branch)
+                .map(|p| (origin, p))
+        });
+        match twin {
+            Some((origin, local)) => local.remotes.push(origin.to_string()),
+            None => pills.push(remote),
+        }
+    }
+    pills
 }
 
 fn graph_color_at(graph: &GraphLayout, ci: usize) -> usize {
@@ -2192,6 +2279,67 @@ mod tests {
         assert_eq!(s.editor.history.selected.as_deref(), Some("a"));
         assert!(s.editor.history.jump_to.is_none());
         assert!(!poll(&mut s, &mut tx));
+    }
+
+    #[test]
+    fn poll_keeps_jump_to_while_its_commit_is_still_loading() {
+        let mut s = state_on_history();
+        s.editor.history.loading = true;
+        s.editor.history.jump_to = Some("a".into());
+        let mut tx = Tx::default();
+        poll(&mut s, &mut tx);
+        assert_eq!(s.editor.history.jump_to.as_deref(), Some("a"));
+        // The page lands with the commit on it: the jump completes.
+        s.editor.history.loading = false;
+        s.editor.history.commits = vec![commit("b", &["a"], true), commit("a", &[], false)];
+        poll(&mut s, &mut tx);
+        assert_eq!(s.editor.history.selected.as_deref(), Some("a"));
+        assert!(s.editor.history.jump_to.is_none());
+    }
+
+    #[test]
+    fn poll_drops_jump_to_once_the_history_runs_out() {
+        let mut s = state_on_history();
+        s.editor.history.commits = vec![commit("b", &[], true)];
+        s.editor.history.jump_to = Some("gone".into());
+        let mut tx = Tx::default();
+        assert!(poll(&mut s, &mut tx));
+        assert!(s.editor.history.jump_to.is_none());
+    }
+
+    #[test]
+    fn fuse_refs_folds_a_remote_into_its_local_twin() {
+        let refs: Vec<String> = [
+            "remotes/origin/main",
+            "main",
+            "remotes/up/main",
+            "remotes/origin/dev",
+            "tag: v1",
+        ]
+        .map(String::from)
+        .into();
+        let pills = fuse_refs(&refs);
+        let shown: Vec<(&str, &[String])> = pills
+            .iter()
+            .map(|p| (p.label.as_str(), p.remotes.as_slice()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("main", &["origin".to_string(), "up".to_string()][..]),
+                ("v1", &[][..]),
+                ("origin/dev", &[][..]),
+            ],
+            "a remote with no local twin keeps its own pill"
+        );
+    }
+
+    #[test]
+    fn fuse_refs_does_not_fold_into_a_tag_of_the_same_name() {
+        let refs = ["tag: main".to_string(), "remotes/origin/main".to_string()];
+        let pills = fuse_refs(&refs);
+        assert_eq!(pills.len(), 2);
+        assert!(pills.iter().all(|p| p.remotes.is_empty()));
     }
 
     #[test]

@@ -635,7 +635,13 @@ Evidence: `apps/rune/src/editor/go_to_definition.rs`, `apps/rune/src/editor/lsp.
 
 ### RNE-history
 
-The system SHALL show History as a branch-filtered, paged commit table with a lane graph, a synthetic uncommitted-changes row, a filter that dims non-matching rows while keeping the whole graph, match navigation, Jump to HEAD, a commit detail pane with parents and patch, and a resizable layout persisted through the shared settings store.
+The system SHALL show History as a branch-filtered, paged commit table with a lane graph, a synthetic uncommitted-changes row, a filter that dims non-matching rows while keeping the whole graph, match navigation, Jump to HEAD, a commit detail pane with parents and patch, and a resizable layout persisted through the shared settings store. Each row's ref pills sit ahead of the subject, a merge commit's subject and author read muted, and a local branch and a remote-tracking ref of the same name on one commit share one pill (`main | origin`).
+
+#### Scenario: Pills and merge rows
+
+- GIVEN a commit carries `main`, `origin/main` and a tag, and another is a merge commit
+- WHEN History lists them
+- THEN the commit shows one `main | origin` pill and the tag pill before its subject, a remote with no local twin keeps its own pill, and the merge commit's subject and author draw muted
 
 #### Scenario: Filter and jump
 
@@ -665,7 +671,7 @@ Evidence: `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/history_graph
 
 ### RNE-inline-blame
 
-The system SHALL show, next to the open file's code, an annotation on the caret's line naming the author who last touched it and how long ago the commit landed, read through `git blame` on the worker lane — the annotation blanked (the column stays mounted) while the buffer holds unsaved edits, re-read after the save lands, and toggled on and off from the editor footer with the choice persisted under `goko.editor.blame`.
+The system SHALL show, next to the open file's code, an annotation on the caret's line naming the author who last touched it and how long ago the commit landed, read through `git blame` on the worker lane — the annotation blanked (the column stays mounted) while the buffer holds unsaved edits, re-read after the save lands, and toggled on and off from the editor footer with the choice persisted under `goko.editor.blame`. Pressing the annotation of a committed line opens that commit in History: the section switches, and History pages on until the commit is loaded, then selects and reveals it (it gives up once the history runs out).
 
 #### Scenario: Annotations land beside the code
 
@@ -691,7 +697,7 @@ The system SHALL show, next to the open file's code, an annotation on the caret'
 - WHEN the blame read fails
 - THEN the editor shows the error and no annotation is invented
 
-Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
+Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
 
 ### RNE-inline-conflicts
 

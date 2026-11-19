@@ -1423,6 +1423,9 @@ fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
         .on_blame(|st: &mut State, enabled, _tx: &mut Tx| {
             crate::editor::blame::set_enabled(&mut st.editor, enabled);
         })
+        .on_blame_open(|st: &mut State, commit: &str, tx: &mut Tx| {
+            crate::editor::blame::open_commit(st, commit, tx);
+        })
         .on_send(|st: &mut State, tx: &mut Tx| {
             crate::editor::snapshot::send(st, tx);
         })
@@ -2723,7 +2726,7 @@ mod tests {
                 .map(|author| crate::editor::blame::BlameLine {
                     author: author.into(),
                     time: crate::editor::blame::now_ms(),
-                    uncommitted: false,
+                    ..Default::default()
                 })
                 .into(),
         });
