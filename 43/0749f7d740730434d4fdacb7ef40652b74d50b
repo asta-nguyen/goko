@@ -1,0 +1,37 @@
+docs/llm/domains/rune-chrome.md
+  s_ab19936d8fe1a2::t_bed282c9b3413c 568-591,629-633
+docs/llm/domains/rune-editor.md
+  s_ab19936d8fe1a2::t_bed282c9b3413c 804-827,1370
+apps/rune/src/main.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 165-174,347-350,434-481,1200-1216,1237-1239,1287,1294-1303,1408-1421,5582-5602
+  s_ab19936d8fe1a2::t_17b92d026bee7b 5603
+apps/rune/src/settings.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 17,593-612,691-743
+apps/rune/src/editor/changes.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 810-824,828-834
+apps/rune/src/sidebar.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 34-35,43-70,1312-1318,1325,1334,1340-1341,2429-2469
+  s_ab19936d8fe1a2::t_b90c9a4ee58ad8 2470
+apps/rune/src/editor/stashes.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 37-47,49-53
+apps/rune/src/editor/files.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 28-32,36,50-70,72-98
+apps/rune/src/editor/pane_layout.rs
+  s_ab19936d8fe1a2::t_bed282c9b3413c 80-111,119-123,133-136,142-144,158,201-216,218-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "430749f7d740730434d4fdacb7ef40652b74d50b",
+  "prompts": {},
+  "sessions": {
+    "s_ab19936d8fe1a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b442db1c-7354-4fca-91a6-88aebbdb24d7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
