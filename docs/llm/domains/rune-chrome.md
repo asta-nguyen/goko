@@ -565,6 +565,30 @@ The system SHALL give every sidebar button an accessible name that includes its 
 
 Evidence: `apps/rune/src/sidebar.rs`
 
+### RNC-sidebar-dock
+
+The system SHALL dock the project sidebar on either edge of the window, left or right, rendering it beside the workspace column with the 8 px resize separator between them, persisting the choice under `rune.sidebar_position` so it survives restarts, and inverting the separator's drag direction when docked right so dragging toward the workspace widens the sidebar.
+
+#### Scenario: dock the sidebar right
+
+- GIVEN the sidebar docked left
+- WHEN the user picks Right under Settings → Appearance → Sidebar position
+- THEN the workspace column renders to the left of the sidebar, the separator sits on the sidebar's leading edge, and the choice persists under `rune.sidebar_position`
+
+#### Scenario: docked-right resize direction
+
+- GIVEN the sidebar docked right
+- WHEN the separator is dragged toward the workspace, or an arrow key steps it
+- THEN the sidebar widens rather than narrows, and the new width persists
+
+#### Scenario: side restored on launch
+
+- GIVEN a previously persisted `rune.sidebar_position` value of `right`
+- WHEN the app starts
+- THEN the sidebar opens on the right
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/main.rs`, `apps/rune/src/settings.rs`
+
 ### RNC-sidebar-projects
 
 The system SHALL render the selected workspace's registered projects and per-project worktree lists from the editor backend — never mock rows — with one expandable project row (chevron, folder icon, name, missing badge, checkout status, branch label), child repository projects of a folder project indented under their parent row and expanded by the parent's chevron, a collapsible Worktrees group for linked checkouts, real daemon sessions nested under matching checkouts subject to the active-project filter in [RNC-project-terminals](#rnc-project-terminals), an Other sessions group for project sessions matching no checkout, honest loading/error/empty-group states, Add Project through the native folder picker and the nested-repository review in [RNC-nested-repo-import](#rnc-nested-repo-import), and a Rescan repositories action on a folder project's More menu; Unassigned sessions appear only in Default when no project is active, while switching workspaces leaves existing tabs, sessions, and editor checkout intact.
@@ -602,9 +626,11 @@ The system SHALL render the selected workspace's registered projects and per-pro
 Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/projects.rs`, `crates/app-core/src/store.rs`, `crates/app-core/src/worktrees.rs`
 ### RNC-sidebar-resize
 
-The system SHALL let the user drag the sidebar's right-edge separator to
-resize it between 220 and 480 px, persisting the chosen width through the
-app settings store so it survives restarts.
+The system SHALL let the user drag the separator on the sidebar's inner edge —
+its right edge when the sidebar is docked left and its left edge when docked
+right ([RNC-sidebar-dock](#rnc-sidebar-dock)) — to resize it between 220 and
+480 px, following the pointer along that edge and persisting the chosen width
+through the app settings store so it survives restarts.
 
 #### Scenario: drag within bounds
 

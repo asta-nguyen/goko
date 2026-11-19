@@ -162,6 +162,16 @@ pub struct State {
     notice_seen: Option<String>,
     /// The sidebar's width in pixels.
     sidebar_width: f32,
+    /// Which edge the sidebar docks against — left or right.
+    sidebar_side: sidebar::Side,
+    /// The user changed the sidebar side since launch, so the pending startup
+    /// read must not overwrite it.
+    sidebar_side_chosen: bool,
+    /// Which side the Files tab's file tree sits on — left or right.
+    list_aside_side: sidebar::Side,
+    /// The user changed the list aside side since launch, so the pending
+    /// startup read must not overwrite it.
+    list_aside_side_chosen: bool,
     /// The open sidebar menu: the row it belongs to and what it offers.
     sidebar_menu: Option<(sidebar::RowTarget, sidebar::MenuKind)>,
     /// The ⌥↑/⌥↓ cursor: the element key of the sidebar row the keyboard is
@@ -334,6 +344,10 @@ impl State {
             notice_set_at: None,
             notice_seen: None,
             sidebar_width: sidebar::DEFAULT_SIDEBAR_W,
+            sidebar_side: sidebar::Side::Left,
+            sidebar_side_chosen: false,
+            list_aside_side: sidebar::Side::Left,
+            list_aside_side_chosen: false,
             sidebar_menu: None,
             sidebar_cursor: None,
             last_link_open: None,
@@ -415,6 +429,54 @@ impl State {
                 value: format!("{width}"),
             }),
         );
+    }
+
+    /// Save which edge the sidebar docks against, so it survives the next
+    /// launch — the same worker-lane settings write as the width.
+    pub fn persist_sidebar_side(&mut self) {
+        let queued = backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::SetSetting {
+                key: sidebar::SIDEBAR_SIDE_KEY.to_string(),
+                value: self.sidebar_side.store_value().to_string(),
+            }),
+        );
+        if !queued {
+            self.notice =
+                Some("the editor queue is full; the sidebar position was not saved".into());
+        }
+    }
+
+    /// Move the project sidebar to the left or right edge and persist the
+    /// choice; the chosen flag keeps the pending startup read from overwriting
+    /// a side picked before that read lands.
+    pub fn set_sidebar_side(&mut self, side: sidebar::Side) {
+        if self.sidebar_side == side {
+            return;
+        }
+        self.sidebar_side = side;
+        self.sidebar_side_chosen = true;
+        self.persist_sidebar_side();
+    }
+
+    /// Move the Files tab's file tree to the left or right edge and persist
+    /// the choice through the same worker-lane settings write as the width.
+    pub fn set_list_aside_side(&mut self, side: sidebar::Side) {
+        if self.list_aside_side == side {
+            return;
+        }
+        self.list_aside_side = side;
+        self.list_aside_side_chosen = true;
+        let queued = backend::enqueue(
+            &mut self.editor.backend,
+            backend::Job::project(backend::Req::SetSetting {
+                key: editor::files::LIST_ASIDE_SIDE_KEY.to_string(),
+                value: side.store_value().to_string(),
+            }),
+        );
+        if !queued {
+            self.notice = Some("the editor queue is full; the list position was not saved".into());
+        }
     }
 
     /// Seconds until the notice toast closes; `None` with no toast. The poll
@@ -1135,6 +1197,23 @@ impl State {
                 }
                 return;
             }
+            backend::Req::GetSetting { key } if key == sidebar::SIDEBAR_SIDE_KEY => {
+                // Do not let the startup read overwrite a side picked before it lands.
+                if !self.sidebar_side_chosen
+                    && let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
+                {
+                    self.sidebar_side = sidebar::Side::parse(raw);
+                }
+                return;
+            }
+            backend::Req::GetSetting { key } if key == editor::files::LIST_ASIDE_SIDE_KEY => {
+                if !self.list_aside_side_chosen
+                    && let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
+                {
+                    self.list_aside_side = sidebar::Side::parse(raw);
+                }
+                return;
+            }
             _ => {}
         }
         self.editor.apply_reply(reply);
@@ -1155,8 +1234,9 @@ pub(crate) fn test_handle() -> rune::AppHandle<State> {
     rune::App::new(AppSpec::new("test", (10.0, 10.0), init, view)).handle()
 }
 
-/// Root: header full-width, then [sidebar 320 | 8 px separator | workspace
-/// column]. Settings replaces the whole column like App.tsx's settingsMode;
+/// Root: header full-width, then [sidebar | 8 px separator | workspace
+/// column], with the sidebar docked left or right per `sidebar_side`.
+/// Settings replaces the whole column like App.tsx's settingsMode;
 /// Editor/Terminal keep the tab strip + controls and swap only the content.
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let ink = &s.ink;
@@ -1204,15 +1284,23 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(ink.bg)
         .child(chrome::header(s, ink, cx.titlebar_inset()))
-        .child(
+        .child(if s.sidebar_side == sidebar::Side::Left {
             row()
                 .grow(1.0)
                 .min_h(0.0)
                 .w_full()
                 .child(sidebar::sidebar(s, ink, &mut layer))
                 .child(sidebar::separator(s, ink))
-                .child(workspace),
-        );
+                .child(workspace)
+        } else {
+            row()
+                .grow(1.0)
+                .min_h(0.0)
+                .w_full()
+                .child(workspace)
+                .child(sidebar::separator(s, ink))
+                .child(sidebar::sidebar(s, ink, &mut layer))
+        });
     // Caret-anchored LSP hover card: mounts only once `Cx::caret` has
     // measured the field's caret in window points.
     if s.view == View::Editor
@@ -1315,6 +1403,20 @@ fn setup(s: &mut State, waker: rune::Waker) {
         &mut s.editor.backend,
         backend::Job::project(backend::Req::GetSetting {
             key: sidebar::SIDEBAR_WIDTH_KEY.to_string(),
+        }),
+    );
+    // The sidebar's docked side survives restarts too.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: sidebar::SIDEBAR_SIDE_KEY.to_string(),
+        }),
+    );
+    // The Files tab's tree side survives restarts too.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: editor::files::LIST_ASIDE_SIDE_KEY.to_string(),
         }),
     );
     // The tabs' layout comes back once the daemon's session list is in too.
@@ -5475,6 +5577,28 @@ mod view_tests {
             Ok(ReplyData::Setting(None)),
         ));
         assert_eq!(s.theme_choice, crate::theme::Theme::Dark);
+    }
+
+    #[test]
+    fn the_stored_list_aside_side_restores_on_its_getsetting_reply() {
+        let mut s = State::new(test_handle());
+        assert_eq!(s.list_aside_side, crate::sidebar::Side::Left);
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: crate::editor::files::LIST_ASIDE_SIDE_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(Some("right".into()))),
+        ));
+        assert_eq!(s.list_aside_side, crate::sidebar::Side::Right);
+        // An unrecognized value falls back to Left.
+        let mut s = State::new(test_handle());
+        s.apply_reply(reply(
+            Req::GetSetting {
+                key: crate::editor::files::LIST_ASIDE_SIDE_KEY.to_string(),
+            },
+            Ok(ReplyData::Setting(Some("corner".into()))),
+        ));
+        assert_eq!(s.list_aside_side, crate::sidebar::Side::Left);
     }
 
     #[test]

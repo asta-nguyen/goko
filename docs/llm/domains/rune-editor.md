@@ -801,6 +801,30 @@ The system SHALL run one stdio language-server connection per `(checkout, server
 
 Evidence: `apps/rune/src/editor/lsp.rs`, `apps/rune/src/editor/lsp/pos.rs`, `apps/rune/src/editor/lsp/sync.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/lsp.rs`
 
+### RNE-list-aside-position
+
+The system SHALL dock the Files file tree, the Changes changed-file list, and the Stashes list on either side of their detail panes, left or right, rendering each section as one row with the 8 px pane grip between the list and its detail pane, persisting a single shared `goko.editor.list_side` choice so all three sections share one side across restarts, and inverting the grip's drag direction when docked right so dragging toward the detail pane widens the list.
+
+#### Scenario: one side shared by all three sections
+
+- GIVEN the list asides docked left
+- WHEN the user picks Right under Settings → Editor → List position
+- THEN the Files tree, Changes changed-file list and Stashes list each render to the right of their detail pane, with their 1 px border rule moved to the list's leading edge, and the choice persists
+
+#### Scenario: docked-right grip direction
+
+- GIVEN a list docked right
+- WHEN its grip is dragged toward the detail pane
+- THEN the list widens rather than narrows, and the new width persists
+
+#### Scenario: side restored on launch
+
+- GIVEN a previously persisted `goko.editor.list_side` value of `right`
+- WHEN the app starts and a section activates
+- THEN its list aside renders on the right
+
+Evidence: `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/pane_layout.rs`, `apps/rune/src/main.rs`, `apps/rune/src/settings.rs`
+
 ### RNE-notice-dismiss
 
 The system SHALL show a dismiss button on the Editor's notice bar that clears the notice at once.
@@ -1343,6 +1367,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/data.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/sidebar.rs`
+- `apps/rune/src/settings.rs`
 - `apps/rune/src/editor/mod.rs`
 - `apps/rune/src/editor/state.rs`
 - `apps/rune/src/editor/tabs.rs`

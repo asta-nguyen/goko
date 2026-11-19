@@ -25,10 +25,15 @@ use crate::editor::state::search_state::{IndexStatus, SearchMode};
 use crate::editor::state::{FileMark, FileMenu};
 use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 
+/// Settings-store key for which side the editor's list asides (Files tree,
+/// Changes list, Stashes list) dock on (`left` | `right`), alongside the
+/// indent and blame editor preferences.
+pub const LIST_ASIDE_SIDE_KEY: &str = "goko.editor.list_side";
+
 /// Files section root: toolbar (file filter + file actions, then the always
 /// visible search row), then [aside: tree or search results | editor] split —
 /// the aside swaps content like the desktop `SplitPane`, the editor flexes to
-/// the remaining width.
+/// the remaining width. `list_aside_side` docks the aside left or right.
 pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
     let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0);
     if let Some(dialog) = trash_dialog(s, ink) {
@@ -42,54 +47,55 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
             ink.muted,
         ));
     }
-    root = root.child(
-        row()
-            .grow(1.0)
-            .min_h(0.0)
+    // The aside (tree/search) and the editor detail are one horizontal split;
+    // `list_aside_side` flips which side the aside docks on, VS Code-style.
+    let on_right = pane_layout::docks_right(s);
+    let aside = col()
+        .w(pane_layout::current(s, PaneKind::FilesAside))
+        .h_full()
+        .shrink()
+        .min_w(pane_layout::PANE_MIN)
+        // The 1 px rule faces the editor: right edge when the aside is on
+        // the left, left edge when it docks right.
+        .border_sides(pane_layout::aside_border(on_right), ink.border)
+        .child(
+            // Desktop SplitPane parity: the aside shows EITHER the file tree
+            // or the content-search results — never both — so the editor
+            // always owns whatever width remains (no fixed code column +
+            // results column + tree overflowing narrow windows).
+            if s.editor.files.search.open {
+                search_results(s, ink, k)
+            } else {
+                tree_pane(s, ink, k)
+            }
             .w_full()
-            .on_layout_tx(pane_layout::watch_row_width())
-            // Desktop SplitPane parity: the aside shows EITHER the file
-            // tree or the content-search results — never both — so the
-            // editor always owns whatever width remains (no fixed code
-            // column + results column + tree overflowing narrow windows).
-            .child(
-                // Persisted width + grip: the aside gives way before the
-                // editor does on narrow windows (flex shrink to PANE_MIN),
-                // but never collapses unusable; the detail column keeps
-                // SIBLING_MIN so the code surface stays usable.
-                col()
-                    .w(pane_layout::current(s, PaneKind::FilesAside))
-                    .h_full()
-                    .shrink()
-                    .min_w(pane_layout::PANE_MIN)
-                    .border_sides([0.0, 1.0, 0.0, 0.0], ink.border)
-                    .child(
-                        if s.editor.files.search.open {
-                            search_results(s, ink, k)
-                        } else {
-                            tree_pane(s, ink, k)
-                        }
-                        .w_full()
-                        .h_full(),
-                    )
-                    .child(pane_layout::grip(
-                        s,
-                        ink,
-                        PaneKind::FilesAside,
-                        "Resize file list and editor",
-                    )),
-            )
-            .child(
-                col()
-                    .grow(1.0)
-                    .min_w(pane_layout::SIBLING_MIN)
-                    .h_full()
-                    .min_h(0.0)
-                    .child(tab_bar(s, ink))
-                    .child(doc_bar(s, ink))
-                    .child(editor_pane(s, ink, k).grow(1.0).min_w(0.0).h_full()),
-            ),
-    );
+            .h_full(),
+        )
+        .child(pane_layout::grip(
+            s,
+            ink,
+            PaneKind::FilesAside,
+            "Resize file list and editor",
+        ));
+    let detail = col()
+        .grow(1.0)
+        .min_w(pane_layout::SIBLING_MIN)
+        .h_full()
+        .min_h(0.0)
+        .child(tab_bar(s, ink))
+        .child(doc_bar(s, ink))
+        .child(editor_pane(s, ink, k).grow(1.0).min_w(0.0).h_full());
+    let mut split = row()
+        .grow(1.0)
+        .min_h(0.0)
+        .w_full()
+        .on_layout_tx(pane_layout::watch_row_width());
+    split = if on_right {
+        split.child(detail).child(aside)
+    } else {
+        split.child(aside).child(detail)
+    };
+    root = root.child(split);
     // The confirmation is a modal: its members are itself plus everything
     // after it in tree order, so it must mount last — mounted earlier the
     // whole section would stay live and steal the dialog's presses.
