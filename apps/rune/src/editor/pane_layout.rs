@@ -93,6 +93,13 @@ pub fn aside_border(right: bool) -> [f32; 4] {
     }
 }
 
+/// Leading inset of a right-docked list: its grip is pinned over the leading
+/// edge, so the content starts past it instead of under it. Docked left the
+/// grip covers the trailing padding and needs none.
+pub fn aside_inset(right: bool) -> f32 {
+    if right { GRIP_W } else { 0.0 }
+}
+
 /// The grip's pin edges `(left, top, right, bottom)` — the aside's trailing
 /// edge when docked left, its leading edge when docked right.
 fn grip_pin(right: bool) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
@@ -109,8 +116,9 @@ fn grip_sign(right: bool) -> f32 {
     if right { -1.0 } else { 1.0 }
 }
 
-/// The visible, grabbable separator pinned inside a pane aside's trailing
-/// edge. Place it as the aside's LAST child so it paints above the content.
+/// The visible, grabbable separator pinned inside a pane aside's facing edge:
+/// trailing when docked left, leading when docked right. Place it as the
+/// aside's LAST child so it paints above the content.
 pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
     // Report the effective (viewport-clamped) width so AT reads what is
     // actually rendered when a restored oversized value shrinks via flex.
@@ -152,10 +160,13 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
             st.editor.history.layout.panes.reset(kind);
             st.editor.history.layout_dirty = true;
         })
+        // `range_value` is the width, so a step is +width on either side: AT
+        // Increment/SetValue must move the value toward its target. Only the
+        // pointer drag mirrors.
         .on_step(move |st: &mut State, steps: i32, _tx: &mut Tx| {
             let w = clamp_width(
                 st.editor.pane_row_w,
-                current(st, kind) + steps as f32 * GRIP_STEP * dir,
+                current(st, kind) + steps as f32 * GRIP_STEP,
             );
             set_width(st, kind, w);
         })

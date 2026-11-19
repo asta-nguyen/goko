@@ -58,6 +58,7 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
         // The 1 px rule faces the editor: right edge when the aside is on
         // the left, left edge when it docks right.
         .border_sides(pane_layout::aside_border(on_right), ink.border)
+        .pl(pane_layout::aside_inset(on_right))
         .child(
             // Desktop SplitPane parity: the aside shows EITHER the file tree
             // or the content-search results — never both — so the editor
@@ -3044,6 +3045,47 @@ mod tests {
         );
         let json = rt.state.editor.history.layout.to_json();
         assert!(json.contains("\"filesAside\":360"), "stored doc: {json}");
+    }
+
+    /// Docked right, the grip sits on the aside's leading edge with no tree row
+    /// under it, dragging it left widens the list, and an AT Increment widens
+    /// it too — the grip's value is the width on either side.
+    #[test]
+    fn right_docked_grip_clears_the_rows_and_widens_both_ways() {
+        let mut s = scene();
+        s.list_aside_side = crate::sidebar::Side::Right;
+        let mut rt = Runtime::new(s, files_only, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+
+        let g = pane_grip(&rt);
+        let grip_end = g.rect[0] + g.rect[2];
+        let rows = rt.elements().into_iter().filter(|e| e.role == "treeitem");
+        assert!(
+            rows.clone().count() > 0 && rows.into_iter().all(|e| e.rect[0] >= grip_end),
+            "no tree row starts under the grip at {:?}",
+            g.rect
+        );
+
+        let (x, y) = (g.rect[0] + g.rect[2] / 2.0, g.rect[1] + g.rect[3] / 2.0);
+        drag_x(&mut rt, x, y, x - 80.0);
+        let dragged = rt.state.editor.history.layout.panes.files_aside;
+        assert!(
+            (dragged - 360.0).abs() < 1.0,
+            "drag left +80px: 280 -> {dragged}"
+        );
+
+        assert!(rt.accessibility_action(
+            "files-pane-grip",
+            rune::accesskit::Action::Increment,
+            None
+        ));
+        rt.frame(1.0 / 60.0);
+        let stepped = rt.state.editor.history.layout.panes.files_aside;
+        assert!(
+            (stepped - dragged - f64::from(pane_layout::GRIP_STEP)).abs() < 1.0,
+            "Increment widens by one step: {dragged} -> {stepped}"
+        );
     }
 
     /// Dragging past either bound clamps: the static PANE_MIN..=PANE_MAX

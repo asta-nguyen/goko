@@ -40,7 +40,8 @@ fn stashes_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
         .h_full()
         .shrink()
         .min_w(pane_layout::PANE_MIN)
-        .border_sides(pane_layout::aside_border(on_right), ink.border);
+        .border_sides(pane_layout::aside_border(on_right), ink.border)
+        .pl(pane_layout::aside_inset(on_right));
     let detail = detail_pane(s, ink, k)
         .grow(1.0)
         .min_w(pane_layout::SIBLING_MIN)

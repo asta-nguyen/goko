@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versions follow the app release version (`[workspace.package]` in `Cargo.toml`).
 Rename the `Unreleased` heading to the version and date when tagging a release.
 
+Credit a change from an outside contributor at the end of its entry, linking
+their profile and naming the PR and commits: ``Contributed by
+[@login](https://github.com/login) in #123 (`abc1234`).``
+
 ## [Unreleased]
 
 ### Added
@@ -17,6 +21,10 @@ Rename the `Unreleased` heading to the version and date when tagging a release.
 - In History, a branch and its remote copy on the same commit share one pill
   (`main | origin`), pills sit before the commit message, and merge commits
   read quieter so the real commits stand out.
+- The project sidebar and the Files, Changes and Stashes lists can each dock on
+  the left or the right; pick the sides under Settings → Appearance → Sidebar
+  position and Settings → Editor → List position. Contributed by
+  [@iamdevtry](https://github.com/iamdevtry) in #34 (`e183612`, `e2a1aa7`).
 
 ## [0.3.0] - 2026-11-18
 

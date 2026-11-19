@@ -816,7 +816,8 @@ fn split_view(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewC
         .h_full()
         .shrink()
         .min_w(pane_layout::PANE_MIN)
-        .border_sides(pane_layout::aside_border(on_right), ink.border);
+        .border_sides(pane_layout::aside_border(on_right), ink.border)
+        .pl(pane_layout::aside_inset(on_right));
     let patch = patch_side(s, ink)
         .grow(1.0)
         .min_w(pane_layout::SIBLING_MIN)

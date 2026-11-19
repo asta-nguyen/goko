@@ -1284,22 +1284,15 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(ink.bg)
         .child(chrome::header(s, ink, cx.titlebar_inset()))
-        .child(if s.sidebar_side == sidebar::Side::Left {
-            row()
-                .grow(1.0)
-                .min_h(0.0)
-                .w_full()
-                .child(sidebar::sidebar(s, ink, &mut layer))
-                .child(sidebar::separator(s, ink))
-                .child(workspace)
-        } else {
-            row()
-                .grow(1.0)
-                .min_h(0.0)
-                .w_full()
-                .child(workspace)
-                .child(sidebar::separator(s, ink))
-                .child(sidebar::sidebar(s, ink, &mut layer))
+        .child({
+            let body = row().grow(1.0).min_h(0.0).w_full();
+            let bar = sidebar::sidebar(s, ink, &mut layer);
+            let rule = sidebar::separator(s, ink);
+            if s.sidebar_side == sidebar::Side::Left {
+                body.child(bar).child(rule).child(workspace)
+            } else {
+                body.child(workspace).child(rule).child(bar)
+            }
         });
     // Caret-anchored LSP hover card: mounts only once `Cx::caret` has
     // measured the field's caret in window points.

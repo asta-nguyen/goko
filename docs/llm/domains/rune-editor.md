@@ -803,7 +803,7 @@ Evidence: `apps/rune/src/editor/lsp.rs`, `apps/rune/src/editor/lsp/pos.rs`, `app
 
 ### RNE-list-aside-position
 
-The system SHALL dock the Files file tree, the Changes changed-file list, and the Stashes list on either side of their detail panes, left or right, rendering each section as one row with the 8 px pane grip between the list and its detail pane, persisting a single shared `goko.editor.list_side` choice so all three sections share one side across restarts, and inverting the grip's drag direction when docked right so dragging toward the detail pane widens the list.
+The system SHALL dock the Files file tree, the Changes changed-file list, and the Stashes list on either side of their detail panes, left or right, rendering each section as one row with the 8 px pane grip between the list and its detail pane, persisting a single shared `goko.editor.list_side` choice so all three sections share one side across restarts, inverting the grip's drag direction when docked right so dragging toward the detail pane widens the list, and insetting a right-docked list by the grip's width so no row sits under the grip. The grip reports the list's width as its value, so an assistive-technology step widens the list on either side.
 
 #### Scenario: one side shared by all three sections
 
@@ -814,8 +814,14 @@ The system SHALL dock the Files file tree, the Changes changed-file list, and th
 #### Scenario: docked-right grip direction
 
 - GIVEN a list docked right
-- WHEN its grip is dragged toward the detail pane
+- WHEN its grip is dragged toward the detail pane, or assistive technology increments it
 - THEN the list widens rather than narrows, and the new width persists
+
+#### Scenario: rows clear the docked-right grip
+
+- GIVEN a list docked right
+- WHEN it renders
+- THEN its content starts past the 8 px grip, so no row or chevron lies under it
 
 #### Scenario: side restored on launch
 
