@@ -1,0 +1,49 @@
+apps/rune/src/editor/history.rs
+  s_5f2418012d4292::t_26bb1aec317ad9 2284-2344
+  s_5f2418012d4292::t_726f7fdcfb24b9 1467-1469
+  s_5f2418012d4292::t_2a675ad7cef190 785,789,794,799-808,810-816
+  s_5f2418012d4292::t_3ef1f6f8e315af 1483-1485,1500-1501,1505-1515,1519-1524
+  s_5f2418012d4292::t_76c2842e231491 1561-1568,1572,1575,1580,1582,1585,1587-1593,1595,1602-1644
+  s_5f2418012d4292::t_a9787c0ced5e50 1645
+apps/rune/src/editor/code.rs
+  s_5f2418012d4292::t_eb5807b1ce6a6f 1214-1217,1220-1235,1246-1248
+  s_5f2418012d4292::t_e72361800ef1c1 412
+  s_5f2418012d4292::t_4668714ee17166 1244-1245
+  s_5f2418012d4292::t_807b372e9e0018 524
+  s_5f2418012d4292::t_605ab0c3d25059 30
+  s_5f2418012d4292::t_817f309babc6b2 428
+  s_5f2418012d4292::t_97bef89b1df480 468-474
+  s_5f2418012d4292::t_56c41476d3f31e 396-397
+  s_5f2418012d4292::t_02e2ee251440e2 1207
+apps/rune/src/editor/blame.rs
+  s_5f2418012d4292::t_163dcec2a17f0d 14,16,18-19
+  s_5f2418012d4292::t_20b3455427e203 75,80-96
+  s_5f2418012d4292::t_f25eac758e6bce 33-34
+  s_5f2418012d4292::t_23a7f937db8595 355,362,366-387
+  s_5f2418012d4292::t_ae9d0f9f461a23 97
+CHANGELOG.md
+  s_5f2418012d4292::t_46b04bb1aff57e 13-20
+apps/rune/src/editor/files.rs
+  s_5f2418012d4292::t_0a2a85c6329e82 2729
+  s_5f2418012d4292::t_3f535f627df64c 1426-1428
+docs/llm/domains/rune-editor.md
+  s_5f2418012d4292::t_78652fcdfb188c 700
+  s_5f2418012d4292::t_f075326cba2166 638-644
+  s_5f2418012d4292::t_1bcb964b8708d9 674
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "958e9a86bcec96b1ac88e28801f58efdf576337a",
+  "prompts": {},
+  "sessions": {
+    "s_5f2418012d4292": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5f8670e5-18c6-42fe-bf49-594c9e88d169",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
