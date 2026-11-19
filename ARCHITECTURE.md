@@ -205,7 +205,15 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
 - Stashes are read-only and repository-wide; history persists its pane layout under the
   settings key `goko.history.layout`. The code surface has an optional inline-blame column
   read through `app_core::git_view::blame`; the toggle persists under `goko.editor.blame`.
-- There is no Vim mode.
+- The code editor offers an optional Vim mode (`goko.editor.vim`, off by default,
+  switched in Settings → Editor): a pure modal engine in
+  `apps/rune/src/editor/vim.rs` routes the code field's Normal, Insert, Visual and
+  Visual Line keys — motions with counts, `d`/`c`/`y` operators, text objects, one
+  unnamed register mirrored to the clipboard, `.` repeat, `/ ? n N *` over the find
+  bar, and `:w`/`:q`/`:wq`/`:<line>` in a command bar — with a block caret and a
+  mode chip outside Insert. In Normal mode the macOS input source must be ABC
+  because the pinned Rune rev cannot disable the input method; Insert mode composes
+  Vietnamese normally.
 
 ## Daemon lifecycle
 

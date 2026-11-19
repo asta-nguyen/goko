@@ -56,6 +56,36 @@ impl FindState {
         self.query.set_caret(self.query.text.len());
     }
 
+    /// Show the panel and refresh matches without moving the caret or
+    /// selecting a match — Vim's `/` and `?` wait for Enter.
+    pub fn open_at(&mut self, text: &str) {
+        self.open_panel();
+        self.matches = search_matches(text, &self.query.text, self.case_sensitive);
+        self.active = None;
+    }
+
+    /// The first match strictly after `from` (forward) or the last one ending
+    /// at or before it (backward), wrapping; sets `active`.
+    pub fn next_after(&mut self, from: usize, forward: bool) -> Option<Range<usize>> {
+        if self.matches.is_empty() {
+            self.active = None;
+            return None;
+        }
+        let index = if forward {
+            self.matches
+                .iter()
+                .position(|r| r.start > from)
+                .unwrap_or(0)
+        } else {
+            self.matches
+                .iter()
+                .rposition(|r| r.end <= from)
+                .unwrap_or(self.matches.len() - 1)
+        };
+        self.active = Some(index);
+        self.matches.get(index).cloned()
+    }
+
     /// Recompute `matches` against `text`, keeping `active` on the same range
     /// when it still exists, else moving to the first match.
     pub fn refresh(&mut self, text: &str) {
@@ -267,6 +297,34 @@ mod tests {
         f.close();
         assert!(!f.open);
         assert!(f.query.text.is_empty());
+    }
+
+    #[test]
+    fn open_at_does_not_move_the_active_match() {
+        let mut f = FindState::new();
+        f.set_query("foo");
+        f.open_at("foo bar foo");
+        assert!(f.open);
+        assert_eq!(f.matches.len(), 2);
+        assert!(f.active.is_none(), "Vim waits for Enter");
+        assert!(f.active_range().is_none());
+    }
+
+    #[test]
+    fn next_after_walks_from_a_byte_and_wraps() {
+        let mut f = FindState::new();
+        f.set_query("foo");
+        f.open_at("foo bar foo foo");
+        // Matches at 0, 8, 12.
+        assert_eq!(f.next_after(0, true), Some(8..11));
+        assert_eq!(f.next_after(8, true), Some(12..15));
+        assert_eq!(f.next_after(12, true), Some(0..3), "wraps forward");
+        assert_eq!(f.next_after(12, false), Some(8..11));
+        assert_eq!(f.next_after(0, false), Some(12..15), "wraps backward");
+        f.set_query("zzz");
+        f.open_at("foo bar");
+        assert_eq!(f.next_after(0, true), None);
+        assert!(f.active.is_none());
     }
 
     #[test]

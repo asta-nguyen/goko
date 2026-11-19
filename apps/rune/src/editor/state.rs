@@ -555,6 +555,12 @@ pub struct EditorState {
     /// `goko.editor.blame`; the column itself additionally hides while the
     /// draft is dirty — the annotations describe the file on disk.
     pub blame_enabled: bool,
+    /// Whether the code field routes keys through the Vim engine. Persisted
+    /// under `goko.editor.vim`; every mounted [`CodeState`] mirrors it.
+    pub vim_enabled: bool,
+    /// The unnamed Vim register, shared across tabs so a yank in one pastes
+    /// in another.
+    pub vim_register: crate::editor::vim::Register,
     /// Go-to-definition resolution in flight (one at a time).
     pub go_to: Option<GoToPending>,
     /// Token guarding an in-flight file load against stale replies, plus
@@ -747,6 +753,8 @@ impl EditorState {
             scratch_code: CodeState::new("", ""),
             indent_choice: UnitChoice::Auto,
             blame_enabled: true,
+            vim_enabled: false,
+            vim_register: crate::editor::vim::Register::default(),
             go_to: None,
             doc_load: None,
             doc_reload: None,

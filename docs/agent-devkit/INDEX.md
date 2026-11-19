@@ -14,6 +14,7 @@
 
 ## Archived changes
 
+- [Vim mode in the native editor](changes/archive/2026-11-19-27-vim-mode/design.md) ([tasks](changes/archive/2026-11-19-27-vim-mode/tasks.md), [delta](changes/archive/2026-11-19-27-vim-mode/delta.md))
 - [Rune SSH passphrase prompt](changes/archive/rune-ssh-passphrase-prompt/delta.md)
 - [Folder projects and nested repository import](changes/archive/folder-projects/design.md) ([tasks](changes/archive/folder-projects/tasks.md), [delta](changes/archive/folder-projects/delta.md))
 - [Agent snapshot: copy code for the terminal](changes/archive/agent-snapshot/delta.md)

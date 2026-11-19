@@ -325,6 +325,12 @@ impl EditorState {
                     crate::editor::blame::request(self);
                 }
             }
+            // The Vim switch restores on the same lane: only `"1"` is on.
+            (Req::GetSetting { key }, Ok(ReplyData::Setting(value)))
+                if key == crate::editor::vim::VIM_KEY =>
+            {
+                self.apply_vim_enabled(value.as_deref() == Some("1"));
+            }
             (Req::GetSetting { key }, Err(e)) if key == crate::editor::lsp::SERVERS_KEY => {
                 // Un-pend + bounded retry live in lsp.rs; presets keep
                 // serving until a read succeeds.

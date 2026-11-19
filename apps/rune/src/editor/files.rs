@@ -16,6 +16,7 @@ use rune_kit::{
 
 use crate::State;
 use crate::editor::backend::Req;
+use crate::editor::code::VimCommand;
 use crate::editor::draft::{self, DocKind};
 use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
@@ -1412,12 +1413,37 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 /// the gutter re-derives line numbers from `edit.text` each frame.
 fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
     crate::editor::code::Code::<State>::new(code_get, code_get_mut)
+        .register(|s: &mut State| &mut s.editor.vim_register)
         // The tab chords get first refusal: `Tab` would indent and `⌘⌥→`
         // would word-move before `AppSpec::on_key` ever saw them.
         .preempt_key(crate::editor::keyboard::on_key)
         .on_changed(code_changed)
         .on_save(|st: &mut State, _tx: &mut Tx| {
             save_active_doc(st);
+        })
+        .on_vim_command(|st: &mut State, cmd: VimCommand, tx: &mut Tx| match cmd {
+            VimCommand::Save => save_active_doc(st),
+            VimCommand::Close => {
+                if let Some(path) = st.editor.doc.as_ref().map(|d| d.path.clone()) {
+                    navigation::navigate(st, PendingNav::CloseTab { path }, tx);
+                }
+            }
+            VimCommand::SaveClose => {
+                let Some(path) = st.editor.doc.as_ref().map(|d| d.path.clone()) else {
+                    return;
+                };
+                let dirty = st.editor.doc.as_ref().is_some_and(|d| d.dirty());
+                if dirty {
+                    st.editor.save_resume = Some(navigation::Guard {
+                        pending: PendingNav::CloseTab { path: path.clone() },
+                        doc_path: path,
+                        queue: Vec::new(),
+                        quitting: false,
+                    });
+                }
+                save_active_doc(st);
+            }
+            VimCommand::Line(_) => {}
         })
         .on_go_to(
             |st: &mut State, req: crate::editor::code::GoToRequest, tx: &mut Tx| {
@@ -1715,6 +1741,7 @@ fn search_results(s: &State, ink: &Ink, k: &Kit) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::code::VIM_CARET_KEY;
     use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
     use std::path::PathBuf;
 
@@ -3183,6 +3210,355 @@ mod tests {
             mods: Mods::default(),
         });
         rt.frame(0.0);
+    }
+
+    fn texts(rt: &Runtime<State>) -> Vec<String> {
+        rt.elements().into_iter().filter_map(|e| e.text).collect()
+    }
+
+    fn vim_scene(text: &str) -> State {
+        let mut s = scene();
+        open_text_doc(&mut s, "src/a.rs", text);
+        s.editor.apply_vim_enabled(true);
+        s.editor.doc.as_mut().unwrap().code.edit.focused = true;
+        s
+    }
+
+    #[test]
+    fn vim_motions_chip_and_block_caret_route_only_when_enabled() {
+        let mut rt = kb_runtime(vim_scene("one two\nthree four\n"));
+        key_text(&mut rt, "l");
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 1);
+        key_text(&mut rt, "w");
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 4);
+        assert!(texts(&rt).iter().any(|t| t == "NORMAL"));
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(VIM_CARET_KEY)),
+            "the block caret mounts outside Insert"
+        );
+        key_text(&mut rt, "2");
+        assert!(texts(&rt).iter().any(|t| t == "2"), "pending count shows");
+        key_text(&mut rt, "l");
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 6);
+        assert!(!texts(&rt).iter().any(|t| t == "2"));
+    }
+
+    #[test]
+    fn vim_insert_passes_typing_and_escape_keeps_focus() {
+        let mut rt = kb_runtime(vim_scene("ab\n"));
+        key_text(&mut rt, "i");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.vim.mode,
+            crate::editor::vim::Mode::Insert
+        );
+        assert!(texts(&rt).iter().any(|t| t == "INSERT"));
+        assert!(
+            !rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(VIM_CARET_KEY) && !e.exiting),
+            "Insert uses the native bar caret"
+        );
+        type_text(&mut rt, "xy");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "xyab\n"
+        );
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.vim.mode, crate::editor::vim::Mode::Normal);
+        assert!(doc.code.edit.focused, "Escape must not blur the field");
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "xyab\n",
+            "Tab in Normal is consumed"
+        );
+    }
+
+    #[test]
+    fn vim_off_keeps_native_typing_and_hides_the_chip() {
+        let mut s = scene();
+        open_text_doc(&mut s, "src/a.rs", "one two\n");
+        s.editor.doc.as_mut().unwrap().code.edit.focused = true;
+        let mut rt = kb_runtime(s);
+        key_text(&mut rt, "l");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "lone two\n",
+            "with Vim off the field types the key natively"
+        );
+        assert!(texts(&rt).iter().all(|t| t != "NORMAL"));
+        assert!(
+            !rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(VIM_CARET_KEY) && !e.exiting)
+        );
+    }
+
+    #[test]
+    fn vim_dd_is_one_undo_step_and_fills_the_register() {
+        let mut rt = kb_runtime(vim_scene("one\ntwo\nthree\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(4);
+        key_text(&mut rt, "d");
+        key_text(&mut rt, "d");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "one\nthree\n"
+        );
+        assert_eq!(rt.state.editor.vim_register.text, "two\n");
+        assert!(rt.state.editor.vim_register.linewise);
+        key_text(&mut rt, "u");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "one\ntwo\nthree\n",
+            "one undo restores the whole delete"
+        );
+    }
+
+    #[test]
+    fn vim_yy_and_p_paste_the_register() {
+        let mut rt = kb_runtime(vim_scene("one\ntwo\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "y");
+        key_text(&mut rt, "y");
+        key_text(&mut rt, "p");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "one\none\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn vim_paste_falls_back_to_the_clipboard() {
+        let mut rt = kb_runtime(vim_scene("ab"));
+        let clip = rune::clipboard::memory();
+        clip.set_text("XY");
+        rt.use_clipboard(&clip);
+        key_text(&mut rt, "p");
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "aXYb",
+            "an empty register reads the system clipboard"
+        );
+    }
+
+    #[test]
+    fn vim_normal_rejects_an_ime_commit() {
+        let mut rt = kb_runtime(vim_scene("ab\n"));
+        rt.ime(rune::Ime::Commit("x".into()));
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.edit.text, "ab\n", "Normal mode never edits");
+        assert_eq!(doc.code.edit.focus, 0);
+        assert_eq!(doc.code.vim.mode, crate::editor::vim::Mode::Normal);
+    }
+
+    #[test]
+    fn vim_visual_shows_the_chip_and_range() {
+        let mut rt = kb_runtime(vim_scene("one two\n"));
+        key_text(&mut rt, "v");
+        key_text(&mut rt, "e");
+        assert!(texts(&rt).iter().any(|t| t == "VISUAL"));
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.vim_visual_range(), Some(0..3));
+        assert_eq!(doc.code.edit.focus, 2, "the caret stays on the character");
+        key_text(&mut rt, "d");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            " two\n"
+        );
+        assert!(texts(&rt).iter().any(|t| t == "NORMAL"));
+    }
+
+    #[test]
+    fn vim_search_opens_without_moving_and_commits_on_enter() {
+        let mut rt = kb_runtime(vim_scene("foo bar foo baz\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "/");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(doc.code.find.open);
+        assert_eq!(doc.code.edit.focus, 0, "opening does not move the caret");
+        assert!(doc.code.find.query.focused);
+        type_text(&mut rt, "foo");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.focus,
+            0,
+            "typing does not jump either"
+        );
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(!doc.code.find.open);
+        assert_eq!(doc.code.edit.focus, 8, "Enter lands on the next match");
+    }
+
+    #[test]
+    fn vim_search_escape_restores_the_caret() {
+        let mut rt = kb_runtime(vim_scene("foo bar foo\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(4);
+        key_text(&mut rt, "/");
+        type_text(&mut rt, "foo");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(!doc.code.find.open);
+        assert_eq!(doc.code.edit.focus, 4);
+        assert!(doc.code.edit.focused);
+    }
+
+    #[test]
+    fn vim_n_and_star_repeat_the_search() {
+        let mut rt = kb_runtime(vim_scene("foo bar foo baz\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "/");
+        type_text(&mut rt, "foo");
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 8);
+        key_text(&mut rt, "n");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.focus,
+            0,
+            "n wraps forward"
+        );
+        key_text(&mut rt, "N");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.focus,
+            8,
+            "N goes back"
+        );
+
+        let mut rt = kb_runtime(vim_scene("foo bar foo baz\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "*");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.find.query.text, "foo");
+        assert_eq!(doc.code.edit.focus, 8);
+    }
+
+    fn vim_command(rt: &mut Runtime<State>, text: &str) {
+        key_text(rt, ":");
+        type_text(rt, text);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+    }
+
+    #[test]
+    fn vim_command_bar_opens_and_escape_closes() {
+        let mut rt = kb_runtime(vim_scene("one\ntwo\n"));
+        key_text(&mut rt, ":");
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(crate::editor::code::VIM_CMD_KEY)),
+            "the command bar mounts"
+        );
+        assert!(!rt.state.editor.doc.as_ref().unwrap().code.edit.focused);
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(doc.code.vim_cmd.is_none());
+        assert!(doc.code.edit.focused, "Escape returns focus to the code");
+    }
+
+    #[test]
+    fn vim_quit_raises_the_guard_or_closes_the_tab() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        key_text(&mut rt, "i");
+        type_text(&mut rt, "x");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        vim_command(&mut rt, "q");
+        assert!(rt.state.editor.guard.is_some(), "a dirty tab asks first");
+
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        vim_command(&mut rt, "q");
+        assert!(rt.state.editor.doc.is_none(), "a clean tab closes outright");
+    }
+
+    #[test]
+    fn vim_write_requests_a_save() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        key_text(&mut rt, "i");
+        type_text(&mut rt, "x");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        vim_command(&mut rt, "w");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(doc.code.vim_cmd.is_none(), "the bar closes");
+        assert!(
+            doc.saving || doc.save_error.is_some() || !doc.dirty(),
+            "the save was attempted"
+        );
+    }
+
+    #[test]
+    fn vim_write_quit_resumes_the_close_after_saving() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        key_text(&mut rt, "i");
+        type_text(&mut rt, "x");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        vim_command(&mut rt, "wq");
+        assert!(
+            rt.state.editor.save_resume.is_some(),
+            "the close waits for the save"
+        );
+        assert!(rt.state.editor.guard.is_none());
+    }
+
+    #[test]
+    fn vim_line_command_reveals_the_line() {
+        let text: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+        let mut rt = kb_runtime(vim_scene(&text));
+        vim_command(&mut rt, "12");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        let line = doc.code.edit.line_range(11);
+        assert_eq!(doc.code.edit.range(), (line.start, line.end));
+    }
+
+    #[test]
+    fn vim_unknown_command_keeps_the_bar_open() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        vim_command(&mut rt, "bogus");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        let cmd = doc.code.vim_cmd.as_ref().expect("the bar stays open");
+        assert_eq!(cmd.error.as_deref(), Some("Unknown command: :bogus"));
     }
 
     /// Click the tree row labelled `name`; the press also moves DOM focus to

@@ -1880,6 +1880,7 @@ impl EditorState {
         }
         let mut doc = crate::editor::draft::OpenDoc::new(path.clone(), &file);
         doc.code.set_indent_choice(self.indent_choice);
+        doc.code.vim.set_enabled(self.vim_enabled);
         doc.reveal_line = line;
         // Fresh document: arm the highlight debounce so the initial text is
         // coloured once the quiet period passes.
@@ -1969,6 +1970,7 @@ impl EditorState {
         if let Some(doc) = self.doc.as_mut() {
             doc.highlight_dirty_at = Some(std::time::Instant::now());
             doc.highlight_inflight = false;
+            doc.code.vim.set_enabled(self.vim_enabled);
         }
         crate::editor::blame::sync_visibility(self);
         crate::editor::blame::request(self);
@@ -2024,6 +2026,7 @@ impl EditorState {
         }
         let mut doc = crate::editor::draft::OpenDoc::new(path.to_string(), &file);
         doc.code.set_indent_choice(self.indent_choice);
+        doc.code.vim.set_enabled(self.vim_enabled);
         doc.reveal_line = self.doc.as_ref().and_then(|d| d.reveal_line);
         doc.highlight_dirty_at = Some(std::time::Instant::now());
         self.doc = Some(doc);
@@ -2079,6 +2082,7 @@ impl EditorState {
                 let (focused, reveal_line) = (doc.code.edit.focused, doc.reveal_line);
                 let mut new_doc = crate::editor::draft::OpenDoc::new(path.to_string(), &file);
                 new_doc.code.set_indent_choice(self.indent_choice);
+                new_doc.code.vim.set_enabled(self.vim_enabled);
                 new_doc.reveal_line = reveal_line;
                 new_doc.highlight_dirty_at = Some(std::time::Instant::now());
                 // Above the revision this check ran at, so a stale probe
@@ -2281,6 +2285,37 @@ impl EditorState {
         );
     }
 
+    /// Mirror the Vim switch into every mounted code surface. Turning it off
+    /// returns each document to Normal and drops half-typed keys.
+    pub fn apply_vim_enabled(&mut self, enabled: bool) {
+        self.vim_enabled = enabled;
+        if let Some(doc) = self.doc.as_mut() {
+            doc.code.vim.set_enabled(enabled);
+            if !enabled {
+                doc.code.vim_search = None;
+                doc.code.vim_cmd = None;
+            }
+        }
+        self.scratch_code.vim.set_enabled(enabled);
+        if !enabled {
+            self.scratch_code.vim_search = None;
+            self.scratch_code.vim_cmd = None;
+        }
+    }
+
+    /// Apply a new Vim switch and persist it through the same settings lane
+    /// as the indent override.
+    pub fn set_vim_enabled(&mut self, enabled: bool) {
+        self.apply_vim_enabled(enabled);
+        let _ = enqueue(
+            &mut self.backend,
+            Job::project(Req::SetSetting {
+                key: crate::editor::vim::VIM_KEY.to_string(),
+                value: if enabled { "1".into() } else { "0".into() },
+            }),
+        );
+    }
+
     /// Queue a worktree-list read for `project_id`, marking the sidebar's
     /// per-project entry loading when the job is accepted. The reply lands
     /// in `sidebar_worktrees` — and in `worktrees` too when `project_id` is
@@ -2471,6 +2506,51 @@ mod tests {
             generation,
             checkout_key: key,
             result,
+        }
+    }
+
+    #[test]
+    fn vim_switch_mirrors_into_the_active_and_scratch_surfaces() {
+        let mut e = editor();
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("one\ntwo\n")));
+        e.apply_vim_enabled(true);
+        assert!(e.vim_enabled);
+        assert!(e.doc.as_ref().unwrap().code.vim.enabled);
+        assert!(e.scratch_code.vim.enabled);
+        e.doc.as_mut().unwrap().code.vim.mode = crate::editor::vim::Mode::Insert;
+        e.apply_vim_enabled(false);
+        assert!(!e.vim_enabled);
+        assert_eq!(
+            e.doc.as_ref().unwrap().code.vim.mode,
+            crate::editor::vim::Mode::Normal,
+            "turning the setting off returns the document to Normal"
+        );
+        assert!(!e.scratch_code.vim.enabled);
+    }
+
+    #[test]
+    fn the_vim_setting_reply_accepts_only_one_as_on() {
+        let mut e = editor();
+        e.doc = Some(OpenDoc::new("a.txt", &text_file("one\n")));
+        let key = crate::editor::vim::VIM_KEY.to_string();
+        e.apply_reply(reply(
+            Req::GetSetting { key: key.clone() },
+            0,
+            None,
+            Ok(ReplyData::Setting(Some("1".into()))),
+        ));
+        assert!(e.vim_enabled);
+        assert!(e.doc.as_ref().unwrap().code.vim.enabled);
+        for value in [Some("0".to_string()), Some("yes".to_string()), None] {
+            e.apply_vim_enabled(true);
+            e.apply_reply(reply(
+                Req::GetSetting { key: key.clone() },
+                0,
+                None,
+                Ok(ReplyData::Setting(value.clone())),
+            ));
+            assert!(!e.vim_enabled, "{value:?} must read as off");
+            assert!(!e.doc.as_ref().unwrap().code.vim.enabled);
         }
     }
 

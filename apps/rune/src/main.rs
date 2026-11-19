@@ -1458,6 +1458,13 @@ fn setup(s: &mut State, waker: rune::Waker) {
             key: editor::blame::BLAME_KEY.to_string(),
         }),
     );
+    // The Vim switch restores on the same settings lane.
+    let _ = backend::enqueue(
+        &mut s.editor.backend,
+        backend::Job::project(backend::Req::GetSetting {
+            key: editor::vim::VIM_KEY.to_string(),
+        }),
+    );
     s.editor.acp.refresh();
     // The quota chips, the accounts they name, and the stored theme.
     let _ = backend::enqueue(

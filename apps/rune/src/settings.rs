@@ -1,10 +1,9 @@
 //! The native Settings page — a compact port of `main`'s
 //! `features/settings/SettingsPage.tsx`: a section rail on the left
 //! (Editor, Appearance, Accounts, ACP agents) and the active section on
-//! the right. Vim is deliberately absent (decision D1); the Editor
-//! section carries the native indent preference instead. All mutations —
-//! settings rows, accounts, ACP overrides — ride the existing worker
-//! lanes, never the UI thread.
+//! the right. The Editor section carries the native indent, Vim and
+//! scroll/done-sound preferences. All mutations — settings rows, accounts,
+//! ACP overrides — ride the existing worker lanes, never the UI thread.
 
 use std::collections::HashMap;
 
@@ -18,8 +17,8 @@ use crate::sidebar;
 use crate::theme::{self, Ink, T11M, T12, T12M, T14M};
 use crate::{State, theme::Theme};
 
-/// The section rail's entries — SettingsPage.tsx's `SECTIONS`, minus the
-/// Vim control (deferred) and in the same order.
+/// The section rail's entries — SettingsPage.tsx's `SECTIONS`, in the same
+/// order.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Section {
     #[default]
@@ -542,8 +541,8 @@ fn acp_empty_draft() -> &'static AcpDraft {
 }
 
 // ---------------------------------------------------------------------------
-// Editor — the native editor preferences (indent); Vim is deferred, so no
-// inert toggle is rendered.
+// Editor — the native editor preferences: indent, Vim, list position, scroll
+// speed and the done sound.
 // ---------------------------------------------------------------------------
 
 fn editor_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
@@ -588,6 +587,18 @@ fn editor_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                 }
             })
             .build(&s.editor.kit, layer),
+            ink,
+        ))
+        .child(field(
+            "Vim mode",
+            "Modal editing in the code editor. In Normal mode, switch the macOS input source to ABC; Vietnamese input works in Insert mode.",
+            rune_kit::Checkbox::new(s.editor.vim_enabled)
+                .label("Enable Vim mode")
+                .on_toggle(|s: &mut State| {
+                    let next = !s.editor.vim_enabled;
+                    s.editor.set_vim_enabled(next);
+                })
+                .build(&s.editor.kit),
             ink,
         ))
         .child(field(
