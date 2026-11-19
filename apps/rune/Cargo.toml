@@ -9,6 +9,7 @@ alacritty_terminal = "0.26.0"
 app-core = { path = "../../crates/app-core" }
 base64 = "0.23"
 chrono = "0.4"
+getrandom = { version = "0.3", features = ["std"] }
 lsp-types = "0.97"
 protocol = { path = "../../crates/protocol" }
 rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", features = ["native-file-dialog"] }

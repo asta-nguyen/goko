@@ -209,6 +209,16 @@ pub fn commit(checkout: &Path, message: &str) -> Result<GitCommitResult, BridgeE
 /// `git push -u origin HEAD` otherwise — never forced, with terminal
 /// prompts disabled and a two-minute deadline.
 pub fn push(checkout: &Path) -> Result<GitPushResult, BridgeError> {
+    push_with_env(checkout, &[])
+}
+
+/// [`push`] with extra environment variables for the Git child and its ssh —
+/// the Rune editor passes its SSH askpass bridge here. `GIT_TERMINAL_PROMPT`
+/// is applied last, so no caller can re-enable Git's own terminal prompts.
+pub fn push_with_env(
+    checkout: &Path,
+    extra_env: &[(&str, &str)],
+) -> Result<GitPushResult, BridgeError> {
     let upstream = worktrees::run(
         checkout,
         &["rev-parse", "--verify", "--quiet", "@{u}"],
@@ -219,12 +229,9 @@ pub fn push(checkout: &Path) -> Result<GitPushResult, BridgeError> {
     } else {
         vec!["push", "-u", "origin", "HEAD"]
     };
-    let out = worktrees::run_timed(
-        checkout,
-        &args,
-        &[("GIT_TERMINAL_PROMPT", "0")],
-        PUSH_TIMEOUT,
-    )?;
+    let mut envs = extra_env.to_vec();
+    envs.push(("GIT_TERMINAL_PROMPT", "0"));
+    let out = worktrees::run_timed(checkout, &args, &envs, PUSH_TIMEOUT)?;
     if out.timed_out {
         return Err(BridgeError::new(Code::Timeout, "Push timed out"));
     }

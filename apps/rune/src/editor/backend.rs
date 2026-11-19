@@ -691,20 +691,32 @@ fn worker(rx: std::sync::mpsc::Receiver<Job>, handle: AppHandle<State>, shutdown
     let storage = home::home_dir().ok().map(|home| Storage::open(&home));
     #[cfg(test)]
     let storage: Option<Storage> = None;
-    serve(rx, &storage, &shutdown, move |reply| {
-        let h = handle.clone();
-        handle.update(move |s: &mut State, _tx| {
-            s.apply_reply(reply);
-            crate::editor::worktree_form::after_reply(s);
-            // The Changes section keeps its patch-pane selection valid —
-            // the desktop's "select first change" effect, run where a
-            // `&mut State` exists (replies land outside the render pass).
-            if s.editor.section == Section::Changes {
-                crate::editor::changes::ensure_selection(s);
-            }
-            let _ = &h;
+    let ask_handle = handle.clone();
+    let ask = move |request: crate::askpass::AskpassRequest| {
+        ask_handle.update(move |s: &mut State, _tx| {
+            s.askpass = Some(crate::askpass::AskpassState::new(request));
         });
-    });
+    };
+    serve(
+        rx,
+        &storage,
+        &shutdown,
+        move |reply| {
+            let h = handle.clone();
+            handle.update(move |s: &mut State, _tx| {
+                s.apply_reply(reply);
+                crate::editor::worktree_form::after_reply(s);
+                // The Changes section keeps its patch-pane selection valid —
+                // the desktop's "select first change" effect, run where a
+                // `&mut State` exists (replies land outside the render pass).
+                if s.editor.section == Section::Changes {
+                    crate::editor::changes::ensure_selection(s);
+                }
+                let _ = &h;
+            });
+        },
+        ask,
+    );
 }
 
 /// How often the worker looks for a finished detached job while it waits for
@@ -751,12 +763,13 @@ fn serve(
     storage: &Option<Storage>,
     shutdown: &AtomicBool,
     post: impl Fn(Reply) + Clone + Send + 'static,
+    ask: impl Fn(crate::askpass::AskpassRequest) + Clone + Send + 'static,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
     let (done_tx, done_rx) = std::sync::mpsc::channel::<String>();
     // Checkout key -> the git writes waiting behind its detached job.
     let mut busy: HashMap<String, std::collections::VecDeque<Job>> = HashMap::new();
-    let mut detach = |job: Job| detach_job(job, storage, &done_tx, &post);
+    let mut detach = |job: Job| detach_job(job, storage, &done_tx, &post, &ask);
     loop {
         while let Ok(key) = done_rx.try_recv() {
             release(&key, &mut busy, storage, &post, &mut detach);
@@ -852,6 +865,7 @@ fn detach_job(
     storage: &Option<Storage>,
     done: &std::sync::mpsc::Sender<String>,
     post: &(impl Fn(Reply) + Clone + Send + 'static),
+    ask: &(impl Fn(crate::askpass::AskpassRequest) + Clone + Send + 'static),
 ) -> bool {
     let validated = match (&job.project_id, &job.checkout, &job.checkout_key) {
         (Some(project_id), Some(checkout), Some(key)) => storage_req(storage, |store| {
@@ -873,14 +887,27 @@ fn detach_job(
         }
     };
     let (done, thread_post, thread_job) = (done.clone(), post.clone(), job.clone());
+    let thread_ask = (*ask).clone();
     let spawned = std::thread::Builder::new()
         .name("goko-editor-git".into())
         .spawn(move || {
             let job = thread_job;
             let result = match &job.req {
-                Req::Push => git_write::push(&checkout)
-                    .map(ReplyData::Push)
-                    .map_err(|e| e.to_string()),
+                Req::Push => match crate::askpass::Session::start(thread_ask) {
+                    Ok(session) => {
+                        let envs = session.envs();
+                        let result = git_write::push_with_env(&checkout, &envs);
+                        let cancelled = session.cancelled();
+                        drop(session);
+                        match result {
+                            Err(_) if cancelled => Err("Push cancelled".to_string()),
+                            other => other.map(ReplyData::Push).map_err(|e| e.to_string()),
+                        }
+                    }
+                    Err(_) => git_write::push(&checkout)
+                        .map(ReplyData::Push)
+                        .map_err(|e| e.to_string()),
+                },
                 Req::Commit { message } => git_write::commit(&checkout, message)
                     .map(ReplyData::Commit)
                     .map_err(|e| e.to_string()),

@@ -14,6 +14,7 @@
 
 ## Archived changes
 
+- [Rune SSH passphrase prompt](changes/archive/rune-ssh-passphrase-prompt/delta.md)
 - [Folder projects and nested repository import](changes/archive/folder-projects/design.md) ([tasks](changes/archive/folder-projects/tasks.md), [delta](changes/archive/folder-projects/delta.md))
 - [Agent snapshot: copy code for the terminal](changes/archive/agent-snapshot/delta.md)
 - [Agent snapshot: code context menu](changes/archive/agent-snapshot-menu/delta.md)

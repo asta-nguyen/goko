@@ -182,13 +182,25 @@ Evidence: `apps/rune/src/editor/autorefresh.rs`, `apps/rune/src/editor/backend.r
 
 ### RNE-changes-git-writes
 
-The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts, per-layer diffs and each conflict's kind (both modified, both added, deleted by us, deleted by them, both deleted, added by us, added by them), staging, unstaging, discarding, resolving conflicts, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing or prompting for credentials — and, while Git reports a merge, rebase, cherry-pick or revert in progress, showing a banner offering Abort behind a confirmation and turning Commit into Continue, which is enabled once no conflict remains (and, for a merge, the message is not blank) and either commits a merge, with Git's merge message prefilled, or runs the operation's `--continue` non-interactively.
+The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts, per-layer diffs and each conflict's kind (both modified, both added, deleted by us, deleted by them, both deleted, added by us, added by them), staging, unstaging, discarding, resolving conflicts, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing, prompting only for an SSH key passphrase in a masked modal whose answer goes to that one push and is never stored, and failing every other credential prompt — and, while Git reports a merge, rebase, cherry-pick or revert in progress, showing a banner offering Abort behind a confirmation and turning Commit into Continue, which is enabled once no conflict remains (and, for a merge, the message is not blank) and either commits a merge, with Git's merge message prefilled, or runs the operation's `--continue` non-interactively.
 
 #### Scenario: Stage, commit, push
 
 - GIVEN a checkout has unstaged files
 - WHEN the user stages a file, types a message, and presses Commit then Push
 - THEN Git creates the commit, the draft clears on success, and the push runs without force under the backend's 120-second limit
+
+#### Scenario: SSH passphrase prompt
+
+- GIVEN the push needs a passphrase for its SSH key and no ssh-agent holds the key
+- WHEN the user presses Push and ssh asks for the passphrase
+- THEN a masked "SSH key passphrase" modal shows ssh's own prompt, submitting continues the same push, and a rejected passphrase opens the prompt again
+
+#### Scenario: Cancel the passphrase prompt
+
+- GIVEN the passphrase modal is open
+- WHEN the user cancels or presses Escape
+- THEN no passphrase is sent, the push stops, and the panel shows "Push cancelled" instead of Git's publickey error
 
 #### Scenario: Discard requires confirmation
 
@@ -220,7 +232,7 @@ The system SHALL show the checkout's conflict, staged, unstaged, and untracked g
 - WHEN the user presses Continue
 - THEN `git rebase --continue` runs non-interactively with a 120-second limit, and Continue is disabled while any conflict remains
 
-Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
+Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/askpass.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
 
 ### RNE-changes-view-layout
 
@@ -1213,7 +1225,10 @@ session state — the daemon's session lifecycle is not involved in the editor.
   re-evaluates only the paths `git status` names (with `--no-optional-locks`),
   waiting at most one second before the query is answered from the index.
 - Git writes run `git` via argv with `-C <checkout>`, hooks enabled, no
-  force, push killed after 120 seconds.
+  force, push killed after 120 seconds. Push carries `SSH_ASKPASS` and
+  `SSH_ASKPASS_REQUIRE=force` pointing at the running `goko-rune` binary: a
+  passphrase-protected SSH key opens the masked prompt, while any other
+  credential prompt is refused.
 - History reads page 100 commits per request through `git log`/`for-each-ref`
   in the validated checkout; none mutates refs.
 - ACP `generate` sends the staged diff (capped like the desktop's) to the
@@ -1281,6 +1296,10 @@ the Servers section. On non-macOS platforms, OS-level quit (⌘Q equivalent,
 logout) cannot be vetoed — window close still can — and that gap is
 documented in `quit_guard.rs` rather than silently claimed.
 
+Push failures keep the commit draft: a cancelled passphrase prompt reports
+"Push cancelled", a rejected passphrase reopens the prompt, and a push that
+outlives 120 seconds reports `Push timed out`.
+
 ## Tests
 
 - Empty-file regression in `files.rs` applies create and file-load replies before
@@ -1336,6 +1355,9 @@ documented in `quit_guard.rs` rather than silently claimed.
   and worktree row selection committing identity, dirty-guard
   Discard/Cancel, status rows, and real-backend fixtures driving
   cross-project selection including in-flight replies.
+- `askpass.rs` tests the loopback bridge's token check, passphrase-only
+  filter, answer and cancel paths; `main.rs` view tests cover the masked
+  modal, its inert background, submit/cancel, and a Push reply clearing it.
 - `snapshot.rs` covers selection-to-whole-line expansion, whole-file,
   one-line and empty headers, dirty marking, CRLF normalization, fence
   collision, unknown languages, the copy/send guards, and a live-session
@@ -1369,6 +1391,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `crates/app-core/src/code_index.rs`
 - `apps/rune/Cargo.toml`
 - `apps/rune/src/main.rs`
+- `apps/rune/src/askpass.rs`
 - `apps/rune/src/chrome.rs`
 - `apps/rune/src/data.rs`
 - `apps/rune/src/term.rs`

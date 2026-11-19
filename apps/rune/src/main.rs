@@ -3,6 +3,7 @@
 //! native editor workspace backed by `app-core` (real projects, Git sections,
 //! drafts with Save/Discard/Cancel guards).
 
+mod askpass;
 mod chrome;
 mod daemon;
 mod data;
@@ -112,6 +113,8 @@ pub struct State {
     /// The native editor workspace: projects/checkouts, sections, docs,
     /// backend worker and ACP runtime.
     editor: editor::state::EditorState,
+    /// The SSH passphrase prompt a running Push is waiting on, if any.
+    askpass: Option<askpass::AskpassState>,
     /// The daemon client: every session read and write goes through it.
     daemon: daemon::Daemon,
     /// The stored session metadata rows, keyed by session id.
@@ -324,6 +327,7 @@ impl State {
             worktrees_open: HashMap::new(),
             view: View::Terminal,
             editor,
+            askpass: None,
             daemon,
             session_metas: HashMap::new(),
             pending: Vec::new(),
@@ -765,6 +769,10 @@ impl State {
     /// Apply one backend reply: the app-level kinds land here, the editor's
     /// own kinds in the editor state.
     pub fn apply_reply(&mut self, reply: backend::Reply) {
+        // A Push reply ends the passphrase prompt that push was waiting on.
+        if matches!(&reply.req, backend::Req::Push) {
+            self.askpass = None;
+        }
         let scan_token = match &reply.req {
             backend::Req::ScanNestedRepos { token, .. } => Some(*token),
             _ => None,
@@ -1353,6 +1361,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .build(&s.editor.kit),
         );
     }
+    // A running Push's SSH passphrase prompt mounts above every view and
+    // overlay; the push keeps running across view switches.
+    askpass::modal(s, ink, &s.editor.kit, &mut layer);
     // Paste with no text field focused belongs to the focused terminal pane.
     // It hears every clipboard form: a lone image (a screenshot, Copy Image)
     // has no text, so a text-only handler never fired for it.
@@ -1363,6 +1374,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 && !s.nested_import.open
                 && s.sidebar_input.is_none()
                 && s.tab_menu.is_none()
+                && s.askpass.is_none()
                 && let Some(session) = s.focused_terminal_session()
             {
                 s.paste_clipboard_into_terminal(session, content);
@@ -1743,6 +1755,7 @@ fn shortcut_owned(s: &State) -> bool {
         || s.sidebar_picker_open()
         || s.nested_import.open
         || s.editor.guard.is_some()
+        || s.askpass.is_some()
         || s.editor.quick_open.open
         || s.editor.project_picker.open
         || s.editor.checkout_picker.open
@@ -1926,6 +1939,11 @@ fn on_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
 }
 
 fn main() {
+    // ssh runs this binary as its askpass helper during a Push: answer on the
+    // bridge and exit before any GUI, login shell or daemon starts.
+    if askpass::is_helper() {
+        askpass::run_helper();
+    }
     // A Dock/Finder launch gets launchd's bare PATH, so `claude`/`codex` would not
     // resolve; adopt the login shell's before any thread or the daemon starts.
     app_core::agents::adopt_login_shell_path(&editor::backend::default_shell());
@@ -2557,6 +2575,78 @@ mod view_tests {
             assert!(!e[idx].inert, "{label} inert inside dialog");
         }
         let _ = dialog_idx;
+    }
+
+    #[test]
+    fn askpass_dialog_is_modal_with_the_passphrase_field() {
+        let mut s = dirty_scene();
+        let (answer, _answers) = std::sync::mpsc::sync_channel(1);
+        s.askpass = Some(askpass::AskpassState::new(askpass::AskpassRequest {
+            prompt: "Enter passphrase for key '/k': ".into(),
+            answer,
+        }));
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let e = els(&rt);
+        assert!(
+            e.iter().any(|el| el.role == "dialog"),
+            "askpass dialog mounted with dialog role"
+        );
+        for label in ["Cancel", "Unlock"] {
+            let idx = e
+                .iter()
+                .enumerate()
+                .find(|(i, el)| {
+                    (el.label.as_deref() == Some(label) || el.text.as_deref() == Some(label))
+                        && inside_role(&e, *i, "dialog")
+                })
+                .map(|(i, _)| i)
+                .unwrap_or_else(|| panic!("{label} button mounted in dialog"));
+            assert!(!e[idx].inert, "{label} inert inside dialog");
+        }
+        let tab_idx = e
+            .iter()
+            .position(|el| el.role == "tab")
+            .expect("section tabs mounted");
+        assert!(e[tab_idx].inert, "background tab not inert under askpass");
+        assert!(shortcut_owned(&rt.state));
+    }
+
+    #[test]
+    fn askpass_submit_and_cancel_answer_the_push() {
+        let mut s = dirty_scene();
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        s.askpass = Some(askpass::AskpassState::new(askpass::AskpassRequest {
+            prompt: "Enter passphrase for key '/k': ".into(),
+            answer,
+        }));
+        s.askpass.as_mut().unwrap().input.text = "secret".into();
+        askpass::submit(&mut s);
+        assert_eq!(answers.recv().unwrap(), Some("secret".into()));
+        assert!(s.askpass.is_none(), "submit cleared the prompt");
+
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        s.askpass = Some(askpass::AskpassState::new(askpass::AskpassRequest {
+            prompt: "Enter passphrase for key '/k': ".into(),
+            answer,
+        }));
+        askpass::cancel(&mut s);
+        assert_eq!(answers.recv().unwrap(), None);
+        assert!(s.askpass.is_none(), "cancel cleared the prompt");
+
+        let (answer, _answers) = std::sync::mpsc::sync_channel(1);
+        s.askpass = Some(askpass::AskpassState::new(askpass::AskpassRequest {
+            prompt: "Enter passphrase for key '/k': ".into(),
+            answer,
+        }));
+        s.apply_reply(backend::Reply {
+            req: backend::Req::Push,
+            generation: 0,
+            checkout_key: None,
+            result: Err("Push timed out".into()),
+        });
+        assert!(s.askpass.is_none(), "a Push reply cleared the prompt");
     }
 
     #[test]
