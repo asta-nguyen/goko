@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_9215a0304080ff::t_f58bcae07a7818 22-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "81660e98e0e5b79b055115dd82265fe3440b1f67",
+  "prompts": {},
+  "sessions": {
+    "s_9215a0304080ff": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "regal-matrix",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
