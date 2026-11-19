@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_064871db16456e::t_3bedba9367e380 49-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0d5430e89d278e063f47b358b21644583ff5b09",
+  "prompts": {},
+  "sessions": {
+    "s_064871db16456e": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "pebble-sneeze",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
