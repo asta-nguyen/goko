@@ -46,12 +46,12 @@ same entry. Keep each link on one line: What's new shows it as its text. The
 - The code editor has an optional Vim mode, off by default and switched in
   Settings → Editor. Normal, Insert, Visual and Visual Line modes cover
   motions with counts, operators, text objects, one unnamed register, `.`
-  repeat, `zz`/`zt`/`zb` scrolling, `/ ? n N *` search over the find bar, and a
-  `:` bar with `:w`, `:q`, `:wq` and `:<line>`. The footer shows the mode, and the caret is a block
-  outside Insert, and native edits (an IME commit, a paste) are rejected there.
-  In Normal mode the macOS input source must be ABC; Vietnamese input works in
-  Insert. By
-  [@asta-nguyen](https://github.com/asta-nguyen).
+  repeat, `zz`/`zt`/`zb` scrolling, `/ ? n N *` search over the find bar, and
+  a `:` bar with `:w`, `:q`, `:wq` and `:<line>`. The footer shows the mode,
+  the caret is a block outside Insert, and native edits (an IME commit, a
+  paste) are rejected there. In Normal mode the macOS input source must be
+  ABC; Vietnamese input works in Insert. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `1d03b03`.
 
 ### Fixed
 
