@@ -1,0 +1,55 @@
+docs/llm/domains/rune-editor.md
+  s_9215a0304080ff::t_e504d744c6a79c 1228-1231
+  s_9215a0304080ff::t_9c4f06f2e2e844 1299-1302
+  s_9215a0304080ff::t_4f51addfbc94bc 1358-1360
+  s_9215a0304080ff::t_7d1c5e658cd3d5 1394
+  s_9215a0304080ff::t_d3748443d6a5ec 185,193-204,235
+apps/rune/src/main.rs
+  s_9215a0304080ff::t_bf02cd52774eb5 1942-1946
+  s_9215a0304080ff::t_7aeedd41ed3156 116-117
+  s_9215a0304080ff::t_c667498421834a 772-775
+  s_9215a0304080ff::t_5050ca8090d9df 330
+  s_9215a0304080ff::t_c3a603f8c9a594 6
+  s_9215a0304080ff::t_47dfc853c672b3 1364-1366
+  s_9215a0304080ff::t_0318d86cf2830c 1377
+  s_9215a0304080ff::t_9b035fd675cee8 2580-2651
+  s_9215a0304080ff::t_6ac6209da9b747 1758
+apps/rune/src/editor/backend.rs
+  s_9215a0304080ff::t_0d7157d34d4a92 766,772
+  s_9215a0304080ff::t_7acc491fb0a8ca 868
+  s_9215a0304080ff::t_46738bf7ec4114 890,896-910
+  s_9215a0304080ff::t_852b27ae1dd6f1 694-697,699
+  s_9215a0304080ff::t_2278c3059c610f 700-719
+crates/app-core/src/git_write.rs
+  s_9215a0304080ff::t_55082d27b07d2d 212-221,232-234
+docs/agent-devkit/INDEX.md
+  s_9215a0304080ff::t_ee1f28f96e2949 17
+apps/rune/Cargo.toml
+  s_9215a0304080ff::t_3b79ee6e2f7c6f 12
+apps/rune/src/askpass.rs
+  s_9215a0304080ff::t_aff2c2d558064e 371-373
+  s_9215a0304080ff::t_a3a5e75aa6963f 1-121,123-125,127-204,206-243,247-277,279-321,323-370,374-403,405-429,435-454
+  s_9215a0304080ff::t_7b3043dce8cda1 205
+  s_9215a0304080ff::t_2278c3059c610f 322,404,430-434
+  s_9215a0304080ff::t_9c10e6d22f9a7c 122,126
+  s_9215a0304080ff::t_7c7377507d8fb8 278
+  s_9215a0304080ff::t_9e4f52e76ac921 244-246
+Cargo.lock
+  s_9215a0304080ff::t_1aa99056621fbc 1190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aaff65a7d252ae21c6da8e6d7a840e48ec47e724",
+  "prompts": {},
+  "sessions": {
+    "s_9215a0304080ff": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "regal-matrix",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
