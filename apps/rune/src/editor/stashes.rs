@@ -34,20 +34,13 @@ fn stashes_view_impl(s: &State, ink: &Ink, k: &Kit) -> El {
         return history::error_pane(h.error.as_deref().unwrap_or("failed"), ink);
     }
 
-    let on_right = s.list_aside_side == crate::sidebar::Side::Right;
+    let on_right = pane_layout::docks_right(s);
     let list = aside(s, ink, k)
         .w(pane_layout::current(s, PaneKind::StashesList))
         .h_full()
         .shrink()
         .min_w(pane_layout::PANE_MIN)
-        .border_sides(
-            if on_right {
-                [0.0, 0.0, 0.0, 1.0]
-            } else {
-                [0.0, 1.0, 0.0, 0.0]
-            },
-            ink.border,
-        );
+        .border_sides(pane_layout::aside_border(on_right), ink.border);
     let detail = detail_pane(s, ink, k)
         .grow(1.0)
         .min_w(pane_layout::SIBLING_MIN)

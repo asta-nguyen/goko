@@ -807,7 +807,7 @@ fn clean_view(s: &State, ink: &Ink) -> El {
 }
 
 fn split_view(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChanges) -> El {
-    let on_right = s.list_aside_side == crate::sidebar::Side::Right;
+    let on_right = pane_layout::docks_right(s);
     let list = aside(s, ink, k, data)
         // Persisted width (desktop `editorList` default 288, min 180, max
         // 480 — per-section default keeps 300 for the icon-row actions);
@@ -816,14 +816,7 @@ fn split_view(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewC
         .h_full()
         .shrink()
         .min_w(pane_layout::PANE_MIN)
-        .border_sides(
-            if on_right {
-                [0.0, 0.0, 0.0, 1.0]
-            } else {
-                [0.0, 1.0, 0.0, 0.0]
-            },
-            ink.border,
-        );
+        .border_sides(pane_layout::aside_border(on_right), ink.border);
     let patch = patch_side(s, ink)
         .grow(1.0)
         .min_w(pane_layout::SIBLING_MIN)

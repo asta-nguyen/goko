@@ -77,6 +77,38 @@ fn grip_key(kind: PaneKind) -> &'static str {
     }
 }
 
+/// Whether the editor's list asides (Files tree, Changes list, Stashes list)
+/// dock on the right; the three sections share one side via `list_aside_side`.
+pub fn docks_right(s: &State) -> bool {
+    s.list_aside_side == crate::sidebar::Side::Right
+}
+
+/// The 1 px border edge that faces the detail pane: the list's trailing
+/// (right) edge when docked left, its leading (left) edge when docked right.
+pub fn aside_border(right: bool) -> [f32; 4] {
+    if right {
+        [0.0, 0.0, 0.0, 1.0]
+    } else {
+        [0.0, 1.0, 0.0, 0.0]
+    }
+}
+
+/// The grip's pin edges `(left, top, right, bottom)` — the aside's trailing
+/// edge when docked left, its leading edge when docked right.
+fn grip_pin(right: bool) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
+    if right {
+        (Some(0.0), Some(0.0), None, Some(0.0))
+    } else {
+        (None, Some(0.0), Some(0.0), Some(0.0))
+    }
+}
+
+/// A right-docked list drags/steps the opposite way so it grows toward the
+/// detail pane.
+fn grip_sign(right: bool) -> f32 {
+    if right { -1.0 } else { 1.0 }
+}
+
 /// The visible, grabbable separator pinned inside a pane aside's trailing
 /// edge. Place it as the aside's LAST child so it paints above the content.
 pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
@@ -86,8 +118,8 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
     let max = max_width(s.editor.pane_row_w);
     // Any list aside (Files, Changes, Stashes) shares one side; a right-docked
     // grip sits on the aside's leading (left) edge and dragging left widens it.
-    let on_right = s.list_aside_side == crate::sidebar::Side::Right;
-    let dir: f32 = if on_right { -1.0 } else { 1.0 };
+    let right = docks_right(s);
+    let dir = grip_sign(right);
     let mut b = col()
         .key(grip_key(kind))
         .role("separator")
@@ -99,11 +131,8 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
         .cursor(Cursor::ResizeColumn)
         .fill(Color::TRANSPARENT)
         .hover(ink.border);
-    b = if on_right {
-        b.pin(Some(0.0), Some(0.0), None, Some(0.0))
-    } else {
-        b.pin(None, Some(0.0), Some(0.0), Some(0.0))
-    };
+    let (pl, pt, pr, pb) = grip_pin(right);
+    b = b.pin(pl, pt, pr, pb);
     b.child(el().w(1.0).h_full().fill(ink.border))
         .on_drag(move |st: &mut State, d: &mut Drag, tx: &mut Tx| {
             match d.phase {
@@ -169,15 +198,32 @@ mod tests {
     }
 
     #[test]
-    fn grip_builder_runs_for_each_kind() {
-        let s = State::new(crate::test_handle());
+    fn right_docked_grip_inverts_direction_and_pins_the_leading_edge() {
+        // Left-docked: pinned to the trailing (right) edge, drag right widens,
+        // border on the trailing edge.
+        assert_eq!(grip_pin(false), (None, Some(0.0), Some(0.0), Some(0.0)));
+        assert_eq!(grip_sign(false), 1.0);
+        assert_eq!(aside_border(false), [0.0, 1.0, 0.0, 0.0]);
+        // Right-docked: pinned to the leading (left) edge, drag left widens,
+        // border on the leading edge.
+        assert_eq!(grip_pin(true), (Some(0.0), Some(0.0), None, Some(0.0)));
+        assert_eq!(grip_sign(true), -1.0);
+        assert_eq!(aside_border(true), [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn grip_builds_on_either_side_for_each_kind() {
+        let mut s = State::new(crate::test_handle());
         let ink = Ink::new();
-        for (kind, label) in [
-            (PaneKind::FilesAside, "Resize file list and editor"),
-            (PaneKind::ChangesList, "Resize changed files and diff"),
-            (PaneKind::StashesList, "Resize stash list and detail"),
-        ] {
-            let _ = grip(&s, &ink, kind, label);
+        for side in [crate::sidebar::Side::Left, crate::sidebar::Side::Right] {
+            s.list_aside_side = side;
+            for (kind, label) in [
+                (PaneKind::FilesAside, "Resize file list and editor"),
+                (PaneKind::ChangesList, "Resize changed files and diff"),
+                (PaneKind::StashesList, "Resize stash list and detail"),
+            ] {
+                let _ = grip(&s, &ink, kind, label);
+            }
         }
     }
 }

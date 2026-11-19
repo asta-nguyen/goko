@@ -40,7 +40,7 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
     root = root.child(toolbar(s, ink, k));
     // The aside (tree/search) and the editor detail are one horizontal split;
     // `list_aside_side` flips which side the aside docks on, VS Code-style.
-    let on_right = s.list_aside_side == crate::sidebar::Side::Right;
+    let on_right = pane_layout::docks_right(s);
     let aside = col()
         .w(pane_layout::current(s, PaneKind::FilesAside))
         .h_full()
@@ -48,14 +48,7 @@ pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
         .min_w(pane_layout::PANE_MIN)
         // The 1 px rule faces the editor: right edge when the aside is on
         // the left, left edge when it docks right.
-        .border_sides(
-            if on_right {
-                [0.0, 0.0, 0.0, 1.0]
-            } else {
-                [0.0, 1.0, 0.0, 0.0]
-            },
-            ink.border,
-        )
+        .border_sides(pane_layout::aside_border(on_right), ink.border)
         .child(
             // Desktop SplitPane parity: the aside shows EITHER the file tree
             // or the content-search results — never both — so the editor

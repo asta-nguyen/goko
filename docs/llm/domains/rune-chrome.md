@@ -576,9 +576,11 @@ Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/data.rs`, `apps/rune/src/da
 
 ### RNC-sidebar-resize
 
-The system SHALL let the user drag the sidebar's right-edge separator to
-resize it between 220 and 480 px, persisting the chosen width through the
-app settings store so it survives restarts.
+The system SHALL let the user drag the separator on the sidebar's inner edge —
+its right edge when the sidebar is docked left and its left edge when docked
+right ([RNC-sidebar-dock](#rnc-sidebar-dock)) — to resize it between 220 and
+480 px, following the pointer along that edge and persisting the chosen width
+through the app settings store so it survives restarts.
 
 #### Scenario: drag within bounds
 

@@ -736,10 +736,7 @@ fn appearance_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                 } else {
                     sidebar::Side::Right
                 };
-                if s.sidebar_side != side {
-                    s.sidebar_side = side;
-                    s.persist_sidebar_side();
-                }
+                s.set_sidebar_side(side);
             })
             .build(&s.editor.kit),
             ink,
