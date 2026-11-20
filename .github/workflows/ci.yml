@@ -23,7 +23,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-15, windows-latest]
+        # windows-2022, not windows-latest: that is Visual Studio 2026, whose
+        # C++ library needs Clang 22 and Zig 0.16 bundles Clang 21, so `vt`
+        # cannot build libghostty-vt there. Go back to windows-latest once the
+        # Zig in use bundles Clang 22.
+        os: [ubuntu-22.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       # crates/vt builds libghostty-vt from this submodule.

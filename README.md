@@ -171,7 +171,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The daemon integration tests start the real `gokod` in a temporary `GOKO_HOME`.
-CI runs the same checks on `ubuntu-22.04` and `macos-15`; on `windows-latest` it
+CI runs the same checks on `ubuntu-22.04` and `macos-15`; on `windows-2022` it
 builds the whole workspace and runs the `protocol`, `daemon` and `app-core`
 tests (the app's own test harness is Unix-only in this version, and the Windows
 daemon tests live in `crates/daemon/tests/windows_ipc.rs`).
