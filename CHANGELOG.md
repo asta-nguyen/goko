@@ -17,12 +17,14 @@ same entry. Keep each link on one line: What's new shows it as its text. The
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
 ### Added
 
 - Pushing from the Editor now asks for the SSH key passphrase in a masked
   modal when ssh needs one; the passphrase is used for that push only, is
   never stored, and dismissing the prompt cancels the push. By
-  [@asta-nguyen](https://github.com/asta-nguyen) in `aaff65a`.
+  [@asta-nguyen](https://github.com/asta-nguyen) in `aaff65a` and `bcf1975`.
 - Add Project now scans a folder that is not a Git worktree root for nested
   repositories, lets you review what it found, and imports them as a group
   under a folder project or separately. A folder project shows a Files tree,
