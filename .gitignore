@@ -9,3 +9,4 @@ node_modules/
 perf.data*
 /apps/desktop/
 /dist/
+.claude/settings.local.json

@@ -99,6 +99,7 @@ async fn session_create_waits_for_the_shared_worktree_operation_lock() {
         .request(json!({"type": "session.stop", "session_id": id, "force": true}))
         .await;
     wait_for_state(&mut client, &id, "exited").await;
+    // SAFETY: `daemon.pid()` is the live child `gokod` process spawned by this test.
     assert_eq!(unsafe { libc::kill(daemon.pid(), libc::SIGTERM) }, 0);
     assert!(daemon
         .exited_within(Duration::from_secs(5))

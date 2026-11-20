@@ -744,11 +744,15 @@ fn is_available_utf8_locale(locale: &str) -> bool {
     let Ok(name) = CString::new(locale) else {
         return false;
     };
+    // SAFETY: `name` is a valid NUL-terminated C string and null base means
+    // create a fresh locale object; `newlocale` returns null on failure.
     let resolved =
         unsafe { libc::newlocale(libc::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut()) };
     if resolved.is_null() {
         return false;
     }
+    // SAFETY: `resolved` is a non-null locale handle returned by `newlocale`
+    // above and is freed exactly once here.
     unsafe { libc::freelocale(resolved) };
     true
 }

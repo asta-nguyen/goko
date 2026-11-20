@@ -93,6 +93,7 @@ fn process_exists(pid: u32) -> bool {
     if pid > i32::MAX as u32 {
         return false;
     }
+    // SAFETY: `pid` was checked to fit in `i32` above; signal 0 only probes existence.
     let result = unsafe { libc::kill(pid as i32, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
