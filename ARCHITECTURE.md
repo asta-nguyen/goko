@@ -9,7 +9,7 @@ their results are in [docs/agent-devkit](docs/agent-devkit/INDEX.md).
 Rune app (apps/rune)                          gokod (crates/daemon)
 ┌───────────────────────────┐ socket or pipe  ┌──────────────────────────────┐
 │ native UI ─▶ daemon client┼────────────────▶│ server ─▶ SessionManager     │
-│ (alacritty_terminal grid) │ daemon.sock     │            └─▶ PtyProcess ─▶ child
+│    (libghostty-vt grid)   │ daemon.sock     │            └─▶ PtyProcess ─▶ child
 └─────────────┬─────────────┘                 └──────────────────────────────┘
               └─▶ crates/app-core ─▶ goko.db, git, language servers, ACP
 ```
@@ -142,8 +142,12 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
 `a7f276c3630f85a06a0230295da4d2bd172d8d3b`) with the local `crates/rune-kit` component
 crate. Build and launch it with `apps/rune/run-macos.sh` (see the [README](README.md)).
 
-- **Terminal:** the daemon's PTY bytes are fed to an `alacritty_terminal` grid (`term.rs`)
-  and rendered as styled text runs. Panes (`panes.rs`) are a recursive binary split layout
+- **Terminal:** the daemon's PTY bytes are fed to a `libghostty-vt` terminal (`term.rs`,
+  through the `vt` crate) and its frames rendered as styled text runs, on a clock of about
+  30 frames a second that also waits for the output to go quiet for 16 ms (at most 100 ms), so
+  a UI redrawn in several writes is not shown torn (a keystroke's echo, a resize and a scroll
+  are drawn at once; a synchronized update is held until it ends); rows the engine did not
+  change keep their lines. Panes (`panes.rs`) are a recursive binary split layout
   per workspace tab, one terminal per pane; sessions and their lifecycle are in
   `sessions.rs`, the project/worktree tree in `sidebar.rs`.
 - **Terminal input and links:** Cmd+V pastes into the focused pane (bracketed when the
@@ -152,8 +156,8 @@ crate. Build and launch it with `apps/rune/run-macos.sh` (see the [README](READM
   are links: Cmd-click opens a URL in the browser, or a file inside the session's project
   checkout in the Editor at its line (`PendingNav::ExternalOpen`).
 - **Terminal find:** Cmd+F opens a find bar over the focused pane (an overlay, so the
-  PTY keeps its size). It searches the text of every row the pane's `alacritty_terminal`
-  grid retains — scrollback included, wrapped rows joined — with the editor's `FindState`
+  PTY keeps its size). It searches the text of every row the pane's terminal
+  retains — scrollback included, wrapped rows joined — with the editor's `FindState`
   (`editor/find.rs`); `term::Haystack` maps a match back to grid cells for the highlight
   and for scrolling to it. Output that changes the grid (`Terminal::revision`) is
   searched again at most every 250 ms. Nothing is indexed and the daemon is not involved.
@@ -353,11 +357,12 @@ The client answers that drop by waiting for the next ack before resubscribing, s
 view cannot keep accumulating windows. The app acknowledges every 64 KiB it has parsed,
 and the rest once the output has been quiet for 30 ms, not on every frame.
 
-The daemon also keeps each session's terminal (`terminal.rs`, an `alacritty_terminal` grid
-with `protocol::SCROLLBACK_LINES` of history, the same as the app's grids) for the first
+The daemon also keeps each session's terminal (`terminal.rs`, a `vt` terminal
+with `protocol::SCROLLBACK_LINES` of history within `protocol::SCROLLBACK_MAX_BYTES`, the same as the app's) for the first
 paint of a `paint: true` subscribe. It is parsed on its own thread (`gokod-pty-model`) fed
 in stream order, so neither the reader nor the subscribe/ack lock waits for parsing; a
-paint holds that lock and waits until the model has parsed up to its offset. The PTY
+paint holds that lock and waits until the model has parsed up to its offset and applied every resize asked
+so far (the app sizes the PTY to the pane before it attaches, so the paint is of the pane's size). The PTY
 master is non-blocking on Unix: the reader and a pending write wait in `select` (macOS
 `poll` does not work on PTYs), and a write gives up once the child has exited. On Windows
 ConPTY exposes a blocking reader instead, so one dedicated thread parks in it and the flow

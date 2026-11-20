@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/protocol", "crates/daemon", "crates/app-core", "crates/rune-kit", "apps/rune"]
+members = ["crates/protocol", "crates/daemon", "crates/app-core", "crates/rune-kit", "crates/vt", "apps/rune"]
 resolver = "2"
 
 [workspace.package]
@@ -8,7 +8,6 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-alacritty_terminal = "0.26.0"
 base64 = "0.23"
 getrandom = { version = "0.3", features = ["std"] }
 libc = "0.2"

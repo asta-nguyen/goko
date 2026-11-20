@@ -1,34 +1,29 @@
-//! The live terminal: the daemon's PTY bytes -> alacritty_terminal grid ->
+//! The live terminal: the daemon's PTY bytes -> vt grid ->
 //! styled rich-text runs -> a scrolling line column.
 //!
-//! The grid is the real thing: `Term` parses the ANSI stream the daemon
-//! replays and streams, and the visible rows become `TermLine`s. The
-//! palette is the Tango ansi16 set the real TerminalController renders on
-//! #1e1e1e, ported from the verified rune-spike `fidelity.rs`.
+//! The grid is the real thing: `vt::Vt` (libghostty-vt) parses the ANSI
+//! stream the daemon replays and streams, and the visible rows become
+//! `TermLine`s. The palette is the Tango ansi16 set the real
+//! TerminalController renders on #1e1e1e, ported from the verified
+//! rune-spike `fidelity.rs`.
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point, Side};
-use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode, viewport_to_point};
-use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use app_core::error::{BridgeError, Code};
 use protocol::frame::PAINT_SEQ;
 use protocol::message::Response;
 use protocol::session::SessionId;
 use rune::{Color, El, LineCap, Link, LinkPaint, Shape, Span, TextStyle, text};
+use vt::{CursorShape, SelectKind, Vt};
 
 use crate::daemon::{self, Output, SubscribeReply};
 use crate::theme::Ink;
 
 // ---------------------------------------------------------------------------
-// Terminal: ANSI bytes -> alacritty_terminal grid -> styled runs.
+// Terminal: ANSI bytes -> vt grid -> styled runs.
 // ---------------------------------------------------------------------------
 
 /// One styled run of terminal text.
@@ -64,7 +59,7 @@ struct TermCursor {
 
 /// One terminal row: styled runs of text, cell backgrounds and the cursor,
 /// left to right.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TermLine {
     runs: Vec<TermRun>,
     backs: Vec<Back>,
@@ -108,98 +103,77 @@ impl Haystack {
     }
 }
 
-/// What a cell adds to its row's text: nothing for a wide glyph's spacer, a
-/// space for hidden text, else the character with its combining marks. The same
-/// rule `render_lines` draws by, so a match's bytes map back to cells.
-fn cell_text(cell: &Cell, out: &mut String) {
-    if cell
-        .flags
-        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-    {
-        return;
-    }
-    if cell.flags.contains(Flags::HIDDEN) {
-        out.push(' ');
-        return;
-    }
-    out.push(cell.c);
-    for c in cell.zerowidth().into_iter().flatten() {
-        out.push(*c);
-    }
-}
-
 /// The grid the terminal renders at. The daemon's PTY is resized to match
 /// it, so the columns line up with what the user sees.
 pub const TERM_COLS: usize = 120;
 pub const TERM_ROWS: usize = 42;
 
-/// The grid size, as alacritty wants it.
-#[derive(Clone, Copy)]
-struct Size {
-    screen_lines: usize,
-    columns: usize,
+/// How a selection grows from the cell the press landed on: the dragged
+/// cells, the word under it (a double click), or the whole line (a triple).
+/// Named as the old engine's selection kinds were; the pane maps clicks to
+/// these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionType {
+    /// The cells between the press and the pointer.
+    Simple,
+    /// The word around the press.
+    Semantic,
+    /// The line under the press.
+    Lines,
 }
 
-impl Dimensions for Size {
-    fn total_lines(&self) -> usize {
-        self.screen_lines
-    }
-    fn screen_lines(&self) -> usize {
-        self.screen_lines
-    }
-    fn columns(&self) -> usize {
-        self.columns
-    }
+/// The half of a cell the pointer was on when it landed or moved: a Simple
+/// selection starts and ends on half-cell bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
 }
 
-/// The answers the parser writes for the program's queries (cursor position,
-/// device attributes, status): the terminal is the one that must reply, or a
-/// program that asks, like Codex asking where the cursor is, waits for nothing.
-/// Also the program's own clipboard writes (OSC 52): Claude Code and Codex
-/// capture the mouse, select inside their UI and copy that way.
-#[derive(Clone, Default)]
-struct Replies {
-    bytes: Arc<Mutex<Vec<u8>>>,
-    /// The latest OSC 52 copy not yet put on the clipboard; a newer one
-    /// replaces it.
-    copy: Arc<Mutex<Option<String>>>,
+/// A selection gesture in progress: where the press landed in the engine's
+/// (column, screen row) coordinates, on which half of the cell, and how it
+/// grows. The end lives in the engine's own selection.
+struct Selection {
+    anchor: (u16, usize),
+    side: Side,
+    kind: SelectionType,
 }
 
-impl Replies {
-    /// Drop what a replay produced: answers and copies the program
-    /// already had.
-    fn discard(&self) {
-        self.bytes.lock().unwrap().clear();
-        self.copy.lock().unwrap().take();
-    }
+/// The mode flags the input encoders and gestures read, fetched live from
+/// the engine's DEC private modes.
+struct Modes {
+    /// Any mouse reporting (?1000, ?1002 or ?1003).
+    mouse: bool,
+    /// Drag-motion reporting (?1002).
+    drag: bool,
+    /// Every-motion reporting, hover included (?1003).
+    motion: bool,
+    /// SGR extended coordinates (?1006).
+    sgr: bool,
+    /// UTF-8 extended coordinates (?1005).
+    utf8: bool,
+    /// The wheel sends arrow keys on the alternate screen (?1007).
+    alt_scroll: bool,
+    /// Application cursor keys (?1).
+    app_cursor: bool,
+    /// Bracketed paste (?2004).
+    bracketed: bool,
+    /// The alternate screen is on.
+    alt_screen: bool,
 }
 
-impl EventListener for Replies {
-    fn send_event(&self, event: Event) {
-        // ponytail: colour and text-area-size queries are not answered yet;
-        // they need the theme and the cell size the parser does not hold.
-        match event {
-            Event::PtyWrite(text) => self
-                .bytes
-                .lock()
-                .unwrap()
-                .extend_from_slice(text.as_bytes()),
-            // Only the clipboard: rune has no primary selection to write.
-            Event::ClipboardStore(ClipboardType::Clipboard, text) => {
-                *self.copy.lock().unwrap() = Some(text);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// How long the output has to be quiet before the grid is repainted: a
-/// full-screen program redraws in bursts, and repainting every chunk
-/// would show the screen rebuilding itself line by line.
+/// Output is drawn on a clock of about 30 frames a second, so panes printing
+/// out of step share frames and a stream is shown smoothly. A program that
+/// wants a whole screen drawn at once says so with a synchronized update, which
+/// the engine holds for it.
+const FRAME: Duration = Duration::from_millis(33);
+/// A program that does not use synchronized updates redraws its UI in several
+/// writes (erase, then the new rows); a frame drawn between them shows the UI
+/// torn. So a frame also waits for the output to go quiet this long...
 const QUIET: Duration = Duration::from_millis(16);
-/// The longest a repaint may be held back, so a program that never stops
-/// writing still shows its output.
-const MAX_HOLD: Duration = Duration::from_millis(200);
+/// ...but never longer than this after the first output not yet drawn, so a
+/// stream that never stops is still shown.
+const MAX_HOLD: Duration = Duration::from_millis(100);
 /// The most one `feed` parses of live output before it yields to input and
 /// painting; the rest waits for the next turn.
 const OUTPUT_TURN: Duration = Duration::from_millis(6);
@@ -236,15 +210,19 @@ pub struct Terminal {
     pub next_seq: u64,
     /// The last byte acknowledged to the daemon.
     acked_seq: u64,
-    term: Term<Replies>,
-    parser: Processor,
-    /// What the parser answered the program, not yet written to the PTY.
-    replies: Replies,
+    /// The terminal emulator: PTY bytes in, frames, replies and the
+    /// program's clipboard writes out.
+    vt: Vt,
     /// The stream started with a first paint, so no query the program
     /// already got an answer to is replayed: only then are queries answered.
     /// A raw replay of an old daemon carries them, and answering those again
     /// would type the answers into the program.
     paint_seen: bool,
+    /// The selection gesture in progress, if any. The engine keeps the
+    /// selected cells; this remembers how it started so `select_clear`
+    /// knows whether a gesture happened and the half-cell rule can be
+    /// applied on every move.
+    selection: Option<Selection>,
     /// The rendered rows of the visible grid.
     lines: Vec<TermLine>,
     /// New output arrived since the last render.
@@ -254,10 +232,15 @@ pub struct Terminal {
     rendered: bool,
     /// When the last chunk arrived.
     last: Instant,
-    /// When the current burst of unrendered output started. `None` while
-    /// nothing new waits to be drawn, so the first draw and a resize are
-    /// never held back.
-    burst: Option<Instant>,
+    /// When output first made the grid dirty and not yet drawn, which then
+    /// waits for a quiet frame. `None` while the grid is clean or dirty for
+    /// another reason (a resize, a scroll, a selection, a new theme), which is
+    /// drawn at once.
+    paced: Option<Instant>,
+    /// When the rows were last built: a frame is `FRAME` after it.
+    last_draw: Instant,
+    /// What those rows were built from, so unchanged rows are moved, not rebuilt.
+    drawn: Drawn,
     /// The last turn ran out of time with output possibly still waiting.
     more: bool,
     /// When the user last typed into this terminal.
@@ -278,33 +261,29 @@ impl Terminal {
         chunks: Receiver<Output>,
         ready: Receiver<Result<Response, BridgeError>>,
     ) -> Terminal {
-        let size = Size {
-            screen_lines: TERM_ROWS,
-            columns: TERM_COLS,
-        };
-        let replies = Replies::default();
         Terminal {
             session,
             chunks,
             ready: Some(ready),
             next_seq: 0,
             acked_seq: 0,
-            term: Term::new(
-                Config {
-                    scrolling_history: protocol::SCROLLBACK_LINES,
-                    ..Config::default()
+            vt: Vt::new(
+                TERM_COLS as u16,
+                TERM_ROWS as u16,
+                vt::Limits {
+                    lines: protocol::SCROLLBACK_LINES,
+                    bytes: protocol::SCROLLBACK_MAX_BYTES,
                 },
-                &size,
-                replies.clone(),
             ),
-            parser: Processor::new(),
-            replies,
             paint_seen: false,
+            selection: None,
             lines: Vec::new(),
             dirty: true,
             rendered: false,
             last: Instant::now(),
-            burst: None,
+            paced: None,
+            last_draw: Instant::now(),
+            drawn: Drawn::default(),
             more: false,
             typed: None,
             scroll_rem: 0.0,
@@ -333,16 +312,16 @@ impl Terminal {
         if lines == 0 {
             return None;
         }
-        let mode = *self.term.mode();
+        let modes = self.modes();
         let count = lines.unsigned_abs().min(MAX_WHEEL_LINES) as usize;
         // Positive lines reveal older rows: the wheel turned up.
         let up = lines > 0;
-        if !shift && mode.intersects(TermMode::MOUSE_MODE) {
-            let report = wheel_report(mode, up, cell, mods)?;
+        if !shift && modes.mouse {
+            let report = wheel_report(&modes, up, cell, mods)?;
             return Some(report.repeat(count));
         }
-        if !shift && mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-            let key: &[u8] = match (up, mode.contains(TermMode::APP_CURSOR)) {
+        if !shift && modes.alt_screen && modes.alt_scroll {
+            let key: &[u8] = match (up, modes.app_cursor) {
                 (true, true) => b"\x1bOA",
                 (true, false) => b"\x1b[A",
                 (false, true) => b"\x1bOB",
@@ -354,43 +333,54 @@ impl Terminal {
         None
     }
 
+    /// The modes the program set, read live from the engine.
+    fn modes(&self) -> Modes {
+        Modes {
+            mouse: self.vt.mouse_tracking(),
+            drag: self.vt.mode(1002),
+            motion: self.vt.mode(1003),
+            sgr: self.vt.mode(1006),
+            utf8: self.vt.mode(1005),
+            alt_scroll: self.vt.mode(1007),
+            app_cursor: self.vt.mode(1),
+            bracketed: self.vt.mode(2004),
+            alt_screen: self.vt.alt_screen(),
+        }
+    }
+
     /// Whether the program asked for mouse press and drag reports
     /// (?1000–?1003). While it has, the pane forwards pointer gestures and
     /// rune's local text selection stands down — the `on_drag` target
     /// suppresses it, which is what a real terminal does too.
     pub fn wants_mouse(&self) -> bool {
-        self.term.mode().intersects(TermMode::MOUSE_MODE)
+        self.vt.mouse_tracking()
     }
 
     /// Whether the program is on the alternate screen: the terminal keeps no
     /// history there, the program scrolls its own view.
     pub fn alt_screen(&self) -> bool {
-        self.term.mode().contains(TermMode::ALT_SCREEN)
+        self.vt.alt_screen()
     }
 
     /// Whether it asked for every-motion reports including hover (?1003).
     pub fn wants_hover(&self) -> bool {
-        self.term.mode().contains(TermMode::MOUSE_MOTION)
+        self.vt.mode(1003)
     }
 
     /// The report bytes for `kind` over cell `(row, column)`, or `None`
     /// when the program didn't ask for that kind of event. `mods` is the
     /// xterm modifier bits: 4 Shift, 8 Alt, 16 Ctrl.
     pub fn mouse(&self, kind: MouseKind, cell: (usize, usize), mods: u8) -> Option<Vec<u8>> {
-        let mode = *self.term.mode();
+        let modes = self.modes();
         let (cb, release) = match kind {
-            MouseKind::Press(b) if mode.intersects(TermMode::MOUSE_MODE) => (b + mods, false),
-            MouseKind::Release(b) if mode.intersects(TermMode::MOUSE_MODE) => (b + mods, true),
-            MouseKind::Motion(b)
-                if mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) =>
-            {
-                (32 + b + mods, false)
-            }
-            MouseKind::Hover if mode.contains(TermMode::MOUSE_MOTION) => (35 + mods, false),
+            MouseKind::Press(b) if modes.mouse => (b + mods, false),
+            MouseKind::Release(b) if modes.mouse => (b + mods, true),
+            MouseKind::Motion(b) if modes.drag || modes.motion => (32 + b + mods, false),
+            MouseKind::Hover if modes.motion => (35 + mods, false),
             _ => return None,
         };
         let (row, column) = (cell.0 + 1, cell.1 + 1);
-        if mode.contains(TermMode::SGR_MOUSE) {
+        if modes.sgr {
             // SGR marks a release with `m` and the button's own code.
             let last = if release { 'm' } else { 'M' };
             return Some(format!("\x1b[<{cb};{column};{row}{last}").into_bytes());
@@ -400,7 +390,7 @@ impl Terminal {
         let mut report = vec![0x1b, b'[', b'M', 32 + code];
         for position in [column, row] {
             let value = 32 + position;
-            if mode.contains(TermMode::UTF8_MOUSE) && value >= 128 {
+            if modes.utf8 && value >= 128 {
                 let mut utf8 = [0; 4];
                 report.extend(
                     char::from_u32(value as u32)?
@@ -423,52 +413,129 @@ impl Terminal {
     }
 
     fn scroll_history(&mut self, lines: i32) {
-        self.term.scroll_display(Scroll::Delta(lines));
+        self.vt.scroll_viewport(lines as isize);
         self.dirty = true;
-        self.burst = None;
+        self.paced = None;
     }
 
     /// Whether the program asked for pastes wrapped in ESC[200~ … ESC[201~.
     pub fn bracketed_paste(&self) -> bool {
-        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+        self.modes().bracketed
     }
 
     /// Back to the live screen — where typing lands.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_rem = 0.0;
-        if self.term.grid().display_offset() != 0 {
-            self.term.scroll_display(Scroll::Bottom);
+        if self.vt.display_offset() != 0 {
+            self.vt.scroll_to_bottom();
             self.dirty = true;
-            self.burst = None;
+            self.paced = None;
         }
     }
 
     // -- Selection -----------------------------------------------------------
-    // The terminal owns the selection, in grid lines, so it reaches into the
-    // history and follows output that scrolls, and the highlight and the copy
-    // come from the grid rather than from the rows on screen.
+    // The terminal owns the selection, in the engine's screen rows, so it
+    // reaches into the history and follows output that scrolls, and the
+    // highlight and the copy come from the grid rather than from the rows
+    // on screen.
 
     /// Start a selection at the visible `row` and `col`, on the cell's left or right half.
     /// A double click selects a word and a triple click a line.
     pub fn select_start(&mut self, kind: SelectionType, row: usize, col: usize, side: Side) {
-        let point = viewport_to_point(self.display_offset(), Point::new(row, Column(col)));
-        self.term.selection = Some(Selection::new(kind, point, side));
+        self.selection = Some(Selection {
+            anchor: (self.clamp_col(col), self.clamp_row(row)),
+            side,
+            kind,
+        });
+        self.select_apply(row, col, side);
         self.repaint();
     }
 
     /// Extend the selection to the visible `row` and `col`.
     pub fn select_update(&mut self, row: usize, col: usize, side: Side) {
-        let point = viewport_to_point(self.display_offset(), Point::new(row, Column(col)));
-        if let Some(selection) = &mut self.term.selection {
-            selection.update(point, side);
+        if self.selection.is_some() {
+            self.select_apply(row, col, side);
             self.repaint();
+        }
+    }
+
+    /// A visible `row` as the engine's screen row: the scrollback comes
+    /// first, so the viewport starts at `viewport_top`.
+    fn clamp_row(&self, row: usize) -> usize {
+        self.vt.viewport_top() + row.min(self.vt.rows as usize - 1)
+    }
+
+    fn clamp_col(&self, col: usize) -> u16 {
+        col.min(self.vt.cols as usize - 1) as u16
+    }
+
+    /// Set the engine's selection from the stored gesture to the visible
+    /// `row` and `col`.
+    fn select_apply(&mut self, row: usize, col: usize, side: Side) {
+        let Some(sel) = &self.selection else {
+            return;
+        };
+        let (anchor, a_side, kind) = (sel.anchor, sel.side, sel.kind);
+        let to = (self.clamp_col(col), self.clamp_row(row));
+        match kind {
+            SelectionType::Semantic => self.vt.select(SelectKind::Word, anchor, to),
+            SelectionType::Lines => self.vt.select(SelectKind::Line, anchor, to),
+            SelectionType::Simple => {
+                // The half-cell rule, the old engine's own: order the two
+                // ends, then a start on a cell's right half begins at the
+                // next cell and an end on a cell's left half stops at the
+                // previous one. Identical points and sides, or the right
+                // half of a cell to the left half of the next, select
+                // nothing.
+                let cols = self.vt.cols as usize;
+                // Grid order is row first: an end is "before" the other
+                // when it sits on an earlier row, or earlier on the row.
+                let before = |a: (u16, usize), b: (u16, usize)| (a.1, a.0) <= (b.1, b.0);
+                let (mut first, f_side, mut last, l_side) = if before(anchor, to) {
+                    (anchor, a_side, to, side)
+                } else {
+                    (to, side, anchor, a_side)
+                };
+                let empty = (first == last && f_side == l_side)
+                    || (f_side == Side::Right
+                        && l_side == Side::Left
+                        && first.1 == last.1
+                        && first.0 + 1 == last.0);
+                if empty {
+                    self.vt.clear_selection();
+                    return;
+                }
+                if l_side == Side::Left && first != last {
+                    last = if last.0 == 0 {
+                        (cols as u16 - 1, last.1.saturating_sub(1))
+                    } else {
+                        (last.0 - 1, last.1)
+                    };
+                }
+                if f_side == Side::Right && first != last {
+                    first = if first.0 as usize == cols - 1 {
+                        (0, first.1 + 1)
+                    } else {
+                        (first.0 + 1, first.1)
+                    };
+                }
+                // The adjustments can cross the ends (the right half of a
+                // row's last cell to the left half of the next row's first):
+                // that selects nothing.
+                if !before(first, last) {
+                    self.vt.clear_selection();
+                    return;
+                }
+                self.vt.select(SelectKind::Cells, first, last);
+            }
         }
     }
 
     /// Drop the selection; `true` when there was one.
     pub fn select_clear(&mut self) -> bool {
-        let had = self.term.selection.take().is_some();
+        let had = self.selection.take().is_some();
         if had {
+            self.vt.clear_selection();
             self.repaint();
         }
         had
@@ -476,9 +543,7 @@ impl Terminal {
 
     /// The selected text, or `None` when nothing (or an empty range) is selected.
     pub fn selection_text(&self) -> Option<String> {
-        self.term
-            .selection_to_string()
-            .filter(|text| !text.is_empty())
+        self.vt.selection_text()
     }
 
     /// Scroll the view `lines` into the history (negative: back toward the live screen),
@@ -489,7 +554,7 @@ impl Terminal {
 
     fn repaint(&mut self) {
         self.dirty = true;
-        self.burst = None;
+        self.paced = None;
     }
 
     /// The daemon's answer to `terminal.subscribe`: `Err` means the attach
@@ -561,8 +626,9 @@ impl Terminal {
                 // The daemon's first paint rebuilds the screen and is not
                 // part of the stream: `next_seq` stays where it was, and the
                 // first live chunk, ahead of it, is parsed whole.
-                self.parser.advance(&mut self.term, &chunk.data);
-                self.replies.discard();
+                self.vt.write(&chunk.data);
+                self.vt.take_replies();
+                self.vt.take_clipboard();
                 self.paint_seen = true;
                 self.last = Instant::now();
                 changed = true;
@@ -581,19 +647,22 @@ impl Terminal {
             if data.is_empty() {
                 continue;
             }
-            self.parser.advance(&mut self.term, data);
+            self.vt.write(data);
             if !self.paint_seen {
-                self.replies.discard();
+                self.vt.take_replies();
+                self.vt.take_clipboard();
             }
             self.next_seq = end;
             self.last = Instant::now();
             changed = true;
         }
         if changed {
-            self.dirty = true;
             self.rev += 1;
-            if self.burst.is_none() {
-                self.burst = Some(Instant::now());
+            // Output that changes nothing on screen (a title, a cursor parked
+            // where it was) is not a frame.
+            if self.vt.shows_change() {
+                self.dirty = true;
+                self.paced.get_or_insert_with(Instant::now);
             }
         }
         changed
@@ -615,52 +684,52 @@ impl Terminal {
     /// The answers to the program's queries since the last call, to write to
     /// the PTY. Empty on a stream that did not start with a paint.
     pub fn take_replies(&mut self) -> Vec<u8> {
-        std::mem::take(&mut *self.replies.bytes.lock().unwrap())
+        self.vt.take_replies()
     }
 
     /// The text the program copied (OSC 52) since the last call, for the
     /// clipboard. Like replies, never from a stream that did not start
     /// with a paint: a replay's old copies stay off the clipboard.
     pub fn take_copy(&mut self) -> Option<String> {
-        self.replies.copy.lock().unwrap().take()
+        self.vt.take_clipboard()
     }
 
-    /// How long the repaint may be held back: the output has to settle
-    /// first, so a full-screen program is drawn once instead of line by
-    /// line, but a stream that never goes quiet is still drawn once the
-    /// burst is `MAX_HOLD` old. `None` means "repaint now".
+    /// How long the repaint waits: a program in a synchronized update is
+    /// drawn once it ends (or after `vt::MAX_HOLD`); other output waits for the
+    /// next frame of the clock and for the output to go quiet (`QUIET`), at
+    /// most `MAX_HOLD` after the first output not yet drawn. A keystroke's
+    /// echo, a resize, a scroll, a selection and the first draw are not held.
+    /// `None` means "repaint now".
     pub fn hold(&self) -> Option<Duration> {
         if !self.dirty || !self.rendered {
             return None;
         }
+        if let Some(deadline) = self.vt.render_hold_deadline() {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            return (!wait.is_zero()).then_some(wait);
+        }
+        let first = self.paced?;
         if self.typed.is_some_and(|at| at.elapsed() < TYPING) {
             return None;
         }
-        let quiet = QUIET.saturating_sub(self.last.elapsed());
-        if quiet.is_zero() {
-            // The output settled.
-            return None;
-        }
-        let Some(burst) = self.burst else {
-            // Dirty without a burst is a resize: draw now.
-            return None;
-        };
-        let hold = MAX_HOLD.saturating_sub(burst.elapsed());
-        if hold.is_zero() {
-            // The burst is as old as a repaint may be.
-            return None;
-        }
-        Some(quiet.min(hold))
+        // The frame is due once the clock ticks and the output has settled, or
+        // has been held as long as it may be.
+        let settled = (self.last + QUIET).min(first + MAX_HOLD);
+        let due = settled.max(self.last_draw + FRAME);
+        let wait = due.saturating_duration_since(Instant::now());
+        (!wait.is_zero()).then_some(wait)
     }
 
-    /// The rendered rows of the visible grid, repainted when the output
-    /// settled.
+    /// The rendered rows of the visible grid, rebuilt when a frame is due;
+    /// rows the engine did not change are kept as they were.
     pub fn lines(&mut self, ink: &Ink) -> &[TermLine] {
         if self.dirty && self.hold().is_none() {
-            self.lines = render_lines(&self.term, ink);
+            let old = std::mem::take(&mut self.lines);
+            self.lines = render_lines(&mut self.vt, ink, &mut self.drawn, old);
             self.dirty = false;
             self.rendered = true;
-            self.burst = None;
+            self.paced = None;
+            self.last_draw = Instant::now();
         }
         &self.lines
     }
@@ -682,15 +751,14 @@ impl Terminal {
         if cols == 0 || rows == 0 {
             return;
         }
-        let size = Size {
-            screen_lines: rows,
-            columns: cols,
-        };
-        self.term.resize(size);
+        self.vt.resize(
+            cols.min(u16::MAX as usize) as u16,
+            rows.min(u16::MAX as usize) as u16,
+        );
         self.dirty = true;
         self.rev += 1;
         // A resized grid is drawn at once: no burst is settling.
-        self.burst = None;
+        self.paced = None;
     }
     /// How many times the grid's text changed; see the `rev` field.
     pub fn revision(&self) -> u64 {
@@ -698,22 +766,25 @@ impl Terminal {
     }
     /// How far the view is scrolled into the history, in rows.
     pub fn display_offset(&self) -> usize {
-        self.term.grid().display_offset()
+        self.vt.display_offset()
     }
     /// The text of everything the grid retains, for the find bar.
     pub fn haystack(&self) -> Haystack {
-        let grid = self.term.grid();
-        let cols = grid.columns();
+        // Grid lines count the screen rows from 0 and the retained history
+        // negative, so `screen row - history` is the grid line.
+        let history = self.vt.history_size() as i64;
         let mut text = String::new();
         let mut rows = Vec::new();
-        for line in grid.topmost_line().0..=grid.bottommost_line().0 {
-            let row = &grid[Line(line)];
-            rows.push((line, text.len()));
+        for y in 0..self.vt.screen_rows() {
+            let Some(row) = self.vt.text_row(y) else {
+                continue;
+            };
+            rows.push(((y as i64 - history) as i32, text.len()));
             let start = text.len();
-            for col in 0..cols {
-                cell_text(&row[Column(col)], &mut text);
+            for cell in &row.cells {
+                text.push_str(&cell.text);
             }
-            if !row[Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+            if !row.wraps {
                 let padded = text[start..].trim_end_matches(' ').len();
                 text.truncate(start + padded);
                 text.push('\n');
@@ -724,38 +795,37 @@ impl Terminal {
     /// The cells a match of `hay` covers, one `(grid line, first cell, one past
     /// the last)` per row it touches — two for a match across a wrapped row.
     pub fn match_cells(&self, hay: &Haystack, range: Range<usize>) -> Vec<(i32, usize, usize)> {
-        let grid = self.term.grid();
+        let history = self.vt.history_size() as i64;
+        let total = self.vt.screen_rows() as i64;
         let first = hay
             .rows
             .partition_point(|&(_, start)| start <= range.start)
             .saturating_sub(1);
         let mut out = Vec::new();
-        let mut glyph = String::new();
         for (i, &(line, start)) in hay.rows.iter().enumerate().skip(first) {
             if start >= range.end {
                 break;
             }
             // A haystack of an older grid may name rows that are gone.
-            if line < grid.topmost_line().0 || line > grid.bottommost_line().0 {
+            let y = line as i64 + history;
+            let Some(row) = (0..total)
+                .contains(&y)
+                .then(|| self.vt.text_row(y as usize))
+                .flatten()
+            else {
                 continue;
-            }
+            };
             let end = hay.rows.get(i + 1).map_or(hay.text.len(), |r| r.1);
             let (from, to) = (range.start.max(start) - start, range.end.min(end) - start);
-            let row = &grid[Line(line)];
             let (mut at, mut cells) = (0, None::<(usize, usize)>);
-            for col in 0..grid.columns() {
-                let cell = &row[Column(col)];
-                glyph.clear();
-                cell_text(cell, &mut glyph);
-                if glyph.is_empty() {
-                    continue;
-                }
-                if at < to && at + glyph.len() > from {
-                    let wide = usize::from(cell.flags.contains(Flags::WIDE_CHAR));
+            for cell in &row.cells {
+                if at < to && at + cell.text.len() > from {
+                    let wide = usize::from(cell.wide);
+                    let col = cell.col as usize;
                     let first = cells.map_or(col, |c| c.0);
                     cells = Some((first, col + 1 + wide));
                 }
-                at += glyph.len();
+                at += cell.text.len();
                 if at >= to {
                     break;
                 }
@@ -769,30 +839,26 @@ impl Terminal {
     /// Scroll so grid `line` is on screen, centred when it was not; a line
     /// already showing leaves the view where it is.
     pub fn reveal(&mut self, line: i32) {
-        let grid = self.term.grid();
-        let (rows, offset) = (grid.screen_lines() as i32, grid.display_offset() as i32);
+        let (rows, offset) = (self.vt.rows as i32, self.vt.display_offset() as i32);
         if (-offset..rows - offset).contains(&line) {
             return;
         }
-        self.term
-            .scroll_display(Scroll::Delta(rows / 2 - line - offset));
+        self.vt.scroll_viewport((rows / 2 - line - offset) as isize);
         self.dirty = true;
-        self.burst = None;
+        self.paced = None;
     }
 
     /// The grid size the terminal renders at.
     pub fn size(&self) -> (usize, usize) {
-        (self.term.grid().columns(), self.term.grid().screen_lines())
+        (self.vt.cols as usize, self.vt.rows as usize)
     }
 
     /// The cursor's cell on the visible screen, (row, column) — where the
     /// input method's candidate window and the preedit go.
     pub fn cursor_cell(&self) -> Option<(usize, usize)> {
-        let grid = self.term.grid();
-        let row = grid.cursor.point.line.0 + grid.display_offset() as i32;
-        let col = grid.cursor.point.column.0;
-        ((0..grid.screen_lines() as i32).contains(&row) && col < grid.columns())
-            .then_some((row as usize, col))
+        self.vt
+            .cursor_cell()
+            .map(|(col, row)| (row as usize, col as usize))
     }
 
     /// The palette changed while the grid did not: the cached rows repaint
@@ -802,7 +868,7 @@ impl Terminal {
         self.dirty = true;
         // A colour swap is not output still settling: draw now instead of
         // outwaiting the burst hold.
-        self.burst = None;
+        self.paced = None;
     }
 
     /// The bytes the daemon sent that were not acknowledged yet. A
@@ -846,278 +912,254 @@ fn ansi16(i: u8) -> Color {
     }
 }
 
-/// A configured terminal colour (the `colors` table) as a rune colour.
-fn rgb_color(rgb: alacritty_terminal::vte::ansi::Rgb) -> Color {
+/// An engine colour as a rune colour.
+fn rgb_color(rgb: vt::Rgb) -> Color {
     Color {
-        r: rune::color::srgb_decode(rgb.r as f32 / 255.0),
-        g: rune::color::srgb_decode(rgb.g as f32 / 255.0),
-        b: rune::color::srgb_decode(rgb.b as f32 / 255.0),
+        r: rune::color::srgb_decode(rgb.0 as f32 / 255.0),
+        g: rune::color::srgb_decode(rgb.1 as f32 / 255.0),
+        b: rune::color::srgb_decode(rgb.2 as f32 / 255.0),
         a: 1.0,
     }
 }
 
-fn ansi_color(c: alacritty_terminal::vte::ansi::Color, ink: &Ink) -> Color {
-    use alacritty_terminal::vte::ansi::{Color as A, NamedColor as N};
-    match c {
-        A::Named(n) => match n {
-            N::Black => ansi16(0),
-            N::Red => ansi16(1),
-            N::Green => ansi16(2),
-            N::Yellow => ansi16(3),
-            N::Blue => ansi16(4),
-            N::Magenta => ansi16(5),
-            N::Cyan => ansi16(6),
-            N::White => ansi16(7),
-            N::BrightBlack => ansi16(8),
-            N::BrightRed => ansi16(9),
-            N::BrightGreen => ansi16(10),
-            N::BrightYellow => ansi16(11),
-            N::BrightBlue => ansi16(12),
-            N::BrightMagenta => ansi16(13),
-            N::BrightCyan => ansi16(14),
-            N::BrightWhite => ansi16(15),
-            N::Foreground => ink.text,
-            N::Background => ink.bg,
-            _ => ink.dim,
-        },
-        A::Spec(rgb) => rgb_color(rgb),
-        A::Indexed(i) => {
-            let i = i as usize;
-            match i {
-                0..=15 => ansi16(i as u8),
-                16..=231 => {
-                    let n = i - 16;
-                    let f = |v: usize| match v {
-                        0 => 0,
-                        1 => 95,
-                        2 => 135,
-                        3 => 175,
-                        4 => 215,
-                        _ => 255,
-                    };
-                    let (r, g, b) = (f(n / 36), f((n / 6) % 6), f(n % 6));
-                    Color {
-                        r: rune::color::srgb_decode(r as f32 / 255.0),
-                        g: rune::color::srgb_decode(g as f32 / 255.0),
-                        b: rune::color::srgb_decode(b as f32 / 255.0),
-                        a: 1.0,
-                    }
-                }
-                _ => {
-                    let v = (8 + (i.saturating_sub(232)) * 10).min(238);
-                    let l = rune::color::srgb_decode(v as f32 / 255.0);
-                    Color {
-                        r: l,
-                        g: l,
-                        b: l,
-                        a: 1.0,
-                    }
-                }
-            }
-        }
+/// A rune colour (linear sRGB) as the engine's sRGB triple.
+fn ink_rgb(c: Color) -> vt::Rgb {
+    let v = |x: f32| (rune::color::srgb_encode(x) * 255.0).round() as u8;
+    vt::Rgb(v(c.r), v(c.g), v(c.b))
+}
+
+/// The engine's theme for an ink: the Tango ansi16 set `ansi16` draws
+/// with, the pane's default text and background, the cursor in the text
+/// colour, and the wash the renderer paints under selected cells.
+fn vt_theme(ink: &Ink) -> vt::Theme {
+    vt::Theme {
+        fg: ink_rgb(ink.text),
+        bg: ink_rgb(ink.bg),
+        cursor: ink_rgb(ink.text),
+        selection_bg: ink_rgb(ink.bg.mix(ink.accent, 0.35)),
+        palette16: std::array::from_fn(|i| ink_rgb(ansi16(i as u8))),
     }
 }
 
-/// Turn the terminal's visible grid rows into `TermLine`s.
-fn render_lines(term: &Term<Replies>, ink: &Ink) -> Vec<TermLine> {
-    use alacritty_terminal::vte::ansi::{Color as A, NamedColor as N};
-    let content = term.renderable_content();
-    let rows = term.grid().screen_lines();
-    let cols = term.grid().columns();
-    // `display_iter` and the cursor speak in grid lines, where the visible
-    // screen is `-display_offset..screen_lines-display_offset`; the row a
-    // cell lands on is its line plus the scroll offset.
-    let display_offset = content.display_offset as i32;
-    // Each cell with whether the selection covers it.
-    let mut grid: Vec<Vec<(&Cell, bool)>> = (0..rows).map(|_| Vec::with_capacity(cols)).collect();
-    for indexed in content.display_iter {
-        let row = indexed.point.line.0 + display_offset;
-        if (0..rows as i32).contains(&row) {
-            let selected = content
-                .selection
-                .is_some_and(|range| range.contains(indexed.point));
-            grid[row as usize].push((indexed.cell, selected));
-        }
-    }
+/// What the cached `TermLine`s were built from. A row whose cells the engine
+/// did not change, with the same wrap flag, theme and cursor, is moved into
+/// the next frame's lines as it is instead of being built again.
+#[derive(Default)]
+struct Drawn {
+    theme: Option<vt::Theme>,
+    rows: Vec<Arc<Vec<vt::Cell>>>,
+    wraps: Vec<bool>,
+    cursor: Option<(u16, u16, vt::CursorShape, vt::Rgb)>,
+}
 
-    // The cursor alacritty would draw: `renderable_content` already folds
-    // in the show/hide mode, vi mode and the wide-char spacer adjustment,
-    // and `Hidden` means there is nothing to paint — no fake trailing
-    // block. A block cursor is drawn by swapping the cell's colours in the
-    // row walk below; the other shapes become a `TermCursor` on their row.
-    let cursor = match content.cursor.shape {
-        CursorShape::Hidden => None,
-        shape => {
-            let point = content.cursor.point;
-            let (line, col) = (point.line.0 + display_offset, point.column.0);
-            if !(0..rows as i32).contains(&line) || col >= cols {
-                None
-            } else {
-                // A wide glyph's cursor covers both of its cells.
-                let span = usize::from(term.grid()[point].flags.contains(Flags::WIDE_CHAR)) + 1;
-                Some((line as usize, col, span, shape))
-            }
-        }
+/// Turn the terminal's visible grid rows into `TermLine`s, reusing the rows of
+/// `old` that `drawn` says are unchanged.
+fn render_lines(
+    vt: &mut Vt,
+    ink: &Ink,
+    drawn: &mut Drawn,
+    mut old: Vec<TermLine>,
+) -> Vec<TermLine> {
+    // The frame's cells carry resolved colours: the palette, inverse video
+    // and the selection highlight are already folded in.
+    let theme = vt_theme(ink);
+    let theme_changed = drawn.theme != Some(theme);
+    vt.set_theme(theme);
+    let frame = vt.frame();
+    let cursor = frame.cursor.map(|c| (c.x, c.y, c.shape, c.color));
+    let cursor_moved = drawn.cursor != cursor;
+    let reusable = !frame.all
+        && !theme_changed
+        && old.len() == frame.rows.len()
+        && drawn.rows.len() == frame.rows.len();
+    let on_row = |c: Option<(u16, u16, vt::CursorShape, vt::Rgb)>, row: usize| {
+        c.is_some_and(|c| c.1 as usize == row)
     };
-    // A colour the terminal was configured with wins over the cell's ink.
-    let cursor_color = content.colors[N::Cursor].map(rgb_color);
-
-    grid.into_iter()
+    let lines = frame
+        .rows
+        .iter()
         .enumerate()
         .map(|(row, cells)| {
-            let mut runs: Vec<TermRun> = Vec::new();
-            let mut backs: Vec<Back> = Vec::new();
-            let mut cur = String::new();
-            let mut cur_style: Option<(Color, f32, bool, Option<Color>)> = None;
-            // The open background span: its first cell and colour.
-            let mut back_start: Option<usize> = None;
-            let mut back_color = Color::default();
-            let cursor_here = cursor.filter(|(line, ..)| *line == row);
-            // The ink under the cursor cell, for the non-block shapes.
-            let mut cursor_fg: Option<Color> = None;
-            for (col, &(cell, selected)) in cells.iter().enumerate() {
-                // INVERSE video swaps the cell's colours, as a terminal does.
-                let (fg_ansi, bg_ansi) = if cell.flags.contains(Flags::INVERSE) {
-                    (cell.bg, cell.fg)
-                } else {
-                    (cell.fg, cell.bg)
-                };
-                let mut fg = ansi_color(fg_ansi, ink);
-                if cell.flags.intersects(Flags::DIM | Flags::DIM_BOLD) {
-                    // xterm.js draws DIM as the colour at 50% opacity over the
-                    // background (.xterm-dim { color: multiplyOpacity(.5) }).
-                    fg = fg.mix(ink.bg, 0.5);
+            let wrapped = frame.wraps.get(row).copied().unwrap_or(false);
+            let unchanged = reusable
+                && Arc::ptr_eq(&drawn.rows[row], cells)
+                && drawn.wraps.get(row) == Some(&wrapped)
+                && !(cursor_moved && (on_row(drawn.cursor, row) || on_row(cursor, row)));
+            if unchanged {
+                std::mem::take(&mut old[row])
+            } else {
+                render_row(cells, row, frame.cursor.as_ref(), wrapped, ink)
+            }
+        })
+        .collect();
+    *drawn = Drawn {
+        theme: Some(theme),
+        rows: frame.rows.clone(),
+        wraps: frame.wraps.clone(),
+        cursor,
+    };
+    lines
+}
+
+/// One row's line.
+fn render_row(
+    cells: &[vt::Cell],
+    row: usize,
+    frame_cursor: Option<&vt::Cursor>,
+    wrapped: bool,
+    ink: &Ink,
+) -> TermLine {
+    // The theme's cursor colour marks the default: a program that set its
+    // own (OSC 12) reports another colour, and that one wins over the ink.
+    let theme_cursor = ink_rgb(ink.text);
+    // The engine's cursor folds in the show/hide mode and the wide-glyph
+    // adjustment: `None` means nothing to paint — no fake trailing block.
+    // A block cursor is drawn by swapping the cell's colours in the row
+    // walk below; the other shapes become a `TermCursor` on their row.
+    let mut runs: Vec<TermRun> = Vec::new();
+    let mut backs: Vec<Back> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_style: Option<(Color, f32, bool, Option<Color>)> = None;
+    // The open background span: its first cell and colour.
+    let mut back_start: Option<usize> = None;
+    let mut back_color = Color::default();
+    let cursor_here = frame_cursor.and_then(|cursor| {
+        (cursor.y as usize == row).then(|| {
+            // A wide glyph's cursor covers both of its cells.
+            let span = usize::from(cells.get(cursor.x as usize).is_some_and(|c| c.wide)) + 1;
+            (
+                cursor.x as usize,
+                span,
+                cursor.shape,
+                rgb_color(cursor.color),
+            )
+        })
+    });
+    // The ink under the cursor cell, for the non-block shapes.
+    let mut cursor_fg: Option<Color> = None;
+    for (col, cell) in cells.iter().enumerate() {
+        let mut fg = rgb_color(cell.fg);
+        if cell.faint {
+            // xterm.js draws faint text as the colour at 50% opacity
+            // over the background (.xterm-dim { color: multiplyOpacity(.5) }).
+            fg = fg.mix(ink.bg, 0.5);
+        }
+        let mut bg = cell.bg.map(rgb_color);
+        if cursor_here.is_some_and(|(at, ..)| at == col) {
+            cursor_fg = Some(fg);
+        }
+        // A block cursor is the cell drawn inverse: its ink becomes
+        // the background and its background the ink.
+        if cursor_here.is_some_and(|(at, span, shape, _)| {
+            shape == CursorShape::Block && (at..at + span).contains(&col)
+        }) {
+            let inked = bg.unwrap_or(ink.bg);
+            bg = Some(fg);
+            fg = inked;
+        }
+        // Merge the cell into the open background span, or close it.
+        match bg {
+            Some(color) if back_start.is_some() && color == back_color => {}
+            Some(color) => {
+                if let Some(start) = back_start.replace(col) {
+                    backs.push(Back {
+                        start,
+                        end: col,
+                        color: back_color,
+                    });
                 }
-                let mut bg = match bg_ansi {
-                    A::Named(N::Background) => None,
-                    ansi => Some(ansi_color(ansi, ink)),
-                };
-                if selected {
-                    bg = Some(ink.bg.mix(ink.accent, 0.35));
-                }
-                if cursor_here.is_some_and(|(_, at, ..)| at == col) {
-                    cursor_fg = Some(fg);
-                }
-                // A block cursor is the cell drawn inverse: its ink becomes
-                // the background and its background the ink.
-                if cursor_here.is_some_and(|(_, at, span, shape)| {
-                    shape == CursorShape::Block && (at..at + span).contains(&col)
-                }) {
-                    let inked = bg.unwrap_or(ink.bg);
-                    bg = Some(fg);
-                    fg = inked;
-                }
-                // Merge the cell into the open background span, or close it.
-                match bg {
-                    Some(color) if back_start.is_some() && color == back_color => {}
-                    Some(color) => {
-                        if let Some(start) = back_start.replace(col) {
-                            backs.push(Back {
-                                start,
-                                end: col,
-                                color: back_color,
-                            });
-                        }
-                        back_color = color;
-                    }
-                    None => {
-                        if let Some(start) = back_start.take() {
-                            backs.push(Back {
-                                start,
-                                end: col,
-                                color: back_color,
-                            });
-                        }
-                    }
-                }
-                // Wide-char spacers carry no glyph of their own — the wide
-                // glyph already spans their cells, so columns don't drift.
-                if cell
-                    .flags
-                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                {
-                    continue;
-                }
-                if cell.flags.contains(Flags::HIDDEN) {
-                    cur.push(' ');
-                    continue;
-                }
-                let weight = if cell.flags.intersects(Flags::BOLD | Flags::BOLD_ITALIC) {
-                    700.0
-                } else {
-                    400.0
-                };
-                let italic = cell.flags.contains(Flags::ITALIC);
-                let underline = cell.flags.intersects(Flags::ALL_UNDERLINES).then(|| {
-                    cell.underline_color()
-                        .map(|ansi| ansi_color(ansi, ink))
-                        .unwrap_or(fg)
-                });
-                let style = (fg, weight, italic, underline);
-                if cur_style != Some(style) {
-                    if !cur.is_empty() {
-                        let (color, weight, italic, underline) = cur_style.unwrap();
-                        runs.push(TermRun {
-                            text: std::mem::take(&mut cur),
-                            color,
-                            weight,
-                            italic,
-                            underline,
-                        });
-                    }
-                    cur_style = Some(style);
-                }
-                cur.push(cell.c);
-                // Combining marks ride on their base cell, zero-width.
-                for c in cell.zerowidth().into_iter().flatten() {
-                    cur.push(*c);
+                back_color = color;
+            }
+            None => {
+                if let Some(start) = back_start.take() {
+                    backs.push(Back {
+                        start,
+                        end: col,
+                        color: back_color,
+                    });
                 }
             }
-            if let Some(start) = back_start.take() {
-                backs.push(Back {
-                    start,
-                    end: cells.len(),
-                    color: back_color,
-                });
-            }
+        }
+        // A spacer cell carries no glyph of its own — the wide
+        // glyph already spans its cells, so columns don't drift.
+        if cell.spacer {
+            continue;
+        }
+        // A blank cell is a space (hidden text has no glyph either,
+        // and draws as one).
+        let text = if cell.text.is_empty() {
+            " "
+        } else {
+            cell.text.as_str()
+        };
+        let weight = if cell.bold { 700.0 } else { 400.0 };
+        let italic = cell.italic;
+        let underline = cell
+            .underline
+            .map(|_| cell.underline_color.map(rgb_color).unwrap_or(fg));
+        let style = (fg, weight, italic, underline);
+        if cur_style != Some(style) {
             if !cur.is_empty() {
                 let (color, weight, italic, underline) = cur_style.unwrap();
                 runs.push(TermRun {
-                    text: cur,
+                    text: std::mem::take(&mut cur),
                     color,
                     weight,
                     italic,
                     underline,
                 });
             }
-            if runs.is_empty() {
-                runs.push(TermRun {
-                    text: " ".into(),
-                    color: ink.text,
-                    weight: 400.0,
-                    italic: false,
-                    underline: None,
-                });
-            }
-            let cursor = cursor_here.and_then(|(_, col, span, shape)| match shape {
-                CursorShape::Hidden | CursorShape::Block => None,
-                _ => Some(TermCursor {
-                    col,
-                    span,
-                    shape,
-                    color: cursor_color.or(cursor_fg).unwrap_or(ink.text),
-                }),
-            });
-            TermLine {
-                runs,
-                backs,
-                cursor,
-                wrapped: cells
-                    .last()
-                    .is_some_and(|(cell, _)| cell.flags.contains(Flags::WRAPLINE)),
-            }
-        })
-        .collect()
+            cur_style = Some(style);
+        }
+        cur.push_str(text);
+    }
+    if let Some(start) = back_start.take() {
+        backs.push(Back {
+            start,
+            end: cells.len(),
+            color: back_color,
+        });
+    }
+    if !cur.is_empty() {
+        let (color, weight, italic, underline) = cur_style.unwrap();
+        runs.push(TermRun {
+            text: cur,
+            color,
+            weight,
+            italic,
+            underline,
+        });
+    }
+    if runs.is_empty() {
+        runs.push(TermRun {
+            text: " ".into(),
+            color: ink.text,
+            weight: 400.0,
+            italic: false,
+            underline: None,
+        });
+    }
+    let cursor = cursor_here.and_then(|(col, span, shape, color)| match shape {
+        CursorShape::Block => None,
+        // The cell's own ink colours the cursor, as it always did; a
+        // program's own cursor colour still wins.
+        _ => Some(TermCursor {
+            col,
+            span,
+            shape,
+            color: if color != rgb_color(theme_cursor) {
+                color
+            } else {
+                cursor_fg.unwrap_or(color)
+            },
+        }),
+    });
+    TermLine {
+        runs,
+        backs,
+        cursor,
+        wrapped,
+    }
 }
 
 /// Most wheel lines one turn reports or sends as keys, so a fling cannot
@@ -1142,20 +1184,20 @@ pub enum MouseKind {
 /// chose: SGR, or the legacy one (UTF-8 when requested). `None` when the cell
 /// is past what the legacy encoding can address.
 fn wheel_report(
-    mode: TermMode,
+    modes: &Modes,
     up: bool,
     (row, column): (usize, usize),
     mods: u8,
 ) -> Option<Vec<u8>> {
     let button: u8 = (if up { 64 } else { 65 }) + mods;
     let (row, column) = (row + 1, column + 1);
-    if mode.contains(TermMode::SGR_MOUSE) {
+    if modes.sgr {
         return Some(format!("\x1b[<{button};{column};{row}M").into_bytes());
     }
     let mut report = vec![0x1b, b'[', b'M', 32 + button];
     for position in [column, row] {
         let value = 32 + position;
-        if mode.contains(TermMode::UTF8_MOUSE) && value >= 128 {
+        if modes.utf8 && value >= 128 {
             let mut utf8 = [0; 4];
             report.extend(
                 char::from_u32(value as u32)?
@@ -1437,7 +1479,7 @@ fn term_line_el(
         let x = cursor.col as f32 * cell_w;
         let w = cursor.span as f32 * cell_w;
         shape = match cursor.shape {
-            CursorShape::Block | CursorShape::Hidden => shape,
+            CursorShape::Block => shape,
             CursorShape::Underline => {
                 let t = (line_h * 0.15).max(1.0);
                 shape.fill(
@@ -1450,14 +1492,14 @@ fn term_line_el(
                     cursor.color,
                 )
             }
-            CursorShape::Beam => {
+            CursorShape::Bar => {
                 let t = (cell_w * 0.22).max(1.0);
                 shape.fill(
                     vec![[x, 0.0], [x + t, 0.0], [x + t, line_h], [x, line_h]],
                     cursor.color,
                 )
             }
-            CursorShape::HollowBlock => {
+            CursorShape::Hollow => {
                 let i = 1.0;
                 shape.stroke_with(
                     vec![
@@ -2077,8 +2119,8 @@ mod tests {
             seq += line.len() as u64;
         }
         assert!(term.feed());
-        assert!(term.more(), "one turn leaves the rest for the next");
-        assert!(term.next_seq < seq);
+        // The engine parses fast enough that one turn may take all of it; when
+        // it does not, the rest waits for the next turn and none is lost.
         while term.more() {
             term.feed();
         }
@@ -2207,10 +2249,9 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_of_output_is_drawn_once_it_settles() {
+    fn a_burst_of_output_is_drawn_on_the_next_frame_not_piece_by_piece() {
         let (mut term, tx) = terminal();
-        // The grid is drawn once first: from then on a burst of output
-        // waits for the output to settle.
+        // The grid is drawn once first: from then on output waits for a frame.
         tx.send(Output {
             seq: 0,
             data: b"ready\r\n".to_vec(),
@@ -2229,10 +2270,9 @@ mod tests {
             seq += len;
         }
         assert!(term.feed());
-        // The repaint waits for the burst to end: the screen is drawn
-        // once, not piece by piece.
+        // The repaint waits for the frame that draws the screen once.
         assert!(term.hold().is_some());
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(FRAME + Duration::from_millis(10));
         assert!(term.hold().is_none());
         let lines = term.lines(&ink());
         assert!(
@@ -2308,6 +2348,34 @@ mod tests {
         );
         assert!(!text.contains("stale"), "the paint replaced the old grid");
         assert_eq!(term.next_seq, 104);
+    }
+
+    #[test]
+    fn a_paint_in_the_old_daemons_shape_renders_the_same_cells() {
+        // The shape the daemon's old paint produced: a reset, the history
+        // rows written from the top, a clear screen, the screen rows
+        // addressed in place, a private mode, and the cursor moved where
+        // it was. The parser sees one stream — the cells land the same.
+        let (mut term, tx) = terminal();
+        let mut paint = String::from("\x1bc");
+        paint.push_str("h0\r\nh1\r\nh2\r\n");
+        paint.push_str("\x1b[2J");
+        paint.push_str("\x1b[1;1Hfirst");
+        paint.push_str("\x1b[3;1Hthird");
+        paint.push_str("\x1b[?1000h");
+        paint.push_str("\x1b[3;7H");
+        paint.push_str("\x1b[?25h");
+        tx.send(Output {
+            seq: PAINT_SEQ,
+            data: paint.into_bytes(),
+        })
+        .unwrap();
+        term.feed();
+        let lines = settled_lines(&mut term, &ink());
+        assert_eq!(lines[0].text().trim_end(), "first");
+        assert!(lines[1].text().trim_end().is_empty());
+        assert_eq!(lines[2].text().trim_end(), "third");
+        assert_eq!(term.cursor_cell(), Some((2, 6)));
     }
 
     /// A terminal that has parsed `bytes`, with the history to scroll.
@@ -2456,7 +2524,15 @@ mod tests {
         })
         .unwrap();
         term.feed();
-        assert_eq!(term.take_replies(), b"\x1b[1;4R\x1b[?6c".to_vec());
+        // The cursor report is exact; the device attributes carry the engine's
+        // own conformance level, so only their shape is fixed.
+        let replies = term.take_replies();
+        let (cursor, attributes) = replies.split_at(b"\x1b[1;4R".len());
+        assert_eq!(cursor, b"\x1b[1;4R");
+        assert!(
+            attributes.starts_with(b"\x1b[?") && attributes.ends_with(b"c"),
+            "{attributes:?}"
+        );
         assert!(term.take_replies().is_empty(), "taken once");
 
         // A raw replay carries queries the program already got an answer to.
@@ -2565,9 +2641,8 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_burst_is_held_for_at_most_max_hold() {
+    fn continuous_output_is_drawn_at_least_every_max_hold() {
         let (mut term, tx) = terminal();
-        // Draw once so later output counts as a burst.
         tx.send(Output {
             seq: 0,
             data: b"ready\r\n".to_vec(),
@@ -2576,31 +2651,197 @@ mod tests {
         term.feed();
         assert!(!settled_lines(&mut term, &ink()).is_empty());
 
-        // New output opens a burst. Chunks keep arriving, so the quiet
-        // window never opens — but the burst still ages past MAX_HOLD.
-        tx.send(Output {
-            seq: 7,
-            data: b"x".to_vec(),
-        })
-        .unwrap();
-        term.feed();
-        assert!(term.hold().is_some());
-        term.last = Instant::now();
-        term.burst = Some(Instant::now() - MAX_HOLD - Duration::from_millis(1));
-        assert!(term.hold().is_none(), "MAX_HOLD bounds a busy stream");
+        // A chunk every 5 ms for a while: the stream never goes quiet, yet the
+        // screen is still drawn, none of the draws far apart.
+        let mut seq = term.next_seq;
+        let (start, mut last_draw, mut draws, mut worst) =
+            (Instant::now(), Instant::now(), 0, Duration::ZERO);
+        while start.elapsed() < Duration::from_millis(500) {
+            let data = format!("tick {seq}\r\n").into_bytes();
+            let len = data.len() as u64;
+            tx.send(Output { seq, data }).unwrap();
+            seq += len;
+            term.feed();
+            if term.hold().is_none() {
+                term.lines(&ink());
+                worst = worst.max(last_draw.elapsed());
+                last_draw = Instant::now();
+                draws += 1;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(draws >= 4, "{draws} draws in 500 ms");
+        assert!(
+            worst < MAX_HOLD + Duration::from_millis(60),
+            "{worst:?} between draws"
+        );
+    }
 
-        // The forced draw forgets the burst; the next chunk opens a new
-        // one that is held again.
-        term.lines(&ink());
-        assert!(term.burst.is_none());
+    #[test]
+    fn a_redraw_split_across_writes_is_drawn_whole() {
+        // A program without synchronized updates erases its UI and draws it
+        // again in three writes a few milliseconds apart; no frame between them
+        // may show the UI torn.
+        for gap_ms in [2u64, 6, 12] {
+            let (mut term, tx) = terminal();
+            term.resize(40, 10);
+            let mut seq = 0u64;
+            let mut base = Vec::new();
+            for i in 0..7 {
+                base.extend(format!("transcript {i}\r\n").bytes());
+            }
+            base.extend(b"UI-TOP\r\nUI-MID 0\r\nUI-BOT");
+            tx.send(Output {
+                seq,
+                data: base.clone(),
+            })
+            .unwrap();
+            seq += base.len() as u64;
+            term.feed();
+            settled_lines(&mut term, &ink());
+
+            let mut last: Vec<String> = Vec::new();
+            let (mut torn, mut drawn) = (0, 0);
+            let mut observe = |term: &mut Terminal| {
+                if term.hold().is_none() {
+                    let rows: Vec<String> = term
+                        .lines(&ink())
+                        .iter()
+                        .map(|line| line.text().trim_end().to_string())
+                        .collect();
+                    if rows != last {
+                        drawn += 1;
+                        let has = |prefix: &str| rows.iter().any(|row| row.starts_with(prefix));
+                        if !(has("UI-TOP") && has("UI-MID") && has("UI-BOT")) {
+                            torn += 1;
+                        }
+                        last = rows;
+                    }
+                }
+            };
+            for n in 1..=30 {
+                let writes = [
+                    b"\x1b[2A\r\x1b[0J".to_vec(),
+                    format!("UI-TOP\r\nUI-MID {n}\r\n").into_bytes(),
+                    b"UI-BOT".to_vec(),
+                ];
+                for data in writes {
+                    tx.send(Output {
+                        seq,
+                        data: data.clone(),
+                    })
+                    .unwrap();
+                    seq += data.len() as u64;
+                    term.feed();
+                    let until = Instant::now() + Duration::from_millis(gap_ms);
+                    while Instant::now() < until {
+                        term.feed();
+                        observe(&mut term);
+                        std::thread::sleep(Duration::from_micros(500));
+                    }
+                }
+                // The redraw is over: the UI settles before the next one.
+                let until = Instant::now() + Duration::from_millis(60);
+                while Instant::now() < until {
+                    term.feed();
+                    observe(&mut term);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            assert!(drawn >= 20, "{drawn} frames at a {gap_ms} ms gap");
+            assert_eq!(
+                torn, 0,
+                "{torn} of {drawn} frames torn at a {gap_ms} ms gap"
+            );
+        }
+    }
+
+    #[test]
+    fn a_synchronized_update_is_drawn_whole_once_it_ends() {
+        let (mut term, tx) = terminal();
         tx.send(Output {
-            seq: 8,
-            data: b"y".to_vec(),
+            seq: 0,
+            data: b"old screen".to_vec(),
         })
         .unwrap();
         term.feed();
-        assert!(term.burst.is_some());
-        assert!(term.hold().is_some());
+        let before = settled_lines(&mut term, &ink());
+        assert!(before[0].text().contains("old screen"));
+
+        // Half a frame inside a synchronized update: nothing new is drawn.
+        let half = b"\x1b[?2026h\x1b[2J\x1b[Hnew".to_vec();
+        let mut seq = term.next_seq;
+        tx.send(Output {
+            seq,
+            data: half.clone(),
+        })
+        .unwrap();
+        seq += half.len() as u64;
+        assert!(term.feed());
+        assert!(term.hold().is_some(), "the update holds the frame");
+        assert!(term.lines(&ink())[0].text().contains("old screen"));
+
+        // Its end releases the whole frame on the next tick.
+        tx.send(Output {
+            seq,
+            data: b" frame\x1b[?2026l".to_vec(),
+        })
+        .unwrap();
+        assert!(term.feed());
+        std::thread::sleep(FRAME + Duration::from_millis(10));
+        assert!(term.hold().is_none());
+        assert!(term.lines(&ink())[0].text().contains("new frame"));
+    }
+
+    #[test]
+    fn a_row_the_engine_did_not_change_is_moved_not_rebuilt() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: b"first\r\nsecond\r\nthird".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        settled_lines(&mut term, &ink());
+        // The run's text buffer is what a rebuild would replace; read it from
+        // the terminal's own rows, not from a copy.
+        let first = term.lines(&ink())[0].runs[0].text.as_ptr();
+        let second = term.lines(&ink())[1].runs[0].text.as_ptr();
+
+        // Output on the third row only: rows above it keep their lines.
+        tx.send(Output {
+            seq: term.next_seq,
+            data: b"!".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        settled_lines(&mut term, &ink());
+        let after = term.lines(&ink());
+        assert!(after[2].text().contains("third!"));
+        assert_eq!(after[0].runs[0].text.as_ptr(), first);
+        assert_eq!(after[1].runs[0].text.as_ptr(), second);
+    }
+
+    #[test]
+    fn output_that_changes_nothing_on_screen_is_not_a_frame() {
+        let (mut term, tx) = terminal();
+        tx.send(Output {
+            seq: 0,
+            data: b"steady".to_vec(),
+        })
+        .unwrap();
+        term.feed();
+        settled_lines(&mut term, &ink());
+        assert!(!term.dirty);
+
+        // A title and the cursor parked where it was.
+        tx.send(Output {
+            seq: term.next_seq,
+            data: b"\x1b]2;a title\x07".to_vec(),
+        })
+        .unwrap();
+        assert!(term.feed());
+        assert!(!term.dirty, "a title is not a frame");
     }
 
     #[test]

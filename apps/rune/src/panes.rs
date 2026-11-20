@@ -12,8 +12,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::index::Side;
-use alacritty_terminal::selection::SelectionType;
+use crate::term::{SelectionType, Side};
 use protocol::session::SessionId;
 use rune::{Color, El, Phase, TextStyle, Tx, col, el, row};
 use serde::{Deserialize, Serialize};
@@ -1592,6 +1591,12 @@ impl State {
             {
                 self.output_subscribes += 1;
             }
+            // Size the PTY to the pane before attaching, so the first paint is
+            // the daemon's terminal at the pane's size: replayed into a grid of
+            // another size, the cursor lands on the wrong row and the program's
+            // next "erase below" wipes the rows under it. The daemon handles a
+            // connection's requests in order and a paint waits for the resize.
+            self.resize_terminal(session, cols as u16, rows as u16);
             let Some((chunks, ready)) = self.daemon.attach_output(session, flow, paint) else {
                 continue;
             };
@@ -1602,8 +1607,9 @@ impl State {
             // makes the program redraw).
             let mut terminal = term::Terminal::new(session, chunks, ready);
             terminal.resize(cols, rows);
-            self.attachments
-                .insert(key.clone(), Attachment::new(terminal, cols, rows));
+            let mut attachment = Attachment::new(terminal, cols, rows);
+            attachment.pty = (cols, rows);
+            self.attachments.insert(key.clone(), attachment);
             changed = true;
         }
         changed
@@ -3143,6 +3149,18 @@ mod tests {
         assert!(s.sync_terminals());
         assert!(s.attachments.contains_key(&a));
         assert_eq!(s.output_subscribes, 1);
+    }
+
+    #[test]
+    fn a_terminal_attaches_after_the_pty_was_sized_to_its_pane() {
+        let mut s = state();
+        let (a, _) = tabbed_session(&mut s, "first");
+        s.data.connected = true;
+        s.pane_grids.insert(a.clone(), (90, 20));
+        assert!(s.sync_terminals());
+        // The size went to the daemon ahead of the subscribe, so the first paint
+        // is of the pane's size, and the next poll does not send it again.
+        assert_eq!(s.attachments[&a].pty, (90, 20));
     }
 
     #[test]

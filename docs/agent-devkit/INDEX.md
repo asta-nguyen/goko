@@ -11,6 +11,8 @@
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))
 
+- [Terminal engine: replace alacritty_terminal with libghostty-vt](changes/2026-11-20-terminal-engine-ghostty/design.md) ([tasks](changes/2026-11-20-terminal-engine-ghostty/tasks.md))
+
 
 ## Archived changes
 

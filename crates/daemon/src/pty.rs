@@ -12,6 +12,7 @@ use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -242,6 +243,8 @@ enum ModelInput {
 /// offset the model has consumed through; a paint waits until it reaches the
 /// offset the paint is taken at.
 struct Model {
+    /// The resizes asked of the model so far: a paint waits until all are applied.
+    asked: AtomicU64,
     state: Mutex<ModelState>,
     /// Signalled whenever `parsed` moves.
     progress: Condvar,
@@ -250,15 +253,19 @@ struct Model {
 struct ModelState {
     term: TerminalModel,
     parsed: u64,
+    /// The resizes the model thread has applied.
+    resized: u64,
 }
 
 impl Model {
     /// A model of a `cols`×`rows` terminal and the thread that feeds it.
     fn spawn(cols: u16, rows: u16) -> io::Result<(Arc<Model>, SyncSender<ModelInput>)> {
         let model = Arc::new(Model {
+            asked: AtomicU64::new(0),
             state: Mutex::new(ModelState {
                 term: TerminalModel::new(cols, rows),
                 parsed: 0,
+                resized: 0,
             }),
             progress: Condvar::new(),
         });
@@ -285,20 +292,25 @@ impl Model {
                     state.term.advance(&bytes);
                     state.parsed = end;
                 }
-                ModelInput::Resize { cols, rows } => state.term.resize(cols, rows),
+                ModelInput::Resize { cols, rows } => {
+                    state.term.resize(cols, rows);
+                    state.resized += 1;
+                }
             }
             drop(state);
             self.progress.notify_all();
         }
     }
 
-    /// The first paint at offset `seq`, once the model has parsed up to it. The
+    /// The first paint at offset `seq`, once the model has parsed up to it and
+    /// applied every resize asked so far: a viewer that sized the PTY first gets
+    /// a paint of that size, which it replays into a grid of the same size. The
     /// caller holds the `Shared` lock, so the reader cannot publish past `seq`
     /// meanwhile; everything before `seq` is already queued for the model.
     fn paint_at(&self, seq: u64) -> Vec<u8> {
         let deadline = Instant::now() + PAINT_WAIT;
         let mut state = lock_unpoisoned(&self.state);
-        while state.parsed < seq {
+        while state.parsed < seq || state.resized < self.asked.load(Ordering::SeqCst) {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 // The model thread is gone or stuck: paint what it has.
@@ -529,6 +541,7 @@ impl PtyProcess {
                 pixel_height: 0,
             })
             .map_err(|error| PtyError::Io(format!("could not resize PTY: {error:#}")))?;
+        self.model.asked.fetch_add(1, Ordering::SeqCst);
         let _ = feed.send(ModelInput::Resize { cols, rows });
         Ok(())
     }
