@@ -2670,7 +2670,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(draws >= 4, "{draws} draws in 500 ms");
+        // Draws no further apart than the bound below put at least three in
+        // 500 ms; four is only what an unloaded machine reaches (about every
+        // 115 ms), so asking for it fails a slow runner whose draws are all
+        // still within the bound.
+        assert!(draws >= 3, "{draws} draws in 500 ms");
         assert!(
             worst < MAX_HOLD + Duration::from_millis(60),
             "{worst:?} between draws"
