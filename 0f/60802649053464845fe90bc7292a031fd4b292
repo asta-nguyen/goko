@@ -1,0 +1,14 @@
+crates/app-core/src/store.rs
+  h_611058a46223af 14-17,168-169,172-178,790-804
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0f60802649053464845fe90bc7292a031fd4b292",
+  "prompts": {},
+  "humans": {
+    "h_611058a46223af": {
+      "author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
