@@ -119,7 +119,14 @@ fn serve(
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
-            Ok((stream, _)) => handle(stream, &token, &ask, &shutdown, &cancelled),
+            Ok((stream, _)) => {
+                // macOS hands the accepted socket the listener's non-blocking
+                // mode: a read before the helper's request arrives would fail
+                // and drop the prompt, so the handler reads with its timeout.
+                if stream.set_nonblocking(false).is_ok() {
+                    handle(stream, &token, &ask, &shutdown, &cancelled);
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(ACCEPT_POLL);
             }
@@ -416,6 +423,19 @@ mod tests {
         let mut reader = BufReader::new(stream);
         assert_eq!(read_line(&mut reader).as_deref(), Some("0"));
         assert!(session.cancelled());
+    }
+
+    #[test]
+    fn a_request_that_arrives_after_the_connection_is_still_answered() {
+        let session = Session::start(|request| {
+            request.answer.send(Some("late".into())).unwrap();
+        })
+        .unwrap();
+        let (mut stream, token) = connect(&session);
+        // The helper connects, then takes a while to send its request.
+        std::thread::sleep(Duration::from_millis(200));
+        send_request(&mut stream, &token, "Enter passphrase for key '/k': ");
+        assert_eq!(read_answer(stream).as_deref(), Some("late"));
     }
 
     #[test]
