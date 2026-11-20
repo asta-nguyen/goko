@@ -99,7 +99,7 @@ Interfaces: consumes Tasks 3-5
 Change: drop the alacritty_terminal dependency; describe the engine in ARCHITECTURE.md; add a `### Changed` entry (smoother terminal output, less memory) with the changelog skill; write delta.md MODIFIED for RNC-terminal-attach and RNC-terminal-splits once daemon-terminal-state is archived, otherwise record that blocker in the Decision Log.
 Verify: `rg -n alacritty --glob '!target' --glob '!CHANGELOG.md'` finds nothing outside this folder; cargo build and test pass; the real-app check from the design passes in a separate copy; the 20-terminal footprint probe on the alacritty build (HEAD before Task 3) and on this build, both numbers recorded here.
 Progress: todo
-Result: partly done. Done: `alacritty_terminal` is out of the root `Cargo.toml`, `apps/rune` and `crates/daemon`; `ARCHITECTURE.md` describes the engine, the frame clock and the sizing rule; whole-workspace `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass. Memory and speed (a throwaway bench in the scratchpad, release build, 20 terminals × 12,000 lines of coloured log, 120 columns, 5,000-line limit, run twice): alacritty 15.8 MB per full terminal and about 135 MB/s parsed; `vt` 5.4 MB (4,885 history rows kept) and about 290–340 MB/s; 20 terminals 353 MB against 149 MB (process footprint). These are the engine's cost, not the app's total footprint. Real-app check in a separate copy (`GokoVerify.app`, its own bundle id and `GOKO_HOME`, read through the accessibility tree because Screen Recording is not granted): colours, a wide-character row and 300 lines of scrollback attach and show; it FOUND a regression, below. Not done: the `CHANGELOG.md` entry and the wiki delta (see the Decision Log), the same check on a hand-driven session (typing, selecting, find, wheel were covered by tests, not by driving the window), and an app-level 20-terminal footprint probe.
+Result: partly done. Done: `alacritty_terminal` is out of the root `Cargo.toml`, `apps/rune` and `crates/daemon`; `ARCHITECTURE.md` describes the engine, the frame clock and the sizing rule; whole-workspace `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass. Memory and speed (a throwaway bench in the scratchpad, release build, 20 terminals × 12,000 lines of coloured log, 120 columns, 5,000-line limit, run twice): alacritty 15.8 MB per full terminal and about 135 MB/s parsed; `vt` 5.4 MB (4,885 history rows kept) and about 290–340 MB/s; 20 terminals 353 MB against 149 MB (process footprint). These are the engine's cost, not the app's total footprint. Real-app check in a separate copy (`GokoVerify.app`, its own bundle id and `GOKO_HOME`, read through the accessibility tree because Screen Recording is not granted): colours, a wide-character row and 300 lines of scrollback attach and show; it FOUND a regression, below. The `CHANGELOG.md` entry was written after the commit (crediting `0358e21`). Not done: the wiki delta (see the Decision Log), the same check on a hand-driven session (typing, selecting, find, wheel were covered by tests, not by driving the window), and an app-level 20-terminal footprint probe.
 ```
 
 ## Files inspected, no change
@@ -166,8 +166,8 @@ Status: approved
   queries (see below), so a new Claude session enables the kitty keyboard
   protocol (`ESC[>5u`) that the app's key encoder does not speak and reads the
   cell size as 1×1 px; whether either is visible was not checked.
-- 2026-11-20: Task 6's `CHANGELOG.md` entry and the wiki delta for
-  `RNC-terminal-attach` / `RNC-terminal-splits` are not written yet: the
-  changelog convention credits commits that do not exist until the user asks
-  for them, and the open change `daemon-terminal-state` still targets
-  `RNC-terminal-attach`. Both are listed as what remains.
+- 2026-11-20: the `CHANGELOG.md` entry is written (after the commit, which
+  it credits, as the changelog convention requires). The wiki delta for
+  `RNC-terminal-attach` and `RNC-terminal-splits` is not: the open change
+  `daemon-terminal-state` still targets `RNC-terminal-attach`, so the delta
+  waits until it is archived.

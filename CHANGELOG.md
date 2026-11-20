@@ -53,6 +53,20 @@ same entry. Keep each link on one line: What's new shows it as its text. The
   ABC; Vietnamese input works in Insert. By
   [@asta-nguyen](https://github.com/asta-nguyen) in `1d03b03`.
 
+### Changed
+
+- Terminals run on a new engine, libghostty-vt, that keeps a terminal's
+  history in about a third of the memory: one with a full 5,000-line history
+  takes 5.4 MB instead of 15.8 MB, and twenty of them 149 MB instead of 353 MB
+  (measured on a log-like stream at 120 columns). Output is parsed about 2.3
+  times faster. A full terminal keeps about 4,800 of its 5,000 lines. Output is
+  drawn on a 33 ms clock that waits a moment for a program that redraws its
+  screen in several writes, so Claude Code, Codex and OpenCode are not shown
+  half redrawn, and a synchronized update is held until it ends. The daemon
+  uses the engine too, but it keeps running your sessions: its copies shrink
+  the next time it starts. By [@asta-nguyen](https://github.com/asta-nguyen)
+  in `0358e21`.
+
 ### Fixed
 
 - Pasting an image into a terminal (a screenshot, Copy Image) did nothing. It
