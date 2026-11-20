@@ -11,7 +11,10 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// How long SQLite waits for a concurrent writer before returning SQLITE_BUSY.
+const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// The permanent Default workspace id. Every database has this row; it cannot
 /// be renamed or removed, and it receives the projects of a removed workspace.
@@ -162,8 +165,17 @@ impl Store {
             .map_err(|error| storage("cannot open goko.db", error))?;
         let mut conn =
             Connection::open(&path).map_err(|error| storage("cannot open goko.db", error))?;
+        conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
+            .map_err(|error| storage("cannot set SQLite busy_timeout", error))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|error| storage("cannot enable foreign keys", error))?;
+        let journal_mode: String = conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .map_err(|error| storage("cannot read SQLite journal_mode", error))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            conn.execute_batch("PRAGMA journal_mode = WAL;")
+                .map_err(|error| storage("cannot enable SQLite WAL mode", error))?;
+        }
         migrate(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -773,6 +785,21 @@ mod tests {
         let opened = Store::open(dir.path());
         writer.execute_batch("ROLLBACK").unwrap();
         assert!(opened.is_ok(), "{:?}", opened.err().map(|e| e.message));
+    }
+
+    #[test]
+    fn open_enables_wal_mode_and_busy_timeout() {
+        let dir = TempDir::new("store-wal-timeout");
+        let store = open(&dir);
+        let conn = store.conn.lock().unwrap();
+        let journal_mode: String = conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = conn
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert!(journal_mode.eq_ignore_ascii_case("wal"), "{journal_mode}");
+        assert_eq!(busy_timeout, BUSY_TIMEOUT_MS as i64);
     }
 
     #[test]
