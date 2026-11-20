@@ -15,6 +15,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  ZIG_VERSION: 0.16.0
+
 jobs:
   check:
     strategy:
@@ -23,11 +26,21 @@ jobs:
         os: [ubuntu-22.04, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # crates/vt builds libghostty-vt from this submodule.
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # libghostty-vt is built with Zig.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        # Rebuild the crate cache when the Zig version changes.
+        with:
+          key: zig-${{ env.ZIG_VERSION }}
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -37,7 +50,13 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 update
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential pkg-config \
             libfontconfig1-dev libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev \
-            libxkbcommon-x11-dev libvulkan-dev
+            libxkbcommon-x11-dev libvulkan-dev clang libclang-dev
+
+      # bindgen needs libclang; the Windows runner already carries LLVM.
+      - name: Windows build dependencies
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
 
       - name: Format
         run: cargo fmt --all -- --check
