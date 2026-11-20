@@ -1,0 +1,16 @@
+ARCHITECTURE.md
+  h_611058a46223af 42-46,141-143
+README.md
+  h_611058a46223af 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "08c762993939bca763cee0c3731df9882939c01f",
+  "prompts": {},
+  "humans": {
+    "h_611058a46223af": {
+      "author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
