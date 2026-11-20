@@ -157,7 +157,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "lsp-types",
@@ -1205,7 +1205,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "goko-rune"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "app-core",
  "base64 0.23.1",
@@ -2708,7 +2708,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3912,7 +3912,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vt"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bindgen",
 ]

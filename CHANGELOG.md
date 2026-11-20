@@ -17,6 +17,8 @@ same entry. Keep each link on one line: What's new shows it as its text. The
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
 ### Added
 
 - Pushing from the Editor now asks for the SSH key passphrase in a masked
