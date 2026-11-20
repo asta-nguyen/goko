@@ -2,7 +2,7 @@
 //! @opencode/ui's use-filtered-list: looping arrows, Ctrl-N/P, composition-safe Enter,
 //! and editor modifiers left to the text field. Fuzzy scores are Rune's own ordering.
 use crate::{Kit, Placement, Popover, PopupItem, PopupList, Select, SelectAppearance, TextInput};
-use rune::{El, Key, TextEdit, Tx, col, el, icon, row};
+use rune::{El, Icon, Key, TextEdit, Tx, col, el, icon, row};
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -11,10 +11,36 @@ pub struct ComboboxOption {
     pub label: String,
     pub detail: String,
     pub disabled: bool,
+    pub actions: Vec<ComboboxAction>,
 }
 impl ComboboxOption {
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), detail: String::new(), disabled: false }
+        Self { id: id.into(), label: label.into(), detail: String::new(), disabled: false, actions: Vec::new() }
+    }
+    /// An icon button at the end of the row, for [`Combobox::on_action`].
+    pub fn action(mut self, action: ComboboxAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+}
+
+/// A row's own command, such as rename or remove: an icon button that shows while the row is
+/// highlighted. `label` names it for assistive tech and the tooltip; a `disabled` one stays
+/// visible so the tooltip can say why it does nothing.
+#[derive(Clone, Debug)]
+pub struct ComboboxAction {
+    pub id: String,
+    pub label: String,
+    pub icon: &'static Icon,
+    pub disabled: bool,
+}
+impl ComboboxAction {
+    pub fn new(id: impl Into<String>, label: impl Into<String>, icon: &'static Icon) -> Self {
+        Self { id: id.into(), label: label.into(), icon, disabled: false }
+    }
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 }
 
@@ -90,6 +116,40 @@ fn filtered(options: &[ComboboxOption], query: &str) -> Vec<usize> {
 
 type Access<S> = Rc<dyn for<'a> Fn(&'a mut S) -> &'a mut ComboboxState>;
 type Choose<S> = Rc<dyn Fn(&mut S, &str, &mut Tx)>;
+type Act<S> = Rc<dyn Fn(&mut S, &str, &str, &mut Tx)>;
+
+/// A row's action button. It takes space on every row so the label never shifts, but only the
+/// highlighted row (`shown`) draws it and lets the keyboard reach it.
+fn action_button<S: 'static>(
+    k: &Kit,
+    key: &str,
+    option_id: &str,
+    action: &ComboboxAction,
+    shown: bool,
+    act: &Act<S>,
+    access: &Access<S>,
+) -> El {
+    let button = el()
+        .key(format!("{key}-action-{option_id}-{}", action.id))
+        .size(20.0, 20.0)
+        .center()
+        .radius(4.0)
+        .hover_group()
+        .opacity(if shown { 1.0 } else { 0.0 })
+        .role("button")
+        .label(&action.label)
+        .help(&action.label)
+        .child(icon(action.icon, 12.0).color(k.c.icon_base).group_color(k.c.text_base));
+    if action.disabled {
+        return button.disabled(true).layer_opacity(0.5).on_press(|_: &mut S| {});
+    }
+    let (act, access) = (act.clone(), access.clone());
+    let (option_id, action_id) = (option_id.to_owned(), action.id.clone());
+    button.focusable(shown).on_press_tx(move |s: &mut S, tx| {
+        access(s).close();
+        act(s, &option_id, &action_id, tx);
+    })
+}
 
 /// `Combobox::new("models", &s.combo, &options, |s: &mut App| &mut s.combo)`.
 /// Selection is app-controlled through `current` and `on_choose`; search/open/highlight
@@ -100,6 +160,7 @@ pub struct Combobox<S> {
     options: Rc<Vec<ComboboxOption>>,
     access: Access<S>,
     choose: Option<Choose<S>>,
+    act: Option<Act<S>>,
     current: Option<String>,
     placeholder: String,
     search_placeholder: String,
@@ -128,6 +189,7 @@ impl<S: 'static> Combobox<S> {
             options: Rc::new(options.to_vec()),
             access: Rc::new(access),
             choose: None,
+            act: None,
             current: None,
             placeholder: String::new(),
             search_placeholder: "Search".into(),
@@ -220,6 +282,12 @@ impl<S: 'static> Combobox<S> {
     }
     pub fn on_choose(mut self, choose: impl Fn(&mut S, &str, &mut Tx) + 'static) -> Self {
         self.choose = Some(Rc::new(choose));
+        self
+    }
+    /// Pressing a row's [`ComboboxAction`] closes the popover, then calls this with the
+    /// option's id and the action's id. The row is not chosen.
+    pub fn on_action(mut self, act: impl Fn(&mut S, &str, &str, &mut Tx) + 'static) -> Self {
+        self.act = Some(Rc::new(act));
         self
     }
     pub fn build(self, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -394,14 +462,26 @@ impl<S: 'static> Combobox<S> {
             .iter()
             .map(|&i| {
                 let option = &self.options[i];
+                let check = icon(k.glyph.check_small, 14.0)
+                    .color(k.c.icon_base)
+                    .opacity(if self.current.as_deref() == Some(option.id.as_str()) { 1.0 } else { 0.0 });
+                let trailing = match &self.act {
+                    Some(act) if !option.actions.is_empty() => {
+                        let shown = active == Some(i);
+                        row()
+                            .gap(4.0)
+                            .center_y()
+                            .children(option.actions.iter().map(|action| {
+                                action_button(k, &self.key, &option.id, action, shown, act, &self.access)
+                            }))
+                            .child(check)
+                    }
+                    _ => check,
+                };
                 PopupItem::new(&option.id, &option.label)
                     .description(&option.detail)
                     .disabled(option.disabled)
-                    .trailing(
-                        icon(k.glyph.check_small, 14.0)
-                            .color(k.c.icon_base)
-                            .opacity(if self.current.as_deref() == Some(option.id.as_str()) { 1.0 } else { 0.0 }),
-                    )
+                    .trailing(trailing)
             })
             .collect();
         let hover_access = self.access.clone();

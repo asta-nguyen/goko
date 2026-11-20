@@ -2375,13 +2375,102 @@ fn opening_a_removal_closes_the_workspace_confirmation_and_back() {
     assert!(rt.state.workspace_picker.open, "the workspace picker opens");
     // Let the surface finish opening before pressing one of its options.
     rt.frame(0.5);
-    click_label(&mut rt, "Remove workspace…");
+    click_key(&mut rt, "sidebar-workspace-action-w1-remove");
     assert!(
         !rt.state.workspace_picker.open,
         "choosing closes the picker"
     );
     assert_eq!(rt.state.workspace_remove_confirm.as_deref(), Some("w1"));
     assert!(rt.state.sidebar_confirm.is_none());
+}
+/// The workspace picker opened on `scene`, its surface settled.
+fn open_workspace_picker(scene: State) -> Runtime<State> {
+    let mut rt = Runtime::new(scene, view, (1100.0, 700.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+    click_key(&mut rt, "sidebar-workspace-selector");
+    rt.frame(0.5);
+    rt
+}
+/// Move the pointer onto `key` and let a frame pass: a row's buttons show once the row is
+/// highlighted, as they do for a hand that moves before it presses.
+fn hover_key(rt: &mut Runtime<State>, key: &str) {
+    let e = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some(key))
+        .unwrap_or_else(|| panic!("element {key} mounted"));
+    rt.pointer_move(e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
+    rt.frame(1.0 / 60.0);
+}
+#[test]
+fn a_workspace_rows_buttons_act_on_that_row_not_the_selected_one() {
+    let mut s = two_workspace_scene();
+    s.selected_workspace = Some(app_core::store::DEFAULT_WORKSPACE_ID.into());
+    let mut rt = open_workspace_picker(s);
+    hover_key(&mut rt, "sidebar-workspace-action-w1-remove");
+    click_key(&mut rt, "sidebar-workspace-action-w1-remove");
+    assert!(!rt.state.workspace_picker.open);
+    assert_eq!(rt.state.workspace_remove_confirm.as_deref(), Some("w1"));
+    assert_eq!(
+        rt.state.selected_workspace.as_deref(),
+        Some(app_core::store::DEFAULT_WORKSPACE_ID),
+        "the row was not chosen"
+    );
+    let mut s = two_workspace_scene();
+    s.selected_workspace = Some(app_core::store::DEFAULT_WORKSPACE_ID.into());
+    let mut rt = open_workspace_picker(s);
+    hover_key(&mut rt, "sidebar-workspace-action-w1-rename");
+    click_key(&mut rt, "sidebar-workspace-action-w1-rename");
+    assert!(matches!(
+        &rt.state.sidebar_input,
+        Some(crate::sidebar::SidebarInput::WorkspaceRename { id }) if id == "w1"
+    ));
+    assert_eq!(rt.state.sidebar_text.text, "Work");
+    assert_eq!(
+        rt.state.selected_workspace.as_deref(),
+        Some(app_core::store::DEFAULT_WORKSPACE_ID)
+    );
+}
+#[test]
+fn the_default_workspaces_buttons_say_why_they_do_nothing() {
+    let mut rt = open_workspace_picker(two_workspace_scene());
+    for (key, label) in [
+        (
+            "sidebar-workspace-action-default-rename",
+            "Default can't be renamed",
+        ),
+        (
+            "sidebar-workspace-action-default-remove",
+            "Default can't be removed",
+        ),
+    ] {
+        let button = els(&rt)
+            .into_iter()
+            .find(|el| el.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("{key} mounts"));
+        assert_eq!(button.label.as_deref(), Some(label));
+        assert!(!button.focusable, "{key} is out of the keyboard's reach");
+    }
+    hover_key(&mut rt, "sidebar-workspace-action-default-remove");
+    click_key(&mut rt, "sidebar-workspace-action-default-remove");
+    assert!(
+        rt.state.workspace_picker.open,
+        "a disabled button does nothing"
+    );
+    assert!(rt.state.workspace_remove_confirm.is_none());
+}
+#[test]
+fn a_workspace_button_is_reachable_from_the_keyboard() {
+    let mut rt = open_workspace_picker(two_workspace_scene());
+    press(&mut rt, Key::Tab);
+    press(&mut rt, Key::Text(" ".into()));
+    assert!(
+        matches!(
+            &rt.state.sidebar_input,
+            Some(crate::sidebar::SidebarInput::WorkspaceRename { id }) if id == "w1"
+        ),
+        "Tab from the search lands on the highlighted row's first button, Space presses it"
+    );
 }
 
 #[test]

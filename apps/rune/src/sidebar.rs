@@ -963,10 +963,11 @@ const PROJECTS_HEADER_KEY: &str = "sidebar-projects-header";
 /// The new-session picker's option for a custom command; agent ids never
 /// start with `:`.
 const PICK_CUSTOM: &str = ":custom";
-/// The workspace picker's actions; workspace ids never start with `:`.
+/// The workspace picker's one extra option; workspace ids never start with `:`.
 const PICK_NEW_WORKSPACE: &str = ":new";
-const PICK_RENAME_WORKSPACE: &str = ":rename";
-const PICK_REMOVE_WORKSPACE: &str = ":remove";
+/// The buttons on a workspace's own row.
+const ROW_RENAME_WORKSPACE: &str = "rename";
+const ROW_REMOVE_WORKSPACE: &str = "remove";
 
 /// Where the one new-session picker is open: the element it drops from, how
 /// wide it is, and the checkout it starts in — `None` for "where the app is
@@ -1058,7 +1059,8 @@ fn start_picked_session(s: &mut State, id: &str) {
 }
 
 /// The workspace selector: a searchable select of every workspace (another
-/// one's waiting sessions named beside it), then New, Rename and Remove.
+/// one's waiting sessions named beside it) with Rename and Remove buttons on
+/// each row, then New. Default has both buttons, disabled: it is permanent.
 fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
     let selected = s.workspace_id().to_string();
     let counts = s.workspace_waiting_counts();
@@ -1067,6 +1069,15 @@ fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
         .iter()
         .map(|workspace| {
             let name = s.workspace_label(workspace);
+            let permanent = workspace.id == app_core::store::DEFAULT_WORKSPACE_ID;
+            let (rename, remove) = if permanent {
+                (
+                    "Default can't be renamed".to_string(),
+                    "Default can't be removed".to_string(),
+                )
+            } else {
+                (format!("Rename {name}"), format!("Remove {name}"))
+            };
             let label = match counts.get(&workspace.id) {
                 Some(n) if *n > 0 && workspace.id != selected => {
                     format!("{name} · {n} need you")
@@ -1074,22 +1085,24 @@ fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                 _ => name,
             };
             rune_kit::ComboboxOption::new(&workspace.id, label)
+                .action(
+                    rune_kit::ComboboxAction::new(ROW_RENAME_WORKSPACE, rename, &theme::PENCIL)
+                        .disabled(permanent),
+                )
+                .action(
+                    rune_kit::ComboboxAction::new(
+                        ROW_REMOVE_WORKSPACE,
+                        remove,
+                        &crate::editor::changes::TRASH_2,
+                    )
+                    .disabled(permanent),
+                )
         })
         .collect();
     options.push(rune_kit::ComboboxOption::new(
         PICK_NEW_WORKSPACE,
         "New workspace",
     ));
-    if selected != app_core::store::DEFAULT_WORKSPACE_ID {
-        options.push(rune_kit::ComboboxOption::new(
-            PICK_RENAME_WORKSPACE,
-            "Rename workspace…",
-        ));
-        options.push(rune_kit::ComboboxOption::new(
-            PICK_REMOVE_WORKSPACE,
-            "Remove workspace…",
-        ));
-    }
     rune_kit::Combobox::new(
         "sidebar-workspace",
         &s.workspace_picker,
@@ -1104,17 +1117,22 @@ fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
     .trigger(workspace_header(s, ink))
     .on_choose(|st: &mut State, id: &str, _tx: &mut Tx| match id {
         PICK_NEW_WORKSPACE => st.submit_workspace_create(""),
-        PICK_RENAME_WORKSPACE => {
-            let id = st.workspace_id().to_string();
-            let name = st.workspace_name();
-            st.ask_for_workspace_rename(&id, &name);
-        }
-        PICK_REMOVE_WORKSPACE => {
-            st.sidebar_confirm = None;
-            st.workspace_remove_confirm = Some(st.workspace_id().to_string());
-        }
         id => st.select_workspace(id),
     })
+    // A row's button acts on that row's workspace, selected or not.
+    .on_action(
+        |st: &mut State, id: &str, action: &str, _tx: &mut Tx| match action {
+            ROW_RENAME_WORKSPACE => {
+                let name = st.workspace_label_of(id, "");
+                st.ask_for_workspace_rename(id, &name);
+            }
+            ROW_REMOVE_WORKSPACE => {
+                st.sidebar_confirm = None;
+                st.workspace_remove_confirm = Some(id.to_string());
+            }
+            _ => {}
+        },
+    )
     .build(&s.editor.kit, layer)
 }
 

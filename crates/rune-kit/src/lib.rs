@@ -73,6 +73,7 @@ pub use card::Card;
 pub use checkbox::Checkbox;
 pub use collapsible::Collapsible;
 pub use combobox::Combobox;
+pub use combobox::ComboboxAction;
 pub use combobox::ComboboxOption;
 pub use combobox::ComboboxState;
 pub use dialog::Dialog;

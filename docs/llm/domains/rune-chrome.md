@@ -319,7 +319,7 @@ Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/si
 
 ### RNC-project-workspaces
 
-The system SHALL persist named workspaces with exactly one membership per registered project, migrate existing projects into a permanent Default workspace, and let the user select, create, rename, remove, and move projects between workspaces from the sidebar without changing project files, running sessions, tabs, or the editor checkout; moving a folder project moves its child repository projects to the same workspace in one transaction, moving a child detaches it from its parent, and removing a workspace moves its parents and children to Default with their hierarchy preserved.
+The system SHALL persist named workspaces with exactly one membership per registered project, migrate existing projects into a permanent Default workspace, and let the user select, create, rename, remove, and move projects between workspaces from the sidebar, renaming and removing through buttons on that workspace's own row in the workspace selector (disabled on Default), without changing project files, running sessions, tabs, or the editor checkout; moving a folder project moves its child repository projects to the same workspace in one transaction, moving a child detaches it from its parent, and removing a workspace moves its parents and children to Default with their hierarchy preserved.
 
 #### Scenario: migrate and restore
 
@@ -345,13 +345,31 @@ The system SHALL persist named workspaces with exactly one membership per regist
 - WHEN its removal is confirmed
 - THEN its projects move to Default atomically, Default becomes selected if necessary, project files and running sessions remain untouched, and any parent/child hierarchy is preserved
 
+#### Scenario: rename or remove from a workspace's row
+
+- GIVEN the workspace selector is open and Default is the selected workspace
+- WHEN the pointer highlights the row of a named workspace and its Remove button is pressed, or the same for Rename
+- THEN the selector closes, that row's workspace gets the removal confirmation or the rename prompt, and the selected workspace is unchanged
+
+#### Scenario: a workspace button from the keyboard
+
+- GIVEN the workspace selector is open with a named workspace highlighted
+- WHEN Tab moves focus from the search field and Space is pressed
+- THEN the highlighted row's Rename button is pressed and the rename prompt opens for that workspace
+
+#### Scenario: Default's buttons are disabled
+
+- GIVEN the workspace selector is open
+- WHEN the pointer highlights the Default row and presses its Rename or Remove button
+- THEN the buttons read "Default can't be renamed" and "Default can't be removed", take no keyboard focus, and pressing one changes nothing and leaves the selector open
+
 #### Scenario: invalid or failed mutation
 
 - GIVEN a blank or case-insensitive duplicate name, a missing id, or a storage failure
 - WHEN the mutation is submitted
 - THEN an error is shown and the existing workspace selection and membership remain intact
 
-Evidence: `crates/app-core/src/store.rs`, `crates/app-core/src/projects.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`
+Evidence: `crates/app-core/src/store.rs`, `crates/app-core/src/projects.rs`, `crates/rune-kit/src/combobox.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/view_tests.rs`
 ### RNC-prune-worktrees
 
 The system SHALL offer Prune missing worktrees in a git project's More menu only while at least one of its worktrees is `missing`, run `git worktree prune` in the project root when chosen, refresh that project's worktree list, and touch no folder or session.
@@ -1417,6 +1435,8 @@ attributed tools without charging the shared server.
 - `apps/rune/src/tab_debug.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/theme.rs`
+- `apps/rune/src/view_tests.rs`
+- `crates/rune-kit/src/combobox.rs`
 - `crates/app-core/src/accounts.rs`
 - `crates/app-core/src/acp.rs`
 - `crates/app-core/src/agents.rs`
