@@ -1,0 +1,25 @@
+.github/workflows/ci.yml
+  s_8265c08ec67b12::t_259f197982ba1f 26-30
+AGENTS.md
+  s_8265c08ec67b12::t_baa2e4d6d78e3f 21
+README.md
+  s_8265c08ec67b12::t_d7efe08233cf92 174
+.github/workflows/release.yml
+  s_8265c08ec67b12::t_4e5f005f0bd2a7 28-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e062368fd9453279fd5f9ad75daa0f59a38517f6",
+  "prompts": {},
+  "sessions": {
+    "s_8265c08ec67b12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d3dc32b7-d623-4b79-b936-56e48b392f64",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
