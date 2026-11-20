@@ -10,7 +10,7 @@ use app_core::git_view::{GitViewDiff, GitViewFile};
 
 use super::{Reply, ReplyData, Req, kind_key};
 use crate::editor::state::{
-    EditorState, GoToStage, Notice, Patch, SidebarWorktrees, search_state::SearchMode,
+    EditorState, GoToStage, Notice, Patch, Section, SidebarWorktrees, search_state::SearchMode,
 };
 
 impl EditorState {
@@ -85,10 +85,33 @@ impl EditorState {
             (Req::Worktrees(pid), Ok(ReplyData::Worktrees(list))) => {
                 // Replies are keyed by the request's project id: only the
                 // selected project's list feeds the checkout picker.
+                let is_git = list.repo;
                 if self.project_id.as_deref() == Some(pid.as_str()) {
                     self.worktrees = list.clone();
                     self.worktrees_loading = false;
                     self.worktrees_error = None;
+                    self.folder_project = !is_git;
+                    if self.folder_project && self.section == Section::Changes {
+                        self.section = Section::Files;
+                        self.visited.insert(Section::Files);
+                    }
+                    if self.folder_project
+                        && self.section == Section::Files
+                        && let (Some(checkout), Some(key)) =
+                            (self.checkout.clone(), self.checkout_key.clone())
+                        && (self.files.model_checkout.as_deref() != Some(key.as_str())
+                            || self.files.paths.is_empty())
+                    {
+                        self.files.loading = true;
+                        self.files.error = None;
+                        if !self.enqueue_read(checkout, key, Req::FileList) {
+                            self.files.loading = false;
+                            self.notice = Some(Notice {
+                                text: "Backend queue is full — try again".into(),
+                                stale: false,
+                            });
+                        }
+                    }
                 }
                 self.sidebar_worktrees.insert(
                     pid.clone(),
@@ -302,6 +325,12 @@ impl EditorState {
                     crate::editor::blame::request(self);
                 }
             }
+            // The Vim switch restores on the same lane: only `"1"` is on.
+            (Req::GetSetting { key }, Ok(ReplyData::Setting(value)))
+                if key == crate::editor::vim::VIM_KEY =>
+            {
+                self.apply_vim_enabled(value.as_deref() == Some("1"));
+            }
             (Req::GetSetting { key }, Err(e)) if key == crate::editor::lsp::SERVERS_KEY => {
                 // Un-pend + bounded retry live in lsp.rs; presets keep
                 // serving until a read succeeds.
@@ -451,13 +480,14 @@ impl EditorState {
             (Req::Branches, Ok(ReplyData::Branches(branches))) => {
                 self.history.branches = branches;
             }
-            (Req::FileList, Ok(ReplyData::FileList(paths, ignored))) => {
+            (Req::FileList, Ok(ReplyData::FileList(paths, ignored, truncated))) => {
                 if self.files.model_checkout != self.checkout_key {
                     self.files.ignored_open.clear();
                     self.files.empty_dirs.clear();
                 }
                 self.files.paths = paths;
                 self.files.ignored = ignored;
+                self.files.truncated = truncated;
                 self.files.loading = false;
                 self.files.error = None;
                 self.rebuild_file_model();
@@ -1152,6 +1182,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }
     }
 
@@ -1185,6 +1216,21 @@ mod tests {
     }
 
     // -- per-project project/worktree replies -------------------------------
+
+    #[test]
+    fn a_folder_worktree_reply_switches_the_editor_to_files() {
+        let mut s = scene();
+        s.editor.section = Section::Changes;
+        s.editor.apply_reply(reply(
+            Req::Worktrees("p1".into()),
+            Ok(ReplyData::Worktrees(WorktreeList {
+                repo: false,
+                worktrees: Vec::new(),
+            })),
+        ));
+        assert!(s.editor.folder_project);
+        assert_eq!(s.editor.section, Section::Files);
+    }
 
     #[test]
     fn projects_reply_seeds_sidebar_worktrees_per_project() {
@@ -1378,7 +1424,7 @@ mod tests {
             req: Req::FileList,
             generation: 0,
             checkout_key: None,
-            result: Ok(ReplyData::FileList(paths, Vec::new())),
+            result: Ok(ReplyData::FileList(paths, Vec::new(), false)),
         }
     }
 

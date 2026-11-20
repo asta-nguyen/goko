@@ -77,14 +77,58 @@ fn grip_key(kind: PaneKind) -> &'static str {
     }
 }
 
-/// The visible, grabbable separator pinned inside a pane aside's trailing
-/// edge. Place it as the aside's LAST child so it paints above the content.
+/// Whether the editor's list asides (Files tree, Changes list, Stashes list)
+/// dock on the right; the three sections share one side via `list_aside_side`.
+pub fn docks_right(s: &State) -> bool {
+    s.list_aside_side == crate::sidebar::Side::Right
+}
+
+/// The 1 px border edge that faces the detail pane: the list's trailing
+/// (right) edge when docked left, its leading (left) edge when docked right.
+pub fn aside_border(right: bool) -> [f32; 4] {
+    if right {
+        [0.0, 0.0, 0.0, 1.0]
+    } else {
+        [0.0, 1.0, 0.0, 0.0]
+    }
+}
+
+/// Leading inset of a right-docked list: its grip is pinned over the leading
+/// edge, so the content starts past it instead of under it. Docked left the
+/// grip covers the trailing padding and needs none.
+pub fn aside_inset(right: bool) -> f32 {
+    if right { GRIP_W } else { 0.0 }
+}
+
+/// The grip's pin edges `(left, top, right, bottom)` — the aside's trailing
+/// edge when docked left, its leading edge when docked right.
+fn grip_pin(right: bool) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
+    if right {
+        (Some(0.0), Some(0.0), None, Some(0.0))
+    } else {
+        (None, Some(0.0), Some(0.0), Some(0.0))
+    }
+}
+
+/// A right-docked list drags/steps the opposite way so it grows toward the
+/// detail pane.
+fn grip_sign(right: bool) -> f32 {
+    if right { -1.0 } else { 1.0 }
+}
+
+/// The visible, grabbable separator pinned inside a pane aside's facing edge:
+/// trailing when docked left, leading when docked right. Place it as the
+/// aside's LAST child so it paints above the content.
 pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
     // Report the effective (viewport-clamped) width so AT reads what is
     // actually rendered when a restored oversized value shrinks via flex.
     let width = clamp_width(s.editor.pane_row_w, current(s, kind));
     let max = max_width(s.editor.pane_row_w);
-    col()
+    // Any list aside (Files, Changes, Stashes) shares one side; a right-docked
+    // grip sits on the aside's leading (left) edge and dragging left widens it.
+    let right = docks_right(s);
+    let dir = grip_sign(right);
+    let mut b = col()
         .key(grip_key(kind))
         .role("separator")
         .label(label)
@@ -94,16 +138,18 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
         .items_center()
         .cursor(Cursor::ResizeColumn)
         .fill(Color::TRANSPARENT)
-        .hover(ink.border)
-        .pin(None, Some(0.0), Some(0.0), Some(0.0))
-        .child(el().w(1.0).h_full().fill(ink.border))
+        .hover(ink.border);
+    let (pl, pt, pr, pb) = grip_pin(right);
+    b = b.pin(pl, pt, pr, pb);
+    b.child(el().w(1.0).h_full().fill(ink.border))
         .on_drag(move |st: &mut State, d: &mut Drag, tx: &mut Tx| {
             match d.phase {
                 Phase::Down => d.data = current(st, kind),
                 Phase::Move | Phase::Up => {
                     if !d.cancelled() {
-                        // Leading pane: dragging right widens it.
-                        let w = clamp_width(st.editor.pane_row_w, d.data + d.dx);
+                        // Leading pane drags right to widen; docked right the
+                        // grip drags left to widen instead.
+                        let w = clamp_width(st.editor.pane_row_w, d.data + d.dx * dir);
                         set_width(st, kind, w);
                         tx.instant();
                     }
@@ -114,6 +160,9 @@ pub fn grip(s: &State, ink: &Ink, kind: PaneKind, label: &'static str) -> El {
             st.editor.history.layout.panes.reset(kind);
             st.editor.history.layout_dirty = true;
         })
+        // `range_value` is the width, so a step is +width on either side: AT
+        // Increment/SetValue must move the value toward its target. Only the
+        // pointer drag mirrors.
         .on_step(move |st: &mut State, steps: i32, _tx: &mut Tx| {
             let w = clamp_width(
                 st.editor.pane_row_w,
@@ -160,15 +209,32 @@ mod tests {
     }
 
     #[test]
-    fn grip_builder_runs_for_each_kind() {
-        let s = State::new(crate::test_handle());
+    fn right_docked_grip_inverts_direction_and_pins_the_leading_edge() {
+        // Left-docked: pinned to the trailing (right) edge, drag right widens,
+        // border on the trailing edge.
+        assert_eq!(grip_pin(false), (None, Some(0.0), Some(0.0), Some(0.0)));
+        assert_eq!(grip_sign(false), 1.0);
+        assert_eq!(aside_border(false), [0.0, 1.0, 0.0, 0.0]);
+        // Right-docked: pinned to the leading (left) edge, drag left widens,
+        // border on the leading edge.
+        assert_eq!(grip_pin(true), (Some(0.0), Some(0.0), None, Some(0.0)));
+        assert_eq!(grip_sign(true), -1.0);
+        assert_eq!(aside_border(true), [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn grip_builds_on_either_side_for_each_kind() {
+        let mut s = State::new(crate::test_handle());
         let ink = Ink::new();
-        for (kind, label) in [
-            (PaneKind::FilesAside, "Resize file list and editor"),
-            (PaneKind::ChangesList, "Resize changed files and diff"),
-            (PaneKind::StashesList, "Resize stash list and detail"),
-        ] {
-            let _ = grip(&s, &ink, kind, label);
+        for side in [crate::sidebar::Side::Left, crate::sidebar::Side::Right] {
+            s.list_aside_side = side;
+            for (kind, label) in [
+                (PaneKind::FilesAside, "Resize file list and editor"),
+                (PaneKind::ChangesList, "Resize changed files and diff"),
+                (PaneKind::StashesList, "Resize stash list and detail"),
+            ] {
+                let _ = grip(&s, &ink, kind, label);
+            }
         }
     }
 }

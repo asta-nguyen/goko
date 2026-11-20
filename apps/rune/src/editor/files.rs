@@ -7,6 +7,8 @@
 //! column fed by the same text; the code owner's `code.rs` can later swap
 //! this surface behind the same `OpenDoc` state.
 
+use std::path::Path;
+
 use rune::{El, KeyEvent, Tx, col, row};
 use rune_kit::{
     FileNode, Kit, MenuItem, ScrollBar, Tree, TreeItem, TreeKey, TreeModel, TreeStyle, context_menu,
@@ -14,6 +16,7 @@ use rune_kit::{
 
 use crate::State;
 use crate::editor::backend::Req;
+use crate::editor::code::VimCommand;
 use crate::editor::draft::{self, DocKind};
 use crate::editor::history_layout::PaneKind;
 use crate::editor::keyboard;
@@ -23,64 +26,78 @@ use crate::editor::state::search_state::{IndexStatus, SearchMode};
 use crate::editor::state::{FileMark, FileMenu};
 use crate::theme::{self, Ink, T11M_LH, T12, T12M, T12TN};
 
+/// Settings-store key for which side the editor's list asides (Files tree,
+/// Changes list, Stashes list) dock on (`left` | `right`), alongside the
+/// indent and blame editor preferences.
+pub const LIST_ASIDE_SIDE_KEY: &str = "goko.editor.list_side";
+
 /// Files section root: toolbar (file filter + file actions, then the always
 /// visible search row), then [aside: tree or search results | editor] split —
 /// the aside swaps content like the desktop `SplitPane`, the editor flexes to
-/// the remaining width.
+/// the remaining width. `list_aside_side` docks the aside left or right.
 pub fn files_view(s: &State, ink: &Ink, k: &Kit) -> El {
     let mut root = col().grow(1.0).min_w(0.0).h_full().min_h(0.0);
     if let Some(dialog) = trash_dialog(s, ink) {
         root = root.child(dialog);
     }
     root = root.child(toolbar(s, ink, k));
-    root = root.child(
-        row()
-            .grow(1.0)
-            .min_h(0.0)
+    if s.editor.files.truncated {
+        root = root.child(theme::txt(
+            "File list limited to 20,000 entries.",
+            theme::T11,
+            ink.muted,
+        ));
+    }
+    // The aside (tree/search) and the editor detail are one horizontal split;
+    // `list_aside_side` flips which side the aside docks on, VS Code-style.
+    let on_right = pane_layout::docks_right(s);
+    let aside = col()
+        .w(pane_layout::current(s, PaneKind::FilesAside))
+        .h_full()
+        .shrink()
+        .min_w(pane_layout::PANE_MIN)
+        // The 1 px rule faces the editor: right edge when the aside is on
+        // the left, left edge when it docks right.
+        .border_sides(pane_layout::aside_border(on_right), ink.border)
+        .pl(pane_layout::aside_inset(on_right))
+        .child(
+            // Desktop SplitPane parity: the aside shows EITHER the file tree
+            // or the content-search results — never both — so the editor
+            // always owns whatever width remains (no fixed code column +
+            // results column + tree overflowing narrow windows).
+            if s.editor.files.search.open {
+                search_results(s, ink, k)
+            } else {
+                tree_pane(s, ink, k)
+            }
             .w_full()
-            .on_layout_tx(pane_layout::watch_row_width())
-            // Desktop SplitPane parity: the aside shows EITHER the file
-            // tree or the content-search results — never both — so the
-            // editor always owns whatever width remains (no fixed code
-            // column + results column + tree overflowing narrow windows).
-            .child(
-                // Persisted width + grip: the aside gives way before the
-                // editor does on narrow windows (flex shrink to PANE_MIN),
-                // but never collapses unusable; the detail column keeps
-                // SIBLING_MIN so the code surface stays usable.
-                col()
-                    .w(pane_layout::current(s, PaneKind::FilesAside))
-                    .h_full()
-                    .shrink()
-                    .min_w(pane_layout::PANE_MIN)
-                    .border_sides([0.0, 1.0, 0.0, 0.0], ink.border)
-                    .child(
-                        if s.editor.files.search.open {
-                            search_results(s, ink, k)
-                        } else {
-                            tree_pane(s, ink, k)
-                        }
-                        .w_full()
-                        .h_full(),
-                    )
-                    .child(pane_layout::grip(
-                        s,
-                        ink,
-                        PaneKind::FilesAside,
-                        "Resize file list and editor",
-                    )),
-            )
-            .child(
-                col()
-                    .grow(1.0)
-                    .min_w(pane_layout::SIBLING_MIN)
-                    .h_full()
-                    .min_h(0.0)
-                    .child(tab_bar(s, ink))
-                    .child(doc_bar(s, ink))
-                    .child(editor_pane(s, ink, k).grow(1.0).min_w(0.0).h_full()),
-            ),
-    );
+            .h_full(),
+        )
+        .child(pane_layout::grip(
+            s,
+            ink,
+            PaneKind::FilesAside,
+            "Resize file list and editor",
+        ));
+    let detail = col()
+        .grow(1.0)
+        .min_w(pane_layout::SIBLING_MIN)
+        .h_full()
+        .min_h(0.0)
+        .child(tab_bar(s, ink))
+        .child(doc_bar(s, ink))
+        .child(editor_pane(s, ink, k).grow(1.0).min_w(0.0).h_full());
+    let mut split = row()
+        .grow(1.0)
+        .min_h(0.0)
+        .w_full()
+        .on_layout_tx(pane_layout::watch_row_width());
+    split = if on_right {
+        split.child(detail).child(aside)
+    } else {
+        split.child(aside).child(detail)
+    };
+    root = root.child(split);
     // The confirmation is a modal: its members are itself plus everything
     // after it in tree order, so it must mount last — mounted earlier the
     // whole section would stay live and steal the dialog's presses.
@@ -470,6 +487,13 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                     .danger(true)
                     .on_select(move |st: &mut State| {
                         st.editor.files.menu = None;
+                        if blocks_child_root(st, &trash_id) {
+                            st.notice = Some(
+                                "This folder is a registered repository; remove it from the sidebar instead."
+                                    .into(),
+                            );
+                            return;
+                        }
                         st.editor.files.delete_prompt = Some(trash_id.clone());
                     }),
             )
@@ -510,8 +534,26 @@ fn reveal(path: &std::path::Path) {
     }
 }
 
+/// A folder-tree rename or trash may not move a registered child
+/// repository root (or an ancestor of one); the sidebar owns that row.
+fn blocks_child_root(s: &State, path: &str) -> bool {
+    let Some(checkout) = &s.editor.checkout else {
+        return false;
+    };
+    let target = checkout.join(path);
+    s.editor.projects.iter().any(|project| {
+        project.parent_project_id.is_some() && Path::new(&project.project.root).starts_with(&target)
+    })
+}
+
 /// Open the rename prompt with the entry's current name filled in.
 fn ask_for_rename(s: &mut State, id: &str) {
+    if blocks_child_root(s, id) {
+        s.notice = Some(
+            "This folder is a registered repository; remove it from the sidebar instead.".into(),
+        );
+        return;
+    }
     s.ask_for_input(crate::sidebar::SidebarInput::RenameFile { id: id.to_string() });
     let name = id.rsplit('/').next().unwrap_or(id);
     s.sidebar_text = rune::edit::TextEdit::new(name);
@@ -1371,12 +1413,37 @@ fn editor_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 /// the gutter re-derives line numbers from `edit.text` each frame.
 fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
     crate::editor::code::Code::<State>::new(code_get, code_get_mut)
+        .register(|s: &mut State| &mut s.editor.vim_register)
         // The tab chords get first refusal: `Tab` would indent and `⌘⌥→`
         // would word-move before `AppSpec::on_key` ever saw them.
         .preempt_key(crate::editor::keyboard::on_key)
         .on_changed(code_changed)
         .on_save(|st: &mut State, _tx: &mut Tx| {
             save_active_doc(st);
+        })
+        .on_vim_command(|st: &mut State, cmd: VimCommand, tx: &mut Tx| match cmd {
+            VimCommand::Save => save_active_doc(st),
+            VimCommand::Close => {
+                if let Some(path) = st.editor.doc.as_ref().map(|d| d.path.clone()) {
+                    navigation::navigate(st, PendingNav::CloseTab { path }, tx);
+                }
+            }
+            VimCommand::SaveClose => {
+                let Some(path) = st.editor.doc.as_ref().map(|d| d.path.clone()) else {
+                    return;
+                };
+                let dirty = st.editor.doc.as_ref().is_some_and(|d| d.dirty());
+                if dirty {
+                    st.editor.save_resume = Some(navigation::Guard {
+                        pending: PendingNav::CloseTab { path: path.clone() },
+                        doc_path: path,
+                        queue: Vec::new(),
+                        quitting: false,
+                    });
+                }
+                save_active_doc(st);
+            }
+            VimCommand::Line(_) => {}
         })
         .on_go_to(
             |st: &mut State, req: crate::editor::code::GoToRequest, tx: &mut Tx| {
@@ -1388,6 +1455,9 @@ fn editor_surface(s: &State, ink: &Ink, k: &Kit) -> El {
         })
         .on_blame(|st: &mut State, enabled, _tx: &mut Tx| {
             crate::editor::blame::set_enabled(&mut st.editor, enabled);
+        })
+        .on_blame_open(|st: &mut State, commit: &str, tx: &mut Tx| {
+            crate::editor::blame::open_commit(st, commit, tx);
         })
         .on_send(|st: &mut State, tx: &mut Tx| {
             crate::editor::snapshot::send(st, tx);
@@ -1671,6 +1741,7 @@ fn search_results(s: &State, ink: &Ink, k: &Kit) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::code::VIM_CARET_KEY;
     use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
     use std::path::PathBuf;
 
@@ -2689,7 +2760,7 @@ mod tests {
                 .map(|author| crate::editor::blame::BlameLine {
                     author: author.into(),
                     time: crate::editor::blame::now_ms(),
-                    uncommitted: false,
+                    ..Default::default()
                 })
                 .into(),
         });
@@ -3003,6 +3074,47 @@ mod tests {
         assert!(json.contains("\"filesAside\":360"), "stored doc: {json}");
     }
 
+    /// Docked right, the grip sits on the aside's leading edge with no tree row
+    /// under it, dragging it left widens the list, and an AT Increment widens
+    /// it too — the grip's value is the width on either side.
+    #[test]
+    fn right_docked_grip_clears_the_rows_and_widens_both_ways() {
+        let mut s = scene();
+        s.list_aside_side = crate::sidebar::Side::Right;
+        let mut rt = Runtime::new(s, files_only, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+
+        let g = pane_grip(&rt);
+        let grip_end = g.rect[0] + g.rect[2];
+        let rows = rt.elements().into_iter().filter(|e| e.role == "treeitem");
+        assert!(
+            rows.clone().count() > 0 && rows.into_iter().all(|e| e.rect[0] >= grip_end),
+            "no tree row starts under the grip at {:?}",
+            g.rect
+        );
+
+        let (x, y) = (g.rect[0] + g.rect[2] / 2.0, g.rect[1] + g.rect[3] / 2.0);
+        drag_x(&mut rt, x, y, x - 80.0);
+        let dragged = rt.state.editor.history.layout.panes.files_aside;
+        assert!(
+            (dragged - 360.0).abs() < 1.0,
+            "drag left +80px: 280 -> {dragged}"
+        );
+
+        assert!(rt.accessibility_action(
+            "files-pane-grip",
+            rune::accesskit::Action::Increment,
+            None
+        ));
+        rt.frame(1.0 / 60.0);
+        let stepped = rt.state.editor.history.layout.panes.files_aside;
+        assert!(
+            (stepped - dragged - f64::from(pane_layout::GRIP_STEP)).abs() < 1.0,
+            "Increment widens by one step: {dragged} -> {stepped}"
+        );
+    }
+
     /// Dragging past either bound clamps: the static PANE_MIN..=PANE_MAX
     /// range AND the viewport max (row width - SIBLING_MIN).
     #[test]
@@ -3098,6 +3210,355 @@ mod tests {
             mods: Mods::default(),
         });
         rt.frame(0.0);
+    }
+
+    fn texts(rt: &Runtime<State>) -> Vec<String> {
+        rt.elements().into_iter().filter_map(|e| e.text).collect()
+    }
+
+    fn vim_scene(text: &str) -> State {
+        let mut s = scene();
+        open_text_doc(&mut s, "src/a.rs", text);
+        s.editor.apply_vim_enabled(true);
+        s.editor.doc.as_mut().unwrap().code.edit.focused = true;
+        s
+    }
+
+    #[test]
+    fn vim_motions_chip_and_block_caret_route_only_when_enabled() {
+        let mut rt = kb_runtime(vim_scene("one two\nthree four\n"));
+        key_text(&mut rt, "l");
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 1);
+        key_text(&mut rt, "w");
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 4);
+        assert!(texts(&rt).iter().any(|t| t == "NORMAL"));
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(VIM_CARET_KEY)),
+            "the block caret mounts outside Insert"
+        );
+        key_text(&mut rt, "2");
+        assert!(texts(&rt).iter().any(|t| t == "2"), "pending count shows");
+        key_text(&mut rt, "l");
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 6);
+        assert!(!texts(&rt).iter().any(|t| t == "2"));
+    }
+
+    #[test]
+    fn vim_insert_passes_typing_and_escape_keeps_focus() {
+        let mut rt = kb_runtime(vim_scene("ab\n"));
+        key_text(&mut rt, "i");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.vim.mode,
+            crate::editor::vim::Mode::Insert
+        );
+        assert!(texts(&rt).iter().any(|t| t == "INSERT"));
+        assert!(
+            !rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(VIM_CARET_KEY) && !e.exiting),
+            "Insert uses the native bar caret"
+        );
+        type_text(&mut rt, "xy");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "xyab\n"
+        );
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.vim.mode, crate::editor::vim::Mode::Normal);
+        assert!(doc.code.edit.focused, "Escape must not blur the field");
+        rt.key(KeyEvent {
+            key: Key::Tab,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "xyab\n",
+            "Tab in Normal is consumed"
+        );
+    }
+
+    #[test]
+    fn vim_off_keeps_native_typing_and_hides_the_chip() {
+        let mut s = scene();
+        open_text_doc(&mut s, "src/a.rs", "one two\n");
+        s.editor.doc.as_mut().unwrap().code.edit.focused = true;
+        let mut rt = kb_runtime(s);
+        key_text(&mut rt, "l");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "lone two\n",
+            "with Vim off the field types the key natively"
+        );
+        assert!(texts(&rt).iter().all(|t| t != "NORMAL"));
+        assert!(
+            !rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(VIM_CARET_KEY) && !e.exiting)
+        );
+    }
+
+    #[test]
+    fn vim_dd_is_one_undo_step_and_fills_the_register() {
+        let mut rt = kb_runtime(vim_scene("one\ntwo\nthree\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(4);
+        key_text(&mut rt, "d");
+        key_text(&mut rt, "d");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "one\nthree\n"
+        );
+        assert_eq!(rt.state.editor.vim_register.text, "two\n");
+        assert!(rt.state.editor.vim_register.linewise);
+        key_text(&mut rt, "u");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "one\ntwo\nthree\n",
+            "one undo restores the whole delete"
+        );
+    }
+
+    #[test]
+    fn vim_yy_and_p_paste_the_register() {
+        let mut rt = kb_runtime(vim_scene("one\ntwo\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "y");
+        key_text(&mut rt, "y");
+        key_text(&mut rt, "p");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "one\none\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn vim_paste_falls_back_to_the_clipboard() {
+        let mut rt = kb_runtime(vim_scene("ab"));
+        let clip = rune::clipboard::memory();
+        clip.set_text("XY");
+        rt.use_clipboard(&clip);
+        key_text(&mut rt, "p");
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            "aXYb",
+            "an empty register reads the system clipboard"
+        );
+    }
+
+    #[test]
+    fn vim_normal_rejects_an_ime_commit() {
+        let mut rt = kb_runtime(vim_scene("ab\n"));
+        rt.ime(rune::Ime::Commit("x".into()));
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.edit.text, "ab\n", "Normal mode never edits");
+        assert_eq!(doc.code.edit.focus, 0);
+        assert_eq!(doc.code.vim.mode, crate::editor::vim::Mode::Normal);
+    }
+
+    #[test]
+    fn vim_visual_shows_the_chip_and_range() {
+        let mut rt = kb_runtime(vim_scene("one two\n"));
+        key_text(&mut rt, "v");
+        key_text(&mut rt, "e");
+        assert!(texts(&rt).iter().any(|t| t == "VISUAL"));
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.vim_visual_range(), Some(0..3));
+        assert_eq!(doc.code.edit.focus, 2, "the caret stays on the character");
+        key_text(&mut rt, "d");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.text,
+            " two\n"
+        );
+        assert!(texts(&rt).iter().any(|t| t == "NORMAL"));
+    }
+
+    #[test]
+    fn vim_search_opens_without_moving_and_commits_on_enter() {
+        let mut rt = kb_runtime(vim_scene("foo bar foo baz\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "/");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(doc.code.find.open);
+        assert_eq!(doc.code.edit.focus, 0, "opening does not move the caret");
+        assert!(doc.code.find.query.focused);
+        type_text(&mut rt, "foo");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.focus,
+            0,
+            "typing does not jump either"
+        );
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(!doc.code.find.open);
+        assert_eq!(doc.code.edit.focus, 8, "Enter lands on the next match");
+    }
+
+    #[test]
+    fn vim_search_escape_restores_the_caret() {
+        let mut rt = kb_runtime(vim_scene("foo bar foo\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(4);
+        key_text(&mut rt, "/");
+        type_text(&mut rt, "foo");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(!doc.code.find.open);
+        assert_eq!(doc.code.edit.focus, 4);
+        assert!(doc.code.edit.focused);
+    }
+
+    #[test]
+    fn vim_n_and_star_repeat_the_search() {
+        let mut rt = kb_runtime(vim_scene("foo bar foo baz\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "/");
+        type_text(&mut rt, "foo");
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.editor.doc.as_ref().unwrap().code.edit.focus, 8);
+        key_text(&mut rt, "n");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.focus,
+            0,
+            "n wraps forward"
+        );
+        key_text(&mut rt, "N");
+        assert_eq!(
+            rt.state.editor.doc.as_ref().unwrap().code.edit.focus,
+            8,
+            "N goes back"
+        );
+
+        let mut rt = kb_runtime(vim_scene("foo bar foo baz\n"));
+        rt.state.editor.doc.as_mut().unwrap().code.edit.set_caret(0);
+        key_text(&mut rt, "*");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert_eq!(doc.code.find.query.text, "foo");
+        assert_eq!(doc.code.edit.focus, 8);
+    }
+
+    fn vim_command(rt: &mut Runtime<State>, text: &str) {
+        key_text(rt, ":");
+        type_text(rt, text);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+    }
+
+    #[test]
+    fn vim_command_bar_opens_and_escape_closes() {
+        let mut rt = kb_runtime(vim_scene("one\ntwo\n"));
+        key_text(&mut rt, ":");
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(crate::editor::code::VIM_CMD_KEY)),
+            "the command bar mounts"
+        );
+        assert!(!rt.state.editor.doc.as_ref().unwrap().code.edit.focused);
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(doc.code.vim_cmd.is_none());
+        assert!(doc.code.edit.focused, "Escape returns focus to the code");
+    }
+
+    #[test]
+    fn vim_quit_raises_the_guard_or_closes_the_tab() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        key_text(&mut rt, "i");
+        type_text(&mut rt, "x");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        vim_command(&mut rt, "q");
+        assert!(rt.state.editor.guard.is_some(), "a dirty tab asks first");
+
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        vim_command(&mut rt, "q");
+        assert!(rt.state.editor.doc.is_none(), "a clean tab closes outright");
+    }
+
+    #[test]
+    fn vim_write_requests_a_save() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        key_text(&mut rt, "i");
+        type_text(&mut rt, "x");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        vim_command(&mut rt, "w");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        assert!(doc.code.vim_cmd.is_none(), "the bar closes");
+        assert!(
+            doc.saving || doc.save_error.is_some() || !doc.dirty(),
+            "the save was attempted"
+        );
+    }
+
+    #[test]
+    fn vim_write_quit_resumes_the_close_after_saving() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        key_text(&mut rt, "i");
+        type_text(&mut rt, "x");
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        vim_command(&mut rt, "wq");
+        assert!(
+            rt.state.editor.save_resume.is_some(),
+            "the close waits for the save"
+        );
+        assert!(rt.state.editor.guard.is_none());
+    }
+
+    #[test]
+    fn vim_line_command_reveals_the_line() {
+        let text: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+        let mut rt = kb_runtime(vim_scene(&text));
+        vim_command(&mut rt, "12");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        let line = doc.code.edit.line_range(11);
+        assert_eq!(doc.code.edit.range(), (line.start, line.end));
+    }
+
+    #[test]
+    fn vim_unknown_command_keeps_the_bar_open() {
+        let mut rt = kb_runtime(vim_scene("one\n"));
+        vim_command(&mut rt, "bogus");
+        let doc = rt.state.editor.doc.as_ref().unwrap();
+        let cmd = doc.code.vim_cmd.as_ref().expect("the bar stays open");
+        assert_eq!(cmd.error.as_deref(), Some("Unknown command: :bogus"));
     }
 
     /// Click the tree row labelled `name`; the press also moves DOM focus to
@@ -3374,6 +3835,26 @@ mod tests {
             cur.is_some() && cur.as_deref() != Some("top.txt"),
             "arrow kept native move: {cur:?}"
         );
+    }
+
+    #[test]
+    fn a_child_repository_root_is_protected_from_the_folder_tree() {
+        let mut s = State::new(crate::test_handle());
+        s.editor.checkout = Some(std::path::PathBuf::from("/work/folder"));
+        s.editor.projects = vec![app_core::projects::ProjectView {
+            project: app_core::store::Project {
+                id: "child".into(),
+                name: "child".into(),
+                root: "/work/folder/child".into(),
+                workspace_id: app_core::store::DEFAULT_WORKSPACE_ID.into(),
+                created_at: 0,
+            },
+            missing: false,
+            parent_project_id: Some("folder".into()),
+        }];
+        assert!(blocks_child_root(&s, "child"));
+        assert!(!blocks_child_root(&s, "child/deeper"));
+        assert!(!blocks_child_root(&s, "other"));
     }
 
     /// A dirty draft parked in another tab blocks rename and trash of the

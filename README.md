@@ -16,6 +16,7 @@ pieces fit together.
 | Path | What it is |
 |---|---|
 | `apps/rune` | The native app (Cargo package `goko-rune`): UI, terminal, editor |
+| `crates/rune-kit` | Generic, themable Rune UI component kit used by `apps/rune` |
 | `crates/daemon` | `gokod`, the daemon that owns every PTY and child process |
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |
@@ -73,9 +74,19 @@ instead.
   target and the Visual Studio Build Tools that rustup asks for), plus `git`.
   Windows 10 1809 or later (ConPTY).
 
-No Node, pnpm or other toolchain is needed.
+The terminal engine is built with Zig 0.16 and bindgen (libclang); see Build below.
+No Node or pnpm is needed.
 
 ## Build
+
+`crates/vt` builds libghostty-vt with Zig 0.16 from the `vendor/ghostty`
+submodule — fetch it with `git submodule update --init --depth 1` — and
+generates bindings with bindgen, which needs libclang. On macOS:
+`brew install zig@0.16`, then `export ZIG=$(brew --prefix zig@0.16)/bin/zig`.
+On Linux: `sudo apt-get install clang libclang-dev` and Zig 0.16 from
+ziglang.org. On Windows: Zig 0.16 and LLVM, with `LIBCLANG_PATH` pointing at
+LLVM's `bin`. Zig fetches its package dependencies over the network on the
+first build.
 
 ```sh
 cargo build --workspace            # debug
@@ -160,7 +171,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The daemon integration tests start the real `gokod` in a temporary `GOKO_HOME`.
-CI runs the same checks on `ubuntu-22.04` and `macos-15`; on `windows-latest` it
+CI runs the same checks on `ubuntu-22.04` and `macos-15`; on `windows-2022` it
 builds the whole workspace and runs the `protocol`, `daemon` and `app-core`
 tests (the app's own test harness is Unix-only in this version, and the Windows
 daemon tests live in `crates/daemon/tests/windows_ipc.rs`).

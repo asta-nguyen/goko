@@ -1,10 +1,9 @@
 //! The native Settings page — a compact port of `main`'s
 //! `features/settings/SettingsPage.tsx`: a section rail on the left
 //! (Editor, Appearance, Accounts, ACP agents) and the active section on
-//! the right. Vim is deliberately absent (decision D1); the Editor
-//! section carries the native indent preference instead. All mutations —
-//! settings rows, accounts, ACP overrides — ride the existing worker
-//! lanes, never the UI thread.
+//! the right. The Editor section carries the native indent, Vim and
+//! scroll/done-sound preferences. All mutations — settings rows, accounts,
+//! ACP overrides — ride the existing worker lanes, never the UI thread.
 
 use std::collections::HashMap;
 
@@ -14,11 +13,12 @@ use rune::{El, ScrollSpec, Tx, col, el, row};
 
 use crate::editor::backend::{self, Job, Req};
 use crate::editor::indent::{self, UnitChoice};
+use crate::sidebar;
 use crate::theme::{self, Ink, T11M, T12, T12M, T14M};
 use crate::{State, theme::Theme};
 
-/// The section rail's entries — SettingsPage.tsx's `SECTIONS`, minus the
-/// Vim control (deferred) and in the same order.
+/// The section rail's entries — SettingsPage.tsx's `SECTIONS`, in the same
+/// order.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Section {
     #[default]
@@ -541,8 +541,8 @@ fn acp_empty_draft() -> &'static AcpDraft {
 }
 
 // ---------------------------------------------------------------------------
-// Editor — the native editor preferences (indent); Vim is deferred, so no
-// inert toggle is rendered.
+// Editor — the native editor preferences: indent, Vim, list position, scroll
+// speed and the done sound.
 // ---------------------------------------------------------------------------
 
 fn editor_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
@@ -587,6 +587,38 @@ fn editor_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
                 }
             })
             .build(&s.editor.kit, layer),
+            ink,
+        ))
+        .child(field(
+            "Vim mode",
+            "Modal editing in the code editor. In Normal mode, switch the macOS input source to ABC; Vietnamese input works in Insert mode.",
+            rune_kit::Checkbox::new(s.editor.vim_enabled)
+                .label("Enable Vim mode")
+                .on_toggle(|s: &mut State| {
+                    let next = !s.editor.vim_enabled;
+                    s.editor.set_vim_enabled(next);
+                })
+                .build(&s.editor.kit),
+            ink,
+        ))
+        .child(field(
+            "List position",
+            "Where the Files tree, Changes list and Stashes list dock in their views: on the left, or docked on the right.",
+            rune_kit::SegmentedControl::new(
+                &["Left", "Right"],
+                Some(usize::from(s.list_aside_side == sidebar::Side::Right)),
+            )
+            .label("List position")
+            .width(Some(200.0))
+            .on_pick(|s: &mut State, index: usize, _tx: &mut Tx| {
+                let side = if index == 0 {
+                    sidebar::Side::Left
+                } else {
+                    sidebar::Side::Right
+                };
+                s.set_list_aside_side(side);
+            })
+            .build(&s.editor.kit),
             ink,
         ))
         .child(field(
@@ -667,36 +699,59 @@ fn appearance_section(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
         .iter()
         .map(|t| t.label().to_string())
         .collect();
-    field(
-        "Theme",
-        "Dark+ is the default. System follows the OS appearance.",
-        rune_kit::Combobox::new(
-            "settings-theme",
-            &s.settings.theme_picker,
-            &crate::picker::options(&options),
-            |s: &mut State| &mut s.settings.theme_picker,
-        )
-        .current(Some(s.theme_choice.label()))
-        .placeholder("System")
-        .label("Theme")
-        .search_placeholder("Search themes")
-        .width(176.0)
-        .popover_width(crate::picker::list_width(176.0))
-        .on_choose(|s: &mut State, label: &str, _tx: &mut Tx| {
-            if let Some(choice) = Theme::OPTIONS.iter().find(|t| t.label() == label) {
-                s.theme_choice = *choice;
-                // A fresh OS read keeps System honest at pick time.
-                s.os_dark = os_dark_mode();
-                s.apply_theme();
-                s.account_job(Req::SetSetting {
-                    key: theme::THEME_KEY.to_string(),
-                    value: choice.id().to_string(),
-                });
-            }
-        })
-        .build(&s.editor.kit, layer),
-        ink,
-    )
+    col()
+        .w_full()
+        .gap(20.0)
+        .child(field(
+            "Theme",
+            "Dark+ is the default. System follows the OS appearance.",
+            rune_kit::Combobox::new(
+                "settings-theme",
+                &s.settings.theme_picker,
+                &crate::picker::options(&options),
+                |s: &mut State| &mut s.settings.theme_picker,
+            )
+            .current(Some(s.theme_choice.label()))
+            .placeholder("System")
+            .label("Theme")
+            .search_placeholder("Search themes")
+            .width(176.0)
+            .popover_width(crate::picker::list_width(176.0))
+            .on_choose(|s: &mut State, label: &str, _tx: &mut Tx| {
+                if let Some(choice) = Theme::OPTIONS.iter().find(|t| t.label() == label) {
+                    s.theme_choice = *choice;
+                    // A fresh OS read keeps System honest at pick time.
+                    s.os_dark = os_dark_mode();
+                    s.apply_theme();
+                    s.account_job(Req::SetSetting {
+                        key: theme::THEME_KEY.to_string(),
+                        value: choice.id().to_string(),
+                    });
+                }
+            })
+            .build(&s.editor.kit, layer),
+            ink,
+        ))
+        .child(field(
+            "Sidebar position",
+            "Where the project sidebar sits, like VS Code's side bar.",
+            rune_kit::SegmentedControl::new(
+                &["Left", "Right"],
+                Some(usize::from(s.sidebar_side == sidebar::Side::Right)),
+            )
+            .label("Sidebar position")
+            .width(Some(200.0))
+            .on_pick(|s: &mut State, index: usize, _tx: &mut Tx| {
+                let side = if index == 0 {
+                    sidebar::Side::Left
+                } else {
+                    sidebar::Side::Right
+                };
+                s.set_sidebar_side(side);
+            })
+            .build(&s.editor.kit),
+            ink,
+        ))
 }
 
 // ---------------------------------------------------------------------------

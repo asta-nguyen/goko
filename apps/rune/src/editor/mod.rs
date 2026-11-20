@@ -40,5 +40,6 @@ pub mod syntax;
 pub mod table;
 pub mod tabs;
 pub mod trash;
+pub mod vim;
 pub mod workspace;
 pub mod worktree_form;

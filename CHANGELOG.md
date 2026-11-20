@@ -8,7 +8,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versions follow the app release version (`[workspace.package]` in `Cargo.toml`).
 Rename the `Unreleased` heading to the version and date when tagging a release.
 
+End every entry with who made it and the commits, linking their profile:
+``By [@login](https://github.com/login) in `abc1234`.`` Give a pull request its
+number — ``Contributed by [@login](https://github.com/login) in #123
+(`abc1234`, `def5678`).`` — and credit a follow-up fix by someone else in the
+same entry. Keep each link on one line: What's new shows it as its text. The
+`changelog` skill builds this from the commits since the last release.
+
 ## [Unreleased]
+
+## [0.4.0] - 2026-11-20
+
+### Added
+
+- Pushing from the Editor now asks for the SSH key passphrase in a masked
+  modal when ssh needs one; the passphrase is used for that push only, is
+  never stored, and dismissing the prompt cancels the push. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `aaff65a` and `bcf1975`.
+- Add Project now scans a folder that is not a Git worktree root for nested
+  repositories, lets you review what it found, and imports them as a group
+  under a folder project or separately. A folder project shows a Files tree,
+  while Changes, History and Stashes say it is not a Git worktree; child
+  repositories sit under it in the sidebar and Project Map, and moving or
+  removing a folder project keeps their registrations and files. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `e52677b`.
+- Pressing the blame note beside a line now opens the commit that last touched
+  it in History, loading older commits until it is found. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `958e9a8`.
+- In History, a branch and its remote copy on the same commit share one pill
+  (`main | origin`), pills sit before the commit message, and merge commits
+  read quieter so the real commits stand out. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `958e9a8`.
+- The project sidebar and the Files, Changes and Stashes lists can each dock on
+  the left or the right; pick the sides under Settings → Appearance → Sidebar
+  position and Settings → Editor → List position. Contributed by
+  [@iamdevtry](https://github.com/iamdevtry) in #34 (`e183612`, `e2a1aa7`),
+  with follow-up fixes by [@asta-nguyen](https://github.com/asta-nguyen) in
+  `3fcd762`.
+- The code editor has an optional Vim mode, off by default and switched in
+  Settings → Editor. Normal, Insert, Visual and Visual Line modes cover
+  motions with counts, operators, text objects, one unnamed register, `.`
+  repeat, `zz`/`zt`/`zb` scrolling, `/ ? n N *` search over the find bar, and
+  a `:` bar with `:w`, `:q`, `:wq` and `:<line>`. The footer shows the mode,
+  the caret is a block outside Insert, and native edits (an IME commit, a
+  paste) are rejected there. In Normal mode the macOS input source must be
+  ABC; Vietnamese input works in Insert. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `1d03b03`.
+
+### Changed
+
+- Terminals run on a new engine, libghostty-vt, that keeps a terminal's
+  history in about a third of the memory: one with a full 5,000-line history
+  takes 5.4 MB instead of 15.8 MB, and twenty of them 149 MB instead of 353 MB
+  (measured on a log-like stream at 120 columns). Output is parsed about 2.3
+  times faster. A full terminal keeps about 4,800 of its 5,000 lines. Output is
+  drawn on a 33 ms clock that waits a moment for a program that redraws its
+  screen in several writes, so Claude Code, Codex and OpenCode are not shown
+  half redrawn, and a synchronized update is held until it ends. The daemon
+  uses the engine too, but it keeps running your sessions: its copies shrink
+  the next time it starts. By [@asta-nguyen](https://github.com/asta-nguyen)
+  in `0358e21`.
+
+### Fixed
+
+- Pasting an image into a terminal (a screenshot, Copy Image) did nothing. It
+  now types the path of a saved PNG, which Claude Code, Codex and OpenCode
+  attach as an image. Files copied in Finder paste as their paths instead of
+  their names. By [@asta-nguyen](https://github.com/asta-nguyen) in `49c6056`.
 
 ## [0.3.0] - 2026-11-18
 

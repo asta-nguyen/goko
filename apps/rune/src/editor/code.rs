@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use rune::{
     Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, PointerPress, ScrollPos, Shape, Span,
-    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
+    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, el, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
@@ -41,6 +41,7 @@ use crate::editor::find::FindState;
 use crate::editor::go_to_definition as gtd;
 use crate::editor::indent::{self, IndentUnit, UnitChoice};
 use crate::editor::syntax::{self, HighlightResult};
+use crate::editor::vim;
 use crate::theme::{self, Ink, T11M_LH, T12, T128};
 
 /// Key of the scroll viewport: the `scroll_into_view_in` scope and the target
@@ -52,6 +53,44 @@ pub const FIELD_KEY: &str = "goko-code-field";
 pub const TEXT_KEY: &str = "goko-code-text";
 /// Key of the active find match's [`TextHighlight`] — the reveal target.
 pub const FIND_MATCH_KEY: &str = "goko-code-find-match";
+/// Key of the Vim block caret's overlay canvas.
+pub const VIM_CARET_KEY: &str = "goko-vim-caret";
+/// Key of the Vim `:` command bar's input.
+pub const VIM_CMD_KEY: &str = "goko-vim-cmd";
+
+/// What a `:` command asks the host to do. `Line` is handled by the bar
+/// itself (it reveals the line); the rest go to the host callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VimCommand {
+    Save,
+    Close,
+    SaveClose,
+    Line(u64),
+}
+
+/// The `:` command bar's state.
+pub struct VimCmd {
+    pub input: TextEdit,
+    pub error: Option<String>,
+}
+
+impl VimCmd {
+    pub fn new() -> VimCmd {
+        VimCmd {
+            input: TextEdit::new(""),
+            error: None,
+        }
+    }
+}
+
+fn parse_vim_command(text: &str) -> Option<VimCommand> {
+    match text {
+        "w" | "write" => Some(VimCommand::Save),
+        "q" | "quit" => Some(VimCommand::Close),
+        "wq" | "x" => Some(VimCommand::SaveClose),
+        other => other.parse::<u64>().ok().map(VimCommand::Line),
+    }
+}
 
 /// Code metrics: 13 pt mono on a 19 pt line. The gutter shares the style so
 /// its line boxes track the editor's exactly.
@@ -127,6 +166,17 @@ pub struct CodeState {
     pub indent_unit: IndentUnit,
     /// Manual override mirrored from the parent; `Auto` re-detects per doc.
     pub indent_choice: UnitChoice,
+    /// Modal editing state: mode, pending keys, goal column and the last
+    /// `f`/`t`. `enabled` mirrors `goko.editor.vim`.
+    pub vim: vim::VimState,
+    /// Insert-session bookkeeping for `.`: the caret at entry and the buffer
+    /// tail after it, so the net inserted text can be recovered on exit.
+    pub vim_insert: Option<(usize, String)>,
+    /// The Vim `/` or `?` in progress: the byte it started from and its
+    /// direction. Enter commits, Escape restores.
+    pub vim_search: Option<(usize, bool)>,
+    /// The `:` command bar while it is open.
+    pub vim_cmd: Option<VimCmd>,
 }
 
 impl CodeState {
@@ -156,6 +206,10 @@ impl CodeState {
             reveal_nonce: 0,
             indent_unit: IndentUnit::Spaces(4),
             indent_choice: UnitChoice::Auto,
+            vim: vim::VimState::default(),
+            vim_insert: None,
+            vim_search: None,
+            vim_cmd: None,
         };
         c.load(path, text);
         c
@@ -168,6 +222,10 @@ impl CodeState {
         self.path = path.into();
         self.edit.replace_text(text);
         self.edit.set_caret(0);
+        self.vim.reset();
+        self.vim_insert = None;
+        self.vim_search = None;
+        self.vim_cmd = None;
         self.revision += 1;
         self.conflicts = conflict::parse(&self.edit.text);
         self.find.refresh(&self.edit.text);
@@ -193,6 +251,7 @@ impl CodeState {
     /// refreshes find matches.
     pub fn text_edited(&mut self) {
         self.edit.mark_edited();
+        self.vim.clear_pending();
         self.revision += 1;
         self.conflicts = conflict::parse(&self.edit.text);
         self.sync_gutter();
@@ -242,8 +301,44 @@ impl CodeState {
         (top + line_px * 0.5 - viewport_h * 0.5).max(0.0)
     }
 
+    /// Scroll the viewport so the caret is visible, leaving a line of context
+    /// above and below — what a motion or an Insert session needs after the
+    /// caret moved programmatically.
+    pub fn scroll_to_caret(&self, tx: &mut Tx) {
+        let caret = self.edit.focus.min(self.edit.text.len());
+        let idx = self.edit.line_of_byte(caret);
+        let line_px = CODE_STYLE.line_px();
+        let pos = self.scroll_pos.get();
+        let size = self.scroll_size.get();
+        if size[1] <= 0.0 {
+            return;
+        }
+        let top = idx as f32 * line_px;
+        let bottom = top + line_px;
+        let (mut x, mut y) = (pos[0], pos[1]);
+        if top < y {
+            y = (top - line_px).max(0.0);
+        } else if bottom > y + size[1] {
+            y = bottom - size[1] + line_px;
+        }
+        let cell_w = rune::text::advance("0", CODE_STYLE).max(1.0);
+        if size[0] > 0.0 {
+            let line_start = self.edit.line_range(idx).start;
+            let caret_x = display_cols(&self.edit.text[line_start..caret]) as f32 * cell_w;
+            if caret_x < x {
+                x = (caret_x - cell_w).max(0.0);
+            } else if caret_x + cell_w > x + size[0] {
+                x = caret_x + cell_w - size[0];
+            }
+        }
+        if (x - pos[0]).abs() > 0.5 || (y - pos[1]).abs() > 0.5 {
+            tx.scroll_to_instant(SCROLL_KEY, x, y);
+        }
+    }
+
     /// Open the find bar, seeding the query from a single-line selection.
     pub fn open_find(&mut self, tx: &mut Tx) {
+        self.vim_search = None;
         let (a, b) = self.edit.range();
         if a != b {
             let sel = &self.edit.text[a..b];
@@ -262,12 +357,113 @@ impl CodeState {
 
     /// Hide the find bar and return focus to the editor.
     pub fn close_find(&mut self, tx: &mut Tx) {
+        self.vim_search = None;
         self.find.close();
         self.find.query.focused = false;
         if !self.read_only {
             self.edit.focused = true;
         }
         let _ = tx;
+    }
+
+    /// Vim `/` or `?`: open the bar on a fresh query without moving the caret.
+    pub fn open_find_vim(&mut self, forward: bool, _tx: &mut Tx) {
+        self.find.set_query("");
+        self.find.open_at(&self.edit.text);
+        self.vim_search = Some((self.edit.focus, forward));
+        self.edit.focused = false;
+        self.find.query.focused = true;
+    }
+
+    /// Enter in a Vim search: close the bar and land on the next match.
+    pub fn commit_vim_search(&mut self, tx: &mut Tx) {
+        let Some((origin, forward)) = self.vim_search.take() else {
+            return;
+        };
+        let range = self.find.next_after(origin, forward);
+        self.close_find(tx);
+        if let Some(r) = range {
+            self.edit.set_caret(r.start);
+            self.scroll_to_caret(tx);
+        }
+    }
+
+    /// Escape in a Vim search: close the bar and restore the caret.
+    pub fn cancel_vim_search(&mut self, tx: &mut Tx) {
+        let Some((origin, _)) = self.vim_search.take() else {
+            return;
+        };
+        self.close_find(tx);
+        let at = origin.min(self.edit.text.len());
+        self.edit.set_caret(at);
+        self.scroll_to_caret(tx);
+    }
+
+    /// `n`/`N`: step the last search and put the caret on the match start.
+    pub fn find_step_vim(&mut self, forward: bool, tx: &mut Tx) -> Option<Range<usize>> {
+        let range = if forward {
+            self.find.next()
+        } else {
+            self.find.prev()
+        }?;
+        self.edit.set_caret(range.start);
+        self.scroll_to_caret(tx);
+        Some(range)
+    }
+
+    /// `*`: search the word under the caret and land on the next match.
+    pub fn search_word_vim(&mut self, tx: &mut Tx) {
+        let Some(word) = vim::word_under_caret(&self.edit.text, self.edit.focus) else {
+            return;
+        };
+        self.find.set_query(&word);
+        self.find.refresh(&self.edit.text);
+        self.vim_search = None;
+        if let Some(range) = self.find.next_after(self.edit.focus, true) {
+            self.edit.set_caret(range.start);
+            self.scroll_to_caret(tx);
+        }
+    }
+
+    /// `:`: open the command bar on a fresh input and take focus.
+    pub fn open_cmd_vim(&mut self) {
+        let mut cmd = VimCmd::new();
+        cmd.input.focused = true;
+        self.vim_cmd = Some(cmd);
+        self.edit.focused = false;
+    }
+
+    /// Escape in the command bar: close it and return focus to the code.
+    pub fn close_cmd_vim(&mut self) {
+        self.vim_cmd = None;
+        if !self.read_only {
+            self.edit.focused = true;
+        }
+    }
+
+    /// Enter in the command bar: parse and close, or keep it open with the
+    /// unknown-command message. Returns the host action, if any.
+    pub fn submit_cmd_vim(&mut self, tx: &mut Tx) -> Option<VimCommand> {
+        let text = self.vim_cmd.as_ref()?.input.text.trim().to_string();
+        match parse_vim_command(&text) {
+            Some(VimCommand::Line(line)) => {
+                self.vim_cmd = None;
+                self.edit.focused = true;
+                self.reveal(line as u32, tx);
+                None
+            }
+            Some(action) => {
+                self.vim_cmd = None;
+                self.edit.focused = true;
+                Some(action)
+            }
+            None => {
+                if let Some(cmd) = self.vim_cmd.as_mut() {
+                    cmd.error = Some(format!("Unknown command: :{text}"));
+                }
+                None
+            }
+        }
     }
 
     /// Advance to the next find match (wrapping), selecting and revealing it.
@@ -283,6 +479,37 @@ impl CodeState {
         let r = self.find.prev()?;
         self.select_match(&r, tx);
         Some(r)
+    }
+
+    /// `zz`/`zt`/`zb`: put the caret line in the middle, at the top or at the
+    /// bottom of the viewport without moving the caret.
+    pub fn scroll_line(&self, action: vim::Scroll, tx: &mut Tx) {
+        let idx = self
+            .edit
+            .line_of_byte(self.edit.focus.min(self.edit.text.len()));
+        let line_px = CODE_STYLE.line_px();
+        let pos = self.scroll_pos.get();
+        let viewport = self.scroll_size.get()[1];
+        if viewport <= 0.0 {
+            return;
+        }
+        let top = idx as f32 * line_px;
+        let y = match action {
+            vim::Scroll::Center => top + line_px * 0.5 - viewport * 0.5,
+            vim::Scroll::Top => top,
+            vim::Scroll::Bottom => top + line_px - viewport,
+        }
+        .max(0.0);
+        tx.scroll_to_instant(SCROLL_KEY, pos[0], y);
+    }
+
+    /// The Visual selection's byte range for the view's highlight, or `None`
+    /// outside Visual.
+    pub fn vim_visual_range(&self) -> Option<Range<usize>> {
+        if !self.vim.enabled || self.read_only {
+            return None;
+        }
+        self.vim.visual_range(&self.edit.text, self.edit.focus)
     }
 
     /// The go-to token containing document byte `byte`, if any. Classifies
@@ -393,22 +620,28 @@ type GoToCallback<S> = Rc<dyn Fn(&mut S, GoToRequest, &mut Tx)>;
 type IndentCallback<S> = Rc<dyn Fn(&mut S, UnitChoice, &mut Tx)>;
 /// Blame-toggle callback: receives the new enabled state.
 type BlameCallback<S> = Rc<dyn Fn(&mut S, bool, &mut Tx)>;
+/// Blame-annotation callback: receives the oid of the commit to open.
+type BlameOpenCallback<S> = Rc<dyn Fn(&mut S, &str, &mut Tx)>;
 /// First-refusal key callback: `true` consumes the key before the field's
 /// own handling sees it.
 type KeyCallback<S> = Rc<dyn Fn(&mut S, &KeyEvent, &mut Tx) -> bool>;
+type VimCommandCallback<S> = Rc<dyn Fn(&mut S, VimCommand, &mut Tx)>;
 
 /// The code surface view. `get`/`get_mut` reach the parent's [`CodeState`];
 /// callbacks are optional and generic over the app state `S`.
 pub struct Code<S> {
     get: fn(&S) -> &CodeState,
     get_mut: fn(&mut S) -> &mut CodeState,
+    register: Option<fn(&mut S) -> &mut vim::Register>,
     on_changed: Option<StateCallback<S>>,
     on_save: Option<StateCallback<S>>,
     on_go_to: Option<GoToCallback<S>>,
     on_indent: Option<IndentCallback<S>>,
     on_blame: Option<BlameCallback<S>>,
+    on_blame_open: Option<BlameOpenCallback<S>>,
     on_send: Option<StateCallback<S>>,
     on_secondary: Option<PressCallback<S>>,
+    on_vim_command: Option<VimCommandCallback<S>>,
     preempt_key: Option<KeyCallback<S>>,
 }
 
@@ -417,13 +650,16 @@ impl<S: 'static> Code<S> {
         Code {
             get,
             get_mut,
+            register: None,
             on_changed: None,
             on_save: None,
             on_go_to: None,
             on_indent: None,
             on_blame: None,
+            on_blame_open: None,
             on_send: None,
             on_secondary: None,
+            on_vim_command: None,
             preempt_key: None,
         }
     }
@@ -461,6 +697,13 @@ impl<S: 'static> Code<S> {
         self
     }
 
+    /// Called when the caret line's blame annotation is pressed; receives the
+    /// oid of the commit that last touched the line.
+    pub fn on_blame_open(mut self, f: impl Fn(&mut S, &str, &mut Tx) + 'static) -> Code<S> {
+        self.on_blame_open = Some(Rc::new(f));
+        self
+    }
+
     /// Called when the Send chip is pressed: send the snapshot to the terminal.
     pub fn on_send(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Code<S> {
         self.on_send = Some(Rc::new(f));
@@ -471,6 +714,20 @@ impl<S: 'static> Code<S> {
     /// which replaces the field's built-in one.
     pub fn on_secondary(mut self, f: impl Fn(&mut S, PointerPress, &mut Tx) + 'static) -> Code<S> {
         self.on_secondary = Some(Rc::new(f));
+        self
+    }
+
+    /// The unnamed Vim register shared across tabs. Without it yanks and
+    /// pastes are no-ops (headless views and tests).
+    pub fn register(mut self, f: fn(&mut S) -> &mut vim::Register) -> Code<S> {
+        self.register = Some(f);
+        self
+    }
+
+    /// `:w`, `:q` and `:wq`: the host saves and closes through its own guarded
+    /// paths.
+    pub fn on_vim_command(mut self, f: impl Fn(&mut S, VimCommand, &mut Tx) + 'static) -> Code<S> {
+        self.on_vim_command = Some(Rc::new(f));
         self
     }
 
@@ -494,6 +751,9 @@ impl<S: 'static> Code<S> {
         if code.find.open {
             root = root.child(self.find_bar(s, ink));
         }
+        if code.vim_cmd.is_some() {
+            root = root.child(self.cmd_bar(s, ink));
+        }
         if let Some(notice) = self.notice_bar(code, ink) {
             root = root.child(notice);
         }
@@ -510,7 +770,7 @@ impl<S: 'static> Code<S> {
         // with the code. It stays mounted while the draft is dirty (blank),
         // or the code area would jump by the column's width on the first key.
         if code.blame_enabled {
-            surface = surface.child(blame_el(code, ink));
+            surface = surface.child(blame_el(code, ink, self.on_blame_open.clone()));
         }
         root.child(surface).child(self.footer(s, ink))
     }
@@ -539,6 +799,9 @@ impl<S: 'static> Code<S> {
                 .on_input_change(move |st: &mut S, tx: &mut Tx| {
                     let code = get_mut(st);
                     code.find.refresh(&code.edit.text);
+                    if code.vim_search.is_some() {
+                        return;
+                    }
                     if let Some(r) = code.find.active_range() {
                         code.select_match(&r, tx);
                     }
@@ -550,11 +813,17 @@ impl<S: 'static> Code<S> {
                     let code = get_mut(st);
                     match &ev.key {
                         Key::Escape => {
-                            code.close_find(tx);
+                            if code.vim_search.is_some() {
+                                code.cancel_vim_search(tx);
+                            } else {
+                                code.close_find(tx);
+                            }
                             true
                         }
                         Key::Enter => {
-                            if ev.mods.shift {
+                            if code.vim_search.is_some() {
+                                code.commit_vim_search(tx);
+                            } else if ev.mods.shift {
                                 code.find_prev(tx);
                             } else {
                                 code.find_next(tx);
@@ -589,6 +858,61 @@ impl<S: 'static> Code<S> {
                 get_mut(st).close_find(tx);
             }),
         )
+    }
+
+    /// The Vim `:` bar: a prompt, the command input and an inline error.
+    fn cmd_bar(&self, s: &S, ink: &Ink) -> El {
+        let code = (self.get)(s);
+        let Some(cmd) = &code.vim_cmd else {
+            return col().w_full().h(0.0);
+        };
+        let get_mut = self.get_mut;
+        let on_command = self.on_vim_command.clone();
+        let mut bar = row()
+            .w_full()
+            .h(34.0)
+            .px(8.0)
+            .gap(6.0)
+            .items_center()
+            .fill(ink.panel)
+            .border_sides([0.0, 0.0, 1.0, 0.0], ink.border)
+            .child(theme::txt(":", T12, ink.muted));
+        bar = bar.child(
+            text_input(&cmd.input, QUERY_STYLE)
+                .single_line()
+                .key(VIM_CMD_KEY)
+                .placeholder("Command", ink.muted)
+                .w(260.0)
+                .color(ink.text)
+                .caret(ink.text, ink.accent.alpha(0.3))
+                .on_edit(move |st: &mut S| -> &mut TextEdit {
+                    let code = get_mut(st);
+                    if code.vim_cmd.is_none() {
+                        code.vim_cmd = Some(VimCmd::new());
+                    }
+                    &mut code.vim_cmd.as_mut().unwrap().input
+                })
+                .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
+                    match &ev.key {
+                        Key::Escape => {
+                            get_mut(st).close_cmd_vim();
+                            true
+                        }
+                        Key::Enter => {
+                            let action = get_mut(st).submit_cmd_vim(tx);
+                            if let (Some(action), Some(cb)) = (action, &on_command) {
+                                cb(st, action, tx);
+                            }
+                            true
+                        }
+                        _ => false,
+                    }
+                }),
+        );
+        if let Some(error) = &cmd.error {
+            bar = bar.child(theme::txt(error, T12, ink.warning));
+        }
+        bar
     }
 
     /// Slim status line for plain-text fallback and highlight caps.
@@ -666,6 +990,9 @@ impl<S: 'static> Code<S> {
             wrap = wrap.child(guides);
         }
         wrap = wrap.child(self.field(s, ink));
+        if let Some(caret) = vim_caret_el(code, ink) {
+            wrap = wrap.child(caret);
+        }
         if let Some(overlay) = self.go_to_overlay(code, ink) {
             wrap = wrap.child(overlay);
         }
@@ -748,19 +1075,37 @@ impl<S: 'static> Code<S> {
         bar
     }
 
-    /// Slim footer strip carrying the blame toggle and the indent-unit chip.
-    /// Both settings are global, not per-document — right-aligned so they
-    /// read as status chrome rather than a toolbar.
+    /// Slim footer strip carrying the Vim mode, the blame toggle and the
+    /// indent-unit chip. The settings are global, not per-document — the
+    /// mode chip sits left, the rest right.
     fn footer(&self, s: &S, ink: &Ink) -> El {
-        row()
+        let code = (self.get)(s);
+        let mut bar = row()
             .w_full()
             .h(22.0)
             .px(10.0)
             .gap(8.0)
             .items_center()
             .justify_end()
-            .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
-            .child(self.send_chip(ink))
+            .border_sides([1.0, 0.0, 0.0, 0.0], ink.border);
+        if code.vim.enabled && !code.read_only {
+            let mode = code.vim.mode;
+            bar = bar.child(theme::txt(
+                mode.label(),
+                T128,
+                if mode.inserts() {
+                    ink.muted
+                } else {
+                    ink.accent
+                },
+            ));
+            let pending = code.vim.pending_label();
+            if !pending.is_empty() {
+                bar = bar.child(theme::txt(&pending, T128, ink.muted));
+            }
+            bar = bar.child(rune::spacer());
+        }
+        bar.child(self.send_chip(ink))
             .child(self.blame_chip(s, ink))
             .child(self.indent_chip(s, ink))
     }
@@ -856,6 +1201,9 @@ impl<S: 'static> Code<S> {
             ));
         }
         highlights.extend(self.find_highlights(code, ink));
+        if let Some(range) = code.vim_visual_range() {
+            highlights.push(TextHighlight::new(range, ink.accent.alpha(0.25)));
+        }
         if code.read_only {
             return text(code.edit.text.as_str())
                 .font(CODE_STYLE)
@@ -871,22 +1219,39 @@ impl<S: 'static> Code<S> {
         let on_changed_key = self.on_changed.clone();
         let on_save = self.on_save.clone();
         let preempt = self.preempt_key.clone();
+        let register = self.register;
+        // Outside Insert the Vim block caret is the only caret: the native
+        // bar is drawn transparent under it.
+        let block_caret = code.vim.enabled && !code.vim.mode.inserts() && code.edit.focused;
+        let caret_color = if block_caret {
+            Color::TRANSPARENT
+        } else {
+            ink.text
+        };
         let mut field = text_input(&code.edit, CODE_STYLE)
             .grow(1.0)
             .color(ink.text)
-            .caret(ink.text, ink.accent.alpha(0.3))
+            .caret(caret_color, ink.accent.alpha(0.3))
             .key(FIELD_KEY)
             .spans(spans)
             .text_highlights(highlights)
             .on_edit(move |st: &mut S| -> &mut TextEdit { &mut get_mut(st).edit })
             .on_input_change(move |st: &mut S, tx: &mut Tx| {
+                // Native input (an IME commit, a paste) must not edit outside
+                // Insert: the IME cannot be disabled at the pinned Rune rev, so
+                // revert the change instead of letting Normal mode corrupt the
+                // buffer.
+                let code = get_mut(st);
+                if code.vim.enabled && code.vim.mode != vim::Mode::Insert {
+                    code.edit.undo();
+                }
                 notify_changed(st, tx, get_mut, &on_changed);
             })
             .on_input_key(move |st: &mut S, ev: &KeyEvent, tx: &mut Tx| -> bool {
                 if preempt.as_ref().is_some_and(|f| f(st, ev, tx)) {
                     return true;
                 }
-                field_key(st, ev, tx, get_mut, &on_save, &on_changed_key)
+                field_key(st, ev, tx, get_mut, register, &on_save, &on_changed_key)
             })
             .on_submit(move |st: &mut S, tx: &mut Tx| {
                 // Enter keeps the line's indent (plus one level after an
@@ -1020,9 +1385,27 @@ fn field_key<S: 'static>(
     ev: &KeyEvent,
     tx: &mut Tx,
     get_mut: fn(&mut S) -> &mut CodeState,
+    register: Option<fn(&mut S) -> &mut vim::Register>,
     on_save: &Option<StateCallback<S>>,
     on_changed: &Option<StateCallback<S>>,
 ) -> bool {
+    if let Some(key) = vim_key_for(st, ev, get_mut) {
+        let mode_before = get_mut(st).vim.mode;
+        let effects = {
+            let code = get_mut(st);
+            let indent = code.indent_unit;
+            let CodeState { edit, vim, .. } = code;
+            let doc = vim::Doc {
+                text: &edit.text,
+                focus: edit.focus,
+                indent,
+            };
+            vim::step(vim, &doc, key)
+        };
+        if apply_vim_effects(st, tx, get_mut, register, on_changed, effects, mode_before) {
+            return true;
+        }
+    }
     if ev.is_command('s') {
         if let Some(cb) = on_save {
             cb(st, tx);
@@ -1075,6 +1458,317 @@ fn field_key<S: 'static>(
         return true;
     }
     false
+}
+
+/// The key the Vim engine sees, or `None` when the field is not routed (Vim
+/// off, read-only) or the chord belongs to the app.
+fn vim_key_for<S: 'static>(
+    st: &mut S,
+    ev: &KeyEvent,
+    get_mut: fn(&mut S) -> &mut CodeState,
+) -> Option<vim::Key> {
+    let code = get_mut(st);
+    if !code.vim.enabled || code.read_only {
+        return None;
+    }
+    vim_key(ev)
+}
+
+/// `rune::KeyEvent` as the engine's own key. Cmd and Option chords return
+/// `None` so every app shortcut keeps working; Control reaches the engine as
+/// [`vim::Key::Ctrl`] (redo).
+fn vim_key(ev: &KeyEvent) -> Option<vim::Key> {
+    if ev.mods.alt {
+        return None;
+    }
+    if ev.mods.ctrl {
+        let c = match &ev.key {
+            Key::Text(s) => s.chars().next()?,
+            Key::Command(c) => *c,
+            _ => return None,
+        };
+        return Some(vim::Key::Ctrl(c.to_ascii_lowercase()));
+    }
+    if ev.mods.cmd {
+        return None;
+    }
+    Some(match &ev.key {
+        Key::Text(s) if s.chars().count() == 1 => vim::Key::Char(s.chars().next()?),
+        Key::Enter => vim::Key::Enter,
+        Key::Escape => vim::Key::Escape,
+        Key::Backspace => vim::Key::Backspace,
+        Key::Delete => vim::Key::Delete,
+        Key::Tab => vim::Key::Tab,
+        Key::Left => vim::Key::Left,
+        Key::Right => vim::Key::Right,
+        Key::Up => vim::Key::Up,
+        Key::Down => vim::Key::Down,
+        Key::Home => vim::Key::Home,
+        Key::End => vim::Key::End,
+        Key::PageUp => vim::Key::PageUp,
+        Key::PageDown => vim::Key::PageDown,
+        _ => return None,
+    })
+}
+
+/// Apply the engine's effects to the shared `TextEdit`. `false` hands the key
+/// to the native field (Insert-mode typing). Every text change here is one
+/// undo step; the caller wraps nothing else.
+fn apply_vim_effects<S: 'static>(
+    st: &mut S,
+    tx: &mut Tx,
+    get_mut: fn(&mut S) -> &mut CodeState,
+    register: Option<fn(&mut S) -> &mut vim::Register>,
+    on_changed: &Option<StateCallback<S>>,
+    effects: Vec<vim::Effect>,
+    mode_before: vim::Mode,
+) -> bool {
+    let mut changed = false;
+    let mut select: Option<(usize, usize)> = None;
+    let mut texts: Vec<(usize, usize, String)> = Vec::new();
+    let mut pastes: Vec<(bool, usize)> = Vec::new();
+    let mut undo = false;
+    let mut redo = false;
+    for effect in effects {
+        match effect {
+            vim::Effect::Pass => return false,
+            vim::Effect::Select { anchor, focus } => select = Some((anchor, focus)),
+            vim::Effect::Replace { start, end, text } => texts.push((start, end, text)),
+            vim::Effect::Yank { text, linewise } => {
+                if let Some(f) = register {
+                    f(st).set(text.clone(), linewise);
+                }
+                tx.copy(text);
+            }
+            vim::Effect::Paste { before, count } => pastes.push((before, count)),
+            vim::Effect::Undo => undo = true,
+            vim::Effect::Redo => redo = true,
+            vim::Effect::Find(action) => {
+                let code = get_mut(st);
+                match action {
+                    vim::FindAction::Open { forward } => code.open_find_vim(forward, tx),
+                    vim::FindAction::Next => {
+                        code.find_step_vim(true, tx);
+                    }
+                    vim::FindAction::Prev => {
+                        code.find_step_vim(false, tx);
+                    }
+                    vim::FindAction::WordUnderCaret => code.search_word_vim(tx),
+                }
+            }
+            vim::Effect::Command(vim::CommandAction::Open) => get_mut(st).open_cmd_vim(),
+            vim::Effect::Scroll(action) => get_mut(st).scroll_line(action, tx),
+        }
+    }
+    if undo {
+        get_mut(st).edit.undo();
+        changed = true;
+    }
+    if redo {
+        get_mut(st).edit.redo();
+        changed = true;
+    }
+    for (before, count) in pastes {
+        let reg = register.map(|f| f(st).clone()).unwrap_or_default();
+        if reg.is_empty() {
+            request_clipboard_paste(st, tx, get_mut, on_changed, before, count);
+            continue;
+        }
+        let at = get_mut(st).edit.focus;
+        if let Some((start, end, insert, caret)) =
+            paste_edit_at(get_mut(st), &reg, at, before, count)
+        {
+            let code = get_mut(st);
+            code.edit.undo_group(|edit| {
+                edit.set_selection(start, end);
+                edit.insert(&insert);
+            });
+            code.edit.set_selection(caret, caret);
+            changed = true;
+        }
+    }
+    if !texts.is_empty() {
+        let code = get_mut(st);
+        code.edit.undo_group(|edit| {
+            for (start, end, text) in &texts {
+                edit.set_selection(*start, *end);
+                edit.insert(text);
+            }
+        });
+        changed = true;
+    }
+    if let Some((anchor, focus)) = select {
+        let code = get_mut(st);
+        code.edit.set_selection(anchor, focus);
+        code.scroll_to_caret(tx);
+    }
+    // An Insert session: capture where it starts, then on exit recover the net
+    // inserted text for `.` (a pure insertion still ends with the entry tail).
+    let code = get_mut(st);
+    if mode_before != vim::Mode::Insert && code.vim.mode == vim::Mode::Insert {
+        let at = code.edit.focus.min(code.edit.text.len());
+        code.vim_insert = Some((at, code.edit.text[at..].to_string()));
+    } else if mode_before == vim::Mode::Insert && code.vim.mode != vim::Mode::Insert {
+        code.edit.break_history_group();
+        if let Some((start, tail)) = code.vim_insert.take() {
+            let text = &code.edit.text;
+            if start <= text.len() && text[start..].ends_with(&tail) {
+                let inserted = text[start..text.len() - tail.len()].to_string();
+                code.vim.record_insert(&inserted);
+            }
+        }
+    }
+    if changed {
+        notify_changed(st, tx, get_mut, on_changed);
+    }
+    true
+}
+
+/// The byte after `at`, or `at` at the end.
+fn next_char(text: &str, at: usize) -> usize {
+    text.get(at..)
+        .and_then(|rest| rest.chars().next())
+        .map_or(at, |c| at + c.len_utf8())
+}
+
+/// The edit a register paste makes at `at`: `(start, end, text, caret)`.
+fn paste_edit_at(
+    code: &CodeState,
+    reg: &vim::Register,
+    at: usize,
+    before: bool,
+    count: usize,
+) -> Option<(usize, usize, String, usize)> {
+    if reg.is_empty() {
+        return None;
+    }
+    let text = &code.edit.text;
+    let at = at.min(text.len());
+    let line = code.edit.line_of_byte(at);
+    let line_range = code.edit.line_range(line);
+    let (start, insert) = if reg.linewise {
+        let mut insert = reg.text.clone();
+        if !insert.ends_with('\n') {
+            insert.push('\n');
+        }
+        if before {
+            (line_range.start, insert)
+        } else {
+            let next = if line_range.end < text.len() {
+                line_range.end + 1
+            } else {
+                line_range.end
+            };
+            if next == text.len() && !text.is_empty() && !text.ends_with('\n') {
+                insert.insert(0, '\n');
+            }
+            (next, insert)
+        }
+    } else {
+        let pos = if before || at >= line_range.end {
+            at
+        } else {
+            next_char(text, at)
+        };
+        (pos, reg.text.clone())
+    };
+    let insert = insert.repeat(count);
+    let caret = if reg.linewise {
+        start
+    } else {
+        let last = insert.chars().next_back().map_or(0, |c| c.len_utf8());
+        start + insert.len() - last
+    };
+    Some((start, start, insert, caret))
+}
+
+/// `p`/`P` with an empty register: read the system clipboard and paste when it
+/// arrives, as its own undo step.
+fn request_clipboard_paste<S: 'static>(
+    st: &mut S,
+    tx: &mut Tx,
+    get_mut: fn(&mut S) -> &mut CodeState,
+    on_changed: &Option<StateCallback<S>>,
+    before: bool,
+    count: usize,
+) {
+    let at = get_mut(st).edit.focus;
+    let changed_cb = on_changed.clone();
+    tx.read_clipboard(move |st: &mut S, content, tx| {
+        let text = content.text().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let linewise = text.ends_with('\n');
+        let reg = vim::Register { text, linewise };
+        let Some((start, end, insert, caret)) = paste_edit_at(get_mut(st), &reg, at, before, count)
+        else {
+            return;
+        };
+        let code = get_mut(st);
+        code.edit.undo_group(|edit| {
+            edit.set_selection(start, end);
+            edit.insert(&insert);
+        });
+        code.edit.set_selection(caret, caret);
+        notify_changed(st, tx, get_mut, &changed_cb);
+    });
+}
+
+/// Visual columns of `s`: a tab advances to the next 4-column stop, every
+/// other character takes one cell (the monospace model the guides use).
+fn display_cols(s: &str) -> usize {
+    let mut col = 0;
+    for c in s.chars() {
+        if c == '\t' {
+            col = (col / indent::TAB_STOP as usize + 1) * indent::TAB_STOP as usize;
+        } else {
+            col += 1;
+        }
+    }
+    col
+}
+
+/// The Vim block caret: one translucent rectangle over the character under
+/// the caret (a cell at line end or on an empty line), in document
+/// coordinates inside the scroll content so it scrolls with the text. The
+/// native bar is drawn transparent while this is mounted.
+fn vim_caret_el(code: &CodeState, ink: &Ink) -> Option<El> {
+    if !code.vim.enabled || code.vim.mode.inserts() || !code.edit.focused || code.read_only {
+        return None;
+    }
+    let caret = code.edit.focus.min(code.edit.text.len());
+    let line = code.edit.line_of_byte(caret);
+    let line_range = code.edit.line_range(line);
+    let line_px = CODE_STYLE.line_px();
+    let cell = rune::text::advance("0", CODE_STYLE).max(1.0);
+    let cols = display_cols(&code.edit.text[line_range.start..caret]);
+    let x = cols as f32 * cell;
+    let next = code
+        .edit
+        .text
+        .get(caret..)
+        .and_then(|rest| rest.chars().next());
+    let w = match next {
+        Some('\t') => {
+            let stop = (cols / indent::TAB_STOP as usize + 1) * indent::TAB_STOP as usize;
+            (stop - cols) as f32 * cell
+        }
+        Some(_) if caret < line_range.end => cell,
+        _ => cell,
+    };
+    let y = line as f32 * line_px;
+    let shape = Shape::new().fill(
+        [[x, y], [x + w, y], [x + w, y + line_px], [x, y + line_px]],
+        ink.text.alpha(0.28),
+    );
+    Some(
+        canvas(shape)
+            .key(VIM_CARET_KEY)
+            .absolute(0.0, 0.0)
+            .size(x + w, y + line_px)
+            .a11y_hidden(),
+    )
 }
 
 /// Indent guides: merged vertical ticks in document coordinates inside one
@@ -1193,17 +1887,35 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
 /// scroll offset the gutter uses so it lines up with its line. It is placed by
 /// line height, not by padding the text with blank rows, so building it costs
 /// the same on a 10-line and a 10 000-line file.
-fn blame_el(code: &CodeState, ink: &Ink) -> El {
+fn blame_el<S: 'static>(code: &CodeState, ink: &Ink, on_open: Option<BlameOpenCallback<S>>) -> El {
     let shift = code.gutter_shift.clone();
     let bytes = code.edit.text.as_bytes();
     let active = bytes[..code.edit.focus.min(bytes.len())]
         .iter()
         .filter(|b| **b == b'\n')
         .count();
-    let label = match code.blame.as_ref().filter(|_| code.blame_visible) {
-        Some(blame) => blame::line_label(blame, active as u64 + 1, blame::now_ms()),
+    let number = active as u64 + 1;
+    let shown = code.blame.as_ref().filter(|_| code.blame_visible);
+    let label = match shown {
+        Some(blame) => blame::line_label(blame, number, blame::now_ms()),
         None => String::new(),
     };
+    let mut line = row().w_full().h(CODE_STYLE.line_px()).child(
+        text(label)
+            .font(CODE_STYLE)
+            .color(ink.muted)
+            .pl(10.0)
+            .pr(10.0),
+    );
+    if let (Some(commit), Some(open)) = (shown.and_then(|b| blame::commit_of(b, number)), on_open) {
+        let commit = commit.to_string();
+        line = line
+            .hover(ink.text.alpha(0.08))
+            .press(ink.text.alpha(0.12))
+            .role("button")
+            .label("Open commit in History")
+            .on_press_tx(move |st: &mut S, tx| open(st, &commit, tx));
+    }
     col()
         .w(BLAME_WIDTH)
         .h_full()
@@ -1212,12 +1924,11 @@ fn blame_el(code: &CodeState, ink: &Ink) -> El {
         .clip_rounded(0.0)
         .label("Blame annotations")
         .child(
-            text(label)
-                .font(CODE_STYLE)
-                .color(ink.muted)
-                .pt(active as f32 * CODE_STYLE.line_px())
-                .pl(10.0)
-                .pr(10.0)
+            // A spacer carries the line's offset so the press area is just the
+            // line, not the column above it.
+            col()
+                .child(el().h(active as f32 * CODE_STYLE.line_px()))
+                .child(line)
                 .live_offset(&shift),
         )
 }
@@ -1368,6 +2079,55 @@ mod tests {
         // The clamped line's byte range is what gets selected.
         let idx = c.clamp_line(99);
         assert_eq!(&c.edit.text[c.edit.line_range(idx)], "ccc");
+    }
+
+    #[test]
+    fn vim_key_maps_plain_keys_and_rejects_app_chords() {
+        let plain = |key| KeyEvent {
+            key,
+            mods: rune::Mods::default(),
+        };
+        assert_eq!(
+            vim_key(&plain(Key::Text("w".into()))),
+            Some(vim::Key::Char('w'))
+        );
+        assert_eq!(vim_key(&plain(Key::Escape)), Some(vim::Key::Escape));
+        assert_eq!(vim_key(&plain(Key::Enter)), Some(vim::Key::Enter));
+        assert_eq!(vim_key(&plain(Key::Tab)), Some(vim::Key::Tab));
+        let cmd = rune::Mods {
+            cmd: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            vim_key(&KeyEvent {
+                key: Key::Text("s".into()),
+                mods: cmd
+            }),
+            None,
+            "⌘S stays the app's"
+        );
+        let ctrl = rune::Mods {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            vim_key(&KeyEvent {
+                key: Key::Text("r".into()),
+                mods: ctrl
+            }),
+            Some(vim::Key::Ctrl('r'))
+        );
+        let alt = rune::Mods {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            vim_key(&KeyEvent {
+                key: Key::Text("l".into()),
+                mods: alt
+            }),
+            None
+        );
     }
 
     #[test]

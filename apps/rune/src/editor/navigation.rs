@@ -458,6 +458,17 @@ pub fn select_checkout(s: &mut State, project_id: String, checkout: PathBuf) {
     crate::editor::acp::cancel(s);
     let project_changed = s.editor.project_id.as_deref() != Some(project_id.as_str());
     s.editor.project_id = Some(project_id.clone());
+    let is_folder = s
+        .editor
+        .sidebar_worktrees
+        .get(&project_id)
+        .and_then(|entry| entry.list.as_ref())
+        .is_some_and(|list| !list.repo);
+    s.editor.folder_project = is_folder;
+    if is_folder {
+        s.editor.section = Section::Files;
+        s.editor.visited.insert(Section::Files);
+    }
     if project_changed {
         // The checkout picker's worktree list belongs to the project:
         // reload it (and the sidebar's per-project entry) for the new
@@ -1990,6 +2001,7 @@ mod tests {
                 created_at: 0,
             },
             missing: false,
+            parent_project_id: None,
         }
     }
 

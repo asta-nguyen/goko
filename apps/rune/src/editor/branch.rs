@@ -65,7 +65,7 @@ pub fn read(checkout: &Path) -> Result<Branch, String> {
 
 /// Active-editor polling allows one outstanding probe, including while the queue is busy.
 pub fn poll(ed: &mut EditorState, active: bool, now: f64, tx: &mut Tx) -> bool {
-    if !active {
+    if !active || ed.folder_project {
         ed.branch.checked_at = None;
         return false;
     }

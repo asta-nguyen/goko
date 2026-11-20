@@ -51,6 +51,50 @@ async fn a_paint_keeps_what_the_raw_replay_lost() {
     process.wait_exit().await.expect("reap");
 }
 
+/// A viewer that sizes the PTY and subscribes straight away gets a paint of the
+/// new size: replayed into a grid of that size, the last line and the cursor sit
+/// where the program left them (a paint of the old size puts the cursor on the
+/// wrong row, and the program's next "erase below" wipes the screen under it).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paint_follows_a_resize_asked_just_before_it() {
+    let process = PtyProcess::spawn(spec(&["sh", "-c", "seq 1 100; sleep 30"])).expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !contains(&process.buffer().1, "100\r\n") {
+        assert!(Instant::now() < deadline, "the output never finished");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    process.resize(100, 30).expect("resize");
+    let (_snapshot, paint, _receiver) = process.subscribe_paint(false);
+
+    let mut replay = vt::Vt::new(
+        100,
+        30,
+        vt::Limits {
+            lines: protocol::SCROLLBACK_LINES,
+            bytes: protocol::SCROLLBACK_MAX_BYTES,
+        },
+    );
+    replay.write(&paint);
+    let frame = replay.frame();
+    let text = |row: &[vt::Cell]| {
+        row.iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    };
+    let last = frame
+        .rows
+        .iter()
+        .position(|row| text(row) == "100")
+        .expect("the last line is on the screen");
+    assert_eq!(frame.rows.len(), 30);
+    assert_eq!(frame.cursor_cell, Some((0, last as u16 + 1)));
+    process.kill().expect("the child was still alive to kill");
+    process.wait_exit().await.expect("reap");
+}
+
 /// Over the socket: the reply says `paint`, the paint frames carry `PAINT_SEQ`
 /// and come first, and live output continues at the reply's `next_seq`.
 #[tokio::test]

@@ -11,8 +11,14 @@
 
 - [Native Rune editor](changes/rune-native-editor/design.md) ([tasks](changes/rune-native-editor/tasks.md), [delta](changes/rune-native-editor/delta.md))
 
+- [Terminal engine: replace alacritty_terminal with libghostty-vt](changes/2026-11-20-terminal-engine-ghostty/design.md) ([tasks](changes/2026-11-20-terminal-engine-ghostty/tasks.md))
+
+
 ## Archived changes
 
+- [Vim mode in the native editor](changes/archive/2026-11-19-27-vim-mode/design.md) ([tasks](changes/archive/2026-11-19-27-vim-mode/tasks.md), [delta](changes/archive/2026-11-19-27-vim-mode/delta.md))
+- [Rune SSH passphrase prompt](changes/archive/rune-ssh-passphrase-prompt/delta.md)
+- [Folder projects and nested repository import](changes/archive/folder-projects/design.md) ([tasks](changes/archive/folder-projects/tasks.md), [delta](changes/archive/folder-projects/delta.md))
 - [Agent snapshot: copy code for the terminal](changes/archive/agent-snapshot/delta.md)
 - [Agent snapshot: code context menu](changes/archive/agent-snapshot-menu/delta.md)
 - [Windows support: port gokod + goko-rune to Windows](changes/archive/2026-11-16-29-windows-support/design.md) ([tasks](changes/archive/2026-11-16-29-windows-support/tasks.md))

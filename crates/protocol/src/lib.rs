@@ -6,6 +6,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// column, so 5,000 lines of a 120-column terminal is about 14 MB.
 pub const SCROLLBACK_LINES: usize = 5_000;
 
+/// The most memory a terminal's history may take, whichever of this and
+/// `SCROLLBACK_LINES` is reached first: a very wide or heavily styled terminal
+/// keeps fewer lines instead of growing without bound.
+pub const SCROLLBACK_MAX_BYTES: usize = 8 << 20;
+
 pub mod frame;
 pub mod message;
 pub mod session;

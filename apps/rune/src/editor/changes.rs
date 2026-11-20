@@ -30,7 +30,7 @@ static MINUS: Icon = Icon {
     view: 24.0,
     body: "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 12h14\"/></g>",
 };
-static TRASH_2: Icon = Icon {
+pub(crate) static TRASH_2: Icon = Icon {
     name: "trash-2",
     view: 24.0,
     body: "<g fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 6h18\"/><path d=\"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6\"/><path d=\"M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2\"/><line x1=\"10\" x2=\"10\" y1=\"11\" y2=\"17\"/><line x1=\"14\" x2=\"14\" y1=\"11\" y2=\"17\"/></g>",
@@ -807,28 +807,32 @@ fn clean_view(s: &State, ink: &Ink) -> El {
 }
 
 fn split_view(s: &State, ink: &Ink, k: &Kit, data: &app_core::git_view::GitViewChanges) -> El {
-    row()
+    let on_right = pane_layout::docks_right(s);
+    let list = aside(s, ink, k, data)
+        // Persisted width (desktop `editorList` default 288, min 180, max
+        // 480 — per-section default keeps 300 for the icon-row actions);
+        // the grip inside the aside drags it.
+        .w(pane_layout::current(s, PaneKind::ChangesList))
+        .h_full()
+        .shrink()
+        .min_w(pane_layout::PANE_MIN)
+        .border_sides(pane_layout::aside_border(on_right), ink.border)
+        .pl(pane_layout::aside_inset(on_right));
+    let patch = patch_side(s, ink)
+        .grow(1.0)
+        .min_w(pane_layout::SIBLING_MIN)
+        .h_full();
+    let mut root = row()
         .grow(1.0)
         .min_h(0.0)
         .w_full()
-        .on_layout_tx(pane_layout::watch_row_width())
-        .child(
-            aside(s, ink, k, data)
-                // Persisted width (desktop `editorList` default 288, min
-                // 180, max 480 — per-section default keeps 300 for the
-                // icon-row actions); the grip inside the aside drags it.
-                .w(pane_layout::current(s, PaneKind::ChangesList))
-                .h_full()
-                .shrink()
-                .min_w(pane_layout::PANE_MIN)
-                .border_sides([0.0, 1.0, 0.0, 0.0], ink.border),
-        )
-        .child(
-            patch_side(s, ink)
-                .grow(1.0)
-                .min_w(pane_layout::SIBLING_MIN)
-                .h_full(),
-        )
+        .on_layout_tx(pane_layout::watch_row_width());
+    root = if on_right {
+        root.child(patch).child(list)
+    } else {
+        root.child(list).child(patch)
+    };
+    root
 }
 
 /// Left column: "Changed files" header + refresh, filter, scrollable groups,

@@ -43,6 +43,7 @@ async fn sigterm_removes_the_socket_and_stops_within_two_seconds() {
     let mut daemon = Daemon::start(&home);
     connect(&paths).await;
 
+    // SAFETY: `daemon.pid()` is the live child `gokod` process spawned by this test.
     assert_eq!(unsafe { libc::kill(daemon.pid(), libc::SIGTERM) }, 0);
 
     let status = daemon

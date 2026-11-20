@@ -59,7 +59,10 @@ impl From<&str> for Release {
 /// `(false, text)` for a bullet, its wrapped lines joined into one paragraph.
 pub fn note_rows(notes: &str) -> Vec<(bool, String)> {
     let mut rows: Vec<(bool, String)> = Vec::new();
-    for line in notes.lines().map(|line| line.replace('`', "")) {
+    for line in notes
+        .lines()
+        .map(|line| strip_links(&line.replace('`', "")))
+    {
         let line = line.trim_end();
         if let Some(heading) = line.strip_prefix("### ") {
             rows.push((true, heading.trim().to_owned()));
@@ -76,6 +79,24 @@ pub fn note_rows(notes: &str) -> Vec<(bool, String)> {
         }
     }
     rows
+}
+
+/// `line` with each markdown link `[text](url)` reduced to `text`, since the
+/// notes view is plain text. A link is read within one line, and a `[` that
+/// does not open one is left as written.
+fn strip_links(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(mid) = rest.find("](") {
+        let (Some(open), Some(len)) = (rest[..mid].rfind('['), rest[mid..].find(')')) else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..mid]);
+        rest = &rest[mid + len + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `major.minor.patch` and whether a `-suffix` marks a pre-release.
@@ -435,6 +456,20 @@ mod tests {
             ]
         );
         assert!(note_rows("").is_empty());
+    }
+
+    /// The notes view is plain text, so a markdown link (a contributor's
+    /// profile) shows as its text; brackets that are not a link stay.
+    #[test]
+    fn notes_show_a_markdown_link_as_its_text() {
+        let notes = "- Dock. By [@a](https://github.com/a) in #34 (`e183612`).\n- A [b] and [c](https://x.y/z) link, [d](u) too, [e](";
+        assert_eq!(
+            note_rows(notes),
+            [
+                (false, "Dock. By @a in #34 (e183612).".into()),
+                (false, "A [b] and c link, d too, [e](".into()),
+            ]
+        );
     }
 
     #[test]

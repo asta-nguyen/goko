@@ -148,6 +148,8 @@ pub struct FilesState {
     pub paths: Vec<String>,
     /// What Git ignores (`dir/` for a collapsed directory), shown dimmed.
     pub ignored: Vec<String>,
+    /// The folder file list hit its cap; the tree shows the truncation note.
+    pub truncated: bool,
     /// The filename filter text (what the input edits).
     pub filter: TextEdit,
     /// Content-search query input (debounced into `search.pending`).
@@ -507,6 +509,8 @@ pub struct EditorState {
 
     // -- sections ----------------------------------------------------------
     pub section: Section,
+    /// The active checkout is a registered folder, not a Git worktree.
+    pub folder_project: bool,
     /// Shared changed-file layout (`List`/`Tree`) for the Changes list and
     /// the History commit detail — one session preference for both sections,
     /// not persisted and not reset by section or checkout switches.
@@ -551,6 +555,12 @@ pub struct EditorState {
     /// `goko.editor.blame`; the column itself additionally hides while the
     /// draft is dirty — the annotations describe the file on disk.
     pub blame_enabled: bool,
+    /// Whether the code field routes keys through the Vim engine. Persisted
+    /// under `goko.editor.vim`; every mounted [`CodeState`] mirrors it.
+    pub vim_enabled: bool,
+    /// The unnamed Vim register, shared across tabs so a yank in one pastes
+    /// in another.
+    pub vim_register: crate::editor::vim::Register,
     /// Go-to-definition resolution in flight (one at a time).
     pub go_to: Option<GoToPending>,
     /// Token guarding an in-flight file load against stale replies, plus
@@ -635,12 +645,14 @@ impl EditorState {
             checkout_key: None,
             pending_checkout: None,
             section: Section::Changes,
+            folder_project: false,
             list_view: ListView::default(),
             visited: HashSet::from([Section::Changes]),
             notice: None,
             files: FilesState {
                 paths: Vec::new(),
                 ignored: Vec::new(),
+                truncated: false,
                 filter: TextEdit::new(""),
                 search_edit: TextEdit::new(""),
                 model: TreeModel::new(),
@@ -741,6 +753,8 @@ impl EditorState {
             scratch_code: CodeState::new("", ""),
             indent_choice: UnitChoice::Auto,
             blame_enabled: true,
+            vim_enabled: false,
+            vim_register: crate::editor::vim::Register::default(),
             go_to: None,
             doc_load: None,
             doc_reload: None,

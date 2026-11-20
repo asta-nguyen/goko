@@ -14,15 +14,16 @@ The Rust protocol and daemon live in `crates/protocol/` and `crates/daemon/`, sh
 - `cargo test --workspace` runs the protocol and daemon tests (the daemon integration tests start the real `gokod` in a temp `GOKO_HOME`).
 - `gokod --version` prints `gokod 0.1.0`; an unsupported arg prints the usage and exits 2; no args runs the daemon: it holds `daemon.lock` in `GOKO_HOME` (default `~/Library/Application Support/Goko` on macOS, `~/.local/state/goko` on Linux), serves `daemon.sock`, writes `daemon.token` and `daemon.log`, and exits cleanly on SIGTERM/SIGINT. A second `gokod` prints `gokod: already running` and exits 0.
 - The observed checks are recorded in [s1-01 task results](docs/agent-devkit/changes/archive/s1-01-repo-init/tasks.md).
+- `cargo build --workspace` also builds `crates/vt`, which needs Zig 0.16, the `vendor/ghostty` submodule (`git submodule update --init --depth 1`) and libclang. macOS: `brew install zig@0.16`, then `export ZIG=$(brew --prefix zig@0.16)/bin/zig`. Linux: `apt install clang libclang-dev` and Zig 0.16 from ziglang.org. Windows: Zig 0.16 and LLVM, with `LIBCLANG_PATH` pointing at LLVM's `bin`. Zig fetches its package dependencies over the network on the first build.
 
 The Rune app is a native binary (`apps/rune` → `goko-rune`). On macOS a bare binary opens **no window** — without a bundle, LaunchServices never activates the app, so its window is never ordered in. Run it through `apps/rune/run-macos.sh [release|debug]`, which builds the workspace, assembles `target/Goko.app` (the app plus `gokod` beside it, so the app can start the daemon) and launches it. The daemon client spawns `gokod` out of `GOKO_HOME` (`app_core::home::home_dir`), so a fresh home gets its own daemon.
 
-A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` builds macOS (Apple Silicon) with `apps/rune/package-macos.sh` and Linux (x86_64 on `ubuntu-22.04`, aarch64 on `ubuntu-22.04-arm`) with `apps/rune/package-linux.sh` (each a tar.gz and a `<target>.target.json` entry), merges the entries into `latest.json` with `jq` (with `notes`, the `CHANGELOG.md` entry for the tag, which Settings → Updates shows), and publishes them with `distribution/install.sh` as a GitHub release; users install with the `curl` command in the README. `bundle-macos.sh` is the one place the macOS bundle is assembled, shared with `run-macos.sh`. There is no Windows release (`gokod` uses Unix sockets).
+A release is a pushed tag `vX.Y.Z`: `.github/workflows/release.yml` runs `cargo fmt`, `cargo clippy`, and `cargo test`, then builds macOS (Apple Silicon) with `apps/rune/package-macos.sh`, Linux (x86_64 on `ubuntu-22.04`, aarch64 on `ubuntu-22.04-arm`) with `apps/rune/package-linux.sh`, and Windows (x86_64 on `windows-2022`: `windows-latest` is Visual Studio 2026, whose C++ library needs Clang 22 while Zig 0.16 bundles Clang 21) with `apps/rune/package-windows.ps1` (each an archive and a `<target>.target.json` entry), merges the entries into `latest.json` with `jq` (with `notes`, the `CHANGELOG.md` entry for the tag, which Settings → Updates shows), and publishes them with `distribution/install.sh` and `distribution/install.ps1` as a GitHub release; users install with the command in the README. `bundle-macos.sh` is the one place the macOS bundle is assembled, shared with `run-macos.sh`.
 
 ### Cutting a release
 
 1. Bump `[workspace.package] version` in `Cargo.toml`; `cargo build` refreshes `Cargo.lock`. `gokod` has its own version in `crates/daemon/Cargo.toml`: bump it only when the app gates on a new daemon feature (`version_at_least` in `apps/rune/src/daemon.rs`).
-2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it. That entry is what users read as "What's new" when the app offers the update, so write it for them.
+2. In `CHANGELOG.md`, put the pending entries under `## [X.Y.Z] - YYYY-MM-DD` and leave an empty `## [Unreleased]` above it. That entry is what users read as "What's new" when the app offers the update, so write it for them. Build it with the `changelog` skill: every entry names its author and commits, and its `--missing` check must pass first.
 3. `cargo fmt --all -- --check` and `cargo test --workspace` pass.
 4. Merge to `main`, then tag that commit `vX.Y.Z` and push the tag. The push is what builds and publishes, so do it last and only on purpose.
 5. When the `release` workflow finishes, check that the GitHub release has the tar.gz, `latest.json` and `install.sh`.
@@ -52,6 +53,7 @@ devin -p "$(cat brief.md)" --model swe-2-max --permission-mode dangerous
 ## Skills
 
 - `brainstorm-feature`: `.agents/skills/brainstorm-feature/SKILL.md`
+- `changelog`: `.agents/skills/changelog/SKILL.md`
 - `context-handoff`: `.agents/skills/context-handoff/SKILL.md`
 - `document-wiki`: `.agents/skills/document-wiki/SKILL.md`
 - `estimate-feature`: `.agents/skills/estimate-feature/SKILL.md`

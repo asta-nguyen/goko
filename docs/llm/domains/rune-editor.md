@@ -16,8 +16,11 @@ Scope boundaries, verified against current source:
 - The terminal and session chrome drives real daemon sessions
   (`apps/rune/src/data.rs`, `term.rs`, `panes.rs`); the editor never reads
   session state and no live native terminal/session producer exists.
-- Vim is deferred: the shared `editor.vim` setting still drives the Tauri
-  editor only; Rune exposes no Vim control.
+- Vim mode is optional and off by default (`goko.editor.vim`, Settings →
+  Editor): a native modal engine drives the code field only, not the find bar,
+  commit message or terminal. In Normal mode the macOS input source must be
+  ABC because the pinned Rune rev cannot disable the input method; Insert mode
+  composes Vietnamese normally (see RNE-vim-mode).
 - Language-server support covers hover and go-to-definition only;
   diagnostics and completion are deferred (see RNE-language-servers).
 - External open-file/line requests have a tested consumer but no producer yet
@@ -182,13 +185,25 @@ Evidence: `apps/rune/src/editor/autorefresh.rs`, `apps/rune/src/editor/backend.r
 
 ### RNE-changes-git-writes
 
-The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts, per-layer diffs and each conflict's kind (both modified, both added, deleted by us, deleted by them, both deleted, added by us, added by them), staging, unstaging, discarding, resolving conflicts, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing or prompting for credentials — and, while Git reports a merge, rebase, cherry-pick or revert in progress, showing a banner offering Abort behind a confirmation and turning Commit into Continue, which is enabled once no conflict remains (and, for a merge, the message is not blank) and either commits a merge, with Git's merge message prefilled, or runs the operation's `--continue` non-interactively.
+The system SHALL show the checkout's conflict, staged, unstaged, and untracked groups with counts, per-layer diffs and each conflict's kind (both modified, both added, deleted by us, deleted by them, both deleted, added by us, added by them), staging, unstaging, discarding, resolving conflicts, committing, and pushing only through the serialized write lane — Discard only after a confirmation naming the file, Commit only with a non-empty message and no conflicts, and Push never forcing, prompting only for an SSH key passphrase in a masked modal whose answer goes to that one push and is never stored, and failing every other credential prompt — and, while Git reports a merge, rebase, cherry-pick or revert in progress, showing a banner offering Abort behind a confirmation and turning Commit into Continue, which is enabled once no conflict remains (and, for a merge, the message is not blank) and either commits a merge, with Git's merge message prefilled, or runs the operation's `--continue` non-interactively.
 
 #### Scenario: Stage, commit, push
 
 - GIVEN a checkout has unstaged files
 - WHEN the user stages a file, types a message, and presses Commit then Push
 - THEN Git creates the commit, the draft clears on success, and the push runs without force under the backend's 120-second limit
+
+#### Scenario: SSH passphrase prompt
+
+- GIVEN the push needs a passphrase for its SSH key and no ssh-agent holds the key
+- WHEN the user presses Push and ssh asks for the passphrase
+- THEN a masked "SSH key passphrase" modal shows ssh's own prompt, submitting continues the same push, and a rejected passphrase opens the prompt again
+
+#### Scenario: Cancel the passphrase prompt
+
+- GIVEN the passphrase modal is open
+- WHEN the user cancels or presses Escape
+- THEN no passphrase is sent, the push stops, and the panel shows "Push cancelled" instead of Git's publickey error
 
 #### Scenario: Discard requires confirmation
 
@@ -220,7 +235,7 @@ The system SHALL show the checkout's conflict, staged, unstaged, and untracked g
 - WHEN the user presses Continue
 - THEN `git rebase --continue` runs non-interactively with a 120-second limit, and Continue is disabled while any conflict remains
 
-Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
+Evidence: `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/commit.rs`, `apps/rune/src/editor/patch.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/askpass.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/git_write.rs`, `crates/app-core/src/git_view.rs`
 
 ### RNE-changes-view-layout
 
@@ -278,7 +293,7 @@ Evidence: `apps/rune/src/editor/workspace.rs`
 
 ### RNE-checkout-selection
 
-The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules while never deriving editor selection from terminal sessions.
+The system SHALL let the user pick a registered project and one of its checkouts — the project root or a listed Git worktree — through the workspace pickers or the chrome sidebar's project and worktree rows, routing every selection through the draft-guarded `SelectCheckout`/`SelectProject` navigation with each committed checkout becoming the sidebar's highlighted `active_workspace`, and validating every checkout through `app-core` project/checkout rules: file jobs accept the project root or a listed worktree without requiring a Git worktree, while Git jobs additionally require a real non-bare Git worktree root, and editor selection is never derived from terminal sessions.
 
 #### Scenario: Pick project and worktree
 
@@ -296,10 +311,15 @@ The system SHALL let the user pick a registered project and one of its checkouts
 
 - GIVEN a checkout path that is not the project root or a listed worktree
 - WHEN the backend validates it for a Git or file job
-- THEN `projects::git_checkout`/`project_checkout` rejects it and no Git command runs
+- THEN `projects::file_checkout`/`git_checkout` rejects it and no Git command runs
+
+#### Scenario: Folder project file job vs Git job
+
+- GIVEN a registered folder project whose root is not a Git worktree
+- WHEN the editor issues a file job and a Git job for that root
+- THEN the file job proceeds through `projects::file_checkout` and the Git job is rejected by `projects::git_checkout` with the existing not-a-Git-worktree error
 
 Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/data.rs`, `crates/app-core/src/projects.rs`
-
 ### RNE-code-surface
 
 The system SHALL edit the open document in a rune-kit native text surface with a line-number gutter, offering `⌘S` save, `⌘F` find with match count and `⌘G`/`⇧⌘G` match navigation, `Escape` to close the find bar, `Tab`/`Shift+Tab` line indentation, `Enter` auto-indent, and read-only selectable rendering for files that cannot be edited.
@@ -580,6 +600,30 @@ The system SHALL open complete UTF-8 text files up to the shared 1 MiB cap for e
 
 Evidence: `apps/rune/src/editor/draft.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/code.rs`, `crates/app-core/src/git_view.rs`
 
+### RNE-folder-project
+
+The system SHALL treat a registered project whose root is not a non-bare Git worktree root as a folder project: its Files section is the default section and lists the folder's filesystem recursively — regular files and symlinks, excluding `.git` at every level and the scan's VCS, hidden and heavy build directories, never traversing a symlinked directory, with `/`-separated relative paths and a bounded list that reports truncation — while file open, edit, save, create, rename, trash, media preview, Quick Open and Servers work through the folder root as the checkout; Changes, History and Stashes show an honest "not a Git repository" state without issuing Git reads, and the branch badge, worktree controls, blame, change gutter, content search and concept search are unavailable with an honest message instead of a Git error.
+
+#### Scenario: browse and edit a folder project
+
+- GIVEN a folder project is selected
+- WHEN the editor opens
+- THEN Files is active, the tree shows the folder's files and child repository files with `.git` hidden, and a text file opens, edits and saves through the existing draft guard
+
+#### Scenario: Git features stay honest
+
+- GIVEN a folder project is selected
+- WHEN the user opens Changes, History or Stashes, presses the blame chip, or types in the content search box
+- THEN the section shows that the folder is not a Git repository, no Git request is issued for it, and no branch, worktree, blame, gutter or search result is fabricated
+
+#### Scenario: bounded folder list
+
+- GIVEN the folder contains more files than the list bound
+- WHEN Files loads
+- THEN the tree shows the first bounded set and a truncation notice, and the editor remains usable
+
+Evidence: `crates/app-core/src/git_view.rs`, `crates/app-core/src/projects.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/navigation.rs`
+
 ### RNE-go-to-definition
 
 The system SHALL, on `Cmd`/`Ctrl`+click in the Files editor, first offer the click to the language-server definition path when a server covers the file, and otherwise resolve an import specifier against the checkout's file list — relative paths with extension and `index.*` probing, `.js` to TypeScript source, and `tsconfig`/`jsconfig` `paths` aliases from the nearest config — or find a clicked name's unique declaration through content search, falling back to Text mode with the name as the query when no single declaration exists; an absent, failed, timed-out, or empty language-server answer falls back to the same heuristic path.
@@ -606,7 +650,13 @@ Evidence: `apps/rune/src/editor/go_to_definition.rs`, `apps/rune/src/editor/lsp.
 
 ### RNE-history
 
-The system SHALL show History as a branch-filtered, paged commit table with a lane graph, a synthetic uncommitted-changes row, a filter that dims non-matching rows while keeping the whole graph, match navigation, Jump to HEAD, a commit detail pane with parents and patch, and a resizable layout persisted through the shared settings store.
+The system SHALL show History as a branch-filtered, paged commit table with a lane graph, a synthetic uncommitted-changes row, a filter that dims non-matching rows while keeping the whole graph, match navigation, Jump to HEAD, a commit detail pane with parents and patch, and a resizable layout persisted through the shared settings store. Each row's ref pills sit ahead of the subject, a merge commit's subject and author read muted, and a local branch and a remote-tracking ref of the same name on one commit share one pill (`main | origin`).
+
+#### Scenario: Pills and merge rows
+
+- GIVEN a commit carries `main`, `origin/main` and a tag, and another is a merge commit
+- WHEN History lists them
+- THEN the commit shows one `main | origin` pill and the tag pill before its subject, a remote with no local twin keeps its own pill, and the merge commit's subject and author draw muted
 
 #### Scenario: Filter and jump
 
@@ -636,7 +686,7 @@ Evidence: `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/history_graph
 
 ### RNE-inline-blame
 
-The system SHALL show, next to the open file's code, an annotation on the caret's line naming the author who last touched it and how long ago the commit landed, read through `git blame` on the worker lane — the annotation blanked (the column stays mounted) while the buffer holds unsaved edits, re-read after the save lands, and toggled on and off from the editor footer with the choice persisted under `goko.editor.blame`.
+The system SHALL show, next to the open file's code, an annotation on the caret's line naming the author who last touched it and how long ago the commit landed, read through `git blame` on the worker lane — the annotation blanked (the column stays mounted) while the buffer holds unsaved edits, re-read after the save lands, and toggled on and off from the editor footer with the choice persisted under `goko.editor.blame`. Pressing the annotation of a committed line opens that commit in History: the section switches, and History pages on until the commit is loaded, then selects and reveals it (it gives up once the history runs out).
 
 #### Scenario: Annotations land beside the code
 
@@ -662,7 +712,7 @@ The system SHALL show, next to the open file's code, an annotation on the caret'
 - WHEN the blame read fails
 - THEN the editor shows the error and no annotation is invented
 
-Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
+Evidence: `apps/rune/src/editor/blame.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/files.rs`, `crates/app-core/src/git_view.rs`
 
 ### RNE-inline-conflicts
 
@@ -766,6 +816,36 @@ The system SHALL run one stdio language-server connection per `(checkout, server
 
 Evidence: `apps/rune/src/editor/lsp.rs`, `apps/rune/src/editor/lsp/pos.rs`, `apps/rune/src/editor/lsp/sync.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/main.rs`, `crates/app-core/src/lsp.rs`
 
+### RNE-list-aside-position
+
+The system SHALL dock the Files file tree, the Changes changed-file list, and the Stashes list on either side of their detail panes, left or right, rendering each section as one row with the 8 px pane grip between the list and its detail pane, persisting a single shared `goko.editor.list_side` choice so all three sections share one side across restarts, inverting the grip's drag direction when docked right so dragging toward the detail pane widens the list, and insetting a right-docked list by the grip's width so no row sits under the grip. The grip reports the list's width as its value, so an assistive-technology step widens the list on either side.
+
+#### Scenario: one side shared by all three sections
+
+- GIVEN the list asides docked left
+- WHEN the user picks Right under Settings → Editor → List position
+- THEN the Files tree, Changes changed-file list and Stashes list each render to the right of their detail pane, with their 1 px border rule moved to the list's leading edge, and the choice persists
+
+#### Scenario: docked-right grip direction
+
+- GIVEN a list docked right
+- WHEN its grip is dragged toward the detail pane, or assistive technology increments it
+- THEN the list widens rather than narrows, and the new width persists
+
+#### Scenario: rows clear the docked-right grip
+
+- GIVEN a list docked right
+- WHEN it renders
+- THEN its content starts past the 8 px grip, so no row or chevron lies under it
+
+#### Scenario: side restored on launch
+
+- GIVEN a previously persisted `goko.editor.list_side` value of `right`
+- WHEN the app starts and a section activates
+- THEN its list aside renders on the right
+
+Evidence: `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/pane_layout.rs`, `apps/rune/src/main.rs`, `apps/rune/src/settings.rs`
+
 ### RNE-notice-dismiss
 
 The system SHALL show a dismiss button on the Editor's notice bar that clears the notice at once.
@@ -840,13 +920,19 @@ Evidence: `apps/rune/src/editor/quick_open.rs`, `apps/rune/src/editor/keyboard.r
 
 ### RNE-section-views
 
-The system SHALL present the editor as five sections — Files, Changes, History, Stashes, Servers — defaulting to Changes, render only the active section's view while retaining each section's state in `EditorState` across switches, and issue a section's reads on activation, checkout selection, or manual refresh rather than for hidden sections.
+The system SHALL present the editor as five sections — Files, Changes, History, Stashes, Servers — defaulting to Changes for a Git checkout and Files for a folder project, render only the active section's view while retaining each section's state in `EditorState` across switches, and issue a section's reads on activation, checkout selection, or manual refresh rather than for hidden sections, while a folder project's Changes, History and Stashes show the honest not-a-Git-repository state without issuing Git reads.
 
 #### Scenario: Switch sections
 
 - GIVEN a checkout is selected and Changes is active with loaded data
 - WHEN the user presses the History tab
 - THEN `section` becomes History, its reads issue through `refresh_active`, and only History's view renders; returning to Changes restores its retained selection and data from `EditorState`
+
+#### Scenario: Folder project defaults to Files
+
+- GIVEN a folder project is selected
+- WHEN the editor opens
+- THEN Files is active, and pressing Changes, History or Stashes shows the not-a-Git-repository state without a Git read
 
 #### Scenario: Hidden sections stay cold
 
@@ -855,7 +941,6 @@ The system SHALL present the editor as five sections — Files, Changes, History
 - THEN no Files, History, Stashes, or Servers reads are issued until each section is first activated
 
 Evidence: `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/lsp.rs`
-
 ### RNE-sidebar-sync
 
 The system SHALL keep the chrome sidebar's committed workspace and the editor's checkout selection in sync — activating the committed checkout when the Editor view opens, decoding `active_workspace` into project and checkout, ignoring `__unassigned__`, unregistered or vanished project ids, and an already-matching selection, through the same draft-guarded `SelectCheckout` path, and clearing the committed workspace when a project switch drops the checkout so no stale row stays highlighted.
@@ -928,6 +1013,67 @@ The system SHALL colour supported languages with rune-highlights lexers across t
 
 Evidence: `apps/rune/src/editor/syntax.rs`, `apps/rune/src/editor/highlight.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/Cargo.toml`
 
+### RNE-vim-mode
+
+The system SHALL offer an optional Vim mode for the code field, off by default and switched in Settings → Editor under `goko.editor.vim`, that routes the field's keys through a pure modal engine with Normal, Insert, Visual and Visual Line modes — motions `h j k l w b e W B E 0 ^ $ gg G f t F T ; , { } %` with counts, operators `d c y` with motions, text objects and doubled forms, `x D C p P J > < u`/`Ctrl-r`, `.` repeat, `i a I A o O` insert entries, an unnamed register mirrored to the system clipboard, `/ ? n N *` over the find bar, and `:w :q :wq :<line>` in a command bar — keeping the caret on a character outside Insert mode, drawing a block caret and a mode chip with pending keys, and leaving `⌘S`/`⌘F`/`⌘G`/`⌘/`/`⌘P` working in every mode; with the setting off the field behaves exactly as before, and in Normal mode the macOS input source must be ABC because the pinned Rune rev cannot disable the input method.
+
+#### Scenario: Enable Vim mode
+
+- GIVEN the Settings → Editor page with Vim mode off
+- WHEN the user switches Vim mode on
+- THEN `goko.editor.vim` stores `"1"`, the code field starts in Normal mode, and the footer shows `NORMAL`
+- AND after a restart the field still starts in Normal mode; with the setting absent, unreadable or `"0"` it stays off and every key behaves as before
+
+#### Scenario: Motions and counts
+
+- GIVEN a document in Normal mode with the caret on the first character
+- WHEN the user presses `w`, `3l`, `$`, `gg`, `G` or `%`
+- THEN the caret lands on the expected character, never past a line's last character, and `j`/`k` keep the goal column across shorter lines
+
+#### Scenario: Operator and text object
+
+- GIVEN a document in Normal mode
+- WHEN the user presses `dd`, `2dw`, `ciw` then types replacement text and presses `Escape`, or `y` with a motion
+- THEN the affected text is deleted, changed or yanked as one undo step, `p` pastes the unnamed register after the caret, `u` reverts the command, and `.` repeats it at the new caret
+
+#### Scenario: Insert mode keeps Vietnamese input
+
+- GIVEN Vim mode on and the macOS Vietnamese input source active
+- WHEN the user presses `i` and composes Vietnamese text
+- THEN Insert mode commits the composed text normally, `Escape` returns to Normal without blurring the field, and the caret clamps onto the previous character when it sat past the line end
+
+#### Scenario: Visual selection
+
+- GIVEN a document in Normal mode
+- WHEN the user presses `v` or `V`, extends with motions, and presses `d`, `c` or `y`
+- THEN the selection is inclusive of the character under the caret, the operator applies to it as one undo step, and `Escape` returns to Normal
+
+#### Scenario: Search
+
+- GIVEN a document in Normal mode with the caret inside the document
+- WHEN the user presses `/`, types a query and presses `Enter`, then `n` or `N`, or presses `*`
+- THEN the find bar opens without moving the caret, `Enter` moves the caret to the first match after the search origin, `n`/`N` step in the recorded direction, `*` searches the word under the caret, and `Escape` restores the caret
+
+#### Scenario: Command line
+
+- GIVEN a document in Normal mode
+- WHEN the user presses `:` and enters `w`, `q`, `wq` or a line number
+- THEN `:w` saves, `:q` closes the tab through the draft guard, `:wq` saves and closes only after the save succeeds, `:<line>` reveals that line, and an unknown command leaves the bar open with an inline message
+
+#### Scenario: Block caret and mode chip
+
+- GIVEN Vim mode on and the code field focused
+- WHEN the field is in Normal or Visual mode
+- THEN the native caret is transparent, a block is drawn over the character under the caret, and the footer shows the mode and any pending keys; in Insert mode the native bar caret returns
+
+#### Scenario: Normal mode needs the ABC input source
+
+- GIVEN Vim mode on, a Vietnamese input source active, and Normal mode
+- WHEN the user presses a letter that starts an IME composition
+- THEN the key does not reach the engine, as documented in the Settings description, while Insert mode still composes Vietnamese normally
+
+Evidence: `apps/rune/src/editor/vim.rs`, `apps/rune/src/editor/code.rs`, `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/find.rs`, `apps/rune/src/settings.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/backend/apply.rs`
+
 ## Flow
 
 The shared editor header places a Git branch badge beside Project and Checkout
@@ -950,7 +1096,6 @@ is never shown. No probe runs while the editor is hidden; returning requests a
 fresh probe. Pending reads retain the last result with a checking tooltip, while
 initial loading and failed/unqueued reads show loading or unavailable states.
 Git failures are retried by the same interval without changing documents.
-
 
 Conflict rows activate the guarded Files editor from either pointer or keyboard
 and carry a badge naming what Git reports: Both modified, Both added, Deleted
@@ -1089,7 +1234,6 @@ cleared by a save, overwrite or reload. `AutoRefresh` keeps the poll schedule an
 the view-entry/focus edge per checkout; `CommitState::merge_prefilled` records
 that the merge message was offered, until the merge ends.
 
-
 In-memory: `EditorState` holds the registered-project list
 (`projects`/`projects_loading`/`projects_error`), per-project
 `sidebar_worktrees` entries, the picker's `worktrees` list, project/checkout
@@ -1127,7 +1271,6 @@ session state — the daemon's session lifecycle is not involved in the editor.
 - Current-branch probes read only Git metadata. They never switch branches,
   stage/commit, reload a file, or replace an unsaved editor draft.
 
-
 - Project metadata runs on the same worker lane as project-scoped jobs:
   `Req::Projects` lists the `goko.db` projects table, `Req::AddProject`
   canonicalizes and registers a picked folder (a mutating job that finishes
@@ -1146,7 +1289,10 @@ session state — the daemon's session lifecycle is not involved in the editor.
   re-evaluates only the paths `git status` names (with `--no-optional-locks`),
   waiting at most one second before the query is answered from the index.
 - Git writes run `git` via argv with `-C <checkout>`, hooks enabled, no
-  force, push killed after 120 seconds.
+  force, push killed after 120 seconds. Push carries `SSH_ASKPASS` and
+  `SSH_ASKPASS_REQUIRE=force` pointing at the running `goko-rune` binary: a
+  passphrase-protected SSH key opens the masked prompt, while any other
+  credential prompt is refused.
 - History reads page 100 commits per request through `git log`/`for-each-ref`
   in the validated checkout; none mutates refs.
 - ACP `generate` sends the staged diff (capped like the desktop's) to the
@@ -1214,6 +1360,10 @@ the Servers section. On non-macOS platforms, OS-level quit (⌘Q equivalent,
 logout) cannot be vetoed — window close still can — and that gap is
 documented in `quit_guard.rs` rather than silently claimed.
 
+Push failures keep the commit draft: a cancelled passphrase prompt reports
+"Push cancelled", a rejected passphrase reopens the prompt, and a push that
+outlives 120 seconds reports `Push timed out`.
+
 ## Tests
 
 - Empty-file regression in `files.rs` applies create and file-load replies before
@@ -1222,13 +1372,11 @@ documented in `quit_guard.rs` rather than silently claimed.
   their content height and vertical scrolling; the input fills unused viewport
   space while its wrapper retains at least one code line per document line.
 
-
 - `branch.rs` covers named/unborn branches, external checkout, detached HEAD,
   invalid Git metadata, paced active-only polling, one outstanding request,
   queue refusal, and hiding foreign/failed cached values. `backend.rs` covers
   branch-reply checkout/generation guards; `workspace.rs` verifies the long-name
   branch header remains inside a 480 px editor pane across all five sections.
-
 
 - `conflict.rs` tests marker widths, diff3/base exclusion, CRLF, UTF-8, empty
   sides, EOF, nested/incomplete blocks, and malformed fragments beside valid
@@ -1248,7 +1396,6 @@ documented in `quit_guard.rs` rather than silently claimed.
   Abort and Continue, the dialog, the binary Use Incoming button and the pane's
   Delete file and Keep their version; the row context menu, the Changes poll and
   the open-file disk check were not driven on screen.
-
 
 - `apps/rune` carries extensive inline `#[test]`/`#[tokio::test]` cases across
   `src/` — the count grows with each slice, so `cargo test -p goko-rune` is
@@ -1272,6 +1419,9 @@ documented in `quit_guard.rs` rather than silently claimed.
   and worktree row selection committing identity, dirty-guard
   Discard/Cancel, status rows, and real-backend fixtures driving
   cross-project selection including in-flight replies.
+- `askpass.rs` tests the loopback bridge's token check, passphrase-only
+  filter, answer and cancel paths; `main.rs` view tests cover the masked
+  modal, its inert background, submit/cancel, and a Push reply clearing it.
 - `snapshot.rs` covers selection-to-whole-line expansion, whole-file,
   one-line and empty headers, dirty marking, CRLF normalization, fence
   collision, unknown languages, the copy/send guards, and a live-session
@@ -1299,15 +1449,18 @@ documented in `quit_guard.rs` rather than silently claimed.
 - [Desktop Editor](../architecture/editor.md) — the Tauri CodeMirror/Vim editor over the same `app-core` backend
 - [Architecture overview](../architecture/overview.md)
 
+
 ## Sources
 
 - `crates/app-core/src/code_index.rs`
 - `apps/rune/Cargo.toml`
 - `apps/rune/src/main.rs`
+- `apps/rune/src/askpass.rs`
 - `apps/rune/src/chrome.rs`
 - `apps/rune/src/data.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/sidebar.rs`
+- `apps/rune/src/settings.rs`
 - `apps/rune/src/editor/mod.rs`
 - `apps/rune/src/editor/state.rs`
 - `apps/rune/src/editor/tabs.rs`
@@ -1330,6 +1483,7 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `apps/rune/src/editor/line_changes.rs`
 - `apps/rune/src/editor/search.rs`
 - `apps/rune/src/editor/find.rs`
+- `apps/rune/src/editor/vim.rs`
 - `apps/rune/src/editor/go_to_definition.rs`
 - `apps/rune/src/editor/changes.rs`
 - `apps/rune/src/editor/commit.rs`
@@ -1354,3 +1508,5 @@ documented in `quit_guard.rs` rather than silently claimed.
 - `crates/app-core/src/lsp.rs`
 - `crates/app-core/src/store.rs`
 - `crates/app-core/tests/fixtures/fake_acp_agent.py`
+- `crates/app-core/src/project_scan.rs`
+- `apps/rune/src/nested_import.rs`

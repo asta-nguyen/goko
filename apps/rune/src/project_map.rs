@@ -28,6 +28,7 @@ struct MapRow {
     name: String,
     detail: String,
     current: bool,
+    indent: bool,
 }
 
 #[derive(Default)]
@@ -40,6 +41,10 @@ pub struct ProjectMapState {
 
 fn rows(s: &State) -> Vec<MapRow> {
     let query = s.project_map.query.text.trim().to_lowercase();
+    let matches = |project: &app_core::projects::ProjectView| {
+        project.project.name.to_lowercase().contains(&query)
+            || project.project.root.to_lowercase().contains(&query)
+    };
     let mut rows = Vec::new();
     for workspace in &s.workspaces {
         let label = s.workspace_label(workspace);
@@ -48,27 +53,48 @@ fn rows(s: &State) -> Vec<MapRow> {
             .editor
             .projects
             .iter()
-            .filter(|p| {
-                p.project.workspace_id == workspace.id
-                    && (all
-                        || p.project.name.to_lowercase().contains(&query)
-                        || p.project.root.to_lowercase().contains(&query))
-            })
+            .filter(|project| project.project.workspace_id == workspace.id)
             .collect();
-        if !all && projects.is_empty() {
+        let mut group = Vec::new();
+        for root in projects
+            .iter()
+            .filter(|project| project.parent_project_id.is_none())
+        {
+            let children: Vec<_> = projects
+                .iter()
+                .filter(|child| {
+                    child.parent_project_id.as_deref() == Some(root.project.id.as_str())
+                })
+                .collect();
+            let root_match = all || matches(root);
+            let child_matches: Vec<_> = children
+                .iter()
+                .copied()
+                .filter(|child| all || matches(child))
+                .collect();
+            if !root_match && child_matches.is_empty() {
+                continue;
+            }
+            group.push((*root, false));
+            for child in if root_match { children } else { child_matches } {
+                group.push((child, true));
+            }
+        }
+        if !all && group.is_empty() {
             continue;
         }
         rows.push(MapRow {
             target: Target::Workspace(workspace.id.clone()),
             name: label,
-            detail: if projects.is_empty() {
+            detail: if group.is_empty() {
                 "No projects".into()
             } else {
-                format!("{} projects", projects.len())
+                format!("{} projects", group.len())
             },
             current: workspace.id == s.workspace_id(),
+            indent: false,
         });
-        for project in projects {
+        for (project, indent) in group {
             let p = &project.project;
             rows.push(MapRow {
                 target: Target::Project(p.id.clone()),
@@ -76,6 +102,7 @@ fn rows(s: &State) -> Vec<MapRow> {
                 detail: p.root.clone(),
                 current: s.editor.checkout_key.is_some()
                     && s.editor.project_id.as_deref() == Some(&p.id),
+                indent,
             });
         }
     }
@@ -97,6 +124,7 @@ pub fn available(s: &State) -> bool {
         && s.workspace_remove_confirm.is_none()
         && s.sidebar_menu.is_none()
         && !s.sidebar_picker_open()
+        && !s.nested_import.open
         && s.usage_menu.is_none()
         && s.editor.worktree_form.is_none()
         && s.editor.guard.is_none()
@@ -284,7 +312,13 @@ pub fn layers(s: &State) -> Vec<El> {
             .key(r.target.key())
             .w_full()
             .min_h(42.0)
-            .pl(if is_project { 24.0 } else { 8.0 })
+            .pl(if r.indent {
+                44.0
+            } else if is_project {
+                24.0
+            } else {
+                8.0
+            })
             .pr(8.0)
             .py(6.0)
             .gap(8.0)
@@ -441,6 +475,7 @@ mod tests {
                     created_at: 0,
                 },
                 missing: false,
+                parent_project_id: None,
             })
             .collect();
         s
@@ -469,6 +504,57 @@ mod tests {
             4,
             "workspace match includes its children; path matches keep parent"
         );
+    }
+
+    #[test]
+    fn project_map_nests_child_repositories_and_keeps_their_parent() {
+        let mut s = scene();
+        s.editor.projects.push(ProjectView {
+            project: Project {
+                id: "folder".into(),
+                name: "Folder".into(),
+                root: "/work/folder".into(),
+                workspace_id: "default".into(),
+                created_at: 0,
+            },
+            missing: false,
+            parent_project_id: None,
+        });
+        for (id, path) in [("child-a", "/work/folder/a"), ("child-b", "/work/folder/b")] {
+            s.editor.projects.push(ProjectView {
+                project: Project {
+                    id: id.into(),
+                    name: id.into(),
+                    root: path.into(),
+                    workspace_id: "default".into(),
+                    created_at: 0,
+                },
+                missing: false,
+                parent_project_id: Some("folder".into()),
+            });
+        }
+        let listed = rows(&s);
+        assert_eq!(listed.len(), 8, "3 workspaces + 5 projects");
+        let ids: Vec<&str> = listed
+            .iter()
+            .filter_map(|row| match &row.target {
+                Target::Project(id) => Some(id.as_str()),
+                Target::Workspace(_) => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["a", "folder", "child-a", "child-b", "b"]);
+        assert!(listed[3].indent && listed[4].indent);
+
+        s.project_map.query.text = "child-a".into();
+        let filtered = rows(&s);
+        assert_eq!(filtered.len(), 3, "workspace + parent + matching child");
+        assert_eq!(filtered[1].target, Target::Project("folder".into()));
+        assert_eq!(filtered[2].target, Target::Project("child-a".into()));
+
+        s.project_map.query.text = "Folder".into();
+        let filtered = rows(&s);
+        assert_eq!(filtered.len(), 4, "workspace + parent + both children");
+        assert_eq!(filtered[3].target, Target::Project("child-b".into()));
     }
 
     #[test]
