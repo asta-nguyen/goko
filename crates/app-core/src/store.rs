@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long SQLite waits for a concurrent writer before returning SQLITE_BUSY.
 const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -169,13 +169,7 @@ impl Store {
             .map_err(|error| storage("cannot set SQLite busy_timeout", error))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|error| storage("cannot enable foreign keys", error))?;
-        let journal_mode: String = conn
-            .pragma_query_value(None, "journal_mode", |row| row.get(0))
-            .map_err(|error| storage("cannot read SQLite journal_mode", error))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") {
-            conn.execute_batch("PRAGMA journal_mode = WAL;")
-                .map_err(|error| storage("cannot enable SQLite WAL mode", error))?;
-        }
+        enable_wal(&conn)?;
         migrate(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -730,6 +724,36 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|since| since.as_millis() as i64)
         .unwrap_or_default()
+}
+
+/// Whether `conn`'s database is in WAL mode.
+fn is_wal(conn: &Connection) -> Result<bool, BridgeError> {
+    let mode: String = conn
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .map_err(|error| storage("cannot read SQLite journal_mode", error))?;
+    Ok(mode.eq_ignore_ascii_case("wal"))
+}
+
+/// Put `conn`'s database in WAL mode. The switch needs the database to itself
+/// and SQLite does not wait for that with the busy timeout, so openers racing
+/// on a fresh home retry until one of them has made the switch.
+fn enable_wal(conn: &Connection) -> Result<(), BridgeError> {
+    let deadline = Instant::now() + Duration::from_millis(BUSY_TIMEOUT_MS);
+    while !is_wal(conn)? {
+        match conn.execute_batch("PRAGMA journal_mode = WAL;") {
+            Ok(()) => {}
+            Err(rusqlite::Error::SqliteFailure(failure, _))
+                if matches!(
+                    failure.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(storage("cannot enable SQLite WAL mode", error)),
+        }
+    }
+    Ok(())
 }
 
 fn storage(what: &str, error: impl std::fmt::Display) -> BridgeError {
