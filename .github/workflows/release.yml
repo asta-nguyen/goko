@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
       - name: Linux build dependencies
@@ -38,6 +40,17 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential pkg-config \
             libfontconfig1-dev libwayland-dev libxkbcommon-dev libx11-dev libxcb1-dev \
             libxkbcommon-x11-dev libvulkan-dev
+
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        if: runner.os != 'Windows'
+        run: cargo test --workspace
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --no-fail-fast -p protocol -p daemon -p app-core
 
       - name: Package
         env:
