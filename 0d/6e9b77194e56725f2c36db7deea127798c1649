@@ -1,0 +1,19 @@
+apps/rune/src/term.rs
+  s_8265c08ec67b12::t_1584ab64a744fa 2673-2677
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0d6e9b77194e56725f2c36db7deea127798c1649",
+  "prompts": {},
+  "sessions": {
+    "s_8265c08ec67b12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d3dc32b7-d623-4b79-b936-56e48b392f64",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
