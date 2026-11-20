@@ -1,0 +1,38 @@
+.github/workflows/ci.yml
+  s_94be7728a40dc9::t_ffb991f9744b65 29,31-32,36-39,41-43
+  s_94be7728a40dc9::t_fef7a5500eba60 53-59
+  s_94be7728a40dc9::t_3f1db9489ec212 18-20
+AGENTS.md
+  s_94be7728a40dc9::t_d49d9867ca9573 17
+README.md
+  s_94be7728a40dc9::t_e5680ab7f2136d 82-90
+  s_ab19936d8fe1a2::t_2e149756d9e31c 77-78
+.github/workflows/release.yml
+  s_94be7728a40dc9::t_7d5509c0d5710c 55-61
+  s_94be7728a40dc9::t_888c93ad363012 15-17
+  s_94be7728a40dc9::t_5e0ca5ebac8bfd 31,33-34,38-41,43-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "12dc9c2102928355dfb5a7700bd61b20607a99d9",
+  "prompts": {},
+  "sessions": {
+    "s_94be7728a40dc9": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "developing-move",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_ab19936d8fe1a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b442db1c-7354-4fca-91a6-88aebbdb24d7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
