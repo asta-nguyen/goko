@@ -1,0 +1,22 @@
+Cargo.toml
+  h_611058a46223af 9-20
+apps/rune/Cargo.toml
+  h_611058a46223af 8,10,12-13,18-20,23
+crates/app-core/Cargo.toml
+  h_611058a46223af 8,11-12,14,16,19,22
+crates/daemon/Cargo.toml
+  h_611058a46223af 8-10,13-16,21
+crates/protocol/Cargo.toml
+  h_611058a46223af 8-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "14ed9f31cee33ccf784e06cde3590f5d42ce2de1",
+  "prompts": {},
+  "humans": {
+    "h_611058a46223af": {
+      "author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
