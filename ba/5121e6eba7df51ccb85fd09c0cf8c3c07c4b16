@@ -1,0 +1,45 @@
+docs/llm/domains/rune-chrome.md
+  s_8265c08ec67b12::t_558a46d6c91842 348-365,372
+  s_8265c08ec67b12::t_50f9a3e10a3e84 1438-1439
+  s_8265c08ec67b12::t_5875e87480375a 322
+apps/rune/src/sidebar.rs
+  s_8265c08ec67b12::t_04e7dc49fa314f 966,968-970
+  s_8265c08ec67b12::t_f80a0981b91b94 1122
+  s_8265c08ec67b12::t_1f94d2cb5986a1 1123-1135
+  s_8265c08ec67b12::t_ec1834ce5b6d93 1062-1063,1072-1080,1088-1099
+apps/rune/src/view_tests.rs
+  s_8265c08ec67b12::t_1f94d2cb5986a1 2456-2459
+  s_8265c08ec67b12::t_5a6fd0ebd5b792 2378,2386-2393,2405-2409,2411-2421,2423-2453,2455,2460-2465,2467-2471,2473-2474
+  s_8265c08ec67b12::t_7a01fbe03e3f9f 2394-2404,2410,2422,2454,2466,2472
+crates/rune-kit/src/combobox.rs
+  s_8265c08ec67b12::t_05d60f1d2261ab 287-292
+  s_8265c08ec67b12::t_e21467089a34dd 465-480,484
+  s_8265c08ec67b12::t_c54bb7207702ac 119
+  s_8265c08ec67b12::t_9cc763d9a210fa 5,14,18-43
+  s_8265c08ec67b12::t_d5dabd05b1f684 121-152
+  s_8265c08ec67b12::t_8a667af82b093b 163
+  s_8265c08ec67b12::t_b6f8b2f71c8829 192
+  s_8265c08ec67b12::t_606db9dac9c414 120
+crates/rune-kit/src/lib.rs
+  s_8265c08ec67b12::t_e7bcb2429a85b5 76
+apps/rune/src/editor/changes.rs
+  s_8265c08ec67b12::t_7a48598ff7633c 33
+apps/rune/src/theme.rs
+  s_8265c08ec67b12::t_056e7b92a00a4c 375-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ba5121e6eba7df51ccb85fd09c0cf8c3c07c4b16",
+  "prompts": {},
+  "sessions": {
+    "s_8265c08ec67b12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d3dc32b7-d623-4b79-b936-56e48b392f64",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
