@@ -1,0 +1,26 @@
+.gitignore
+  h_611058a46223af 12
+crates/daemon/src/pty.rs
+  h_611058a46223af 747-748,754-755
+crates/daemon/tests/common/mod.rs
+  h_611058a46223af 301
+crates/daemon/tests/lifecycle.rs
+  h_611058a46223af 46
+crates/daemon/tests/pty_signal.rs
+  h_611058a46223af 96
+crates/daemon/tests/session_ipc.rs
+  h_611058a46223af 102
+crates/daemon/tests/session_manager.rs
+  h_611058a46223af 78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "275ac0cd244e9e06757dd5772edb678c9711951d",
+  "prompts": {},
+  "humans": {
+    "h_611058a46223af": {
+      "author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
