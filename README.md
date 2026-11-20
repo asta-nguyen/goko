@@ -16,6 +16,7 @@ pieces fit together.
 | Path | What it is |
 |---|---|
 | `apps/rune` | The native app (Cargo package `goko-rune`): UI, terminal, editor |
+| `crates/rune-kit` | Generic, themable Rune UI component kit used by `apps/rune` |
 | `crates/daemon` | `gokod`, the daemon that owns every PTY and child process |
 | `crates/protocol` | Wire messages and framing shared by the app and `gokod` |
 | `crates/app-core` | `goko.db` store, Git/worktrees, agents, ACP, language servers |

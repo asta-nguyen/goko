@@ -39,12 +39,11 @@ Rune app (apps/rune)                          gokod (crates/daemon)
 
 ## App-owned project metadata
 
-The app opens `goko.db` in the support directory. SQLite `user_version` controls schema
-migrations; schema v1 contains `projects`, `sessions`, and `settings`. This database stores
-project registration and session metadata, not PTY state or terminal output. The store
-implementation lives in `crates/app-core`. Schema v1 is `projects(id, name, root UNIQUE,
-created_at)`, `sessions(id, project_id REFERENCES projects ON DELETE SET NULL, agent, argv
-JSON, cwd, title, created_at)`, and `settings(key, value)`.
+The app opens `goko.db` in the support directory (with `foreign_keys = ON`, `journal_mode = WAL`,
+and a 5 s `busy_timeout`). SQLite `user_version` controls schema migrations (currently v4):
+`projects`, `sessions`, `settings`, `workspaces`, `project_workspaces`, and `project_parents`.
+This database stores project, workspace, and session metadata, not PTY state or terminal output.
+The store implementation lives in `crates/app-core`.
 
 - A project is a registered, canonical local directory. Adding or removing its row never
   changes files in that directory. Duplicate canonical roots return the existing project;
@@ -139,9 +138,9 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
 
 ## The Rune app
 
-`apps/rune` is built on Rune/wgpu/winit with `rune-kit` pinned to git rev
-`a7f276c3630f85a06a0230295da4d2bd172d8d3b`. Build and launch it with
-`apps/rune/run-macos.sh` (see the [README](README.md)).
+`apps/rune` is built on Rune/wgpu/winit (`rune` pinned to git rev
+`a7f276c3630f85a06a0230295da4d2bd172d8d3b`) with the local `crates/rune-kit` component
+crate. Build and launch it with `apps/rune/run-macos.sh` (see the [README](README.md)).
 
 - **Terminal:** the daemon's PTY bytes are fed to an `alacritty_terminal` grid (`term.rs`)
   and rendered as styled text runs. Panes (`panes.rs`) are a recursive binary split layout
