@@ -1,0 +1,18 @@
+.github/workflows/ci.yml
+  h_611058a46223af 1-2,6-7
+.github/workflows/release.yml
+  h_611058a46223af 30-31,44-54
+AGENTS.md
+  h_611058a46223af 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1f0fb77c1e37666686cb80b5597cf02ba70e58c4",
+  "prompts": {},
+  "humans": {
+    "h_611058a46223af": {
+      "author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
