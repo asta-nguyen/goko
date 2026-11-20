@@ -1,0 +1,22 @@
+docs/agent-devkit/changes/2026-11-20-terminal-engine-ghostty/tasks.md
+  s_ab19936d8fe1a2::t_83139f30350fcc 102,169-170
+  s_ab19936d8fe1a2::t_3c1ee86c0f4124 171-173
+CHANGELOG.md
+  s_ab19936d8fe1a2::t_83139f30350fcc 56-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "49140c427ddb617909d3dc90d1fd2cea443f22c6",
+  "prompts": {},
+  "sessions": {
+    "s_ab19936d8fe1a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b442db1c-7354-4fca-91a6-88aebbdb24d7",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
