@@ -45,6 +45,8 @@ pub enum PendingNav {
     SelectProject { project_id: String },
     /// Select a registered project's current owner and root after the guard.
     SelectMappedProject { project_id: String },
+    /// Resolve a still-waiting session and focus it after the guard.
+    OpenWaitingSession { session_id: String },
     /// Switch workspace section inside the editor.
     SetSection(Section),
     /// Jump to one Changes entry: select `path` in `layer`'s patch pane and
@@ -334,6 +336,30 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
                 crate::sidebar::PROJECTS_SCROLL_KEY,
                 format!("sidebar-project:{}", project.id),
             );
+        }
+        PendingNav::OpenWaitingSession { session_id } => {
+            let Some(session) = s
+                .session_by_key(&session_id)
+                .filter(|v| s.is_waiting_session(v))
+            else {
+                s.notice = Some("That session is no longer waiting".into());
+                crate::yield_focus(s, tx);
+                return;
+            };
+            let workspace = s.session_owner_workspace(session).to_string();
+            let checkout = s.session_workspace(session);
+            apply(s, PendingNav::SetView(View::Terminal), tx);
+            s.select_workspace(&workspace);
+            if let Some((project, path)) = crate::data::checkout_context(&checkout) {
+                select_checkout(s, project.to_owned(), PathBuf::from(path));
+            } else if s.active_project_in_view().is_some() {
+                // The project filter hides unassigned panes in this workspace.
+                s.editor.project_id = None;
+                s.editor.folder_project = false;
+                clear_checkout(s);
+            }
+            crate::sidebar::activate_session(s, &session_id, &checkout, tx);
+            crate::yield_focus(s, tx);
         }
         PendingNav::SetSection(section) => set_section(s, section),
         PendingNav::ShowChanges { layer, path } => {

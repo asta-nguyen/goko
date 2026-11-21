@@ -141,6 +141,30 @@ manual retry control.
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`
 
+### RNC-needs-you
+
+The system SHALL offer a Needs you picker beside the workspace selector when any live session has the existing Waiting activity, listing waiting sessions across workspaces with their location and opening the chosen session's terminal pane through the editor draft guard.
+
+#### Scenario: choose a session in another workspace
+
+- GIVEN a waiting agent in a split tab in another workspace
+- WHEN the user picks it from Needs you
+- THEN the app selects its workspace and opens that tab with the agent's pane focused
+
+#### Scenario: cancel navigation
+
+- GIVEN an unsaved editor draft
+- WHEN the user picks a waiting session and cancels the draft guard
+- THEN the current editor, workspace and terminal selection stay unchanged
+
+#### Scenario: waiting ends
+
+- GIVEN a session is in the waiting list
+- WHEN the session stops waiting or exits
+- THEN it leaves the list, and a pick still pending behind the draft guard does not open it
+
+Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/view_tests.rs`
+
 ### RNC-nested-repo-import
 
 The system SHALL, when Add Project selects a folder that is not a non-bare Git worktree root, scan it on a detached thread for nested non-bare Git worktree roots with bounded depth, repository count, directory count and time — skipping VCS metadata, hidden and heavy build directories, symlinks, and any directory inside an already-found repository — then show a modal review listing every candidate selected with a group-name field and the actions Import as group, Import separately and Open as Folder, revalidating each imported path on the worker for containment and worktree-root status and reporting imported, already-known and failed counts; a Git worktree root takes the existing direct Add Project path, and a plain folder with no candidates offers only Open as Folder.

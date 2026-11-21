@@ -187,6 +187,7 @@ pub struct State {
     last_link_open: Option<(String, std::time::Instant)>,
     /// The sidebar's workspace selector (rune-kit's searchable select).
     pub workspace_picker: rune_kit::ComboboxState,
+    needs_you_picker: rune_kit::ComboboxState,
     /// The one new-session picker (shell, agent or command to start) and
     /// where it is open — the PROJECTS `+`, a row's `+`, or New tab's caret.
     pub new_session_picker: rune_kit::ComboboxState,
@@ -360,6 +361,7 @@ impl State {
             sidebar_cursor: None,
             last_link_open: None,
             workspace_picker: rune_kit::ComboboxState::default(),
+            needs_you_picker: rune_kit::ComboboxState::default(),
             new_session_picker: rune_kit::ComboboxState::default(),
             new_session_from: None,
             sidebar_input: None,
@@ -575,35 +577,12 @@ impl State {
             .map_or_else(|| fallback.to_string(), |w| self.workspace_label(w))
     }
 
-    /// Sessions waiting for the user, per workspace id. A session counts for
-    /// its project's workspace; Unassigned sessions count for Default. Uses
-    /// the dot's own activity so the flag and the row never disagree.
+    /// Sessions waiting for the user, grouped by workspace.
     pub fn workspace_waiting_counts(&self) -> HashMap<String, usize> {
-        let known: HashSet<&str> = self
-            .editor
-            .projects
-            .iter()
-            .map(|p| p.project.id.as_str())
-            .collect();
-        let (by_project, unassigned) = data::partition(&self.data, &known);
-        let waiting = |sv: &data::SessionView| {
-            self.session_shown_activity(&sv.info.id) == Some(app_core::activity::Activity::Waiting)
-        };
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        for project in &self.editor.projects {
-            let n = by_project
-                .get(project.project.id.as_str())
-                .map_or(0, |list| list.iter().filter(|sv| waiting(sv)).count());
-            if n > 0 {
-                *counts
-                    .entry(project.project.workspace_id.clone())
-                    .or_default() += n;
-            }
-        }
-        // A session outside every project counts for the workspace it started in.
-        for sv in unassigned.iter().filter(|sv| waiting(sv)) {
+        let mut counts = HashMap::new();
+        for session in self.waiting_sessions() {
             *counts
-                .entry(self.loose_workspace(sv).to_string())
+                .entry(self.session_owner_workspace(session).to_string())
                 .or_default() += 1;
         }
         counts
@@ -738,7 +717,7 @@ impl State {
     /// Whether one of the sidebar's searchable selects is open (it owns the
     /// keyboard while its search field takes the typing).
     pub fn sidebar_picker_open(&self) -> bool {
-        self.workspace_picker.open || self.new_session_picker.open
+        self.workspace_picker.open || self.needs_you_picker.open || self.new_session_picker.open
     }
 
     /// Whether the open prompt edits a workspace name.

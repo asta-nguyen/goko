@@ -8,8 +8,8 @@
 //! a compact 4-pt-grid scale (see the constants below), deliberately denser than
 //! the TSX.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use app_core::projects::ProjectView;
 use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, row};
@@ -824,12 +824,22 @@ pub fn sidebar(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
         list = list.child(unassigned_node(s, ink, &loose));
     }
 
+    let waiting_counts = s.workspace_waiting_counts();
+    let waiting_count = waiting_counts.values().sum();
     let mut header = col().w_full().gap(4.0).child(
         row()
             .w_full()
             .items_center()
             .gap(4.0)
-            .child(workspace_picker(s, ink, layer).grow(1.0).min_w(0.0))
+            .child(
+                workspace_picker(s, ink, layer, &waiting_counts)
+                    .grow(1.0)
+                    .min_w(0.0),
+            )
+            .children(
+                (waiting_count > 0 || s.needs_you_picker.open)
+                    .then(|| needs_you_picker(s, ink, layer, waiting_count)),
+            )
             .child(
                 el().key("project-map-button")
                     .size(28.0, 28.0)
@@ -1061,9 +1071,14 @@ fn start_picked_session(s: &mut State, id: &str) {
 /// The workspace selector: a searchable select of every workspace (another
 /// one's waiting sessions named beside it) with Rename and Remove buttons on
 /// each row, then New. Default has both buttons, disabled: it is permanent.
-fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
+fn workspace_picker(
+    s: &State,
+    ink: &Ink,
+    layer: &mut Vec<El>,
+    counts: &HashMap<String, usize>,
+) -> El {
     let selected = s.workspace_id().to_string();
-    let counts = s.workspace_waiting_counts();
+    let hidden_waiting = counts.keys().any(|id| id != &selected);
     let mut options: Vec<rune_kit::ComboboxOption> = s
         .workspaces
         .iter()
@@ -1114,7 +1129,7 @@ fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
     .search_placeholder("Switch workspace")
     .width(picker_width(s))
     .placement(rune_kit::Placement::BottomStart)
-    .trigger(workspace_header(s, ink))
+    .trigger(workspace_header(s, ink, hidden_waiting))
     .on_choose(|st: &mut State, id: &str, _tx: &mut Tx| match id {
         PICK_NEW_WORKSPACE => st.submit_workspace_create(""),
         id => st.select_workspace(id),
@@ -1138,14 +1153,8 @@ fn workspace_picker(s: &State, ink: &Ink, layer: &mut Vec<El>) -> El {
 
 /// The workspace selector's face: the selected workspace's label and a caret.
 /// The picker around it opens and closes it.
-fn workspace_header(s: &State, ink: &Ink) -> El {
+fn workspace_header(s: &State, ink: &Ink, hidden_waiting: bool) -> El {
     let name = s.workspace_name().to_string();
-    // A waiting session in a hidden workspace is flagged here: the selector
-    // keeps its dot and label suffix until that session stops waiting.
-    let counts = s.workspace_waiting_counts();
-    let hidden_waiting = counts
-        .iter()
-        .any(|(id, n)| id != s.workspace_id() && *n > 0);
     let label = if hidden_waiting {
         format!("Workspace: {name}, another workspace needs you")
     } else {
@@ -1181,6 +1190,82 @@ fn workspace_header(s: &State, ink: &Ink) -> El {
                 .help("Another workspace needs you")
         }))
         .child(theme::ic(&theme::CHEVRON_DOWN, 12.0, ink.muted).group_color(ink.text))
+}
+
+fn needs_you_picker(s: &State, ink: &Ink, layer: &mut Vec<El>, count: usize) -> El {
+    let options: Vec<_> = if s.needs_you_picker.open {
+        s.waiting_sessions()
+            .map(|session| {
+                let workspace = s.workspace_label_of(s.session_owner_workspace(session), "Default");
+                let checkout = s.session_workspace(session);
+                let location = match (
+                    s.session_project(session),
+                    data::checkout_context(&checkout),
+                ) {
+                    (Some(project), Some((_, path))) => {
+                        if path == project.project.root {
+                            format!("{workspace} / {}", project.project.name)
+                        } else {
+                            let worktree = Path::new(path)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or(path);
+                            format!("{workspace} / {} / {worktree}", project.project.name)
+                        }
+                    }
+                    _ => format!("{workspace} / {}", session.info.cwd),
+                };
+                let mut option = rune_kit::ComboboxOption::new(&session.info.id, session.title());
+                option.detail = location;
+                option
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let caption = if count > 0 {
+        format!("Needs you \u{b7} {count}")
+    } else {
+        "Needs you".to_owned()
+    };
+    let trigger = row()
+        .key("sidebar-needs-you")
+        .h(ROW_H)
+        .px(6.0)
+        .items_center()
+        .radius(6.0)
+        .role("button")
+        .label(&caption)
+        .help("Open a waiting terminal")
+        .focusable(true)
+        .hover(ink.warning.alpha(0.12))
+        .press(ink.warning.alpha(0.20))
+        .child(theme::txt(&caption, T11M, ink.warning));
+    rune_kit::Combobox::new(
+        "needs-you",
+        &s.needs_you_picker,
+        &options,
+        |s: &mut State| &mut s.needs_you_picker,
+    )
+    .width(320.0)
+    .label("Needs you")
+    .search_placeholder("Find a waiting session")
+    .empty_message(if count == 0 {
+        "No sessions are waiting"
+    } else {
+        "No matching sessions"
+    })
+    .trigger(trigger)
+    .on_choose(|s, id, tx| {
+        navigation::navigate(
+            s,
+            PendingNav::OpenWaitingSession {
+                session_id: id.to_owned(),
+            },
+            tx,
+        );
+    })
+    .build(&s.editor.kit, layer)
 }
 
 /// The removal confirmation: what happens to the projects, and the two

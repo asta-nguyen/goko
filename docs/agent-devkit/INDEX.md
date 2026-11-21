@@ -2,6 +2,7 @@
 
 ## Changes
 
+- [Needs you: jump to a waiting terminal](changes/needs-you/delta.md)
 
 - [Current branch in Terminal](changes/terminal-current-branch/delta.md)
 

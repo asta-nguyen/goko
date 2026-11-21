@@ -1456,6 +1456,96 @@ fn entry_shown(rt: &Runtime<State>, text: &str) -> bool {
 }
 
 #[test]
+fn needs_you_opens_the_waiting_split_in_another_workspace() {
+    let mut s = two_workspace_scene();
+    let current = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+    let waiting = seed_session_in(&mut s, "/work/b/fix", Some("p2"));
+    let other_pane = seed_session_in(&mut s, "/work/b/fix", Some("p2"));
+    s.focus_session_tab(&waiting);
+    let tab = s.open_tabs[0].id.clone();
+    s.place_session(
+        &other_pane,
+        "Other pane",
+        panes::Placement::Split {
+            tab: tab.clone(),
+            pane: panes::pane_id(&waiting),
+            direction: panes::Direction::SideBySide,
+        },
+    );
+    editor::navigation::select_checkout(&mut s, "p1".into(), PathBuf::from("/work/a/web"));
+    s.focus_session_tab(&current);
+    s.activity
+        .insert(waiting.clone(), app_core::activity::Activity::Waiting);
+    let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+
+    click_key(&mut rt, "sidebar-needs-you");
+    rt.frame(0.5);
+    assert!(entry_shown(&rt, "Default / api / fix"));
+    click_key(&mut rt, &format!("needs-you-option-{waiting}"));
+
+    assert_eq!(rt.state.workspace_id(), "default");
+    assert_eq!(rt.state.editor.checkout, Some(PathBuf::from("/work/b/fix")));
+    assert_eq!(rt.state.open_tabs[rt.state.active_tab].id, tab);
+    assert_eq!(
+        rt.state.focused_session_key().as_deref(),
+        Some(waiting.as_str())
+    );
+    assert!(rt.state.session_placed(&other_pane));
+    assert_eq!(
+        rt.state.open_tabs.len(),
+        2,
+        "reuse the split, do not open a duplicate"
+    );
+}
+
+#[test]
+fn needs_you_rechecks_the_session_after_the_draft_guard() {
+    for action in [GuardAction::Cancel, GuardAction::Discard] {
+        let mut s = two_workspace_scene();
+        let current = seed_session_in(&mut s, "/work/a/web", Some("p1"));
+        let waiting = seed_session_in(&mut s, "/work/b/api", Some("p2"));
+        editor::navigation::select_checkout(&mut s, "p1".into(), PathBuf::from("/work/a/web"));
+        s.focus_session_tab(&current);
+        s.view = View::Editor;
+        s.editor.doc = Some(dirty_doc());
+        s.activity
+            .insert(waiting.clone(), app_core::activity::Activity::Waiting);
+        let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+        click_key(&mut rt, "sidebar-needs-you");
+        rt.frame(0.5);
+        click_key(&mut rt, &format!("needs-you-option-{waiting}"));
+        assert!(rt.state.editor.guard.is_some());
+
+        rt.update(|s, tx| {
+            if action == GuardAction::Discard {
+                s.activity
+                    .insert(waiting.clone(), app_core::activity::Activity::Done);
+            }
+            editor::navigation::resolve_guard(s, action, tx);
+        });
+        rt.frame(1.0);
+        assert_eq!(rt.state.workspace_id(), "w1");
+        assert_eq!(rt.state.view, View::Editor);
+        assert_eq!(
+            rt.state.focused_session_key().as_deref(),
+            Some(current.as_str())
+        );
+        assert!(!rt.state.session_placed(&waiting));
+        if action == GuardAction::Cancel {
+            assert!(rt.state.editor.doc.as_ref().unwrap().dirty());
+        } else {
+            assert!(
+                !els(&rt)
+                    .iter()
+                    .any(|e| !e.exiting && e.key.as_deref() == Some("sidebar-needs-you"))
+            );
+        }
+    }
+}
+
+#[test]
 fn the_selector_flags_a_waiting_session_in_another_workspace() {
     let mut s = two_workspace_scene();
     // p2 is in Default, so the session is hidden while Work is selected.

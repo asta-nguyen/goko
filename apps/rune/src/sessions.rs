@@ -722,7 +722,10 @@ impl State {
     }
 
     /// The registered project a session belongs to, if any.
-    fn session_project(&self, view: &SessionView) -> Option<&app_core::projects::ProjectView> {
+    pub(crate) fn session_project(
+        &self,
+        view: &SessionView,
+    ) -> Option<&app_core::projects::ProjectView> {
         let id = view.meta.as_ref()?.project_id.as_deref()?;
         self.editor.projects.iter().find(|p| p.project.id == id)
     }
@@ -730,10 +733,12 @@ impl State {
     /// Whether a session belongs to `workspace_id`: through its project, or,
     /// with none, through the workspace it was started in.
     pub fn session_in_workspace(&self, view: &SessionView, workspace_id: &str) -> bool {
-        match self.session_project(view) {
-            Some(project) => project.project.workspace_id == workspace_id,
-            None => self.loose_workspace(view) == workspace_id,
-        }
+        self.session_owner_workspace(view) == workspace_id
+    }
+
+    pub fn session_owner_workspace<'a>(&'a self, view: &'a SessionView) -> &'a str {
+        self.session_project(view)
+            .map_or_else(|| self.loose_workspace(view), |p| &p.project.workspace_id)
     }
 
     /// A session outside every project, started in the selected workspace.
@@ -995,6 +1000,21 @@ impl State {
             return Some(app_core::activity::Activity::Working);
         }
         activity
+    }
+
+    pub(crate) fn is_waiting_session(&self, view: &SessionView) -> bool {
+        matches!(
+            view.info.state,
+            data::SessionState::Running | data::SessionState::WaitingForInput
+        ) && self.session_shown_activity(&view.info.id)
+            == Some(app_core::activity::Activity::Waiting)
+    }
+
+    pub(crate) fn waiting_sessions(&self) -> impl Iterator<Item = &SessionView> {
+        self.data
+            .sessions
+            .iter()
+            .filter(|view| self.is_waiting_session(view))
     }
 
     /// Read the agent CLIs running under the sessions' process trees. The
