@@ -1,0 +1,43 @@
+apps/rune/src/sessions.rs
+  s_b35762bf8c49d6::t_f2020e0a6351d1 725-728,736-741,1005-1018
+  s_b35762bf8c49d6::t_abfbc92e1005e6 1019
+apps/rune/src/sidebar.rs
+  s_b35762bf8c49d6::t_1dec97e2614a54 827-828,834-842,1074-1077,1079,1081,1132,1156,1195-1202,1204-1240,1244-1247,1249-1268
+  s_b35762bf8c49d6::t_df3aa402496ded 11-12,1078,1241-1243
+  s_b35762bf8c49d6::t_4fba99f2cea6cd 1203,1248,1269-1270
+docs/agent-devkit/INDEX.md
+  s_b35762bf8c49d6::t_bca27aabb4f6a4 5
+apps/rune/src/main.rs
+  s_b35762bf8c49d6::t_18fc847434621f 190,364,580,582-583,585,720
+apps/rune/src/editor/navigation.rs
+  s_b35762bf8c49d6::t_fb13a7d9596ece 48-49,340-362
+  s_b35762bf8c49d6::t_37958252d8c1c8 363
+docs/llm/domains/rune-chrome.md
+  s_b35762bf8c49d6::t_6b6ead3c813532 144-167
+apps/rune/src/view_tests.rs
+  s_b35762bf8c49d6::t_ab6299e9d932bd 1475
+  s_b35762bf8c49d6::t_a813eaa5ca5691 1483,1485,1517
+  s_b35762bf8c49d6::t_21a2032e2b0164 1484
+  s_b35762bf8c49d6::t_7dbaa5388ca821 1504-1516,1518,1521-1543
+  s_b35762bf8c49d6::t_2cde8f959d62e5 1458-1474,1476-1482,1486-1503,1519-1520,1544-1546
+  s_b35762bf8c49d6::t_cb8f8eba50a741 1547
+docs/agent-devkit/changes/needs-you/delta.md
+  s_b35762bf8c49d6::t_87e888255b535a 3-4
+  s_b35762bf8c49d6::t_b040c94b1fec82 1-2,5-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "185053b3afcfcdf3df0ce507d08ef340532ab001",
+  "prompts": {},
+  "sessions": {
+    "s_b35762bf8c49d6": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "stormy-anise",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
