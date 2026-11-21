@@ -88,9 +88,11 @@ pub struct State {
     tabs_pending: Option<Option<String>>,
     /// The daemon's first session list has arrived.
     sessions_loaded: bool,
-    /// The layout last written; `None` until the saved one is restored, which
-    /// keeps the save idle so an empty start cannot overwrite it.
+    /// The restored or last acknowledged layout; `None` until restore runs
+    /// so an empty start cannot overwrite it.
     tabs_saved: Option<String>,
+    tabs_save_pending: Option<String>,
+    tabs_save_retry_at: f64,
     /// The tab bar's drag to reorder, in positions among the visible tabs.
     tab_reorder: rune_kit::shell::Reorder,
     /// A pane has the pointer pressed in a drag: its program hears the drag's own
@@ -316,6 +318,8 @@ impl State {
             tabs_pending: None,
             sessions_loaded: false,
             tabs_saved: None,
+            tabs_save_pending: None,
+            tabs_save_retry_at: 0.0,
             tab_reorder: rune_kit::shell::Reorder::new().gap(4.0),
             pane_drag_held: false,
             #[cfg(test)]
@@ -1197,6 +1201,10 @@ impl State {
                 self.restore_tabs();
                 return;
             }
+            backend::Req::SetSetting { key, .. } if key == panes::TABS_KEY => {
+                self.tabs_save_finished(matches!(reply.result, Ok(backend::ReplyData::Ok)));
+                return;
+            }
             backend::Req::GetSetting { key } if key == sidebar::SIDEBAR_WIDTH_KEY => {
                 if let Ok(backend::ReplyData::Setting(Some(raw))) = &reply.result
                     && let Ok(width) = raw.parse::<f32>()
@@ -1509,6 +1517,11 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         changed = true;
     }
     s.save_tabs_if_changed();
+    if s.tabs_save_retry_at > now {
+        tx.wake_after(std::time::Duration::from_secs_f64(
+            s.tabs_save_retry_at - now,
+        ));
+    }
     // The replies the session requests are waiting for.
     changed |= s.drain_pending();
     // Closing panes drive their own stop→delete lifecycle.
@@ -1643,6 +1656,8 @@ fn on_close(s: &mut State, tx: &mut Tx) {
 /// supervisor and drops every pending reply.
 fn on_quit(s: &mut State, _tx: &mut Tx) {
     s.editor.indexer.stop();
+    // Queue any newer layout behind the in-flight write before the worker drains.
+    s.queue_tabs_save();
     s.editor.backend.shutdown();
     s.editor.acp.shutdown();
     s.editor.lsp.shutdown();

@@ -275,6 +275,7 @@ impl Attachment {
 
 /// The settings key the open tabs' layout is stored under.
 pub const TABS_KEY: &str = "rune.tabs";
+const TABS_SAVE_RETRY_SECS: f64 = 1.0;
 
 /// A tab as saved: its title and the shape of its panes.
 #[derive(Serialize, Deserialize)]
@@ -1459,24 +1460,44 @@ impl State {
         serde_json::to_string(&tabs).unwrap_or_default()
     }
 
-    /// Write the layout to the settings store when it changed. Idle until
-    /// the saved one has been restored, so an empty start never overwrites it.
+    /// At most one outstanding write while polling. Failed writes retry
+    /// on a later poll, without waiting for the user to change the tabs.
     pub fn save_tabs_if_changed(&mut self) {
+        if self.tabs_save_pending.is_none() && self.clock >= self.tabs_save_retry_at {
+            self.queue_tabs_save();
+        }
+    }
+
+    pub fn queue_tabs_save(&mut self) {
         let Some(saved) = &self.tabs_saved else {
             return;
         };
         let now = self.tabs_snapshot();
-        if &now == saved {
+        if self.tabs_save_pending.as_ref().unwrap_or(saved) == &now {
             return;
         }
-        backend::enqueue(
+        if backend::enqueue(
             &mut self.editor.backend,
             Job::project(Req::SetSetting {
                 key: TABS_KEY.to_string(),
                 value: now.clone(),
             }),
-        );
-        self.tabs_saved = Some(now);
+        ) {
+            self.tabs_save_pending = Some(now);
+        } else {
+            self.tabs_save_retry_at = self.clock + TABS_SAVE_RETRY_SECS;
+        }
+    }
+
+    pub fn tabs_save_finished(&mut self, saved: bool) {
+        let Some(snapshot) = self.tabs_save_pending.take() else {
+            return;
+        };
+        if saved {
+            self.tabs_saved = Some(snapshot);
+        } else {
+            self.tabs_save_retry_at = self.clock + TABS_SAVE_RETRY_SECS;
+        }
     }
 
     /// Reopen the saved tabs once both the setting and the daemon's session
@@ -3373,6 +3394,106 @@ mod tests {
             .map(|p| p.session.as_str())
             .collect();
         assert_eq!(panes, [a.as_str(), c.as_str()]);
+    }
+
+    #[test]
+    fn terminal_layout_save_retries_after_the_queue_refuses_it() {
+        let mut s = state();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        tabbed_session(&mut s, "shell");
+        s.save_tabs_if_changed();
+        assert!(jobs.try_recv().is_err(), "startup must wait for restore");
+
+        s.tabs_saved = Some("[]".into());
+        while s.editor.backend.send(Job::project(Req::Agents)) {}
+
+        s.save_tabs_if_changed();
+        while jobs.try_recv().is_ok() {}
+        s.save_tabs_if_changed();
+        assert!(jobs.try_recv().is_err(), "queue retries are paced");
+        s.clock += 2.0;
+        s.save_tabs_if_changed();
+
+        assert!(
+            matches!(jobs.try_recv().map(|job| job.req),
+                Ok(Req::SetSetting { key, value }) if key == TABS_KEY && value.contains("shell")
+            ),
+            "an unchanged layout must be queued once the worker has room"
+        );
+    }
+
+    #[test]
+    fn terminal_layout_save_retries_after_storage_fails() {
+        let mut s = state();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        s.tabs_saved = Some("[]".into());
+        tabbed_session(&mut s, "shell");
+        s.save_tabs_if_changed();
+
+        let write = jobs.try_recv().unwrap();
+        let failed = backend::run_job(&None, &write);
+        assert!(failed.result.is_err());
+        s.apply_reply(failed);
+
+        s.save_tabs_if_changed();
+        assert!(jobs.try_recv().is_err(), "storage retries are paced");
+        s.clock += 2.0;
+        s.save_tabs_if_changed();
+        let retry = jobs
+            .try_recv()
+            .expect("an unchanged layout must be retried");
+        let dir = app_core::test_support::TempDir::new("terminal-layout-save");
+        let storage = Some(app_core::store::Storage::open(dir.path()));
+        let reply = backend::run_job(&storage, &retry);
+        assert!(reply.result.is_ok());
+        s.apply_reply(reply);
+
+        let stored = app_core::store::Store::open(dir.path())
+            .unwrap()
+            .get_setting(TABS_KEY)
+            .unwrap()
+            .unwrap();
+        assert!(stored.contains("shell"));
+        s.save_tabs_if_changed();
+        assert!(
+            jobs.try_recv().is_err(),
+            "a saved layout is not queued again"
+        );
+    }
+
+    #[test]
+    fn terminal_layout_save_queues_the_latest_order_before_quit() {
+        let mut s = state();
+        let (backend, jobs) = backend::channel_backend();
+        s.editor.backend = backend;
+        tabbed_session(&mut s, "first");
+        tabbed_session(&mut s, "second");
+        s.tabs_saved = Some(s.tabs_snapshot());
+
+        s.move_tab(0, 1);
+        s.save_tabs_if_changed();
+        let first_write = jobs.try_recv().unwrap();
+        s.move_tab(0, 1); // Back to the last saved order, but a different order is in flight.
+        s.save_tabs_if_changed();
+        assert!(jobs.try_recv().is_err(), "normal polls wait for the reply");
+        s.queue_tabs_save();
+        let quit_write = jobs.try_recv().expect("quit queues the latest order");
+
+        let dir = app_core::test_support::TempDir::new("terminal-layout-quit");
+        let storage = Some(app_core::store::Storage::open(dir.path()));
+        for write in [first_write, quit_write] {
+            assert!(backend::run_job(&storage, &write).result.is_ok());
+        }
+        let stored = app_core::store::Store::open(dir.path())
+            .unwrap()
+            .get_setting(TABS_KEY)
+            .unwrap()
+            .unwrap();
+        let tabs: Vec<SavedTab> = serde_json::from_str(&stored).unwrap();
+        let titles: Vec<_> = tabs.iter().map(|tab| tab.title.as_str()).collect();
+        assert_eq!(titles, ["first", "second"]);
     }
 
     #[test]

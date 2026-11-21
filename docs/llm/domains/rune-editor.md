@@ -4,18 +4,15 @@ The `goko-rune` app's Editor view (`apps/rune`, Rune/wgpu/winit) is a native
 workspace over real registered projects and checkouts — not the terminal
 chrome described in [Rune chrome](rune-chrome.md). It offers five sections —
 Files, Changes, History, Stashes, and Servers (language servers) — backed by
-`crates/app-core`, the same Tauri-free Git/file/ACP/LSP/storage implementation
-the desktop commands call. All blocking Git, filesystem, storage, and
-highlighting work runs on one worker thread, except the Context search
-indexer's passes and syncs, which run on their own thread; the UI thread only
-enqueues jobs and applies replies. Editing uses rune-kit's native text surface, not
-CodeMirror or a WebView.
+`crates/app-core` for Git, file, ACP, LSP and storage operations. The backend
+worker handles Git, file, storage and highlighting jobs off the UI thread.
+Long-running Git writes can detach, and Context search has its own indexer.
+Editing uses rune-kit's native text surface.
 
 Scope boundaries, verified against current source:
 
-- The terminal and session chrome drives real daemon sessions
-  (`apps/rune/src/data.rs`, `term.rs`, `panes.rs`); the editor never reads
-  session state and no live native terminal/session producer exists.
+- The daemon owns terminal sessions. The editor can send a code snapshot to
+  an attached session (see [RNE-agent-snapshot](#rne-agent-snapshot)).
 - Vim mode is optional and off by default (`goko.editor.vim`, Settings →
   Editor): a native modal engine drives the code field only, not the find bar,
   commit message or terminal. In Normal mode the macOS input source must be
@@ -23,11 +20,9 @@ Scope boundaries, verified against current source:
   composes Vietnamese normally (see RNE-vim-mode).
 - Language-server support covers hover and go-to-definition only;
   diagnostics and completion are deferred (see RNE-language-servers).
-- External open-file/line requests have a tested consumer but no producer yet
-  (see RNE-external-open).
-- Inline blame is a Rune-only affordance: the desktop editor has no blame
-  column, and the shared read lives in `crates/app-core/src/git_view.rs`
-  (see RNE-inline-blame).
+- Terminal file links use the editor's [external open path](#rne-external-open).
+- Inline blame uses a shared read in `crates/app-core/src/git_view.rs`
+  (see [RNE-inline-blame](#rne-inline-blame)).
 
 ## Requirements
 
@@ -552,7 +547,10 @@ Evidence: `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.
 
 ### RNE-external-open
 
-The system SHALL accept an external open-file/line request only through the backend worker, which validates the project, checkout, and relative path shape before opening the document once at the requested line — and the current source has a consumer but no producer for this request.
+The system SHALL route external open-file/line requests through the backend
+worker, validating the project, checkout and relative path before opening the
+document once at the requested line. In the app, clicking a terminal file link
+in the session's checkout uses this path.
 
 #### Scenario: Valid external open
 
@@ -566,9 +564,7 @@ The system SHALL accept an external open-file/line request only through the back
 - WHEN the request is processed
 - THEN it is rejected before any file opens
 
-Note: `navigation::external_open` is `#[allow(dead_code)]` — the OS-level producer (launch arg / open-URL event) remains deferred; only the consumer, validation, and once-only application exist and are tested today.
-
-Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`
+Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/backend/apply.rs`, `apps/rune/src/editor/state.rs`
 
 ### RNE-file-editing
 
@@ -1249,11 +1245,11 @@ the sidebar highlight key — inside `select_checkout` post-guard, and
 `__unassigned__` without touching the editor's own selection. Each section's
 state survives switches because it lives in `EditorState`, even though
 `section_body` renders only the active section; `visited` records which
-sections have been activated. Nothing in the editor's section state persists
-across launches.
+sections have been activated. Open drafts and the current section are not
+restored across launches.
 
-Persisted through the shared `goko.db` settings table (same store the desktop
-uses): the history pane layout under `goko.history.layout`, the commit agent
+Persisted through the `goko.db` settings table: the history pane layout
+under `goko.history.layout`, the commit agent
 pick under `commit.agent`, ACP agent configuration under `acp.agents`, and
 the language-server override document under `lsp.servers`. Project
 registration itself lives in `goko.db`'s `projects` table, written through
@@ -1295,7 +1291,7 @@ session state — the daemon's session lifecycle is not involved in the editor.
   credential prompt is refused.
 - History reads page 100 commits per request through `git log`/`for-each-ref`
   in the validated checkout; none mutates refs.
-- ACP `generate` sends the staged diff (capped like the desktop's) to the
+- ACP `generate` sends the capped staged diff to the
   picked agent's model provider; the agent runs in an empty temp directory
   with permissions denied and is killed on cancel/crash/app exit.
 - Language servers spawn their configured commands as stdio child processes
@@ -1431,7 +1427,7 @@ outlives 120 seconds reports `Push timed out`.
   pasted text without executing it and the "Snapshot sent to zsh" notice.
 - `crates/app-core` carries its own inline tests plus the shared
   `tests/fixtures/fake_acp_agent.py` driving ACP connect/generate/cancel/
-  permission-denial coverage — the same fixture the desktop page cites — and
+  permission-denial coverage, and
   an `lsp` module whose transport was smoke-verified against seven real
   language servers (initialize, sync, hover, definition, disconnect all
   passing; server-side capability gaps such as empty HTML definitions and
@@ -1446,7 +1442,6 @@ outlives 120 seconds reports `Push timed out`.
 ## Related
 
 - [Rune chrome](rune-chrome.md) — the daemon session chrome and view switch
-- [Desktop Editor](../architecture/editor.md) — the Tauri CodeMirror/Vim editor over the same `app-core` backend
 - [Architecture overview](../architecture/overview.md)
 
 
@@ -1458,6 +1453,7 @@ outlives 120 seconds reports `Push timed out`.
 - `apps/rune/src/askpass.rs`
 - `apps/rune/src/chrome.rs`
 - `apps/rune/src/data.rs`
+- `apps/rune/src/panes.rs`
 - `apps/rune/src/term.rs`
 - `apps/rune/src/sidebar.rs`
 - `apps/rune/src/settings.rs`
