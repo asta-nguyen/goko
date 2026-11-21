@@ -1,0 +1,52 @@
+apps/rune/src/panes.rs
+  s_b35762bf8c49d6::t_e42337a05d0bf0 3400-3404,3409-3412,3415-3417,3424-3439,3442-3443,3447-3452,3458-3459,3497-3498
+  s_b35762bf8c49d6::t_a830d056750d27 3444-3446,3460-3463
+  s_b35762bf8c49d6::t_939291f82ef120 3454-3457
+  s_b35762bf8c49d6::t_f8ec5441f6a96f 278,1463-1464,1466-1471,1476,1479,1485-1500
+  s_b35762bf8c49d6::t_772e8012a98615 3399,3405-3408,3413-3414,3418-3423,3440-3441,3464-3488,3490-3496
+  s_b35762bf8c49d6::t_46b9f8cb9b5492 3453,3489
+docs/llm/domains/rune-editor.md
+  s_b35762bf8c49d6::t_d0a7aed8f4867b 7-10,14-15,23-25,550-553,567,1248-1249,1251-1252,1294,1430
+  s_b35762bf8c49d6::t_e6d7ad268eb57e 1456
+docs/llm/domains/rune-chrome.md
+  s_b35762bf8c49d6::t_a2f28cb8af8ac3 813-826,828-830,1284-1288,1372-1375,1401-1403
+  s_b35762bf8c49d6::t_8207046e45709b 3-8,176-180,206,473-474,777-779,785,787,838,974-979,983,985,1040,1221,1299-1301,1325-1327,1353-1357
+  s_b35762bf8c49d6::t_0cfdf4faecad84 827
+  s_b35762bf8c49d6::t_ea7578c312378c 423-425,435,437,439,1224-1225
+  s_b35762bf8c49d6::t_fe0dde629292de 57-60,449-451,527-528
+  s_b35762bf8c49d6::t_64efcd1cf34de7 1270-1274
+  s_b35762bf8c49d6::t_c7dcb5964e1d50 1404
+docs/llm/architecture/overview.md
+  s_b35762bf8c49d6::t_d667417e244867 3-7,12-14,17-24,28-34,40-45,49-56,60-62,66-70,74-76,81-85,87-88,90-92,94
+  s_b35762bf8c49d6::t_cb08ac281d3c20 86,89,93,97
+docs/llm/architecture/editor.md
+  s_b35762bf8c49d6::t_f09f1d730628a2 1,3-8,12-13
+ARCHITECTURE.md
+  s_b35762bf8c49d6::t_29c6258c29efdc 62-63
+  s_b35762bf8c49d6::t_b44b36b2d6cd6f 61,64
+docs/llm/domains/desktop-theme.md
+  s_b35762bf8c49d6::t_f09f1d730628a2 1,3-5,9-11
+apps/rune/src/main.rs
+  s_b35762bf8c49d6::t_0d175642fc11e6 91-92,94-95,321-322,1204-1207,1520,1524,1659-1660
+  s_b35762bf8c49d6::t_8833c96d7c93a2 1521-1523
+docs/llm/INDEX.md
+  s_b35762bf8c49d6::t_545f87291d8ce8 11,24-39
+docs/llm/domains/desktop-settings.md
+  s_b35762bf8c49d6::t_f09f1d730628a2 1,3-5,9-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "412163063ef7e8effd172cd4009baf82aa12f0f8",
+  "prompts": {},
+  "sessions": {
+    "s_b35762bf8c49d6": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "stormy-anise",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
