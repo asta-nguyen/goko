@@ -1,19 +1,11 @@
 # Rune chrome
 
-The `goko-rune` app (`apps/rune`, Rune/wgpu/winit) renders the Goko shell chrome —
-the 48 px header, the project sidebar, the workspace tab strip, and the session
-controls strip. Sessions and tabs are real daemon sessions joined with
-their stored metadata: `session.create`/`stop`/`delete` requests drive the
-row actions, split panes and close lifecycle
-`Data`/`State` (spawn shell sessions, stop or close them, switch workspace
-views). The project sidebar is the real exception: it lists registered projects
-and their Git worktrees from the editor backend, and its selection commits to
-the Editor workspace through the draft guard — see
-[RNC-sidebar-projects](#rnc-sidebar-projects) and
-[RNC-sidebar-selection](#rnc-sidebar-selection). The terminal stub is a
-separate region outside this page's scope. The Editor view mounts the native
-editor workspace documented in [Rune editor](rune-editor.md), which performs
-real project, Git, file, and ACP work through `app-core`.
+The `goko-rune` app renders the Goko header, project sidebar, workspace tabs,
+terminal panes, session controls and Settings. Tabs and panes attach to
+daemon sessions, joined with stored app metadata. The sidebar lists
+registered projects and worktrees from the app backend; checkout selection
+passes through the editor's draft guard. See [Rune editor](rune-editor.md)
+for project, Git, file and ACP work in the Editor view.
 
 ## Requirements
 
@@ -62,13 +54,10 @@ Evidence: `apps/rune/src/main.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/chro
 ### RNC-controls-bar
 
 The system SHALL render the controls strip only in the Terminal view while a
-daemon session is selected — the Editor view has no session pane, matching
-App.tsx — showing the project/agent/title breadcrumb resolved from the real
-`SessionInfo` and its stored `SessionMeta`, a state badge with a tone dot
-(rune-kit's activity spinner in the accent while the session works), the elapsed time, and
-Stop/Close pane buttons that issue `session.stop`/`session.delete` to the
-daemon; Stop is dimmed when the state is not controllable or the daemon is
-disconnected.
+daemon session is selected. It shows the breadcrumb from `SessionInfo` and
+stored `SessionMeta`, the state badge (an activity spinner while the session
+works), elapsed time, and Stop and Close pane buttons. Stop is disabled when
+the state is not controllable or the daemon is disconnected.
 
 #### Scenario: session selected in Terminal view
 
@@ -184,11 +173,11 @@ Evidence: `crates/app-core/src/project_scan.rs`, `crates/app-core/src/projects.r
 
 ### RNC-new-tab
 
-The system SHALL create a workspace tab when New tab is pressed: it issues
-`session.create` to the daemon for a shell in the active checkout, records the
-session metadata through the app store, opens a tab titled from the session,
-makes it active, and selects the session once `session.updated` lands; a
-failed spawn surfaces an error and opens no phantom tab.
+The system SHALL open a terminal tab for a successfully created daemon
+session: New tab starts a shell, and its adjacent menu starts an agent preset
+or custom command for the active checkout. Unavailable agents are disabled
+with the reason "<binary> not found on PATH" in the tab bar and sidebar
+launch menus. A failed spawn shows an error and opens no phantom tab.
 
 #### Scenario: press New tab
 
@@ -202,12 +191,6 @@ failed spawn surfaces an error and opens no phantom tab.
 - WHEN New tab is pressed
 - THEN an error notice shows and no tab or session row appears
 
-Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`, `crates/app-core/src/store.rs`, `crates/app-core/src/agents.rs`
-
-### RNC-new-tab-menu
-
-The system SHALL offer, beside New tab, a menu listing every agent preset and Custom command… that starts that session in the active checkout and shows each unavailable agent as disabled with the reason "<binary> not found on PATH" in this menu and in the sidebar's New session menu.
-
 #### Scenario: start an agent from the tab bar
 
 - GIVEN an available agent and an active checkout
@@ -220,7 +203,7 @@ The system SHALL offer, beside New tab, a menu listing every agent preset and Cu
 - WHEN either menu opens
 - THEN its entry is disabled and states "<binary> not found on PATH"
 
-Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `crates/app-core/src/agents.rs`
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/view_tests.rs`, `crates/app-core/src/agents.rs`, `crates/app-core/src/store.rs`
 
 ### RNC-notice-expiry
 
@@ -437,10 +420,9 @@ Evidence: `apps/rune/src/data.rs`, `apps/rune/src/sidebar.rs`
 ### RNC-session-actions
 
 The system SHALL make the controls strip's buttons drive the daemon: Stop
-issues `session.stop` for the selected session and Close pane issues
-`session.delete`, removes the session's stored metadata, drops its title from
-`open_tabs`, and re-syncs selection to the active tab; both reflect the real
-`session.updated`/`session.exited` events rather than mutating local state.
+ends the selected session without removing its pane; Close pane starts the
+stop-then-delete lifecycle for that pane. When the session is deleted, the
+app removes its metadata and collapses the pane or removes its now-empty tab.
 
 #### Scenario: stop a running session
 
@@ -450,11 +432,11 @@ issues `session.stop` for the selected session and Close pane issues
 
 #### Scenario: close the selected pane
 
-- GIVEN the selected session's title is open as a tab
+- GIVEN the selected session is open in a terminal pane
 - WHEN Close pane is pressed
-- THEN `session.delete` is sent, the metadata row and tab are removed, and selection moves to the active tab's session
+- THEN the session is stopped if needed and deleted, its metadata is removed, and the pane disappears
 
-Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/data.rs`, `crates/app-core/src/store.rs`
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/sessions.rs`, `crates/app-core/src/store.rs`
 
 ### RNC-settings-page
 
@@ -464,8 +446,9 @@ of a placeholder: Editor exposes the native indentation preference (auto/2/4/8
 spaces/tabs, persisted under `goko.editor.indent`); Appearance offers
 System, Dark+, Light, One Dark, Catppuccin Mocha and Dracula persisted
 under `goko.theme` with `Ink::for_theme` palettes and System following the
-OS appearance; Accounts lists both agents' accounts with add (name +
-folder), rename, remove (metadata-only — the folder and credentials stay)
+OS appearance on macOS and Windows (Dark+ on Linux); Accounts lists both
+agents' accounts with add (name + folder), rename, remove (metadata-only —
+the folder and credentials stay)
 and set-active actions, a sign-in action for the named accounts only (the
 Default account has none — `accounts::sign_in_launch` refuses it, its login
 belongs to a terminal), and a successful add auto-requests the agent's
@@ -487,9 +470,8 @@ folder on Linux), after which the page says to restart Goko; a failed install
 raises a toast with the installer's last message and keeps the release available.
 A copy the installer would not replace (built from source, renamed, run from a
 disk image) or cannot write to is offered the install command to copy instead.
-No Vim control is rendered — it is deferred by
-decision D1. Every mutation rides a worker lane (backend `Req`s or the ACP
-runtime), never the UI thread.
+Editor also offers [Vim mode](rune-editor.md#rne-vim-mode). Settings writes
+use the backend queue or the ACP runtime.
 
 #### Scenario: persist a theme
 
@@ -542,9 +524,8 @@ Evidence: `apps/rune/src/settings.rs`, `apps/rune/src/update.rs`, `apps/rune/src
 The system SHALL toggle `State::view` between `Settings` and `Terminal` when
 the header settings button is pressed; `Settings` replaces the whole workspace
 column (tab strip, controls, content) with the native settings page —
-Editor/Appearance/Accounts/ACP agents/Updates sections — matching App.tsx's
-settingsMode. The press routes through the editor's draft guard like the view
-switch, so leaving the Editor with unsaved work raises Save/Discard/Cancel
+Editor/Appearance/Accounts/ACP agents/Updates sections. The press routes
+through the editor's draft guard, so leaving the Editor with unsaved work raises Save/Discard/Cancel
 before the view changes. The button is a keyboard-focusable toggle named
 "Settings" with a tooltip, pressed (`checked`) while `view` is `Settings`; it
 shows that state as an accent tint with the gear turned one 60° notch (a
@@ -793,19 +774,17 @@ Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/dae
 
 ### RNC-tab-close
 
-The system SHALL remove a workspace tab when its close control is pressed,
-re-indexing `active_tab` and reselecting the session of the tab that becomes
-active — clearing `selected_session`/`active_workspace` when no session
-resolves; closing a tab whose session is still running asks the daemon to
-stop it only through the explicit Close pane action, never implicitly.
+The system SHALL start the stop-then-delete lifecycle for all panes when
+the tab's close control is pressed. The tab is removed after its last pane
+is deleted; selection then follows the remaining active pane, if any.
 
 #### Scenario: close the active tab
 
 - GIVEN three open tabs with the last one active
 - WHEN its close control is pressed
-- THEN the tab is removed, `active_tab` clamps to the new last index, and the matching session is selected
+- THEN closing starts for its panes; once all are deleted, selection moves to the new last tab
 
-Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/daemon.rs`
+Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/sessions.rs`
 
 ### RNC-tab-debug
 
@@ -831,6 +810,24 @@ The system SHALL offer a secondary-press tab menu with Copy Tab ID, Copy Goko Se
 
 Evidence: `apps/rune/src/tab_debug.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/main.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/session_debug.rs`
 
+### RNC-tab-layout-persistence
+
+The system SHALL save terminal tab order, titles and split trees in `rune.tabs`, retrying a refused or failed write while the app is running and restoring only panes whose sessions are still listed by the daemon.
+
+#### Scenario: the layout write temporarily fails
+
+- GIVEN the terminal layout has changed
+- WHEN the worker queue refuses the write or the settings write returns an error
+- THEN the app retries the current layout on a later poll without needing another layout change
+
+#### Scenario: reopen the app with the daemon still running
+
+- GIVEN a saved split layout and the daemon's session list
+- WHEN the app restores its tabs
+- THEN tab order and split directions return, and a split with a missing session collapses to its remaining pane
+
+Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/main.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/editor/backend.rs`, `crates/app-core/src/store.rs`
+
 ### RNC-terminal-attach
 
 The system SHALL keep each session's terminal state in the daemon and attach
@@ -838,7 +835,7 @@ the Terminal view to the selected session: when the daemon supports it,
 `terminal.subscribe {paint: true}` starts the stream with a first paint (an ANSI
 rebuild of the retained scrollback, the screen, cursor and terminal modes,
 sent as kind-1 frames marked `PAINT_SEQ`) followed by live kind-1 frames, all
-parsed into the alacritty `Term` grid rendered as styled runs; a daemon without
+parsed into the Ghostty VT grid rendered as styled runs; a daemon without
 that support is attached through the retained raw replay. Keyboard input
 encodes to `terminal.write`, viewport changes send `terminal.resize`,
 `terminal.lagged` or a session switch resubscribes, `terminal.unsubscribe`
@@ -974,13 +971,18 @@ Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`, `apps/rune/src/main
 
 ### RNC-terminal-paste
 
-The system SHALL paste the clipboard into the focused terminal pane as the paths of any copied files, else its text, else — for an image with no text, such as a screenshot or Copy Image — the path of a PNG saved under `pasted-images/` in the Goko home, each path shell-escaped like a file dropped on the pane, and bracketed when the program asked for bracketed paste so a coding agent such as Claude Code, Codex or OpenCode attaches the image; it SHALL delete saved images older than a day when it saves a new one, and show a notice, pasting nothing, when the image cannot be saved.
+The system SHALL paste into the focused terminal pane in this order: copied
+file paths, non-empty text, then the path of a saved clipboard image. Paths
+are shell-escaped, and the paste is bracketed if the terminal has that mode
+enabled. For an image, the app writes a PNG under `pasted-images/` in the
+Goko home and attempts to remove files older than a day there. If saving
+fails, it shows a notice and pastes nothing.
 
 #### Scenario: paste a screenshot into an agent
 
-- GIVEN a terminal pane running a coding agent and a clipboard holding only an image
+- GIVEN a terminal pane with bracketed paste enabled and a clipboard holding only an image
 - WHEN the user pastes
-- THEN the agent receives the saved PNG's path as a bracketed paste and attaches it as an image
+- THEN the program receives the escaped path to the saved PNG as a bracketed paste
 
 #### Scenario: text keeps pasting as text
 
@@ -1035,7 +1037,7 @@ Evidence: `apps/rune/src/panes.rs`, `apps/rune/src/term.rs`, `apps/rune/src/main
 ### RNC-terminal-splits
 
 The system SHALL let a workspace tab split into an arbitrary tree of
-terminal panes: each pane attaches its own alacritty `Terminal`
+terminal panes: each pane attaches its own Ghostty VT-backed `Terminal`
 (subscribe/replay/resize/ack lifecycle per attachment), the active pane
 receives input and the controls strip, separators drag or arrow-key the
 split ratio clamped to measured pane minimums, and closing a pane drives
@@ -1216,13 +1218,11 @@ Terminal branch identity follows the focused pane’s session cwd, without falli
 
 `main.rs`'s `view` composes `chrome::header` full-width, then a row of
 `sidebar::sidebar`, `sidebar::separator`, and a workspace column. When
-`State::view` is `Settings` the column is only a placeholder; otherwise it
+`State::view` is `Settings` the column shows `settings::view`; otherwise it
 holds `chrome::tab_bar` and the content area — `panes::terminal_workspace` for
 `Terminal`, `editor::workspace::workspace` for `Editor`. The session controls
-strip (`chrome::controls_bar`) renders only in the Terminal view, matching
-App.tsx where session controls live inside the terminal workspace; the editor
-has no session pane. Each chrome function reads `State` (`Data`, tab
-list, selection, view) and `Ink` (palette) and returns an `El` element tree;
+strip (`chrome::controls_bar`) renders only in the Terminal view. Chrome
+functions read `State` and `Ink` (palette) and return an `El` element tree;
 shared builders (`txt`, `ic`, `btn_sm`, `btn_icon`, `usage_chip`) live in
 `theme.rs`. `setup` kicks `editor.refresh_projects()` once so the sidebar's
 real data loads with the app.
@@ -1267,11 +1267,11 @@ runs on the UI thread.
 
 ## State changes
 
-In-memory only for the chrome itself: `open_tabs`, `active_tab`,
-`project_tabs` (project ID → remembered tab ID), `selected_session`, `active_workspace`, `view`, and the sidebar disclosure
-maps (`expanded`, `worktree_groups`, `worktrees_open`) mutate on tab
-press/close, New tab, Stop, Close pane, session-row presses, sidebar chevron
-and project/worktree presses, the view switch, and the settings button.
+Runtime chrome state includes `open_tabs`, `active_tab`, `project_tabs`
+(project ID → remembered tab ID), `selected_session`, `active_workspace`,
+`view`, and the sidebar disclosure maps (`expanded`, `worktree_groups`,
+`worktrees_open`). Tab and session controls, sidebar actions, and view changes
+update this state.
 `active_workspace` — the sidebar highlight — commits only inside the editor's
 post-guard `select_checkout` on a sidebar selection, and clears when the
 editor drops its checkout; session and tab presses resolve it through
@@ -1280,6 +1280,11 @@ The chrome opens no daemon, socket, or database connection of its own; its
 sidebar actions only enqueue jobs on the editor backend, which owns all
 persistence and is documented in
 [Rune editor](rune-editor.md#state-changes).
+
+The tab snapshot stores tab order, titles and split directions, not focus or
+split ratios. The app waits for both the startup settings read and the daemon's
+session list before it can save a changed layout. Normal quit makes one final
+queue attempt for any newer snapshot before the worker drains accepted writes.
 
 Project Map's open flag, query and keyboard cursor are in memory. Only the
 existing selected-workspace setting is persisted; no recent-project history is
@@ -1291,9 +1296,9 @@ agent configuration, or persisted session metadata.
 
 ## Side effects
 
-None from the chrome's session/tab controls — they render daemon session data and
-perform no I/O beyond the window. The sidebar is no longer inert, though: its
-"Add Project" button sends `Req::AddProject` (a storage write) and its
+Terminal controls send session requests to the daemon; layout snapshots are
+written through the backend settings queue. The sidebar's "Add Project"
+button sends `Req::AddProject` (a storage write) and its
 project/worktree presses commit a checkout selection whose section reads run
 Git and file jobs — all on the editor backend's worker, documented in
 [Rune editor](rune-editor.md#side-effects).
@@ -1317,9 +1322,9 @@ fires at most once per second and only while the window is unfocused.
 
 ## Authorization & constraints
 
-None for the chrome — a local prototype shell with no access checks or
-validation. Editor operations enforce their own project/checkout validation
-in `app-core`; see [Rune editor](rune-editor.md#authorization--constraints).
+The daemon connection authenticates before sending session requests.
+Editor operations enforce project and checkout validation in `app-core`;
+see [Rune editor](rune-editor.md#authorization--constraints).
 
 Project Map only selects registered IDs from the current caches and rechecks
 project ownership after a guard delay. Existing app-core checkout validation
@@ -1345,11 +1350,11 @@ reach the terminal while the menu owns input.
 ## Error paths
 
 `controls_bar` returns an empty element when no session is selected (and the
-whole strip is absent in the Editor view). Closing the active project’s last tab clears `selected_session` and shows its start screen while retaining the committed checkout highlight. Hidden tabs remain stored; `active_tab` has no valid index when the current project has no tab. `sync_selection` clears the selection when the active tab's
-title matches no session. Stop no-ops on non-live states, and the split
-buttons remain inert — real pane splits need a layout the milestone doesn't
-have — so they render dimmed and disabled, with no hover, a tooltip, and no Tab
-stop. Disconnection only dims Stop and shows the header pill. The sidebar
+whole strip is absent in the Editor view). Closing the active project's last
+tab clears `selected_session` and shows its start screen while retaining the
+committed checkout highlight. Hidden tabs remain stored. Stop no-ops on
+non-live states; split actions are disabled without a pane target or a
+daemon connection. The sidebar
 shows honest status rows — "Loading projects…", the `projects_error` text, or
 the empty-registry hint — and never fabricates a project row; a per-project
 worktree failure renders under that project's row only, and refused backend
@@ -1363,6 +1368,10 @@ workspace groups and no search results. Initial/unready data cannot activate a
 row; Retry reuses project/workspace refresh requests. A vanished target or owner
 shows a notice without changing checkout/workspace. Workspace persistence failure
 keeps the in-memory selection and reports the existing queue/write error.
+
+Terminal layout writes leave the previous snapshot acknowledged until the
+settings worker reports success. A queue refusal or write error delays the
+next attempt so an unavailable store does not cause a tight retry loop.
 
 An unavailable process command, `lsof`, session file, or busy/unreadable Devin
 database leaves the corresponding diagnostic unavailable; other copy actions
@@ -1388,6 +1397,10 @@ worktree sessions, numbered visible-tab shortcuts, restoring a split’s focused
 pane, no input target or controls for a project with no tab, editor-picker and
 Project Map switches, late create replies, and deleting the current project’s
 last tab while a foreign tab remains.
+
+Terminal layout tests in `apps/rune/src/panes.rs` cover split restore with
+missing sessions, retry after queue refusal and storage failure, and writing
+the latest tab order behind a pending write on quit.
 
 Project Map tests in `apps/rune/src/project_map.rs`, `main.rs`, and
 `editor/navigation.rs` cover grouping/filtering, stable duplicate IDs, cursor

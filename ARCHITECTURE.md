@@ -58,8 +58,10 @@ The store implementation lives in `crates/app-core`.
   remains the only PTY and child-process authority.
 - On daemon restart, live sessions are gone while metadata rows remain in SQLite. The app
   hides metadata for sessions absent from `session.list`; it does not reattach them.
-- Tab layouts and pane splits are only in memory and disappear when Goko exits. A daemon
-  session is never rendered in multiple panes.
+- Terminal tab order, titles, and split trees are saved in SQLite under `rune.tabs`.
+  The app restores them against the daemon's session list, dropping panes whose sessions
+  are gone. Split ratios and focus are not saved. A refused or failed layout write is retried
+  while the app runs; the app treats a new snapshot as saved only after a successful write.
 - Stop sends SIGTERM and leaves the exited terminal open for inspection; closing a pane
   force-kills the session, waits for `exited` or `failed`, then deletes its daemon record,
   replay buffer, and SQLite metadata. A failed stop/delete keeps a visible retry action. A
