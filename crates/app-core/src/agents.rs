@@ -114,6 +114,14 @@ pub fn discover(path_var: Option<&OsStr>, default_shell: &str) -> Vec<AgentInfo>
         .collect()
 }
 
+/// The display label of a built-in adapter, `None` for an unknown id.
+pub fn label(agent: &str) -> Option<&'static str> {
+    ADAPTERS
+        .iter()
+        .find(|adapter| adapter.id == agent)
+        .map(|adapter| adapter.label)
+}
+
 /// Launch argv for `agent` resolved to the implicit Default account — the
 /// pre-accounts behavior. Equivalent to [`argv_for_account`] with
 /// [`LaunchAccount::default`]; kept so existing callers need no account

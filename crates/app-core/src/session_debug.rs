@@ -141,7 +141,7 @@ fn agent(argv: &[String]) -> Option<&'static str> {
     }
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
         && id.len() <= 128
         && id
@@ -171,6 +171,17 @@ fn launch_id(kind: &str, argv: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// The conversation ID recorded in a launch's argv, for a session that is no
+/// longer running: its process files are gone, so this is the only evidence.
+pub fn launch_identity(argv: &[String]) -> Option<Identity> {
+    let kind = agent(argv)?;
+    Some(Identity {
+        agent: kind.into(),
+        id: launch_id(kind, argv)?,
+        source: "Launch ID; may change inside the CLI".into(),
+    })
 }
 
 fn identity(
@@ -373,6 +384,26 @@ mod tests {
         );
         assert_eq!(agent(&["/bin/agy".into()]), Some("agy"));
         assert!(launch_id("shell", &["sh".into()]).is_none());
+    }
+
+    #[test]
+    fn an_exited_launch_keeps_only_its_recorded_conversation_id() {
+        let argv: Vec<String> = [
+            "/usr/bin/env",
+            "CLAUDE_CONFIG_DIR=/tmp/work",
+            "/bin/claude",
+            "--session-id",
+            "abc-123",
+        ]
+        .map(String::from)
+        .into();
+        let id = launch_identity(&argv).unwrap();
+        assert_eq!((id.agent.as_str(), id.id.as_str()), ("claude", "abc-123"));
+        assert!(id.source.starts_with("Launch ID"));
+        for kind in ["codex", "opencode", "devin", "agy"] {
+            assert!(launch_identity(&[format!("/bin/{kind}")]).is_none());
+        }
+        assert!(launch_identity(&["/bin/zsh".into()]).is_none());
     }
 
     #[test]

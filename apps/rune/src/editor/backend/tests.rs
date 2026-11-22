@@ -2670,7 +2670,7 @@ fn named_account_launches_and_sign_in_and_usage_read() {
     let bin = TempDir::new("rune-acct-bin");
     let goko = TempDir::new("rune-acct-goko");
     let codex_home = TempDir::new("rune-acct-codex");
-    for name in ["claude", "codex", "devin"] {
+    for name in ["claude", "codex", "devin", "opencode", "agy"] {
         let path = bin.path().join(name);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
@@ -2693,6 +2693,7 @@ fn named_account_launches_and_sign_in_and_usage_read() {
         EnvGuard::set("PATH", path.as_os_str()),
         EnvGuard::set("GOKO_HOME", goko.path().as_os_str()),
         EnvGuard::set("CODEX_HOME", codex_home.path().as_os_str()),
+        EnvGuard::set("CLAUDE_CONFIG_DIR", home.path().join(".claude").as_os_str()),
     ];
     let storage = Some(Storage::open(goko.path()));
 
@@ -2768,6 +2769,8 @@ fn named_account_launches_and_sign_in_and_usage_read() {
     };
     assert_eq!(accounts.claude.items.len(), 2);
 
+    handoff_backend_launches(&storage, home.path(), bin.path(), &id, &acct_dir);
+
     if app_core::accounts::DEVIN_ACCOUNTS_SUPPORTED {
         let folder = home.path().join("Devin Work");
         let agent = "devin".to_owned();
@@ -2789,7 +2792,13 @@ fn named_account_launches_and_sign_in_and_usage_read() {
             panic!("expected the Devin preset to launch");
         };
         assert_eq!(argv[3], format!("XDG_DATA_HOME={}", folder.display()));
-        let signed_in = run_job(&storage, &Job::project(Req::AccountSignIn { agent, id }));
+        let signed_in = run_job(
+            &storage,
+            &Job::project(Req::AccountSignIn {
+                agent,
+                id: id.clone(),
+            }),
+        );
         let Ok(ReplyData::SignIn {
             argv: login, cwd, ..
         }) = signed_in.result
@@ -2798,7 +2807,25 @@ fn named_account_launches_and_sign_in_and_usage_read() {
         };
         assert_eq!(&login[..argv.len()], argv);
         assert_eq!(cwd, folder.display().to_string());
+        let (project_id, root) = handoff_project(&storage, home.path());
+        let handoff = Job::project(Req::HandoffArgv {
+            token: 9,
+            agent: "devin".into(),
+            account: id.clone(),
+            project_id,
+            checkout: root.display().to_string(),
+            fork: None,
+        });
+        let Ok(ReplyData::HandoffArgv { argv: named, .. }) = run_job(&storage, &handoff).result
+        else {
+            panic!("expected the named Devin handoff to launch");
+        };
+        assert_eq!(
+            named, argv,
+            "a named Devin handoff keeps the isolated profile"
+        );
         std::fs::rename(&folder, home.path().join("Devin Moved")).unwrap();
+        assert!(run_job(&storage, &handoff).result.is_err());
         assert!(
             run_job(&storage, &launch)
                 .result
@@ -2806,6 +2833,122 @@ fn named_account_launches_and_sign_in_and_usage_read() {
                 .contains("missing")
         );
     }
+}
+
+/// The registered Git checkout the handoff launches run in.
+#[cfg(unix)]
+fn handoff_project(storage: &Option<Storage>, home: &std::path::Path) -> (String, PathBuf) {
+    let root = home.join("handoff-repo");
+    if !root.exists() {
+        std::fs::create_dir_all(&root).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .arg(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let root = root.canonicalize().unwrap();
+    let store = storage.as_ref().unwrap().get().unwrap();
+    let project = app_core::projects::list_projects(store)
+        .unwrap()
+        .into_iter()
+        .find(|project| project.project.root == root.display().to_string())
+        .unwrap_or_else(|| {
+            app_core::projects::add_project(
+                store,
+                root.to_str().unwrap(),
+                app_core::store::DEFAULT_WORKSPACE_ID,
+            )
+            .unwrap()
+        });
+    (project.project.id, root)
+}
+
+/// Every preset launches as a handoff destination on Default, a named
+/// Claude account carries its folder, the stored selection never moves,
+/// and a fork is built only into a profile that shares the source history.
+#[cfg(unix)]
+fn handoff_backend_launches(
+    storage: &Option<Storage>,
+    home: &std::path::Path,
+    bin: &std::path::Path,
+    claude_id: &str,
+    claude_dir: &std::path::Path,
+) {
+    let (project_id, root) = handoff_project(storage, home);
+    let before = app_core::accounts::read(storage.as_ref().unwrap());
+    let launch = |agent: &str, account: &str, fork: Option<app_core::handoff::ForkSource>| {
+        run_job(
+            storage,
+            &Job::project(Req::HandoffArgv {
+                token: 5,
+                agent: agent.into(),
+                account: account.into(),
+                project_id: project_id.clone(),
+                checkout: root.display().to_string(),
+                fork,
+            }),
+        )
+        .result
+    };
+    for agent in ["claude", "codex", "devin", "opencode", "agy"] {
+        let Ok(ReplyData::HandoffArgv { argv, cwd }) = launch(agent, "default", None) else {
+            panic!("{agent} launches on Default");
+        };
+        let binary = bin.canonicalize().unwrap().join(agent);
+        assert!(
+            argv.iter().any(
+                |word| std::path::Path::new(word).canonicalize().ok().as_ref() == Some(&binary)
+            ),
+            "{argv:?}"
+        );
+        assert!(
+            !argv
+                .iter()
+                .any(|word| word.contains("CONFIG_DIR=") || word.contains("CODEX_HOME="))
+        );
+        assert_eq!(cwd, root.display().to_string());
+    }
+    let Ok(ReplyData::HandoffArgv { argv, .. }) = launch("claude", claude_id, None) else {
+        panic!("the named Claude account launches");
+    };
+    assert!(argv.contains(&format!("CLAUDE_CONFIG_DIR={}", claude_dir.display())));
+    assert!(
+        !argv.iter().any(|word| word == "--resume"),
+        "context mode never resumes"
+    );
+
+    let id = "00000000-0000-0000-0000-0000000000cc";
+    let file = home
+        .join(".claude/projects/-repo")
+        .join(format!("{id}.jsonl"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "{}\n").unwrap();
+    let source = app_core::handoff::ForkSource {
+        id: id.into(),
+        file: file.clone(),
+    };
+    let Ok(ReplyData::HandoffArgv { argv, .. }) = launch("claude", "default", Some(source.clone()))
+    else {
+        panic!("Default shares its own history");
+    };
+    let session = argv.iter().position(|word| word == "--session-id").unwrap();
+    assert_ne!(
+        argv[session + 1],
+        id,
+        "the fork gets a fresh conversation ID"
+    );
+    assert_eq!(&argv[argv.len() - 3..], ["--resume", id, "--fork-session"]);
+    assert!(!argv.iter().any(|word| word.ends_with(".jsonl")));
+    let error = launch("claude", claude_id, Some(source.clone())).unwrap_err();
+    assert!(error.contains("does not share"), "{error}");
+    std::os::unix::fs::symlink(home.join(".claude/projects"), claude_dir.join("projects")).unwrap();
+    assert!(launch("claude", claude_id, Some(source)).is_ok());
+    let after = app_core::accounts::read(storage.as_ref().unwrap());
+    assert_eq!(after.claude.active, before.claude.active);
+    assert_eq!(after.codex.active, before.codex.active);
+    assert_eq!(after.devin.active, before.devin.active);
 }
 
 #[test]
@@ -2914,4 +3057,155 @@ fn git_writes_and_detachable_jobs_are_partitioned() {
     for req in [Req::Changes, Req::FileList, Req::Projects, Req::Workspaces] {
         assert!(!is_git_write(&req), "{req:?} is not a git write");
     }
+}
+
+fn handoff_session(
+    argv: &[&str],
+    state: protocol::session::SessionState,
+) -> protocol::session::SessionInfo {
+    protocol::session::SessionInfo {
+        id: protocol::session::SessionId::new(),
+        title: "agent".into(),
+        argv: argv.iter().map(|word| word.to_string()).collect(),
+        cwd: "/".into(),
+        state,
+        pid: None,
+        exit_code: None,
+        error: None,
+        started_at: 0,
+        ended_at: None,
+    }
+}
+
+fn prepared(reply: Reply) -> app_core::handoff::Prepared {
+    match reply.result {
+        Ok(ReplyData::HandoffPrepared { prepared, .. }) => *prepared,
+        other => panic!("expected a handoff review, got {other:?}"),
+    }
+}
+
+/// The review reads the exited pane's recorded conversation from its own
+/// profile, adds the checkout's Git picture, and never sends a draft back.
+#[test]
+fn handoff_backend_prepares_the_exited_panes_own_conversation() {
+    use protocol::session::SessionState;
+    let (dir, root, storage, project_id) = concept_storage("rune-handoff-prepare");
+    let profile = dir.path().join("claude work");
+    let id = "00000000-0000-0000-0000-0000000000bb";
+    let transcript = profile.join("projects/-work").join(format!("{id}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    let cwd = root.display().to_string();
+    std::fs::write(
+        &transcript,
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"user","uuid":"u1","cwd":cwd,"message":{"content":"Finish the parser"}}),
+            serde_json::json!({"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"text","text":"Half done"}]}}),
+        ),
+    )
+    .unwrap();
+    let env_word = format!("CLAUDE_CONFIG_DIR={}", profile.display());
+    let job = |session, manual_id: Option<&str>| {
+        Job::project(Req::PrepareHandoff {
+            token: 7,
+            session,
+            agent: "claude".into(),
+            project_id: project_id.clone(),
+            checkout: cwd.clone(),
+            manual_id: manual_id.map(str::to_owned),
+        })
+    };
+    let claude = handoff_session(
+        &["/usr/bin/env", &env_word, "/bin/claude", "--session-id", id],
+        SessionState::Exited,
+    );
+    let reply = run_job(&storage, &job(claude.clone(), None));
+    assert!(matches!(reply.req, Req::PrepareHandoff { token: 7, .. }));
+    let review = prepared(reply);
+    assert_eq!(review.conversation.as_deref(), Some(id));
+    assert!(review.status.contains("Launch ID"), "{}", review.status);
+    for expected in [
+        "User:\nFinish the parser",
+        "Assistant:\nHalf done",
+        "Branch: main at",
+    ] {
+        assert!(
+            review.draft.contains(expected),
+            "{expected}: {}",
+            review.draft
+        );
+    }
+    assert!(review.fork.is_some() || cfg!(windows));
+
+    // An exited pane started without an ID has no conversation, but a
+    // context-only review; a typed ID is verified in the pane's profile.
+    let bare = handoff_session(
+        &["/usr/bin/env", &env_word, "/bin/claude"],
+        SessionState::Exited,
+    );
+    let review = prepared(run_job(&storage, &job(bare.clone(), None)));
+    assert!(
+        review.status.contains("without a conversation ID"),
+        "{}",
+        review.status
+    );
+    assert!(review.conversation.is_none() && review.accepts_manual_id);
+    assert!(review.draft.contains("Branch: main at"));
+    let review = prepared(run_job(&storage, &job(bare, Some(id))));
+    assert_eq!(review.conversation.as_deref(), Some(id));
+
+    // An unregistered checkout is refused before any history is read.
+    let reply = run_job(
+        &storage,
+        &Job::project(Req::PrepareHandoff {
+            token: 8,
+            session: claude,
+            agent: "claude".into(),
+            project_id: project_id.clone(),
+            checkout: dir.path().join("elsewhere").display().to_string(),
+            manual_id: None,
+        }),
+    );
+    assert!(reply.result.is_err());
+}
+
+/// A destination is exactly the chosen account: an unknown one, a named
+/// account for an agent without accounts, or a fork into another agent is
+/// an error, never a fallback.
+#[test]
+fn handoff_backend_refuses_unknown_accounts_and_foreign_forks() {
+    let (_dir, root, storage, project_id) = concept_storage("rune-handoff-argv");
+    let job = |agent: &str, account: &str, fork: bool| {
+        Job::project(Req::HandoffArgv {
+            token: 3,
+            agent: agent.into(),
+            account: account.into(),
+            project_id: project_id.clone(),
+            checkout: root.display().to_string(),
+            fork: fork.then(|| app_core::handoff::ForkSource {
+                id: "abc".into(),
+                file: root.join("abc.jsonl"),
+            }),
+        })
+    };
+    for (agent, account) in [("claude", "ghost"), ("opencode", "work"), ("agy", "work")] {
+        let reply = run_job(&storage, &job(agent, account, false));
+        assert!(reply.result.is_err(), "{agent}/{account}");
+    }
+    let error = run_job(&storage, &job("codex", "default", true))
+        .result
+        .unwrap_err();
+    assert!(error.contains("only a Claude destination"), "{error}");
+    let reply = run_job(
+        &storage,
+        &Job::project(Req::HandoffArgv {
+            token: 4,
+            agent: "shell".into(),
+            account: "default".into(),
+            project_id: "missing".into(),
+            checkout: root.display().to_string(),
+            fork: None,
+        }),
+    );
+    assert!(reply.result.is_err(), "an unregistered project is refused");
 }

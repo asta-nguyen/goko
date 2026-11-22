@@ -17,6 +17,8 @@
 
 ## Archived changes
 
+- [Terminal agent handoff](changes/archive/claude-account-handoff/design.md) ([tasks](changes/archive/claude-account-handoff/tasks.md), [delta](changes/archive/claude-account-handoff/delta.md))
+
 - [Named Devin CLI accounts](changes/archive/devin-multi-account/design.md) ([tasks](changes/archive/devin-multi-account/tasks.md), [delta](changes/archive/devin-multi-account/delta.md))
 - [Vim mode in the native editor](changes/archive/2026-11-19-27-vim-mode/design.md) ([tasks](changes/archive/2026-11-19-27-vim-mode/tasks.md), [delta](changes/archive/2026-11-19-27-vim-mode/delta.md))
 - [Rune SSH passphrase prompt](changes/archive/rune-ssh-passphrase-prompt/delta.md)

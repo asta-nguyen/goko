@@ -10,6 +10,7 @@ pub mod code_index;
 pub mod error;
 pub mod git_view;
 pub mod git_write;
+pub mod handoff;
 pub mod home;
 pub mod lsp;
 pub mod platform;

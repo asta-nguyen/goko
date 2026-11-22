@@ -2912,6 +2912,7 @@ mod tests {
                 direction: Direction::SideBySide,
             },
             workspace_id: None,
+            handoff: None,
         });
         reply_tx.send(Ok(info.clone())).unwrap();
         assert!(s.drain_pending());
@@ -2946,6 +2947,7 @@ mod tests {
                 direction: Direction::SideBySide,
             },
             workspace_id: None,
+            handoff: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -2972,6 +2974,7 @@ mod tests {
             },
             placement: Placement::Tab,
             workspace_id: None,
+            handoff: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -3117,6 +3120,7 @@ mod tests {
                 direction: Direction::SideBySide,
             },
             workspace_id: None,
+            handoff: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -3268,6 +3272,7 @@ mod tests {
                 direction: Direction::SideBySide,
             },
             workspace_id: None,
+            handoff: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();
@@ -3567,6 +3572,7 @@ mod tests {
                 direction: Direction::SideBySide,
             },
             workspace_id: None,
+            handoff: None,
         });
         reply_tx.send(Ok(info)).unwrap();
         s.drain_pending();

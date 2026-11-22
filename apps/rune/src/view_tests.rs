@@ -5333,6 +5333,7 @@ fn project_terminals_editor_picker_and_background_placement_keep_project_focus()
         },
         placement: panes::Placement::Tab,
         workspace_id: None,
+        handoff: None,
     });
     reply_tx.send(Ok(info)).unwrap();
     assert!(s.drain_pending());

@@ -142,6 +142,9 @@ pub enum Pending {
         /// The workspace selected when a launch with no project went out:
         /// the session belongs to it even if the selection moves meanwhile.
         workspace_id: Option<String>,
+        /// The handoff dialog request this create answers: its approved
+        /// copy is released only when this create succeeds.
+        handoff: Option<u64>,
     },
     /// `session.stop`: the daemon's answer updates the row. The key lets a
     /// closing pane see the stop's failure instead of a global notice.
@@ -195,6 +198,21 @@ impl State {
     /// a fresh tab or a pane splitting an existing one. Returns whether the
     /// request went out.
     pub fn launch_session_placed(&mut self, launch: SessionLaunch, placement: Placement) -> bool {
+        self.launch_session_with(launch, placement, None)
+    }
+
+    /// A handoff's destination session in a new tab. The dialog that asked
+    /// (`token`) hears whether the create succeeded.
+    pub fn launch_handoff(&mut self, launch: SessionLaunch, token: u64) -> bool {
+        self.launch_session_with(launch, Placement::Tab, Some(token))
+    }
+
+    fn launch_session_with(
+        &mut self,
+        launch: SessionLaunch,
+        placement: Placement,
+        handoff: Option<u64>,
+    ) -> bool {
         let asked = launch.clone();
         let reply = self
             .daemon
@@ -210,6 +228,7 @@ impl State {
                     launch,
                     placement,
                     workspace_id,
+                    handoff,
                 });
                 true
             }
@@ -425,13 +444,21 @@ impl State {
                     launch,
                     placement,
                     workspace_id,
+                    handoff,
                 } => match reply.try_recv() {
                     Ok(Ok(info)) => {
                         self.session_created(info, &launch, placement, workspace_id);
+                        if let Some(token) = handoff {
+                            crate::handoff::created(self, token);
+                        }
                         changed = true;
                     }
                     Ok(Err(error)) => {
-                        self.notice = Some(format!("could not start the session: {error}"));
+                        let message = format!("could not start the session: {error}");
+                        match handoff {
+                            Some(token) => crate::handoff::create_failed(self, token, message),
+                            None => self.notice = Some(message),
+                        }
                         changed = true;
                     }
                     Err(TryRecvError::Empty) => waiting.push(Pending::Create {
@@ -439,9 +466,14 @@ impl State {
                         launch,
                         placement,
                         workspace_id,
+                        handoff,
                     }),
                     Err(TryRecvError::Disconnected) => {
-                        self.notice = Some("the Goko daemon is not reachable".into());
+                        let message = "the Goko daemon is not reachable".to_owned();
+                        match handoff {
+                            Some(token) => crate::handoff::create_failed(self, token, message),
+                            None => self.notice = Some(message),
+                        }
                         changed = true;
                     }
                 },

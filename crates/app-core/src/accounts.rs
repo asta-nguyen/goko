@@ -236,6 +236,51 @@ pub fn resolve(agent: &str, storage: &Storage) -> Result<LaunchAccount, BridgeEr
     )
 }
 
+/// The launch account for exactly the stored `id` (or Default), for a launch
+/// the user aimed at one account. Unlike [`resolve`] it never falls back:
+/// an unknown or removed id, a missing folder, or a folder that now
+/// physically aliases Default or another registration is refused. Named
+/// accounts exist only for Claude, Codex and (macOS/Linux) Devin, and never
+/// on Windows. The stored selection is only read.
+pub fn resolve_id(agent: &str, id: &str, storage: &Storage) -> Result<LaunchAccount, BridgeError> {
+    if id == DEFAULT_ID {
+        return Ok(LaunchAccount::default());
+    }
+    if cfg!(windows) {
+        return Err(invalid("named accounts are not supported on Windows"));
+    }
+    let accounts = read(storage);
+    let agent_accounts = accounts
+        .agent(agent)
+        .ok_or_else(|| invalid(format!("{agent} has no named accounts")))?;
+    let item = agent_accounts
+        .items
+        .iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| invalid("the selected account no longer exists"))?;
+    if !item.dir.is_dir() {
+        return Err(invalid(format!(
+            "the account folder {} no longer exists",
+            item.dir.display()
+        )));
+    }
+    if agent == "devin" {
+        validate_devin_profile(&item.dir)?;
+    }
+    reject_physical_alias(
+        &item.dir,
+        default_dir(agent).as_deref(),
+        agent_accounts
+            .items
+            .iter()
+            .filter(|other| other.id != item.id),
+    )?;
+    Ok(LaunchAccount {
+        id: item.id.clone(),
+        dir: Some(item.dir.clone()),
+    })
+}
+
 /// The agent's own login command for an added account, for the UI to start
 /// through the existing custom-command path. The words are joined with
 /// `shlex::try_join` so `resolve_launch`'s `shlex::split` restores them
@@ -1523,6 +1568,50 @@ mod tests {
         let launch = resolve("codex", &storage).unwrap();
         assert_eq!(launch.id, DEFAULT_ID);
         assert_eq!(launch.dir, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_id_names_one_account_and_never_falls_back_or_selects() {
+        let dir = TempDir::new("accounts-resolve-id");
+        let storage = open(&dir);
+        let one = add_ok(&storage, &dir, "claude", "One", &dir.path().join("one"));
+        let one_id = one.claude.items[0].id.clone();
+        add_ok(&storage, &dir, "claude", "Two", &dir.path().join("two"));
+        add_ok(&storage, &dir, "codex", "Codex", &dir.path().join("cx"));
+        let before = store(&storage).get_setting(ACCOUNTS_KEY).unwrap();
+
+        let launch = resolve_id("claude", &one_id, &storage).unwrap();
+        assert_eq!(launch.dir, Some(dir.path().join("one")));
+        assert_eq!(
+            resolve_id("codex", DEFAULT_ID, &storage).unwrap(),
+            LaunchAccount::default()
+        );
+        assert!(resolve_id("claude", "ghost", &storage).is_err());
+        assert!(resolve_id("codex", &one_id, &storage).is_err());
+        for agent in ["opencode", "agy"] {
+            assert!(resolve_id(agent, &one_id, &storage).is_err());
+            assert_eq!(
+                resolve_id(agent, DEFAULT_ID, &storage).unwrap(),
+                LaunchAccount::default()
+            );
+        }
+        assert_eq!(store(&storage).get_setting(ACCOUNTS_KEY).unwrap(), before);
+        assert_eq!(
+            resolve("claude", &storage).unwrap().dir,
+            Some(dir.path().join("two"))
+        );
+
+        // A folder that later becomes a link to another registration is refused.
+        fs::remove_dir_all(dir.path().join("one")).unwrap();
+        assert!(resolve_id("claude", &one_id, &storage).is_err());
+        std::os::unix::fs::symlink(dir.path().join("two"), dir.path().join("one")).unwrap();
+        let error = resolve_id("claude", &one_id, &storage).unwrap_err();
+        assert!(
+            error.message.contains("another account"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

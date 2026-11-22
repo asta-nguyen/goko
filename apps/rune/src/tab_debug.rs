@@ -124,6 +124,20 @@ fn copy_value(s: &State, tab_id: &str, kind: CopyKind) -> Option<String> {
     }
 }
 
+/// Hand off the focused pane to another agent or account, with a reason
+/// when that pane cannot be handed off.
+fn handoff_item(s: &State, tab: &str) -> MenuItem {
+    let reason = crate::handoff::unavailable(s, tab);
+    let tab = tab.to_owned();
+    MenuItem::new("Hand off to…")
+        .description(reason.unwrap_or("Focused pane: new session with its context"))
+        .disabled(reason.is_some())
+        .on_select_tx(move |s: &mut State, tx: &mut Tx| {
+            s.tab_menu = None;
+            crate::handoff::open(s, &tab, tx);
+        })
+}
+
 fn copy_item(label: &str, tab: &str, kind: CopyKind) -> MenuItem {
     let tab = tab.to_owned();
     MenuItem::new(label).on_select_tx(move |s: &mut State, tx: &mut Tx| {
@@ -177,6 +191,8 @@ pub fn menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
             copy_item("Copy Debug Info", &tab.id, CopyKind::Debug)
                 .description("Tab and all panes, IDs, PIDs, and RAM"),
         )
+        .separator()
+        .item(handoff_item(s, &tab.id))
         .separator()
         .item(
             MenuItem::new(memory_label(s, tab))
@@ -322,6 +338,8 @@ mod tests {
             "Copy Goko Session ID",
             "Copy Agent Session ID",
             "Copy Debug Info",
+            "Hand off to…",
+            "This pane was not started from an agent preset",
         ] {
             assert!(
                 rt.elements()

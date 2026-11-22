@@ -122,6 +122,29 @@ pub enum Req {
         /// starts.
         token: u64,
     },
+    /// A handoff review for one pane: its freshly sampled conversation
+    /// identity (or an exited pane's launch ID), the exact saved history
+    /// from its own profile, and a short Git picture of its checkout.
+    /// `token` names the dialog request the reply belongs to.
+    PrepareHandoff {
+        token: u64,
+        session: protocol::session::SessionInfo,
+        agent: String,
+        project_id: String,
+        checkout: String,
+        manual_id: Option<String>,
+    },
+    /// A handoff destination's launch: exactly the chosen account, the
+    /// revalidated checkout, and for an explicit Claude fork its resume
+    /// words. The reviewed text is never part of this request.
+    HandoffArgv {
+        token: u64,
+        agent: String,
+        account: String,
+        project_id: String,
+        checkout: String,
+        fork: Option<app_core::handoff::ForkSource>,
+    },
     /// One usage/accounts read: the snapshot plus the account view the
     /// chips and session labels are drawn from. `previous` keeps the last
     /// values for sources that cannot be read this tick.
@@ -414,6 +437,17 @@ pub enum ReplyData {
     Agents(Vec<AgentInfo>),
     /// The resolved launch argv of one agent.
     AgentArgv(Vec<String>),
+    /// The handoff review (draft, history status, fork source) and the
+    /// Claude accounts whose history a fork of that source can resume.
+    HandoffPrepared {
+        prepared: Box<app_core::handoff::Prepared>,
+        fork_accounts: Vec<String>,
+    },
+    /// A handoff destination's launch argv and its revalidated checkout.
+    HandoffArgv {
+        argv: Vec<String>,
+        cwd: String,
+    },
     /// The usage snapshot plus the accounts view and the per-provider usage
     /// records read with it.
     Usage {
@@ -1021,6 +1055,29 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
             &default_shell(),
         ))),
         Req::AgentArgv { agent, .. } => agent_argv(storage, agent),
+        Req::PrepareHandoff {
+            session,
+            agent,
+            project_id,
+            checkout,
+            manual_id,
+            ..
+        } => prepare_handoff(
+            storage,
+            session,
+            agent,
+            project_id,
+            checkout,
+            manual_id.as_deref(),
+        ),
+        Req::HandoffArgv {
+            agent,
+            account,
+            project_id,
+            checkout,
+            fork,
+            ..
+        } => handoff_argv(storage, agent, account, project_id, checkout, fork.as_ref()),
         Req::Usage { previous } => usage_snapshot(storage, previous),
         Req::AccountAdd {
             agent, name, dir, ..
@@ -1157,15 +1214,8 @@ pub(crate) fn run_job(storage: &Option<Storage>, job: &Job) -> Reply {
             projects::remove_project(store, id).map(|_| ReplyData::Ok)
         }),
         Req::Subagents { sessions, inspect } => {
-            // The process table is read on the worker: `ps` is a command,
-            // not a file the UI thread should run.
-            let (rows, rss) = process_table();
-            let mut map = app_core::subagents::compute_subagents(sessions, &rows);
-            // Codex 0.167 runs its agents under a shared `codex app-server`
-            // daemon: those are attributed through the thread id.
-            add_codex_daemon_agents(&mut map, sessions, &rows);
-            let debug = app_core::session_debug::sample(sessions, &rows, rss, &map, inspect);
-            Ok(ReplyData::Subagents { agents: map, debug })
+            let (agents, debug) = debug_sample(sessions, inspect);
+            Ok(ReplyData::Subagents { agents, debug })
         }
         Req::Activity { sessions, previous } => {
             // The files live in GOKO_HOME and the codex home; reading them
@@ -1235,6 +1285,133 @@ fn storage_req<T>(
     };
     let store = storage.get().map_err(|e| e.to_string())?;
     f(store).map_err(|e| e.to_string())
+}
+
+/// The agent CLIs under `sessions` plus the diagnostics of `inspect`.
+fn debug_sample(
+    sessions: &[protocol::session::SessionInfo],
+    inspect: &[String],
+) -> (
+    app_core::subagents::SubagentMap,
+    app_core::session_debug::Snapshot,
+) {
+    // The process table is read on the worker: `ps` is a command,
+    // not a file the UI thread should run.
+    let (rows, rss) = process_table();
+    let mut map = app_core::subagents::compute_subagents(sessions, &rows);
+    // Codex 0.167 runs its agents under a shared `codex app-server`
+    // daemon: those are attributed through the thread id.
+    add_codex_daemon_agents(&mut map, sessions, &rows);
+    let debug = app_core::session_debug::sample(sessions, &rows, rss, &map, inspect);
+    (map, debug)
+}
+
+/// The handoff review for one pane. A running pane is sampled now, so its
+/// PID-linked conversation is current; an exited pane has only the ID its
+/// launch recorded. The checkout is revalidated against the registered
+/// project first, and nothing outside the pane's own profile is read.
+fn prepare_handoff(
+    storage: &Option<Storage>,
+    session: &protocol::session::SessionInfo,
+    agent: &str,
+    project_id: &str,
+    checkout: &str,
+    manual_id: Option<&str>,
+) -> Result<ReplyData, String> {
+    let (checkout, is_git) = storage_req(storage, |store| {
+        projects::file_checkout(store, project_id, checkout)
+    })?;
+    let key = session.id.as_uuid().to_string();
+    let identity = if app_core::session_debug::live(session.state) {
+        let (_, mut debug) =
+            debug_sample(std::slice::from_ref(session), std::slice::from_ref(&key));
+        debug
+            .identities
+            .remove(&key)
+            .unwrap_or_else(|| Err("No current process sample for this pane".into()))
+    } else {
+        app_core::session_debug::launch_identity(&session.argv).ok_or_else(|| {
+            "The pane has exited and was started without a conversation ID".to_owned()
+        })
+    };
+    let git = is_git
+        .then(|| app_core::handoff::git_snapshot(&checkout))
+        .flatten();
+    let folders = app_core::handoff::Folders::from_env();
+    let prepared = app_core::handoff::prepare(
+        app_core::handoff::Source {
+            agent,
+            argv: &session.argv,
+            checkout: &checkout,
+            identity,
+            manual_id,
+        },
+        &folders,
+        git.as_ref(),
+    );
+    // Which Claude accounts resume from the same history folder: only
+    // those are offered the native fork.
+    let fork_accounts = prepared
+        .fork
+        .as_ref()
+        .map(|fork| {
+            let named = storage
+                .as_ref()
+                .map(|storage| app_core::accounts::read(storage).claude.items)
+                .unwrap_or_default();
+            std::iter::once((app_core::accounts::DEFAULT_ID.to_owned(), None))
+                .chain(named.into_iter().map(|item| (item.id, Some(item.dir))))
+                .filter(|(_, dir)| {
+                    app_core::handoff::validate_fork(fork, dir.as_deref(), &folders).is_ok()
+                })
+                .map(|(id, _)| id)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ReplyData::HandoffPrepared {
+        prepared: Box::new(prepared),
+        fork_accounts,
+    })
+}
+
+/// A handoff destination's launch: the exact account (never a fallback),
+/// the binary on `PATH`, the revalidated checkout, and for an explicit
+/// Claude fork the resume words after the destination's normal argv. The
+/// account selection for future launches is only read.
+fn handoff_argv(
+    storage: &Option<Storage>,
+    agent: &str,
+    account: &str,
+    project_id: &str,
+    checkout: &str,
+    fork: Option<&app_core::handoff::ForkSource>,
+) -> Result<ReplyData, String> {
+    if fork.is_some() && agent != "claude" {
+        return Err("only a Claude destination can fork a Claude conversation".into());
+    }
+    let (checkout, _) = storage_req(storage, |store| {
+        projects::file_checkout(store, project_id, checkout)
+    })?;
+    let account = storage
+        .as_ref()
+        .ok_or("storage is unavailable")
+        .map_err(str::to_owned)
+        .and_then(|storage| {
+            app_core::accounts::resolve_id(agent, account, storage)
+                .map_err(|error| error.to_string())
+        })?;
+    let mut argv = account_argv(agent, &account)?;
+    if let Some(fork) = fork {
+        argv.extend(app_core::handoff::validate_fork(
+            fork,
+            account.dir.as_deref(),
+            &app_core::handoff::Folders::from_env(),
+        )?);
+    }
+    Ok(ReplyData::HandoffArgv {
+        argv,
+        cwd: checkout.display().to_string(),
+    })
 }
 
 /// The agents the shared `codex app-server` daemon runs for a session:
@@ -1383,6 +1560,16 @@ fn agent_argv(storage: &Option<Storage>, agent: &str) -> Result<ReplyData, Strin
         }
         _ => app_core::accounts::LaunchAccount::default(),
     };
+    account_argv(agent, &account).map(ReplyData::AgentArgv)
+}
+
+/// The launch argv for `agent` on `account`: a named account whose folder
+/// vanished is refused, and Claude's original statusline is read from the
+/// account's own settings.
+fn account_argv(
+    agent: &str,
+    account: &app_core::accounts::LaunchAccount,
+) -> Result<Vec<String>, String> {
     if let Some(dir) = &account.dir
         && !dir.is_dir()
     {
@@ -1408,9 +1595,8 @@ fn agent_argv(storage: &Option<Storage>, agent: &str) -> Result<ReplyData, Strin
         &default_shell(),
         &goko_home,
         original_statusline.as_deref(),
-        &account,
+        account,
     )
-    .map(ReplyData::AgentArgv)
     .map_err(|error| error.to_string())
 }
 
@@ -1677,6 +1863,8 @@ fn run_checkout(
         | Req::DeleteSessionMeta(_)
         | Req::Agents
         | Req::AgentArgv { .. }
+        | Req::PrepareHandoff { .. }
+        | Req::HandoffArgv { .. }
         | Req::Usage { .. }
         | Req::AccountAdd { .. }
         | Req::AccountRename { .. }

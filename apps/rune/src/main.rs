@@ -8,6 +8,7 @@ mod chrome;
 mod daemon;
 mod data;
 mod editor;
+mod handoff;
 mod nested_import;
 mod panes;
 mod picker;
@@ -206,6 +207,13 @@ pub struct State {
     project_map: project_map::ProjectMapState,
     /// Add Project's nested-repository review dialog.
     pub nested_import: nested_import::NestedImportState,
+    /// The Hand off dialog for one tab's focused pane.
+    pub handoff: handoff::HandoffState,
+    /// Monotonic token for the next handoff request.
+    pub handoff_token: u64,
+    /// The approved handoff text, copied on the next poll once its session
+    /// exists (the create's reply lands without a `Tx`).
+    pub handoff_copy: Option<String>,
     /// Monotonic token for the next nested scan/import request.
     pub nested_import_token: u64,
     /// Project to select once an import reply's projects are refreshed.
@@ -372,6 +380,9 @@ impl State {
             selected_workspace: None,
             project_map: Default::default(),
             nested_import: Default::default(),
+            handoff: Default::default(),
+            handoff_token: 0,
+            handoff_copy: None,
             nested_import_token: 0,
             nested_import_select: None,
             workspace_restore_pending: true,
@@ -787,6 +798,29 @@ impl State {
             return;
         }
         match &reply.req {
+            backend::Req::PrepareHandoff { token, .. } => {
+                let token = *token;
+                let result = match reply.result {
+                    Ok(backend::ReplyData::HandoffPrepared {
+                        prepared,
+                        fork_accounts,
+                    }) => Ok((*prepared, fork_accounts)),
+                    Ok(_) => return,
+                    Err(error) => Err(error),
+                };
+                handoff::apply_prepared(self, token, result);
+                return;
+            }
+            backend::Req::HandoffArgv { token, .. } => {
+                let token = *token;
+                let result = match reply.result {
+                    Ok(backend::ReplyData::HandoffArgv { argv, cwd }) => Ok((argv, cwd)),
+                    Ok(_) => return,
+                    Err(error) => Err(error),
+                };
+                handoff::apply_argv(self, token, result);
+                return;
+            }
             backend::Req::SessionMetaList => {
                 if let Ok(backend::ReplyData::SessionMetas(rows)) = &reply.result {
                     let metas: HashMap<String, app_core::store::SessionMeta> = rows
@@ -1331,6 +1365,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     for import_layer in nested_import::layers(s) {
         root = root.child(import_layer);
     }
+    for handoff_layer in handoff::layers(s) {
+        root = root.child(handoff_layer);
+    }
     // A failed call's notice: a toast the user closes, or that expires after
     // 8 s. Without it the message was recorded and never shown.
     if let Some(text) = &s.notice {
@@ -1499,6 +1536,12 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     // The replies the session requests are waiting for.
     changed |= s.drain_pending();
+    // A handoff's approved text goes to the clipboard only now that its
+    // session exists.
+    if let Some(text) = s.handoff_copy.take() {
+        tx.copy(text);
+        changed = true;
+    }
     // Closing panes drive their own stop→delete lifecycle.
     changed |= s.poll_closes();
     changed |= s.poll_stop_escalation();
@@ -1655,6 +1698,9 @@ fn on_key(s: &mut State, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if s.nested_import.open {
         return nested_import::key(s, ev, tx);
     }
+    if s.handoff.open {
+        return handoff::key(s, ev, tx);
+    }
     // The sidebar's prompt, or one of its searchable selects, owns the
     // keyboard while it is open: its field takes the typing, not the shell.
     if s.sidebar_input.is_some() || s.sidebar_picker_open() {
@@ -1751,6 +1797,7 @@ fn shortcut_owned(s: &State) -> bool {
         || s.sidebar_menu.is_some()
         || s.sidebar_picker_open()
         || s.nested_import.open
+        || s.handoff.open
         || s.editor.guard.is_some()
         || s.askpass.is_some()
         || s.editor.quick_open.open
@@ -1910,7 +1957,7 @@ fn terminal_key(s: &mut State, ev: &rune::KeyEvent, base: Option<char>) -> bool 
 /// the cursor (`Preedit`) and typed into the focused session once it is
 /// final (`Commit`) — Vietnamese Telex and the other marked-text methods.
 fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
-    if s.project_map.open || s.nested_import.open || s.tab_menu.is_some() {
+    if s.project_map.open || s.nested_import.open || s.handoff.open || s.tab_menu.is_some() {
         return true;
     }
     if s.view != View::Terminal {
