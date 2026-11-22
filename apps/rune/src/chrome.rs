@@ -211,6 +211,27 @@ fn usage_records(s: &State) -> Vec<UsageRecord> {
             }
         }
     }
+    if let Some(devin) = s
+        .data
+        .accounts
+        .as_ref()
+        .and_then(|view| view.agent("devin"))
+        .filter(|devin| devin.items.len() >= 2)
+    {
+        let account_only = UsageRecord {
+            id: "devin".into(),
+            name: "Devin".into(),
+            ..Default::default()
+        };
+        match records.iter_mut().find(|record| record.id == "devin") {
+            // The collector only reads the ambient account.
+            Some(record) if devin.active != app_core::accounts::DEFAULT_ID => {
+                *record = account_only
+            }
+            Some(_) => {}
+            None => records.push(account_only),
+        }
+    }
     let rank = |id: &str| match id {
         "ollama" => 1,
         "devin" => 2,
@@ -404,11 +425,7 @@ pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
 
             // Multi-account switcher rows if accounts view exists
             if let Some(view) = s.data.accounts.as_ref() {
-                let agent_accounts = match provider.id.as_str() {
-                    "claude" => Some(&view.claude),
-                    "codex" => Some(&view.codex),
-                    _ => None,
-                };
+                let agent_accounts = view.agent(&provider.id);
                 if let Some(av) = agent_accounts
                     && av.items.len() >= 2
                 {
@@ -461,7 +478,11 @@ pub fn usage_menu_layer(s: &State, layer: &mut Vec<El>) -> Option<El> {
                                         if is_active { ink.text } else { ink.muted },
                                     )),
                             )
-                            .child(theme::txt(&summary, T10_SUB, ink.muted))
+                            .child(if provider.id == "devin" {
+                                el()
+                            } else {
+                                theme::txt(&summary, T10_SUB, ink.muted)
+                            })
                             .on_press_tx(move |st: &mut State, _tx: &mut Tx| {
                                 if !is_active {
                                     let _ = backend::enqueue(

@@ -860,17 +860,16 @@ fn notes_view(release: &crate::update::Release, ink: &Ink) -> El {
 // ---------------------------------------------------------------------------
 
 fn agent_accounts<'a>(s: &'a State, agent: &str) -> Option<&'a AgentView> {
-    let view = s.data.accounts.as_ref()?;
-    Some(match agent {
-        "claude" => &view.claude,
-        _ => &view.codex,
-    })
+    s.data.accounts.as_ref()?.agent(agent)
 }
 
 fn accounts_section(s: &State, ink: &Ink) -> El {
     let mut body = col().w_full().gap(20.0);
     for (agent, title) in [("claude", "Claude Code"), ("codex", "Codex")] {
         body = body.child(agent_card(s, ink, agent, title));
+    }
+    if app_core::accounts::DEVIN_ACCOUNTS_SUPPORTED {
+        body = body.child(agent_card(s, ink, "devin", "Devin"));
     }
     body
 }
@@ -1393,6 +1392,7 @@ mod tests {
                     is_default: true,
                 }],
             },
+            ..app_core::accounts::view_with(&Default::default(), None, None, None)
         }
     }
 

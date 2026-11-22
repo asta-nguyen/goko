@@ -17,6 +17,7 @@
 
 ## Archived changes
 
+- [Named Devin CLI accounts](changes/archive/devin-multi-account/design.md) ([tasks](changes/archive/devin-multi-account/tasks.md), [delta](changes/archive/devin-multi-account/delta.md))
 - [Vim mode in the native editor](changes/archive/2026-11-19-27-vim-mode/design.md) ([tasks](changes/archive/2026-11-19-27-vim-mode/tasks.md), [delta](changes/archive/2026-11-19-27-vim-mode/delta.md))
 - [Rune SSH passphrase prompt](changes/archive/rune-ssh-passphrase-prompt/delta.md)
 - [Folder projects and nested repository import](changes/archive/folder-projects/design.md) ([tasks](changes/archive/folder-projects/tasks.md), [delta](changes/archive/folder-projects/delta.md))

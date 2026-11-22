@@ -859,18 +859,15 @@ impl State {
                 return;
             }
             backend::Req::Usage { .. } => {
-                if let Ok(backend::ReplyData::Usage { .. }) = &reply.result {
-                    // Move the payload out — the view types aren't Clone.
-                    if let Ok(backend::ReplyData::Usage {
-                        snapshot,
-                        accounts,
-                        records,
-                    }) = reply.result
-                    {
-                        self.data.usage = Some(snapshot);
-                        self.data.accounts = Some(accounts);
-                        self.agent_usage = records;
-                    }
+                if let Ok(backend::ReplyData::Usage {
+                    snapshot,
+                    accounts,
+                    records,
+                }) = reply.result
+                {
+                    self.data.usage = Some(*snapshot);
+                    self.data.accounts = Some(accounts);
+                    self.agent_usage = records;
                 }
                 return;
             }
@@ -879,15 +876,14 @@ impl State {
                     Ok(backend::ReplyData::Accounts(view)) => {
                         // Main's add flow opens sign-in for the new account —
                         // `add` leaves it active, so `active` names it.
-                        let id = match agent.as_str() {
-                            "claude" => view.claude.active.clone(),
-                            _ => view.codex.active.clone(),
-                        };
+                        let id = view.agent(agent).map(|provider| provider.active.clone());
                         self.data.accounts = Some(view);
                         // The drafts are cleared by the reply that belongs
                         // to this submission only: a stale one must never
                         // wipe a newer form.
-                        if self.settings.finish_account_add(*token) {
+                        if self.settings.finish_account_add(*token)
+                            && let Some(id) = id
+                        {
                             self.request_sign_in(agent, &id);
                         }
                     }

@@ -417,7 +417,7 @@ pub enum ReplyData {
     /// The usage snapshot plus the accounts view and the per-provider usage
     /// records read with it.
     Usage {
-        snapshot: app_core::usage::UsageSnapshot,
+        snapshot: Box<app_core::usage::UsageSnapshot>,
         accounts: app_core::accounts::AccountsView,
         records: Vec<app_core::usage_records::UsageRecord>,
     },
@@ -1369,16 +1369,16 @@ fn agent_home() -> PathBuf {
 /// The launch argv for `agent`, resolved the way the desktop resolves it:
 /// the binary on `PATH`, the default shell for `shell`, and Claude's own
 /// statusline/hooks for `claude` — under the account `accounts::resolve`
-/// names, so a named account carries its `CLAUDE_CONFIG_DIR`/`CODEX_HOME`
+/// names, so a named account carries its provider's profile environment
 /// and Claude captures usage under its id. A named account whose folder
 /// vanished is refused, and the original statusline is read from the
 /// account's own settings, never always Default's.
 fn agent_argv(storage: &Option<Storage>, agent: &str) -> Result<ReplyData, String> {
-    // Only Claude and Codex have stored accounts; every other adapter
-    // launches as Default. Asking `accounts::resolve` for e.g. `shell`
-    // would reject a perfectly valid preset.
     let account = match (agent, storage.as_ref()) {
-        ("claude" | "codex", Some(storage)) => {
+        (_, Some(storage))
+            if matches!(agent, "claude" | "codex")
+                || (agent == "devin" && app_core::accounts::DEVIN_ACCOUNTS_SUPPORTED) =>
+        {
             app_core::accounts::resolve(agent, storage).map_err(|error| error.to_string())?
         }
         _ => app_core::accounts::LaunchAccount::default(),
@@ -1435,7 +1435,7 @@ fn usage_snapshot(
     let snapshot =
         app_core::usage::read_snapshot(&goko_home, codex_home.as_deref(), &accounts, previous);
     Ok(ReplyData::Usage {
-        snapshot,
+        snapshot: Box::new(snapshot),
         accounts: app_core::accounts::view(&accounts),
         records: app_core::usage_records::read(
             &usage_record_dirs(&goko_home),

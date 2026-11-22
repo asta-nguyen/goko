@@ -139,7 +139,8 @@ pub fn argv_for(
 /// Launch argv for `agent` on `account`, resolved fresh: `[absolute resolved
 /// path]` for a real agent, `[default_shell]` for `shell`. A named Claude or
 /// Codex account prepends `/usr/bin/env NAME=<dir>`; Claude also captures
-/// usage under the account id. An unknown id or a binary missing from
+/// usage under the account id. Named Devin accounts isolate their own XDG
+/// paths. An unknown id or a binary missing from
 /// `path_var` is `invalid_argument`.
 pub fn argv_for_account(
     agent: &str,
@@ -169,6 +170,13 @@ pub fn argv_for_account(
                 )
                 .with_hint("install it or pick Shell")
             })?;
+            if let ("devin", true, Some(dir)) = (
+                agent,
+                crate::accounts::DEVIN_ACCOUNTS_SUPPORTED,
+                &account.dir,
+            ) {
+                return Ok(devin_profile_argv(&path, dir));
+            }
             // A named Claude or Codex account sets its folder variable through
             // `env`; the dir stays a single argv element even with spaces.
             // Windows has no `/usr/bin/env`: a named account there shares the
@@ -293,6 +301,21 @@ pub fn original_statusline(settings_path: &Path) -> Option<String> {
 }
 
 #[cfg(not(windows))]
+pub(crate) fn devin_profile_argv(binary: &Path, dir: &Path) -> Vec<String> {
+    vec![
+        "/usr/bin/env".to_owned(),
+        "-u".to_owned(),
+        "WINDSURF_API_KEY".to_owned(),
+        format!("XDG_DATA_HOME={}", dir.display()),
+        format!("XDG_CONFIG_HOME={}", dir.join("config").display()),
+        // Keep named sessions out of the ambient account's usage cache.
+        format!("XDG_CACHE_HOME={}", dir.join("cache").display()),
+        binary.display().to_string(),
+        "--process-model".to_owned(),
+        "in-process".to_owned(),
+    ]
+}
+
 fn claude_statusline_command(path: &Path, original: Option<&str>) -> Result<String, BridgeError> {
     let quote = |value: &str| shell_quote(value, "statusline");
     let path = quote(&path.display().to_string())?;
@@ -737,10 +760,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn opencode_devin_agy_and_shell_ignore_a_named_account() {
+    fn opencode_agy_and_shell_ignore_a_named_account() {
         let dir = TempDir::new("agents-other-acct");
         fake_bin(&dir, "opencode", 0o755);
-        fake_bin(&dir, "devin", 0o755);
         fake_bin(&dir, "agy", 0o755);
         let path = path_var(&[dir.path()]);
         let account_dir = dir.path().join("account dir");
@@ -750,7 +772,7 @@ mod tests {
             dir: Some(account_dir),
         };
 
-        for agent in ["opencode", "devin", "agy"] {
+        for agent in ["opencode", "agy"] {
             let default = argv_for(agent, Some(&path), "/bin/zsh", dir.path(), None).unwrap();
             let launched =
                 argv_for_account(agent, Some(&path), "/bin/zsh", dir.path(), None, &named).unwrap();

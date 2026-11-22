@@ -1132,7 +1132,7 @@ mod tests {
                 "work",
                 vec![stored("work", &home.path().join("claude-work"))],
             ),
-            codex: AgentAccounts::default(),
+            ..Accounts::default()
         };
 
         let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
@@ -1180,7 +1180,7 @@ mod tests {
                 "default",
                 vec![stored("work", &home.path().join("claude-work"))],
             ),
-            codex: AgentAccounts::default(),
+            ..Accounts::default()
         };
 
         let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
@@ -1231,8 +1231,8 @@ mod tests {
         write_rollout(default_codex.path(), "2026/11/04", 10.0, recent(10));
         write_rollout(work_codex.path(), "2026/11/04", 56.0, recent(20));
         let accounts = Accounts {
-            claude: AgentAccounts::default(),
             codex: agent_accounts("work", vec![stored("work", work_codex.path())]),
+            ..Accounts::default()
         };
 
         let snapshot = read_snapshot(
@@ -1282,7 +1282,7 @@ mod tests {
                 "default",
                 vec![stored("work", &home.path().join("claude-work"))],
             ),
-            codex: AgentAccounts::default(),
+            ..Accounts::default()
         };
         let previous = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
         assert_eq!(previous.accounts["claude:work"].limits[0].used_pct, 77.0);
@@ -1326,7 +1326,7 @@ mod tests {
                 "default",
                 vec![stored("work", &home.path().join("claude-work"))],
             ),
-            codex: AgentAccounts::default(),
+            ..Accounts::default()
         };
 
         let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
@@ -1388,7 +1388,7 @@ mod tests {
                 "work",
                 vec![stored("work", &home.path().join("claude-work"))],
             ),
-            codex: AgentAccounts::default(),
+            ..Accounts::default()
         };
 
         let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());
@@ -1425,6 +1425,7 @@ mod tests {
                 ],
             ),
             codex: agent_accounts("default", vec![stored("cx", empty_codex.path())]),
+            ..Accounts::default()
         };
 
         let snapshot = read_snapshot(home.path(), None, &accounts, &UsageSnapshot::default());

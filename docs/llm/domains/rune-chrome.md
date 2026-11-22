@@ -73,6 +73,36 @@ the state is not controllable or the daemon is disconnected.
 
 Evidence: `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/daemon.rs`, `apps/rune/src/main.rs`
 
+### RNC-devin-accounts
+
+On macOS and Linux, the system SHALL add a Devin account list alongside the Claude and Codex lists in Settings > Accounts, with an implicit Default and named accounts stored by name and dedicated data-root folder; named sessions and sign-in use that folder's isolated Devin data and configuration, while Default keeps the CLI's ambient login.
+
+#### Scenario: add or sign in
+
+- GIVEN the Devin binary is available
+- WHEN a dedicated folder is registered or Sign in is pressed on its named row
+- THEN a Devin sign-in terminal opens with `XDG_DATA_HOME` set to that folder, `XDG_CONFIG_HOME` set to its `config` subfolder, and no inherited `WINDSURF_API_KEY`
+
+#### Scenario: unsafe or missing folder
+
+- GIVEN a Devin profile folder is missing at launch, or the proposed or selected profile aliases another login location
+- WHEN Goko validates the add, sign-in, or launch
+- THEN Goko reports an error rather than falling through to another account
+
+#### Scenario: remove the active account
+
+- GIVEN a named Devin account is active
+- WHEN its registration is removed
+- THEN Default becomes active for future launches and the removed profile's files remain untouched
+
+#### Scenario: Windows
+
+- GIVEN Goko runs on Windows
+- WHEN a user opens Settings > Accounts or starts the Devin preset
+- THEN no named Devin controls are offered and the preset continues to use the ambient login
+
+Evidence: `crates/app-core/src/accounts.rs`, `crates/app-core/src/agents.rs`, `apps/rune/src/settings.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/main.rs`
+
 ### RNC-done-sound
 
 The system SHALL play a notification sound when a session's activity becomes done or the session ends (exited or failed), but only while the app window is unfocused and the `goko.sound_done` setting is enabled; the sound is the system "Blow" (`Blow.aiff`, or `Breeze.aiff` where Apple renamed it) through `afplay` on macOS, a synthesized tone through the first available player elsewhere, and silence when no player exists.
@@ -420,18 +450,19 @@ The system SHALL ask for confirmation in an inline sidebar row before Remove wor
 Evidence: `apps/rune/src/sidebar.rs`, `apps/rune/src/sessions.rs`, `apps/rune/src/main.rs`
 ### RNC-session-account-label
 
-The system SHALL label every Claude/Codex session row with the account it
-runs under, derived from the session's own launch argv
-(`account_name_of`): a `/usr/bin/env CLAUDE_CONFIG_DIR=…`/`CODEX_HOME=…`
-word names the account whose folder matches (or the folder's basename when
-the account was removed), and plain argv names the Default account —
-independent of any later active-account switch.
+The system SHALL label every Claude/Codex session row and, on macOS and Linux, every Devin preset session row with the launch account, derived from the row's own argv: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or `XDG_DATA_HOME` names the matching account (or the folder basename if removed), and plain argv names Default.
 
 #### Scenario: named-account session
 
 - GIVEN a session whose argv starts `env CLAUDE_CONFIG_DIR=/accts/work`
 - WHEN the sidebar renders its row
 - THEN the label reads `Claude · work`
+
+#### Scenario: Devin account changed after launch
+
+- GIVEN a Devin session launched with the data root for the named account `Work`
+- WHEN another Devin account becomes active
+- THEN the existing session still shows `Work`
 
 #### Scenario: removed-account session
 
@@ -692,10 +723,15 @@ with a notice instead of starting a session.
 
 #### Scenario: a preset without accounts launches
 
-- GIVEN the Shell, OpenCode or Devin preset is chosen
+- GIVEN the Shell or OpenCode preset is chosen
 - WHEN the worker resolves its argv
-- THEN it launches as the Default account — only Claude and Codex resolve a
-  stored account, so no preset is refused as an unknown agent
+- THEN it launches with its existing command and no stored account lookup
+
+#### Scenario: named Devin account launches
+
+- GIVEN a named Devin account is active on macOS or Linux
+- WHEN the Devin preset is chosen
+- THEN the new session starts in that checkout using the active account's isolated environment
 
 #### Scenario: two launches at once
 
@@ -1120,43 +1156,25 @@ Evidence: `apps/rune/src/term.rs`, `apps/rune/src/panes.rs`
 
 ### RNC-usage-accounts
 
-The system SHALL read the usage snapshot and the accounts view on the
-editor backend worker roughly every five seconds (`Req::Usage` carrying the
-previous snapshot, plus an idle `wake_after` so a quiet UI still refreshes),
-store them in `Data::usage`/`Data::accounts` only on successful replies,
-and render one header chip per provider that has any limit or at least two
-accounts: each present window shows its `windowLabel` and `used_pct` —
-muted "reset" once `resets_at` has passed, the rounded percentage in
-muted/warning/danger tones otherwise — and the chip tooltip lists each
-window's reset and "Updated <age|unknown>". With two or more accounts the
-chip suffixes the active account's name and opens a menu listing the
-accounts (checked on the active one, each with its own usage summary in the
-same expiry-aware form as the chips — a window that already reset reads
-"reset", not its last percentage) whose selects send `AccountSetActive`,
-plus "Manage accounts…" which opens the Settings page's Accounts section.
-Account mutations (`AccountAdd`, `AccountRename`, `AccountRemove`,
-`AccountSetActive`) run on the worker, mutate the cached view only on success
-and refresh the usage read; errors surface as the app notice.
+The system SHALL refresh the usage snapshot and account list through the editor worker roughly every five seconds and check the active account in the Agents dropdown's account selectors. Claude and Codex retain their existing selectors and expiry-aware usage summaries. On macOS and Linux the Devin selector appears whenever at least one named Devin account exists, even without quota data, and never attributes Default's meter to a named account. "Manage accounts…" opens Settings > Accounts. Account mutations run on the worker, update the account view only on success, and report failures through the existing notice.
 
-#### Scenario: quota chips render and refresh
+#### Scenario: quota windows refresh
 
-- GIVEN a usage snapshot with a `five_hour` limit at 42 %
-- WHEN the view renders
-- THEN the Claude chip shows `Claude 5h 42%` and a ~5 s later worker read
-  refreshes it
+- GIVEN a usage snapshot with a Claude five-hour limit
+- WHEN the Agents dropdown renders and the limit expires
+- THEN the meter refreshes and shows "reset" rather than the old percentage
 
-#### Scenario: elapsed window
+#### Scenario: multiple Claude accounts
 
-- GIVEN a limit whose `resets_at` is in the past
-- WHEN the view renders
-- THEN the window shows a muted "reset" instead of a percentage
+- GIVEN the Claude accounts view holds two accounts and a usage record is present
+- WHEN the Agents dropdown opens
+- THEN it checks the active account, and the user can select the other account or open Settings > Accounts
 
-#### Scenario: multiple accounts
+#### Scenario: multiple Devin accounts with no usage
 
-- GIVEN the Claude accounts view holds two accounts
-- WHEN the active account differs from the chip's current name
-- THEN the chip shows `Claude · <active name>` and its menu can activate
-  the other account or open Settings → Accounts
+- GIVEN the named Devin account `Work` and Default are available
+- WHEN the user selects `Work` in the Agents dropdown
+- THEN `Work` is checked on success and no quota is shown for it
 
 #### Scenario: failed mutation
 

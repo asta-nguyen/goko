@@ -1,9 +1,10 @@
-//! Multiple named accounts per agent (`claude`, `codex`), persisted as one
+//! Multiple named accounts per agent (`claude`, `codex`, `devin`), persisted as one
 //! JSON value under the `accounts` setting.
 //!
 //! Every agent has an implicit Default account — id `default`, never stored —
 //! that keeps today's launch behavior and folder (`$CLAUDE_CONFIG_DIR` or
-//! `~/.claude` for Claude, `$CODEX_HOME` or `~/.codex` for Codex). Added
+//! `~/.claude` for Claude, `$CODEX_HOME` or `~/.codex` for Codex, and
+//! `$XDG_DATA_HOME` or `~/.local/share` for Devin). Added
 //! accounts are `{id, name, dir}` rows; `accounts.<agent>.active` names the
 //! one new sessions use, and a missing, malformed, unknown, or removed active
 //! id reads as Default. Each command reads the whole value, changes it, and
@@ -34,12 +35,15 @@ use protocol::message::ErrorCode;
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 /// Settings key holding the whole `accounts` JSON value.
 const ACCOUNTS_KEY: &str = "accounts";
 /// The implicit Default account's id; it is never stored as an item.
 pub const DEFAULT_ID: &str = "default";
+pub const DEVIN_ACCOUNTS_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 const MAX_NAME_CHARS: usize = 40;
 
 /// The account a launch resolves to. `dir` is `None` for Default, which
@@ -97,13 +101,27 @@ pub struct Accounts {
     pub claude: AgentAccounts,
     #[serde(default)]
     pub codex: AgentAccounts,
+    #[serde(default)]
+    pub devin: AgentAccounts,
 }
 
-/// The `accounts_get` payload: both agents, Default first in each item list.
+/// The accounts payload: Default first in each provider's item list.
 #[derive(Clone, Debug, Serialize)]
 pub struct AccountsView {
     pub claude: AgentView,
     pub codex: AgentView,
+    pub devin: AgentView,
+}
+
+impl AccountsView {
+    pub fn agent(&self, agent: &str) -> Option<&AgentView> {
+        match agent {
+            "claude" => Some(&self.claude),
+            "codex" => Some(&self.codex),
+            "devin" if DEVIN_ACCOUNTS_SUPPORTED => Some(&self.devin),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -154,8 +172,22 @@ pub fn default_dir_from(
     }
 }
 
-/// [`default_dir_from`] reading the process environment.
+fn xdg_home(var: &str, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(|home| PathBuf::from(home).join(fallback))
+        })
+}
+
+/// The Default account's folder from the process environment.
 pub fn default_dir(agent: &str) -> Option<PathBuf> {
+    if agent == "devin" && DEVIN_ACCOUNTS_SUPPORTED {
+        return xdg_home("XDG_DATA_HOME", ".local/share");
+    }
     default_dir_from(
         agent,
         std::env::var_os("CLAUDE_CONFIG_DIR"),
@@ -187,10 +219,15 @@ pub fn resolve(agent: &str, storage: &Storage) -> Result<LaunchAccount, BridgeEr
             .iter()
             .find(|item| item.id == agent_accounts.active)
         {
-            Some(item) => LaunchAccount {
-                id: item.id.clone(),
-                dir: Some(item.dir.clone()),
-            },
+            Some(item) => {
+                if agent == "devin" {
+                    validate_selected_devin_profile(agent_accounts, item)?;
+                }
+                LaunchAccount {
+                    id: item.id.clone(),
+                    dir: Some(item.dir.clone()),
+                }
+            }
             None => LaunchAccount {
                 id: DEFAULT_ID.to_owned(),
                 dir: None,
@@ -213,21 +250,14 @@ pub fn sign_in_launch(
     id: &str,
     path_var: Option<&OsStr>,
 ) -> Result<SignInLaunch, BridgeError> {
-    let (agent_accounts, bin, label, env_var, tail) = match agent {
+    let (label, env_var, tail) = match agent {
         "claude" => (
-            &accounts.claude,
-            "claude",
             "Claude Code",
-            "CLAUDE_CONFIG_DIR",
+            Some("CLAUDE_CONFIG_DIR"),
             &["auth", "login"][..],
         ),
-        "codex" => (
-            &accounts.codex,
-            "codex",
-            "Codex",
-            "CODEX_HOME",
-            &["login"][..],
-        ),
+        "codex" => ("Codex", Some("CODEX_HOME"), &["login"][..]),
+        "devin" if DEVIN_ACCOUNTS_SUPPORTED => ("Devin", None, &["auth", "login"][..]),
         _ => return Err(invalid(format!("unknown agent '{agent}'"))),
     };
     if id == DEFAULT_ID {
@@ -235,26 +265,35 @@ pub fn sign_in_launch(
             "the Default account's login is yours, sign in from a terminal",
         ));
     }
+    let agent_accounts = accounts
+        .agent(agent)
+        .ok_or_else(|| invalid(format!("unknown agent '{agent}'")))?;
     let account = agent_accounts
         .items
         .iter()
         .find(|item| item.id == id)
         .ok_or_else(|| invalid(format!("no {agent} account '{id}'")))?;
-    if !account.dir.is_dir() {
+    if agent == "devin" {
+        validate_selected_devin_profile(agent_accounts, account)?;
+    } else if !account.dir.is_dir() {
         return Err(invalid(format!(
             "the account folder {} no longer exists",
             account.dir.display()
         ))
         .with_hint("restore the folder or pick another account in Settings › Accounts"));
     }
-    let binary = agents::resolve(bin, path_var).ok_or_else(|| {
-        invalid(format!("{label} '{bin}' was not found on PATH")).with_hint("install it")
+    let binary = agents::resolve(agent, path_var).ok_or_else(|| {
+        invalid(format!("{label} '{agent}' was not found on PATH")).with_hint("install it")
     })?;
-    let mut words = vec![
-        "env".to_owned(),
-        format!("{env_var}={}", account.dir.display()),
-        binary.display().to_string(),
-    ];
+    let mut words = if let Some(env_var) = env_var {
+        vec![
+            "env".to_owned(),
+            format!("{env_var}={}", account.dir.display()),
+            binary.display().to_string(),
+        ]
+    } else {
+        agents::devin_profile_argv(&binary, &account.dir)
+    };
     words.extend(tail.iter().map(|word| word.to_string()));
     let command = shlex::try_join(words.iter().map(String::as_str))
         .map_err(|error| invalid(format!("the sign-in command cannot be quoted: {error}")))?;
@@ -288,6 +327,9 @@ pub fn add(
     let dir = validate_dir(dir, default_dir, &agent_accounts.items, home)?;
     ensure_dir(&dir)?;
     reject_physical_alias(&dir, default_dir, &agent_accounts.items)?;
+    if agent == "devin" {
+        validate_devin_profile(&dir)?;
+    }
     if let Some(default_dir) = default_dir {
         link_shared(agent, default_dir, &dir);
     }
@@ -386,7 +428,7 @@ pub fn link_shared(agent: &str, default_dir: &Path, dir: &Path) -> Vec<String> {
     linked
 }
 
-/// The `accounts_get` payload for `accounts`: both agents, Default first in
+/// The view for `accounts`: Default first in
 /// each item list, with each Default row's folder resolved from the process
 /// environment. For explicit environment values use [`view_with`].
 pub fn view(accounts: &Accounts) -> AccountsView {
@@ -394,6 +436,7 @@ pub fn view(accounts: &Accounts) -> AccountsView {
         accounts,
         default_dir("claude").as_deref(),
         default_dir("codex").as_deref(),
+        default_dir("devin").as_deref(),
     )
 }
 
@@ -403,10 +446,12 @@ pub fn view_with(
     accounts: &Accounts,
     claude_default: Option<&Path>,
     codex_default: Option<&Path>,
+    devin_default: Option<&Path>,
 ) -> AccountsView {
     AccountsView {
         claude: agent_view(&accounts.claude, claude_default),
         codex: agent_view(&accounts.codex, codex_default),
+        devin: agent_view(&accounts.devin, devin_default),
     }
 }
 
@@ -459,6 +504,7 @@ impl Accounts {
         match agent {
             "claude" => Some(&self.claude),
             "codex" => Some(&self.codex),
+            "devin" if DEVIN_ACCOUNTS_SUPPORTED => Some(&self.devin),
             _ => None,
         }
     }
@@ -467,6 +513,7 @@ impl Accounts {
         match agent {
             "claude" => Some(&mut self.claude),
             "codex" => Some(&mut self.codex),
+            "devin" if DEVIN_ACCOUNTS_SUPPORTED => Some(&mut self.devin),
             _ => None,
         }
     }
@@ -476,6 +523,7 @@ impl Accounts {
     fn normalized(mut self) -> Self {
         self.claude.normalize();
         self.codex.normalize();
+        self.devin.normalize();
         self
     }
 }
@@ -599,17 +647,86 @@ fn physical(path: &Path) -> PathBuf {
 /// `default_dir` or stored folder falls back to the same lexical compare
 /// `validate_dir` already did. The user's own path is stored unchanged:
 /// a symlink to a genuinely different folder is legitimate.
-fn reject_physical_alias(
+fn reject_physical_alias<'a>(
     dir: &Path,
     default_dir: Option<&Path>,
-    items: &[StoredAccount],
+    items: impl IntoIterator<Item = &'a StoredAccount>,
 ) -> Result<(), BridgeError> {
     let physical_dir = physical(dir);
     if default_dir.is_some_and(|default| physical(default) == physical_dir) {
         return Err(invalid("the folder is the agent's default folder"));
     }
-    if items.iter().any(|item| physical(&item.dir) == physical_dir) {
+    if items
+        .into_iter()
+        .any(|item| physical(&item.dir) == physical_dir)
+    {
         return Err(invalid("another account already uses this folder"));
+    }
+    Ok(())
+}
+
+fn validate_selected_devin_profile(
+    accounts: &AgentAccounts,
+    account: &StoredAccount,
+) -> Result<(), BridgeError> {
+    validate_devin_profile(&account.dir)?;
+    reject_physical_alias(
+        &account.dir,
+        default_dir("devin").as_deref(),
+        accounts.items.iter().filter(|item| item.id != account.id),
+    )
+}
+
+fn validate_devin_profile(dir: &Path) -> Result<(), BridgeError> {
+    if !dir.is_absolute() || !dir.is_dir() {
+        return Err(invalid(format!(
+            "the Devin account folder {} is missing or invalid",
+            dir.display()
+        )));
+    }
+    for (var, fallback, subdir) in [
+        ("XDG_CONFIG_HOME", ".config", "config"),
+        ("XDG_CACHE_HOME", ".cache", "cache"),
+    ] {
+        if xdg_home(var, fallback)
+            .is_some_and(|default| physical(&default) == physical(&dir.join(subdir)))
+        {
+            return Err(invalid(format!(
+                "the Devin profile shares the Default {var} folder"
+            )));
+        }
+    }
+    // The CLI follows these paths itself. Refuse linked auth or config
+    // locations without opening any credential files.
+    for (relative, is_dir) in [
+        ("devin", true),
+        ("devin/credentials.toml", false),
+        ("config", true),
+        ("config/devin", true),
+        ("config/devin/config.json", false),
+        ("cache", true),
+    ] {
+        let path = dir.join(relative);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(meta) if is_dir && meta.is_dir() => continue,
+            Ok(meta) if !is_dir && meta.is_file() => {
+                #[cfg(unix)]
+                if meta.nlink() != 1 {
+                    return Err(invalid(format!(
+                        "unsafe Devin profile path {}",
+                        path.display()
+                    )));
+                }
+                continue;
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "unsafe Devin profile path {}",
+                    path.display()
+                )))
+            }
+        }
     }
     Ok(())
 }
@@ -712,7 +829,7 @@ mod tests {
 
     /// Everything a `sign_in_launch` test needs: temp storage holding one
     /// added "Work" account for `agent` in `<root>/<folder>`, a `bin` dir with
-    /// fake `claude`/`codex`, and a `PATH` naming only it.
+    /// fake agent, and a `PATH` naming only it.
     #[cfg(unix)]
     struct SignIn {
         root: TempDir,
@@ -728,8 +845,7 @@ mod tests {
         let storage = open(&root);
         let bin = root.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
-        fake_bin(&bin, "claude");
-        fake_bin(&bin, "codex");
+        fake_bin(&bin, agent);
         let path = path_var(&[bin.as_path()]);
         let folder = root.path().join(folder);
         let accounts = add_ok(&storage, &root, agent, "Work", &folder);
@@ -1228,6 +1344,130 @@ mod tests {
         assert_eq!(other.claude.active, claude_id);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn devin_accounts_extend_old_settings_and_switch_independently() {
+        let dir = TempDir::new("accounts-devin-compat");
+        let storage = open(&dir);
+        let store = store(&storage);
+        store
+            .set_setting(
+                ACCOUNTS_KEY,
+                r#"{"claude":{"active":"c1","items":[{"id":"c1","name":"Claude Work","dir":"/claude"}]},"codex":{"active":"c2","items":[{"id":"c2","name":"Codex Work","dir":"/codex"}]}}"#,
+            )
+            .unwrap();
+        let profile = dir.path().join("devin work");
+        assert_eq!(
+            resolve("devin", &storage).unwrap(),
+            LaunchAccount::default()
+        );
+
+        let added = add_ok(&storage, &dir, "devin", "Devin Work", &profile);
+        let id = &added.devin.items[0].id;
+        assert_eq!(
+            resolve("devin", &storage).unwrap().dir.as_deref(),
+            Some(profile.as_path())
+        );
+        set_active(store, "devin", DEFAULT_ID).unwrap();
+        assert_eq!(
+            resolve("devin", &storage).unwrap(),
+            LaunchAccount::default()
+        );
+        set_active(store, "devin", id).unwrap();
+        rename(store, "devin", id, "Work renamed").unwrap();
+        assert_eq!(read(&storage).devin.items[0].name, "Work renamed");
+
+        let result = remove(store, "devin", id).unwrap();
+        assert_eq!(result.devin.active, DEFAULT_ID);
+        assert!(result.devin.items.is_empty());
+        assert_eq!(result.claude.active, "c1");
+        assert_eq!(result.codex.active, "c2");
+        assert!(profile.is_dir());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn devin_account_rejects_aliased_and_missing_profiles() {
+        let dir = TempDir::new("accounts-devin-alias");
+        let storage = open(&dir);
+        let profile = dir.path().join("work");
+        let default = default_folder(&dir, "devin");
+        fs::create_dir_all(default.join("devin")).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&default, &alias).unwrap();
+        assert!(add(
+            store(&storage),
+            "devin",
+            "Alias",
+            alias.to_str().unwrap(),
+            Some(&default),
+            None
+        )
+        .is_err());
+        let work = add_ok(&storage, &dir, "devin", "Work", &profile);
+        let id = &work.devin.active;
+        assert!(add(
+            store(&storage),
+            "devin",
+            "Duplicate",
+            profile.to_str().unwrap(),
+            Some(&default),
+            None
+        )
+        .is_err());
+
+        symlink(default.join("devin"), profile.join("devin")).unwrap();
+        assert!(resolve("devin", &storage)
+            .unwrap_err()
+            .message
+            .contains("unsafe"));
+        assert!(sign_in_launch(&work, "devin", id, None)
+            .unwrap_err()
+            .message
+            .contains("unsafe"));
+        fs::rename(&profile, dir.path().join("moved")).unwrap();
+        assert!(resolve("devin", &storage)
+            .unwrap_err()
+            .message
+            .contains("missing"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn devin_account_sign_in_and_launch_share_isolated_paths() {
+        let setup = sign_in_setup("devin", "Work account");
+        let path = Some(setup.path.as_os_str());
+        let binary = agents::resolve("devin", path).unwrap();
+        assert_eq!(
+            agents::argv_for("devin", path, "/bin/sh", setup.root.path(), None).unwrap(),
+            vec![binary.display().to_string()]
+        );
+        let storage = open(&setup.root);
+        let selected = resolve("devin", &storage).unwrap();
+        let argv =
+            agents::argv_for_account("devin", path, "/bin/sh", setup.root.path(), None, &selected)
+                .unwrap();
+        assert_eq!(
+            argv,
+            [
+                "/usr/bin/env".into(),
+                "-u".into(),
+                "WINDSURF_API_KEY".into(),
+                format!("XDG_DATA_HOME={}", setup.folder.display()),
+                format!("XDG_CONFIG_HOME={}", setup.folder.join("config").display()),
+                format!("XDG_CACHE_HOME={}", setup.folder.join("cache").display()),
+                binary.display().to_string(),
+                "--process-model".into(),
+                "in-process".into(),
+            ]
+        );
+        let sign_in = sign_in_launch(&setup.accounts, "devin", &setup.id, path).unwrap();
+        assert_eq!(sign_in.cwd, setup.folder.display().to_string());
+        let words = shlex::split(&sign_in.command).unwrap();
+        assert_eq!(&words[..argv.len()], argv);
+        assert_eq!(&words[argv.len()..], ["auth", "login"]);
+    }
+
     #[test]
     fn account_commands_reject_an_unknown_agent() {
         let dir = TempDir::new("accounts-agent-unknown");
@@ -1332,7 +1572,7 @@ mod tests {
         let work_id = work.claude.items[0].id.clone();
         add_ok(&storage, &dir, "codex", "Codex", &dir.path().join("dx"));
 
-        let view = view_with(&read(&storage), Some(dir.path()), None);
+        let view = view_with(&read(&storage), Some(dir.path()), None, None);
 
         assert_eq!(view.claude.items.len(), 2);
         assert_eq!(view.claude.items[0].id, DEFAULT_ID);

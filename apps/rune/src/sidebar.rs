@@ -1742,7 +1742,6 @@ fn session_row(s: &State, ink: &Ink, sv: &SessionView, workspace_id: &str, inden
         .meta
         .as_ref()
         .map(|meta| meta.agent.as_str())
-        .filter(|agent| *agent == "claude" || *agent == "codex")
         .and_then(|agent| data::account_name_of(agent, &info.argv, s.data.accounts.as_ref()));
     // The row's label joins the agent name and the account (`Claude ·
     // work`), whichever parts exist.
@@ -2620,6 +2619,7 @@ mod tests {
                 active: String::new(),
                 items: Vec::new(),
             },
+            ..app_core::accounts::view_with(&Default::default(), None, None, None)
         });
         let info = SessionInfo {
             id: SessionId::new(),

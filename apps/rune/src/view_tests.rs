@@ -2167,6 +2167,10 @@ fn usage_view() -> app_core::accounts::AccountsView {
             ],
         ),
         codex: view("default", &[("default", "Default", "/me/.codex", true)]),
+        devin: view(
+            "default",
+            &[("default", "Default", "/me/.local/share", true)],
+        ),
     }
 }
 
@@ -3614,13 +3618,13 @@ fn a_usage_reply_stores_the_snapshot_and_accounts() {
             previous: app_core::usage::UsageSnapshot::default(),
         },
         Ok(ReplyData::Usage {
-            snapshot: app_core::usage::UsageSnapshot {
+            snapshot: Box::new(app_core::usage::UsageSnapshot {
                 claude: app_core::usage::ClaudeUsage {
                     updated_at: Some(42),
                     ..Default::default()
                 },
                 ..Default::default()
-            },
+            }),
             accounts: usage_view(),
             records: vec![app_core::usage_records::UsageRecord {
                 id: "devin".to_string(),
@@ -3682,6 +3686,89 @@ fn an_add_reply_asks_for_the_new_accounts_sign_in() {
         s.data.accounts.as_ref().unwrap().claude.active,
         "aa11bb22",
         "the added account is active"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn devin_account_view() -> app_core::accounts::AccountsView {
+    let mut view = usage_view();
+    view.devin.items.push(app_core::accounts::AccountView {
+        id: "d1".into(),
+        name: "Work".into(),
+        dir: "/accts/devin work".into(),
+        is_default: false,
+    });
+    view
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn adding_a_devin_account_requests_sign_in_for_that_provider() {
+    let mut s = State::new(test_handle());
+    let (backend, rx) = crate::editor::backend::channel_backend();
+    s.editor.backend = backend;
+    let token = s.settings.begin_account_add();
+    let mut view = devin_account_view();
+    view.devin.active = "d1".into();
+    s.apply_reply(reply(
+        Req::AccountAdd {
+            agent: "devin".into(),
+            name: "Work".into(),
+            dir: "/accts/devin work".into(),
+            token,
+        },
+        Ok(ReplyData::Accounts(view)),
+    ));
+    assert!(matches!(
+        workspace_jobs(&rx).as_slice(),
+        [Req::AccountSignIn { agent, id }] if agent == "devin" && id == "d1"
+    ));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn devin_account_switcher_works_without_usage_and_preserves_old_labels() {
+    let mut s = State::new(test_handle());
+    let (backend, rx) = crate::editor::backend::channel_backend();
+    s.editor.backend = backend;
+    s.data.accounts = Some(devin_account_view());
+    let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+    click_key(&mut rt, "agents-button");
+    settle(&mut rt);
+    click_label(&mut rt, "Devin account Work");
+    let select = workspace_jobs(&rx)
+        .into_iter()
+        .find(|req| matches!(req, Req::AccountSetActive { .. }))
+        .expect("selecting Work enqueues a worker request");
+    assert!(matches!(
+        &select,
+        Req::AccountSetActive { agent, id } if agent == "devin" && id == "d1"
+    ));
+    let mut updated = devin_account_view();
+    updated.devin.active = "d1".into();
+    rt.state
+        .apply_reply(reply(select, Ok(ReplyData::Accounts(updated))));
+    let accounts = rt.state.data.accounts.as_ref();
+    assert_eq!(accounts.unwrap().devin.active, "d1");
+    assert_eq!(
+        data::account_name_of("devin", &["devin".into()], accounts).as_deref(),
+        Some("Default")
+    );
+    assert_eq!(
+        data::account_name_of(
+            "devin",
+            &[
+                "/usr/bin/env".into(),
+                "-u".into(),
+                "WINDSURF_API_KEY".into(),
+                "XDG_DATA_HOME=/accts/devin work".into(),
+                "devin".into(),
+            ],
+            accounts,
+        )
+        .as_deref(),
+        Some("Work")
     );
 }
 

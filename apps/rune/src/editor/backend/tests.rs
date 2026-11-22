@@ -2566,8 +2566,8 @@ fn account_add_rejects_a_duplicate_name() {
     assert!(reply.result.is_err(), "the second add must fail");
 }
 
-/// Only Claude and Codex carry accounts: every other preset launches
-/// as Default instead of being refused as an unknown agent.
+/// Other presets and a Devin registry with no named accounts still launch
+/// without an account override.
 #[test]
 fn agent_argv_serves_the_presets_without_accounts() {
     let (dir, storage) = temp_storage("rune-argv-presets");
@@ -2670,7 +2670,7 @@ fn named_account_launches_and_sign_in_and_usage_read() {
     let bin = TempDir::new("rune-acct-bin");
     let goko = TempDir::new("rune-acct-goko");
     let codex_home = TempDir::new("rune-acct-codex");
-    for name in ["claude", "codex"] {
+    for name in ["claude", "codex", "devin"] {
         let path = bin.path().join(name);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
@@ -2767,6 +2767,45 @@ fn named_account_launches_and_sign_in_and_usage_read() {
         panic!("expected Usage, got {:?}", reply.result);
     };
     assert_eq!(accounts.claude.items.len(), 2);
+
+    if app_core::accounts::DEVIN_ACCOUNTS_SUPPORTED {
+        let folder = home.path().join("Devin Work");
+        let agent = "devin".to_owned();
+        let added = run_job(
+            &storage,
+            &Job::project(Req::AccountAdd {
+                agent: agent.clone(),
+                name: "Work".into(),
+                dir: folder.display().to_string(),
+                token: 2,
+            }),
+        );
+        let id = accounts_of(&added).devin.active.clone();
+        let launch = Job::project(Req::AgentArgv {
+            agent: agent.clone(),
+            token: 3,
+        });
+        let Ok(ReplyData::AgentArgv(argv)) = run_job(&storage, &launch).result else {
+            panic!("expected the Devin preset to launch");
+        };
+        assert_eq!(argv[3], format!("XDG_DATA_HOME={}", folder.display()));
+        let signed_in = run_job(&storage, &Job::project(Req::AccountSignIn { agent, id }));
+        let Ok(ReplyData::SignIn {
+            argv: login, cwd, ..
+        }) = signed_in.result
+        else {
+            panic!("expected a Devin sign-in launch");
+        };
+        assert_eq!(&login[..argv.len()], argv);
+        assert_eq!(cwd, folder.display().to_string());
+        std::fs::rename(&folder, home.path().join("Devin Moved")).unwrap();
+        assert!(
+            run_job(&storage, &launch)
+                .result
+                .unwrap_err()
+                .contains("missing")
+        );
+    }
 }
 
 #[test]

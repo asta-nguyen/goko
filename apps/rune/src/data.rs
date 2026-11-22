@@ -382,7 +382,7 @@ pub fn window_label(window_minutes: u64, provider: &str) -> String {
 
 /// `accountNameOf()` from services/accounts.ts: the account a session argv
 /// runs under, read from its OWN argv — never the current active account.
-/// The env-prefixed first word (`env CLAUDE_CONFIG_DIR=…`/`CODEX_HOME=…`)
+/// The env-prefixed profile word (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or `XDG_DATA_HOME`)
 /// names a folder: a stored account's name when the folder matches one, the
 /// folder's last component when it matches none (a removed account), and
 /// the Default account's name when no env word is present.
@@ -403,13 +403,10 @@ pub fn account_name_of(
     let prefix = match agent {
         "claude" => "CLAUDE_CONFIG_DIR=",
         "codex" => "CODEX_HOME=",
+        "devin" => "XDG_DATA_HOME=",
         _ => return None,
     };
-    let view = accounts?;
-    let agent_view = match agent {
-        "claude" => &view.claude,
-        _ => &view.codex,
-    };
+    let agent_view = accounts?.agent(agent)?;
     let word = (argv
         .first()
         .map(|first| last_component(first) == "env")
@@ -545,6 +542,7 @@ mod tests {
         app_core::accounts::AccountsView {
             claude: agent_view(items),
             codex: agent_view(&[]),
+            devin: agent_view(&[]),
         }
     }
 
@@ -638,6 +636,7 @@ mod tests {
                     },
                 ],
             },
+            ..app_core::accounts::view_with(&Default::default(), None, None, None)
         };
         let argv = vec![
             "/usr/bin/env".to_string(),

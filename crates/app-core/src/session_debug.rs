@@ -118,7 +118,15 @@ pub fn memory_kib(snapshot: &Snapshot, sessions: &[String]) -> Option<u64> {
 fn agent(argv: &[String]) -> Option<&'static str> {
     let first = argv.first()?;
     let program = if Path::new(first).file_name()? == "env" {
-        argv.iter().skip(1).find(|word| !word.contains('='))?
+        let mut args = argv.iter().skip(1);
+        loop {
+            let word = args.next()?;
+            if word == "-u" {
+                args.next()?;
+            } else if !word.contains('=') {
+                break word;
+            }
+        }
     } else {
         first
     };
@@ -349,6 +357,19 @@ mod tests {
                 "/bin/codex".into()
             ]),
             Some("codex")
+        );
+        assert_eq!(
+            agent(&[
+                "/usr/bin/env".into(),
+                "-u".into(),
+                "WINDSURF_API_KEY".into(),
+                "XDG_DATA_HOME=/tmp/work profile".into(),
+                "XDG_CONFIG_HOME=/tmp/work profile/config".into(),
+                "/bin/devin".into(),
+                "--process-model".into(),
+                "in-process".into(),
+            ]),
+            Some("devin")
         );
         assert_eq!(agent(&["/bin/agy".into()]), Some("agy"));
         assert!(launch_id("shell", &["sh".into()]).is_none());
