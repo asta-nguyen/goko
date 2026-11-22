@@ -1,0 +1,69 @@
+docs/agent-devkit/changes/archive/devin-multi-account/design.md
+  s_40ae5a1233f336::t_df9c5876085b77 102
+  s_40ae5a1233f336::t_ca67bf0c64105a 99-101
+apps/rune/src/sidebar.rs
+  s_40ae5a1233f336::t_01f02a22fea714 2622
+crates/app-core/src/agents.rs
+  s_40ae5a1233f336::t_38f4afc97a11e3 173-175,177
+  s_40ae5a1233f336::t_5eb3ff41e903ee 311-312
+  s_40ae5a1233f336::t_1037309dc6aea3 142-143,178-179,304-310,313-318,763,775
+  s_40ae5a1233f336::t_e579a3e84e3ac6 176
+apps/rune/src/editor/backend.rs
+  s_40ae5a1233f336::t_5575a144a89739 420,1438
+  s_40ae5a1233f336::t_4229eed0fc1d49 1372,1378-1381
+crates/app-core/src/session_debug.rs
+  s_40ae5a1233f336::t_009eeba90b2bec 121-129,361-372
+  s_40ae5a1233f336::t_2ee79b7ac1ae37 373
+apps/rune/src/settings.rs
+  s_40ae5a1233f336::t_ed31dd82ea14c7 863,871-873,1395
+apps/rune/src/data.rs
+  s_40ae5a1233f336::t_98e8917f91e791 385,406,409,545,639
+apps/rune/src/view_tests.rs
+  s_40ae5a1233f336::t_cdba65cf1fe449 2170-2171,2173
+  s_40ae5a1233f336::t_b58e0de0b4eaae 3692-3774
+  s_40ae5a1233f336::t_4b9cbfb56680da 3621,3627
+  s_40ae5a1233f336::t_076f520c73983f 2172
+apps/rune/src/chrome.rs
+  s_40ae5a1233f336::t_4eb36440aea223 428
+  s_40ae5a1233f336::t_5402b0d50b354d 214-227,229-234,481
+  s_40ae5a1233f336::t_db5302b4f17ab6 228
+  s_40ae5a1233f336::t_16986afee187f6 482-484
+crates/app-core/src/usage.rs
+  s_40ae5a1233f336::t_3678124802a91c 1135,1183,1235,1285,1329,1391,1428
+docs/agent-devkit/INDEX.md
+  s_40ae5a1233f336::t_3951ec75b1fd15 20
+crates/app-core/src/accounts.rs
+  s_40ae5a1233f336::t_a90fe81876c0db 707,1458
+  s_40ae5a1233f336::t_72aa12991ae421 38-39,175-186,189,686-697,715-719
+  s_40ae5a1233f336::t_fda31d3892a489 730,832,848,1347-1457,1459-1469
+  s_40ae5a1233f336::t_32eb5ea2cfd8c6 256,259-260,276-278,286,288,294-295
+  s_40ae5a1233f336::t_c134d970a5122e 1,6-7,46,104-105,108,113-124,188,190,222-230,253,268-270,285,289-293,296,330-332,431,439,449,454,507,516,526,650,653,659-662,668-685,698-706,708-714,720-722,724-729,732,1575
+  s_40ae5a1233f336::t_27776fd3aae6cb 723
+  s_40ae5a1233f336::t_e4e76fab8a600b 731
+  s_40ae5a1233f336::t_7db2c7de3b563d 733
+  s_40ae5a1233f336::t_fcf4f6980596e8 1470
+apps/rune/src/main.rs
+  s_40ae5a1233f336::t_8d109bad958ec7 862-870
+  s_40ae5a1233f336::t_c701b055d10b63 879,884-886
+apps/rune/src/editor/backend/tests.rs
+  s_40ae5a1233f336::t_03e7f6eca5ba5d 2569-2570,2673,2770-2791,2793-2808
+  s_40ae5a1233f336::t_eb14dff3a77c96 2792
+docs/llm/domains/rune-chrome.md
+  s_40ae5a1233f336::t_9224e1870ae0cf 76-105,453,461-466,726,728-734,1159,1161,1163-1171,1173,1175-1177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4b1d6de846f47a2a183b4d7ef3f3dcf3d0fd1134",
+  "prompts": {},
+  "sessions": {
+    "s_40ae5a1233f336": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "fourth-partner",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
