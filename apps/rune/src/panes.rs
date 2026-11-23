@@ -2218,6 +2218,7 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
     let wheel_key = key.clone();
     let pid = pane.id.clone();
     let tid = tab.id.clone();
+    let menu_tab = tid.clone();
     let (drop_tid, drop_pid, drop_key, hover_key) =
         (tid.clone(), pid.clone(), key.clone(), key.clone());
     let focused = pane.id == tab.active_pane;
@@ -2400,6 +2401,18 @@ fn pane_cell(s: &State, ink: &Ink, pane: &Pane, tab: &Tab) -> El {
                 );
             },
         );
+    } else {
+        // A program that does not capture the mouse leaves the right-click
+        // for the tab menu, so Hand off and the copy actions are reachable
+        // from the terminal itself, not only from the tab pill.
+        cell = cell.on_secondary_press(move |s: &mut State, p: rune::PointerPress, _tx| {
+            s.tab_menu = Some(crate::tab_debug::MenuTarget {
+                tab: menu_tab.clone(),
+                x: p.x,
+                y: p.y,
+            });
+            s.subagents_at = None;
+        });
     }
     if hover {
         let hov_key = key.clone();

@@ -970,6 +970,9 @@ impl State {
                         agent: "custom".to_string(),
                         title,
                     });
+                    // The sign-in tab opens behind Settings; show it so the
+                    // click has a visible result.
+                    self.view = View::Terminal;
                 } else if let Err(error) = &reply.result {
                     self.notice = Some(error.clone());
                 }

@@ -336,7 +336,10 @@ impl State {
             return;
         }
         if dir.is_empty() {
-            self.settings.add_error = Some("the account folder is empty".into());
+            self.settings.add_error = Some(format!(
+                "enter a new folder, e.g. {}",
+                account_folder_example(agent)
+            ));
             return;
         }
         // The drafts stay until the matching reply arrives: a refused or
@@ -357,6 +360,49 @@ impl State {
                 "the editor queue is full; the account was not added".into(),
             );
         }
+    }
+
+    /// Open a terminal running the agent's own status command for this
+    /// account, so the user can see which login the profile holds.
+    fn check_account(&mut self, agent: &str, dir: &str, name: &str, is_default: bool) {
+        self.launch_account_script(
+            dir,
+            is_default,
+            format!("Check login · {name}"),
+            account_script(agent, dir, is_default, AccountAction::Check),
+        );
+    }
+
+    /// Log out of this profile, then sign in again with another account.
+    fn reauth_account(&mut self, agent: &str, dir: &str, name: &str) {
+        self.launch_account_script(
+            dir,
+            false,
+            format!("Re-auth · {name}"),
+            account_script(agent, dir, false, AccountAction::Reauth),
+        );
+    }
+
+    fn launch_account_script(
+        &mut self,
+        dir: &str,
+        is_default: bool,
+        title: String,
+        script: String,
+    ) {
+        let cwd = if is_default {
+            std::env::var("HOME").unwrap_or_else(|_| dir.to_string())
+        } else {
+            dir.to_string()
+        };
+        self.launch_session(crate::sessions::SessionLaunch {
+            argv: vec![backend::default_shell(), "-lc".to_string(), script],
+            cwd,
+            project_id: None,
+            agent: "custom".to_string(),
+            title,
+        });
+        self.view = crate::View::Terminal;
     }
 
     fn rename_account(&mut self, agent: &str, id: &str) {
@@ -838,7 +884,7 @@ fn updates_section(s: &State, ink: &Ink) -> El {
 fn notes_view(release: &crate::update::Release, ink: &Ink) -> El {
     use crate::update::note_rows;
 
-    let mut rows = col().w_full().max_w(640.0).gap(6.0).child(theme::txt(
+    let mut rows = col().w_full().gap(6.0).child(theme::txt(
         &format!("What's new in Goko {}", release.version),
         T12M,
         ink.text,
@@ -874,10 +920,89 @@ fn accounts_section(s: &State, ink: &Ink) -> El {
     body
 }
 
+#[derive(Clone, Copy)]
+enum AccountAction {
+    Check,
+    Reauth,
+}
+
+/// A shell script that runs one account's own auth command. The login
+/// shell is used so the CLI is found on the user's PATH; a named account
+/// exports its profile first.
+fn account_script(agent: &str, dir: &str, is_default: bool, action: AccountAction) -> String {
+    let mut script = String::new();
+    if !is_default {
+        match agent {
+            "claude" => {
+                script.push_str(&format!("export CLAUDE_CONFIG_DIR={}; ", shell_quote(dir)))
+            }
+            "codex" => script.push_str(&format!("export CODEX_HOME={}; ", shell_quote(dir))),
+            "devin" => {
+                script.push_str("unset WINDSURF_API_KEY; ");
+                script.push_str(&format!("export XDG_DATA_HOME={}; ", shell_quote(dir)));
+                script.push_str(&format!(
+                    "export XDG_CONFIG_HOME={}; ",
+                    shell_quote(&format!("{dir}/config"))
+                ));
+                script.push_str(&format!(
+                    "export XDG_CACHE_HOME={}; ",
+                    shell_quote(&format!("{dir}/cache"))
+                ));
+            }
+            _ => {}
+        }
+    }
+    let (check, logout, login) = match agent {
+        "claude" => (
+            "claude auth status",
+            "claude auth logout",
+            "claude auth login",
+        ),
+        "codex" => ("codex login status", "codex logout", "codex login"),
+        "devin" => ("devin auth status", "devin auth logout", "devin auth login"),
+        _ => ("true", "true", "true"),
+    };
+    match action {
+        AccountAction::Check => script.push_str(check),
+        AccountAction::Reauth => script.push_str(&format!("{logout}; {login}")),
+    }
+    script
+}
+
+/// A single-quoted shell word, safe for a path with spaces or quotes.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// An example account folder for the add form, per agent.
+fn account_folder_example(agent: &str) -> &'static str {
+    match agent {
+        "claude" => "~/.claude-work",
+        "codex" => "~/.codex-work",
+        "devin" => "~/.devin-acc2",
+        _ => "~/.goko-account",
+    }
+}
+
+/// A suggested folder for a named account: `~/<agent>-<slug>`.
+fn suggested_account_folder(agent: &str, name: &str) -> Option<String> {
+    let slug = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let slug = slug
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    (!slug.is_empty()).then(|| format!("~/.{agent}-{slug}"))
+}
+
 fn agent_card(s: &State, ink: &Ink, agent: &str, title: &str) -> El {
     let mut card = col()
         .w_full()
-        .max_w(560.0)
         .gap(8.0)
         .padding(12.0)
         .radius(8.0)
@@ -1012,6 +1137,23 @@ fn account_row(
         );
     }
     let mut actions = row().gap(4.0).items_center();
+    {
+        let agent = agent.to_string();
+        let dir = item.dir.clone();
+        let name = item.name.clone();
+        let is_default = item.is_default;
+        actions = actions.child(ghost("Check login", ink).on_press(move |s: &mut State| {
+            s.check_account(&agent, &dir, &name, is_default);
+        }));
+    }
+    if !item.is_default {
+        let agent = agent.to_string();
+        let dir = item.dir.clone();
+        let name = item.name.clone();
+        actions = actions.child(ghost("Re-auth", ink).on_press(move |s: &mut State| {
+            s.reauth_account(&agent, &dir, &name);
+        }));
+    }
     if !active {
         let agent = agent.to_string();
         let id = item.id.clone();
@@ -1059,6 +1201,7 @@ fn account_row(
 /// sign-in command automatically — main's add→sign-in flow.
 fn add_form(s: &State, ink: &Ink, agent: &str) -> El {
     let agent = agent.to_string();
+    let example = account_folder_example(&agent);
     let mut form = col()
         .w_full()
         .gap(8.0)
@@ -1086,7 +1229,7 @@ fn add_form(s: &State, ink: &Ink, agent: &str) -> El {
                             text_input(
                                 |s: &mut State| &mut s.settings.add_dir,
                                 &s.settings.add_dir,
-                                "Account folder",
+                                example,
                                 s,
                             )
                             .grow(1.0)
@@ -1116,9 +1259,33 @@ fn add_form(s: &State, ink: &Ink, agent: &str) -> El {
                                     },
                                 );
                             }
+                        }))
+                        .child(ghost("Use suggested", ink).on_press({
+                            let agent = agent.clone();
+                            move |s: &mut State| match suggested_account_folder(
+                                &agent,
+                                &s.settings.add_name.text,
+                            ) {
+                                Some(dir) => {
+                                    s.settings.add_dir.text = dir;
+                                    s.settings.add_error = None;
+                                }
+                                None => {
+                                    s.settings.add_error =
+                                        Some("enter an account name first".into());
+                                }
+                            }
                         })),
                 ),
         )
+        .child(theme::txt(
+            &format!(
+                "New folder for this account; Goko creates it. Example: {}",
+                example
+            ),
+            T11M.lh(16.0),
+            ink.muted,
+        ))
         .child(
             row()
                 .gap(8.0)
@@ -1174,7 +1341,6 @@ fn acp_card(s: &State, ink: &Ink, agent: &AcpAgent) -> El {
     let id = agent.id.clone();
     col()
         .w_full()
-        .max_w(560.0)
         .gap(8.0)
         .padding(12.0)
         .radius(8.0)
@@ -1452,6 +1618,69 @@ mod tests {
         assert_eq!(s.settings.add_dir.text, "/accts/work");
         assert_eq!(s.settings.add_error(), Some("the editor queue is full"));
         assert!(!s.settings.add_busy());
+    }
+
+    #[test]
+    fn a_suggested_account_folder_uses_the_agent_and_the_name() {
+        assert_eq!(
+            suggested_account_folder("devin", "acc2").as_deref(),
+            Some("~/.devin-acc2")
+        );
+        assert_eq!(
+            suggested_account_folder("claude", " Work 2 ").as_deref(),
+            Some("~/.claude-work-2")
+        );
+        assert_eq!(suggested_account_folder("codex", "   "), None);
+    }
+
+    #[test]
+    fn account_scripts_use_each_providers_profile_and_auth_command() {
+        let claude = account_script("claude", "/tmp/work", false, AccountAction::Check);
+        assert!(claude.contains("CLAUDE_CONFIG_DIR='/tmp/work'"));
+        assert!(claude.ends_with("claude auth status"));
+
+        let codex = account_script("codex", "/tmp/work", false, AccountAction::Check);
+        assert!(codex.contains("CODEX_HOME='/tmp/work'"));
+        assert!(codex.ends_with("codex login status"));
+
+        let devin = account_script("devin", "/tmp/work", false, AccountAction::Check);
+        assert!(devin.contains("XDG_DATA_HOME='/tmp/work'"));
+        assert!(devin.contains("XDG_CONFIG_HOME='/tmp/work/config'"));
+        assert!(devin.contains("XDG_CACHE_HOME='/tmp/work/cache'"));
+        assert!(devin.ends_with("devin auth status"));
+
+        let default = account_script("devin", "/tmp/work", true, AccountAction::Check);
+        assert_eq!(default, "devin auth status");
+    }
+
+    #[test]
+    fn a_reauth_script_logs_out_before_logging_in() {
+        let devin = account_script("devin", "/tmp/work", false, AccountAction::Reauth);
+        assert!(devin.ends_with("devin auth logout; devin auth login"));
+        let claude = account_script("claude", "/tmp/work", false, AccountAction::Reauth);
+        assert!(claude.ends_with("claude auth logout; claude auth login"));
+        let codex = account_script("codex", "/tmp/work", false, AccountAction::Reauth);
+        assert!(codex.ends_with("codex logout; codex login"));
+    }
+
+    #[test]
+    fn a_check_opens_the_terminal_view() {
+        let mut s = State::new(crate::test_handle());
+        s.view = crate::View::Settings;
+        s.check_account("devin", "/tmp/work", "Work", false);
+        assert_eq!(s.view, crate::View::Terminal);
+    }
+
+    #[test]
+    fn an_empty_account_folder_error_shows_an_example() {
+        let mut s = State::new(crate::test_handle());
+        s.settings.add_open = Some("devin".into());
+        s.settings.add_name = rune::edit::TextEdit::new("acc2");
+        s.add_account("devin");
+        assert_eq!(
+            s.settings.add_error(),
+            Some("enter a new folder, e.g. ~/.devin-acc2")
+        );
     }
 
     /// A stale reply must not clear the form the user is filling now.

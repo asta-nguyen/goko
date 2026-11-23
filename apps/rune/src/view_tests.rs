@@ -3689,6 +3689,24 @@ fn an_add_reply_asks_for_the_new_accounts_sign_in() {
     );
 }
 
+#[test]
+fn a_sign_in_reply_opens_the_terminal_view() {
+    let mut s = State::new(test_handle());
+    s.view = View::Settings;
+    s.apply_reply(reply(
+        Req::AccountSignIn {
+            agent: "devin".into(),
+            id: "d1".into(),
+        },
+        Ok(ReplyData::SignIn {
+            argv: vec!["/usr/bin/env".into(), "devin".into(), "auth".into()],
+            cwd: "/tmp".into(),
+            title: "Sign in · Work".into(),
+        }),
+    ));
+    assert_eq!(s.view, View::Terminal);
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn devin_account_view() -> app_core::accounts::AccountsView {
     let mut view = usage_view();

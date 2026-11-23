@@ -311,6 +311,29 @@ mod tests {
     }
 
     #[test]
+    fn right_clicking_a_pane_opens_the_tab_menu() {
+        let s = scene();
+        let tab_id = s.open_tabs[0].id.clone();
+        let pane_id = panes::collect_panes(&s.open_tabs[0].layout)[0].id.clone();
+        let mut rt = rune::Runtime::new(s, crate::view, (1000.0, 700.0), rune::Env::new(true, 2.0));
+        rt.on_key = Some(crate::on_key);
+        rt.frame(0.0);
+        let pane = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(&format!("pane:{pane_id}")))
+            .expect("pane mounted");
+        let (x, y) = (pane.rect[0] + 2.0, pane.rect[1] + 2.0);
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.tab_menu.as_ref().map(|m| m.tab.clone()),
+            Some(tab_id)
+        );
+    }
+
+    #[test]
     fn right_click_menu_copies_the_inactive_tab_id() {
         let s = scene();
         let tab_id = s.open_tabs[1].id.clone();
