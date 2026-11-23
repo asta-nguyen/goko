@@ -1,0 +1,44 @@
+apps/rune/src/main.rs
+  s_1073771c40cb4c::t_8030adafb62d02 973-975
+apps/rune/src/panes.rs
+  s_1073771c40cb4c::t_67b288d2afcef2 2404-2415
+  s_1073771c40cb4c::t_5838f6fafee74e 2221
+apps/rune/src/tab_debug.rs
+  s_1073771c40cb4c::t_fa83b136ca5b6d 314-335
+  s_1073771c40cb4c::t_268786be83d024 313
+apps/rune/src/settings.rs
+  s_1073771c40cb4c::t_c06e24751cd849 1140-1156
+  s_1073771c40cb4c::t_aaad9df4549a2c 1282
+  s_1073771c40cb4c::t_607ed1a56d87ad 887
+  s_1073771c40cb4c::t_2b999ebf017da1 1637-1674
+  s_1073771c40cb4c::t_91077fedb10c27 339-342
+  s_1073771c40cb4c::t_92a7921ab472d5 1232
+  s_1073771c40cb4c::t_65735ef1f9d686 365-407
+  s_1073771c40cb4c::t_fae025cc20c4fe 1265-1275
+  s_1073771c40cb4c::t_f7dca9aa6a59d0 1264
+  s_1073771c40cb4c::t_08b96900fd3d5d 1623-1636,1675-1685
+  s_1073771c40cb4c::t_e22f2d0c6a2adf 923-935,939-941,943-955,961-976
+  s_1073771c40cb4c::t_58e5718e67cc5b 1262-1263,1276-1277,1281,1283,1285-1288
+  s_1073771c40cb4c::t_86bacfff4edf82 936-938,942,956-960
+  s_1073771c40cb4c::t_763f430af161fd 1204
+  s_1073771c40cb4c::t_5b5f7ff4cf21b6 1284
+  s_1073771c40cb4c::t_5ee458c09fefd7 977-1002
+apps/rune/src/view_tests.rs
+  s_1073771c40cb4c::t_392387727e155c 3692-3709
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "31fdf1d9587efa3c3e6602767133fcdfe81341da",
+  "prompts": {},
+  "sessions": {
+    "s_1073771c40cb4c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "grape-hound",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
