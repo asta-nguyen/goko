@@ -1,0 +1,123 @@
+.github/workflows/ci.yml
+  s_56f17cefc05ea3::t_e2753406e40c9d 78-95
+.github/workflows/release.yml
+  s_56f17cefc05ea3::t_aaada883bf8c68 65-74
+.gitignore
+  s_56f17cefc05ea3::t_14c9d4658d0913 11
+Cargo.lock
+  s_56f17cefc05ea3::t_3119b2b6a74b1e 403-453,523-532,810-818,849-858,884-889,896-905,1260-1265,1280,1286-1295,1368-1369,1468-1546,1967-1972,1997-2002,2911-2919,2986-2991,3028-3056,3148-3166,3516-3526,3549-3570,3898-3903,4081-4092,4123-4149,4203-4224
+Cargo.toml
+  s_56f17cefc05ea3::t_71d60de9de85dd 2
+README.md
+  s_56f17cefc05ea3::t_98073ae554f876 23-24,80-81,102-108,184-236
+apps/mobile-web/index.html
+  s_56f17cefc05ea3::t_41843d1fa3ee22 1-89
+apps/mobile-web/package-lock.json
+  s_56f17cefc05ea3::t_c6e665ba7d3b24 1-1311
+apps/mobile-web/package.json
+  s_56f17cefc05ea3::t_084138c34044d3 1-17
+apps/mobile-web/public/favicon.svg
+  s_56f17cefc05ea3::t_23a23db8ef455e 1-4
+apps/mobile-web/src/live.ts
+  s_56f17cefc05ea3::t_141d099b47634c 1-722
+apps/mobile-web/src/main.ts
+  s_56f17cefc05ea3::t_9e414474a8ee89 1-356
+apps/mobile-web/src/styles.css
+  s_56f17cefc05ea3::t_a8f2c1f22de7ae 1-303
+apps/mobile-web/src/vite-env.d.ts
+  s_56f17cefc05ea3::t_0e28294ea913cf 1
+apps/mobile-web/test/live.test.mjs
+  s_56f17cefc05ea3::t_1376e8f9816606 1-456
+apps/mobile-web/tsconfig.json
+  s_56f17cefc05ea3::t_67547c27c83259 1-15
+apps/rune/Cargo.toml
+  s_56f17cefc05ea3::t_ddd00121247ced 32-35
+apps/rune/bundle-macos.sh
+  s_56f17cefc05ea3::t_fe653a378c9fc6 4,6-9,15-46,56-62
+apps/rune/package-macos.sh
+  s_56f17cefc05ea3::t_7dd7ea133896d5 18-22,25
+apps/rune/run-macos.sh
+  s_56f17cefc05ea3::t_c798c673f2a16c 23-29
+apps/rune/src/editor/backend.rs
+  s_56f17cefc05ea3::t_fe06afa7ffd6c7 33-34,113-118,439-444,678-681,825-829,859-872,906-909,1010-1030,1115-1118,1952-1953
+apps/rune/src/editor/backend/tests.rs
+  s_56f17cefc05ea3::t_1af99f2d2dbe55 3212-3356
+apps/rune/src/main.rs
+  s_56f17cefc05ea3::t_48accfdde594de 13-14,423,846-868,1577-1583
+apps/rune/src/mobile.rs
+  s_56f17cefc05ea3::t_3520ae064181e3 1-452
+apps/rune/src/settings.rs
+  s_56f17cefc05ea3::t_a1e59dad43afba 12-13,18-19,102-236,240-249,467-542,750-755,760-792,803-1223,2421-2560
+apps/rune/src/view_tests.rs
+  s_56f17cefc05ea3::t_1a8c1515d7c08e 5735-6155
+crates/daemon/src/pty.rs
+  s_56f17cefc05ea3::t_93abd581605489 118-119,212,217,222-235,326-330,345-346,371-373,501,511-523,584-586,645,665,691,693,706-720
+crates/daemon/src/server.rs
+  s_56f17cefc05ea3::t_91c619c5cb9994 38-39,273,305-311,529-549,556,800,859-942,1157-1202
+crates/daemon/src/terminal.rs
+  s_56f17cefc05ea3::t_5192425589c087 39-47
+crates/daemon/tests/mobile_view_ipc.rs
+  s_56f17cefc05ea3::t_20e0c4912153ba 1-230
+crates/protocol/src/message.rs
+  s_56f17cefc05ea3::t_d7f5f2c0ec4e8a 26-46,112-123,377-380,542-582
+crates/remote/Cargo.toml
+  s_56f17cefc05ea3::t_910ffc122a2161 1-28
+crates/remote/src/access.rs
+  s_56f17cefc05ea3::t_3f6f74f3e192dc 1-612
+crates/remote/src/admin.rs
+  s_56f17cefc05ea3::t_1eb86b4c5b6534 1-270
+crates/remote/src/bridge.rs
+  s_56f17cefc05ea3::t_e1173932cc1143 1-543
+crates/remote/src/http.rs
+  s_56f17cefc05ea3::t_91007e7359b5f8 1-315
+crates/remote/src/ipc.rs
+  s_56f17cefc05ea3::t_12fbe5acaf9243 1-536
+crates/remote/src/lib.rs
+  s_56f17cefc05ea3::t_bd5943fefc0c68 1-32
+crates/remote/src/live.rs
+  s_56f17cefc05ea3::t_919143a7ee8a70 1-1194
+crates/remote/src/main.rs
+  s_56f17cefc05ea3::t_20b0e06ac85806 1-101
+crates/remote/src/tailnet.rs
+  s_56f17cefc05ea3::t_d2e0973819de74 1-309
+crates/remote/src/wire.rs
+  s_56f17cefc05ea3::t_196e6f4d838471 1-254
+crates/remote/tests/mobile_api.rs
+  s_56f17cefc05ea3::t_97850244e2b846 1-2127
+docs/agent-devkit/INDEX.md
+  s_56f17cefc05ea3::t_438b50520a2449 5
+docs/agent-devkit/changes/mobile-remote-v1/delta.md
+  s_56f17cefc05ea3::t_673d533e1991cb 1-248
+docs/agent-devkit/changes/mobile-remote-v1/design.md
+  s_56f17cefc05ea3::t_ae02b5158f55d1 1-310
+docs/agent-devkit/changes/mobile-remote-v1/handoff.md
+  s_56f17cefc05ea3::t_351ab5f39876fc 1-100
+docs/agent-devkit/changes/mobile-remote-v1/tasks.md
+  s_56f17cefc05ea3::t_5fcd7fb61e29b8 1-230
+docs/llm/INDEX.md
+  s_56f17cefc05ea3::t_5084e9dee5be3b 12,23,40
+docs/llm/architecture/overview.md
+  s_56f17cefc05ea3::t_c2d411c74afb66 15-17,48-49,62-69,94-97
+docs/llm/domains/gokod-daemon.md
+  s_56f17cefc05ea3::t_dc11a50f54133c 11-28,41-58,149-159,182-184,199-201,227-228
+docs/llm/domains/mobile-remote.md
+  s_56f17cefc05ea3::t_ceb53366851a99 1-299
+docs/llm/domains/rune-chrome.md
+  s_56f17cefc05ea3::t_998ee129e1da1c 231-260,664-682,1592,1623-1625
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8ae542d420713eba7eb5c335bfeb5f47013986ba",
+  "prompts": {},
+  "sessions": {
+    "s_56f17cefc05ea3": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "clammy-haircut",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
