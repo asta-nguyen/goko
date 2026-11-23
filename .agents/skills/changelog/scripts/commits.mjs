@@ -29,7 +29,7 @@ if (!base) {
 
 // Not user-visible on their own: a PR's merge commit (its commits are listed),
 // tests, docs, CI, chores, builds, style and the release itself.
-const SKIP = /^(test|docs|ci|chore|build|style|release)(\(.+\))?!?:|^Merge /;
+const SKIP = /^(test|docs|ci|chore|build|style|release)(\(.+\))?!?:|^Merge |^Release \(#\d+\)$/;
 
 // sha -> PR number, from merge commits ("Merge pull request #N") and from
 // squash merges ("title (#N)").

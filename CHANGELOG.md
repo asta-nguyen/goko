@@ -17,6 +17,43 @@ same entry. Keep each link on one line: What's new shows it as its text. The
 
 ## [Unreleased]
 
+### Added
+
+- The Needs you picker beside the workspace selector lists agents waiting for
+  you across workspaces and opens the chosen terminal through the draft guard.
+  By [@asta-nguyen](https://github.com/asta-nguyen) in `4d474c0`.
+- Workspace rows in the selector carry Rename and Remove buttons for that row,
+  whether or not it is selected; Default shows them dimmed with the reason.
+  By [@asta-nguyen](https://github.com/asta-nguyen) in `ba5121e`.
+- Settings → Accounts can keep several Devin accounts, each with its own data,
+  configuration and cache folder; add, sign in, switch, rename or remove one
+  without touching the Default login. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `4b1d6de`.
+- Hand off to… in a terminal tab's menu continues work under another agent or
+  account in the same checkout: it reads the saved conversation, builds an
+  editable 16 KiB review, opens the destination session and copies the review
+  only after it starts. Claude to Claude can fork the full history when both
+  profiles share `projects`. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `87038be`.
+- Every account row has Check login, and named accounts have Re-auth, for
+  Claude Code, Codex and Devin; both open a terminal in that profile so you can
+  see which login it holds or switch it. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `31fdf1d`.
+
+### Changed
+
+- Settings fills the page instead of a narrow column; the account form shows a
+  per-agent folder example and a Use suggested button, and Sign in switches to
+  the terminal tab it opens. Right-clicking a terminal pane now opens the tab
+  menu, including Hand off to… and the copy actions. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `31fdf1d`.
+
+### Fixed
+
+- Terminal tab layout saves retry when the settings worker refuses or fails,
+  so a saved layout is not lost. By
+  [@asta-nguyen](https://github.com/asta-nguyen) in `4121630`.
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
