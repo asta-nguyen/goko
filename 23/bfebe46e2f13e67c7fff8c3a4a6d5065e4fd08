@@ -1,0 +1,22 @@
+.agents/skills/changelog/scripts/commits.mjs
+  s_1073771c40cb4c::t_0492e3c47e165f 32
+CHANGELOG.md
+  s_1073771c40cb4c::t_24f44319f50405 25-27
+  s_1073771c40cb4c::t_11124dc569a33c 20-24,28-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "23bfebe46e2f13e67c7fff8c3a4a6d5065e4fd08",
+  "prompts": {},
+  "sessions": {
+    "s_1073771c40cb4c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "grape-hound",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
