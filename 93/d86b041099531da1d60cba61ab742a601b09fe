@@ -1,0 +1,425 @@
+crates/cli/tests/bots_cli.rs
+  s_71144874e016b2::t_148c19c2dde374 390-393,413-415,430-432
+  s_71144874e016b2::t_a4f1ea94765bf6 363-389,394-412,416-419,426-429,433-434
+  s_71144874e016b2::t_5a5a4ecabdc09c 188-210
+  s_71144874e016b2::t_6fa0dc6463501c 435
+crates/protocol/src/message.rs
+  s_e0ac085e7ff61a::t_2014d8cdaa220b 6-7
+  s_e0ac085e7ff61a::t_a510e9e91c2b7f 589-635,637-638
+  s_e0ac085e7ff61a::t_98c02f61dd6f09 234-242
+  s_8c52bab7e63d7f::t_5741ccbe89e43d 111-114,132-142,336-337,480-481,488,492-497,770-771,835-839,841-849,851-853
+  s_e0ac085e7ff61a::t_361ef1bbc6caf7 574-580
+  s_8c52bab7e63d7f::t_82f342f7905164 588,870-936
+  s_e0ac085e7ff61a::t_2ff5c9adc4489a 374-376
+  s_e0ac085e7ff61a::t_b2dff64ab35917 636
+  s_e0ac085e7ff61a::t_d4e51ef2000c99 498,840,850
+crates/bots/src/schema.rs
+  s_8c52bab7e63d7f::t_efc87794fa73ed 6-8,70-84,114-115,117-118
+  s_87df5f44e85169::t_7f1a6c3efcbe9f 85-105
+apps/rune/src/bots/create.rs
+  s_8c52bab7e63d7f::t_1bf12c016ca5de 3-4,7,52,65,67,113,119-135,137-171,180-185,187,244-247,254-261,263-266,268-282,284-289,291-332,334-336,338-340,342-344,346-353,365-367,369-372,374-386
+  s_8c52bab7e63d7f::t_79c7cf3d351d25 66
+  s_8c52bab7e63d7f::t_789e0142b2580a 136
+  s_8c52bab7e63d7f::t_c448fb5d0981e5 186
+  s_8c52bab7e63d7f::t_6e58a19d4150e2 262
+  s_8c52bab7e63d7f::t_2548463ac9355a 267
+  s_8c52bab7e63d7f::t_24bcd0458ccd7a 283
+  s_8c52bab7e63d7f::t_b95ed1a55483da 290
+  s_8c52bab7e63d7f::t_2f40f527286f04 333
+  s_8c52bab7e63d7f::t_c31e0d4722abf9 337
+  s_8c52bab7e63d7f::t_38804b1c26beee 341
+  s_8c52bab7e63d7f::t_c46382ada3f447 345
+  s_8c52bab7e63d7f::t_368c71390cb01d 368
+  s_8c52bab7e63d7f::t_b08b121ad1be85 373
+docs/agent-devkit/changes/2026-11-24-bot-agent-launch/delta.md
+  s_8c52bab7e63d7f::t_74ac2e75e4ade5 3-4
+  s_8c52bab7e63d7f::t_703d84243074ce 17
+  s_8c52bab7e63d7f::t_9b3e326b7f7515 49,55,115-139
+  s_8c52bab7e63d7f::t_e5fb2ea973f6a0 1-2
+  s_8c52bab7e63d7f::t_9223736fad499e 5-7,14-16
+  s_8c52bab7e63d7f::t_3c09a7001b5a61 18-20,46-48
+  s_8c52bab7e63d7f::t_55fa6203c0f142 50-54
+  s_8c52bab7e63d7f::t_c154d431d7a6d4 56-58,112-114
+  s_8c52bab7e63d7f::t_e3220c3dbc0b42 140-142
+crates/bots/src/item.rs
+  s_8c52bab7e63d7f::t_76aa84e34848c7 197-198
+crates/bots/src/launch.rs
+  s_8c52bab7e63d7f::t_1f72f785d5a68e 183,186-201
+  s_8c52bab7e63d7f::t_ea9db4cbb0e1f7 184-185,202-205,356-362,364
+  s_8c52bab7e63d7f::t_811e5531da4c22 85-86,116-118
+  s_8c52bab7e63d7f::t_05f70587f10b1f 1-57,59-84,87-94,96-98,100-104,107-111,114-115,119-147,149-157,159-162,164-173,175-182,206-212,214-231,233-241,243-251,253-261,263-266,268-328,330-348,350-355,363,365-366
+  s_8c52bab7e63d7f::t_6f4d7b01bd7df8 58
+  s_8c52bab7e63d7f::t_2458d3c2067a6b 95
+  s_8c52bab7e63d7f::t_a60a5df04b0e02 99
+  s_8c52bab7e63d7f::t_6dbc056eeb362c 105-106
+  s_8c52bab7e63d7f::t_41df9759e19e28 112-113
+  s_8c52bab7e63d7f::t_41aa4decf795ce 148
+  s_8c52bab7e63d7f::t_6b46da8d1226b1 158
+  s_8c52bab7e63d7f::t_78d532e3c01404 163
+  s_8c52bab7e63d7f::t_c299374f0bda4b 174
+  s_8c52bab7e63d7f::t_1e60c883b6a976 213
+  s_8c52bab7e63d7f::t_32ff8d2a199f80 232
+  s_8c52bab7e63d7f::t_c1fc3aaf8aee34 242
+  s_8c52bab7e63d7f::t_e8defe8caa61ae 252
+  s_8c52bab7e63d7f::t_eda267222cfdc3 262
+  s_8c52bab7e63d7f::t_fec0774c631503 267
+  s_8c52bab7e63d7f::t_4b80077135b335 329
+  s_8c52bab7e63d7f::t_4726d562957f5c 349
+apps/rune/src/settings.rs
+  s_8c52bab7e63d7f::t_65f347d7419b20 442-450,452-453
+  s_8c52bab7e63d7f::t_e16becadf0f7cd 451
+README.md
+  s_8c52bab7e63d7f::t_d98e4e97364acd 97-116
+  s_f4a7e3476e39d2::t_814d40eb066504 85-96
+apps/rune/src/bots/state.rs
+  s_8c52bab7e63d7f::t_2ed5c3fa04e69a 159,176,193,392,402-405,452-457,1071,1078
+  s_8c52bab7e63d7f::t_11967c0a5d6059 9-10,37-38,154-158,169,171-175,188-192,199-221,253-254,301-302,304-309,357-362,365-367,376-391,393-401,406-428,430-451,458-485,578-581,612-613,615-618,641-645,750-752,1015-1016,1054-1055,1081,1085-1092,1162-1170,1172-1174,1197,1201
+  s_8c52bab7e63d7f::t_f793d56c93a034 1025-1026,1066-1067,1210-1211
+  s_8c52bab7e63d7f::t_e991af993948b7 303
+  s_8c52bab7e63d7f::t_7e66c754be5984 363-364
+  s_8c52bab7e63d7f::t_d13ebcac9b559d 429
+  s_8c52bab7e63d7f::t_e9b136c7510518 1171
+docs/agent-devkit/INDEX.md
+  s_8c52bab7e63d7f::t_3c88ba971b468a 19-20
+  s_f4a7e3476e39d2::t_a60cac18bc377f 24
+crates/bots/src/lib.rs
+  s_8c52bab7e63d7f::t_807e93d822ea54 11
+  s_3bc716d131d5bc::t_63166fe4c986e5 13
+  s_8c52bab7e63d7f::t_c71dfc32b976a9 10
+crates/daemon/Cargo.toml
+  s_8c52bab7e63d7f::t_7343e1f032c1bf 3
+apps/rune/src/bots/list.rs
+  s_8c52bab7e63d7f::t_c4c07d6891838e 7,35
+  s_8c52bab7e63d7f::t_c976abdd26a436 40,48-56,74,86-87,95
+  s_8c52bab7e63d7f::t_3607f6290035e6 88-90,92-94
+crates/daemon/tests/bots_ipc.rs
+  s_67b287a4692e25::t_2395cb3749f857 700-701
+  s_d386f93c067f9c::t_0f17de5827fdd9 229,896-979,981-1031,1036-1052,1054-1072
+  s_8c52bab7e63d7f::t_58c0553bb5dcf8 230-280
+  s_d386f93c067f9c::t_8c08126a85743a 980
+  s_67b287a4692e25::t_d5dbe32f77c1a5 34-36,55-121,123-124,129-132
+  s_d386f93c067f9c::t_51c35360bd3b4f 171-172,175-182,186
+  s_67b287a4692e25::t_4353530566849a 122,125-128,666,668-669,672,717-720,758,760-761,764,828-831,843-848,889-892,1082-1087,1135-1138
+  s_d386f93c067f9c::t_52980906310c53 1032-1035
+  s_d386f93c067f9c::t_84a37320f83511 1053
+  s_8c52bab7e63d7f::t_e70165372c5f1e 473,521
+  s_67b287a4692e25::t_c4e51de67ff950 33,37-40,46
+  s_67b287a4692e25::t_f5329a0b1d8743 656-665,667,670-671,673-699,702-716,721-757,759,762-763,765-827,832-842,849-888,893-895,1073-1081,1088-1134,1139
+  s_d386f93c067f9c::t_f8878514181d1a 133-170,173-174,183-185,187-198
+crates/bots/src/request.rs
+  s_3bc716d131d5bc::t_a833d028b60b22 422-423
+  s_3bc716d131d5bc::t_9a9e6ee2276468 144,146-152,154-201,203-205,207-214,216,235-421,424-434,437-440,444
+  s_3bc716d131d5bc::t_f4bb1f49aa4346 202,206,215,217-221,224-227,234
+  s_3bc716d131d5bc::t_b62a24644eaf6e 1-143,145,153,445
+  s_3bc716d131d5bc::t_8eb9374326ca32 228-233
+  s_f4a7e3476e39d2::t_fcc7ae6f207599 222-223,435-436,441-443
+crates/app-core/src/acp.rs
+  s_8c52bab7e63d7f::t_e82f64e3c11681 41,95-110,317-320,328-338,346,357,365,442,455-459,487,611,621-646,690-698,700-707,1126-1128,1144-1172,1283-1284
+  s_8c52bab7e63d7f::t_148e07ef5e73db 309,708,2387-2472
+  s_8c52bab7e63d7f::t_ae84f82cfc508a 131,133-135
+  s_8c52bab7e63d7f::t_bebf5b733b27c3 127-130,132,136,144,152,167-179,750-752
+  s_8c52bab7e63d7f::t_41d75988760dd9 180,753,1285-1286
+docs/agent-devkit/changes/2026-11-24-bot-agent-launch/design.md
+  s_8c52bab7e63d7f::t_92d5c6b7502a86 66,72
+  s_6e01d44ffb96b9::t_14e58b01d7a524 1-65,67-71,73-138,140-141,143-199
+  s_8c52bab7e63d7f::t_23e9a02332ff04 139,142
+crates/cli/src/commands.rs
+  s_71144874e016b2::t_5d55a43774f368 5-8
+  s_71144874e016b2::t_86859ab0abe884 142-178,183-194
+  s_71144874e016b2::t_029761c5f34703 195-196
+crates/protocol/src/bot.rs
+  s_8c52bab7e63d7f::t_056223cd2311f1 7,12,14,22,24,32,34,284-287,375,383-407,497-510,518-521,539-542,558-559
+  s_e0ac085e7ff61a::t_c448e720b9afa3 408-496
+crates/app-core/tests/fixtures/fake_acp_agent.py
+  s_d386f93c067f9c::t_01c12448cb0f25 242-272
+  s_f8db2d030cb608::t_c96ce6191db981 9,22
+  s_8c52bab7e63d7f::t_6ed81ac23bf051 46-47,51-102,142,144-145,171,173-174,185-186,498-502
+  s_8c52bab7e63d7f::t_b79fad86a18f9e 48,169-170,172,203,210,216-221,327-357
+  s_d386f93c067f9c::t_5a4a0d435e703b 10-15
+  s_f8db2d030cb608::t_9e869948eb1ce7 360-367
+  s_d386f93c067f9c::t_c6bbc817f00c6a 443-446
+  s_8c52bab7e63d7f::t_487fe9e2fa68af 49-50
+  s_8c52bab7e63d7f::t_898039c49c6dfe 222
+docs/agent-devkit/changes/2026-11-24-bot-agent-launch/decisions.md
+  s_8c52bab7e63d7f::t_ec1a3faf3d32bc 1-6
+crates/bots/src/chat.rs
+  s_d5da71eb7ffab7::t_13559c9bbc31e3 1616,1618,1624-1625,1636,1640-1641,1643
+  s_d5da71eb7ffab7::t_b0ea56ab23799b 1136,1139-1152,1160
+  s_d5da71eb7ffab7::t_f27ce1c529625e 761,780,782-795,797-799
+  s_8c52bab7e63d7f::t_43bf6c5104294a 18
+  s_f8db2d030cb608::t_ac671541dc8e8a 43-111,113-115,121,131,137,151,162-181
+  s_d5da71eb7ffab7::t_dead5d3c8ba678 746-748
+  s_f8db2d030cb608::t_f52a0c1bd35918 1166-1194,1199-1204,1211-1222
+  s_d5da71eb7ffab7::t_da7f56dc25a70c 1794,1806,1810,1813
+  s_d5da71eb7ffab7::t_6e1535d96cae0e 1252-1257,1259-1264,1266-1273
+  s_f8db2d030cb608::t_6d4e8bc85fb562 275,616,752,763,1653,2584,2782-2802,2804-2836,2838-3020,3024-3089,3096-3200,3204-3247,3250-3267,3271-3438
+  s_d5da71eb7ffab7::t_7490e08a04c7c9 829-834,836-838,842
+  s_8c52bab7e63d7f::t_824cbc6200a5bb 1793,1805,1812,1850,1866-1874,1876-1879,1881-2064,2091-2112,2114-2138
+  s_d5da71eb7ffab7::t_3e03a604585754 1851,1859-1860
+  s_f8db2d030cb608::t_10eff6c77332e2 274,845-1002,1008-1046,1048-1069,1083,1090-1101,1113
+  s_d5da71eb7ffab7::t_809af3da31368f 2585-2670
+  s_d5da71eb7ffab7::t_cd3c2ace08ed3c 1647-1652
+  s_8c52bab7e63d7f::t_d85ac22264c09d 1820-1825
+  s_f8db2d030cb608::t_6cf54db1bad525 21
+  s_d5da71eb7ffab7::t_25cf5277882868 708,710,714,717-719
+  s_f8db2d030cb608::t_eb080865dfcb7f 1307-1315,1321,1323
+  s_f8db2d030cb608::t_c670c6fef35348 3248-3249
+  s_f8db2d030cb608::t_960fbbf5fcec80 682-692,762
+  s_f8db2d030cb608::t_b13d441abcc9ae 38-41
+  s_d5da71eb7ffab7::t_2cdc580913ca77 1698,1703,1711,1713-1715
+  s_8c52bab7e63d7f::t_7285c55bba2118 1830-1831,2675
+  s_f8db2d030cb608::t_0604c4fd621a4b 1772,1774,1776,1779
+  s_f8db2d030cb608::t_d2a73b95ea3f14 3021-3023
+  s_f8db2d030cb608::t_df18f97b5c0db0 10,15-16,20
+  s_f8db2d030cb608::t_e3558558e99110 1556-1584
+  s_f8db2d030cb608::t_fb49af72c305b0 11,568-571,1003,1047,1770,1777-1778,2803,2837,3090-3095,3201-3203,3268-3270
+  s_f8db2d030cb608::t_11c3a2ff237334 250-260,264-273
+  s_f8db2d030cb608::t_b47829324332fd 1195-1198
+  s_8c52bab7e63d7f::t_ab0c19c1ea4d00 4,8,12,142-143,156-157,293-294,298-299,617,731-745,749-751,753,1130,1239-1251,1265,1274-1289,1291-1293,1295-1299,1301-1305,1339-1354,1382-1388,1390,1413-1415,1550,1619-1623,1626-1631,1633,1656
+  s_f8db2d030cb608::t_90c23259269fff 347,352-356,362,365,373,378,384-567,572-615
+  s_d5da71eb7ffab7::t_8265d8e1dc6f78 140,154
+  s_8c52bab7e63d7f::t_12f807a853405f 1330-1332
+  s_8c52bab7e63d7f::t_3c297ba25a415b 2065-2090
+  s_f8db2d030cb608::t_cda55f430eaa1e 759,1004-1007
+  s_f4a7e3476e39d2::t_f4c38e62ae01d1 42,182-183,756-758,760,1300,1306,1389,1632,1655,1658-1659,1861-1862,1875,1880,2113
+apps/rune/src/chrome.rs
+  s_8c52bab7e63d7f::t_d426f1ae066aa3 1115
+crates/bots/src/capability.rs
+  s_d5da71eb7ffab7::t_b88847e7c9d9c8 66-68,75-89,91,96,100
+  s_d5da71eb7ffab7::t_c9578ec6ecb880 140-163
+  s_d5da71eb7ffab7::t_83861b6b8d4f77 1-3
+apps/rune/src/bots/chat.rs
+  s_7ccfe35ecdd951::t_32d15210460fcc 159,182
+  s_7ccfe35ecdd951::t_48a10a96f01686 178
+  s_7ccfe35ecdd951::t_fd5eb854d15df4 143-158,160-177,179-181
+  s_7ccfe35ecdd951::t_4f218fdebe0c55 224-244
+apps/rune/src/daemon.rs
+  s_8c52bab7e63d7f::t_af3157a15137c4 366
+  s_8c52bab7e63d7f::t_75869616e1f3e5 778,876
+crates/bots/src/acp_driver.rs
+  s_8c52bab7e63d7f::t_adaeefb8d47758 21-22,25-26,65-71,79-80,102,105-107,109,116,118-125,131-135,140-149
+  s_8c52bab7e63d7f::t_dd77ada628cc95 1-6,8-19,23-24,27-63,72-77,81,83-101,111-115,128-130,136-139,150-215,217-229,231-243,245-258
+  s_8c52bab7e63d7f::t_71b2d4ec380eae 20,64,78,103-104,108,117
+  s_8c52bab7e63d7f::t_d52d6d45611c1c 110,126-127
+  s_8c52bab7e63d7f::t_3ce8348d83baf7 7
+  s_8c52bab7e63d7f::t_f65b3fb02494e0 82
+  s_8c52bab7e63d7f::t_6d7f0fd596b93b 216
+  s_8c52bab7e63d7f::t_dfb4874ee8ab1d 230
+  s_8c52bab7e63d7f::t_79c5270dab635b 244
+crates/bots/src/options.rs
+  s_8c52bab7e63d7f::t_1986728592679b 62,194-200
+  s_8c52bab7e63d7f::t_d613a043d9be00 143
+  s_8c52bab7e63d7f::t_4efda35f7501d7 1-44,46-61,63-85,88-126,128-142,144-153,155-162,164,166-188,190-191,193,201-203
+  s_8c52bab7e63d7f::t_17b2ef1f2e436f 204-349
+  s_8c52bab7e63d7f::t_1a9f9601baf275 45
+  s_8c52bab7e63d7f::t_34f9e4e29536c1 86-87
+  s_8c52bab7e63d7f::t_b7156a3eb24ba1 127
+  s_8c52bab7e63d7f::t_414b5ceb3069bd 154
+  s_8c52bab7e63d7f::t_aefc31459f7536 163
+  s_8c52bab7e63d7f::t_3e4891b02f3b3a 165
+  s_8c52bab7e63d7f::t_e579a7ba27e7e9 189
+  s_8c52bab7e63d7f::t_9b93cf4395c96c 192
+apps/rune/src/bots.rs
+  s_8c52bab7e63d7f::t_3353d845ac8c42 12,29,79-95,97,99-107,109-115,118,121-122,124,126-141,152-171
+  s_8c52bab7e63d7f::t_f81bc93ba1647a 96
+  s_8c52bab7e63d7f::t_2164c3341a067c 98
+  s_8c52bab7e63d7f::t_9b54f010ae7dda 108
+  s_8c52bab7e63d7f::t_495355c3faf7d0 142-144
+crates/daemon/src/main.rs
+  s_67b287a4692e25::t_5863f0a2e51408 99-104
+AGENTS.md
+  s_8c52bab7e63d7f::t_60331d673d9c12 16
+  s_f4a7e3476e39d2::t_3a4ea79932d2e3 15
+crates/cli/src/args.rs
+  s_71144874e016b2::t_3ab13d652f59fa 221
+  s_71144874e016b2::t_648eb738614023 53-55
+  s_71144874e016b2::t_d087e6ff1d6275 325-347
+  s_71144874e016b2::t_5145e207ea375d 3
+  s_71144874e016b2::t_b1de7b30f239ba 99,101-102,104
+  s_71144874e016b2::t_ed5f87bbaf7649 34-42
+  s_71144874e016b2::t_0280ff873c037a 278-286,288-290,292-295,297-299,301-303
+  s_71144874e016b2::t_47f0993c007358 287,291,296,300
+  s_71144874e016b2::t_b5385e1f757e04 61-98,100,103,105-109
+crates/bots/src/preamble.rs
+  s_1760ec5d3138a5::t_425dfa81721381 163-168
+  s_1760ec5d3138a5::t_b6a74e87e8722b 184-188
+  s_8c52bab7e63d7f::t_a316397ada2f83 32-34,36-38,179
+  s_8c52bab7e63d7f::t_7de604cd6a1e1e 43-44
+  s_1760ec5d3138a5::t_c750b72bc480fe 80-81
+  s_1760ec5d3138a5::t_babdf46eccd66a 96-107
+  s_1760ec5d3138a5::t_6e6972eb321b9d 11-13
+  s_1760ec5d3138a5::t_d41e918f56376f 183
+docs/agent-devkit/changes/2026-11-24-bot-agent-launch/tasks.md
+  s_8c52bab7e63d7f::t_01d2a53023b76e 159
+  s_8c52bab7e63d7f::t_1ff46787cf20f2 34-35,44-145
+  s_8c52bab7e63d7f::t_85fba514ed1aec 171
+  s_8c52bab7e63d7f::t_a481119bd99566 36-37
+  s_8c52bab7e63d7f::t_f03de295d5b540 31-33
+  s_8c52bab7e63d7f::t_9de389ae1f66db 38-43
+  s_8c52bab7e63d7f::t_40067a0617e7a3 146-148,156-158
+  s_8c52bab7e63d7f::t_857655b8c3f01d 160-162,168-170
+apps/rune/src/view_tests.rs
+  s_8c52bab7e63d7f::t_f91e4d7804a566 5739,5765,5849,5941,5943,5950-5963,5965-5968,5970-5975,5977-6020,6022-6046,6048-6059,6061-6078,6080-6096,6099-6129,6131-6143,6145-6150,6152-6158,6160-6166,6168-6181,6183-6186
+  s_8c52bab7e63d7f::t_9f5aa371b121b7 5779-5780,5782-5814
+  s_8c52bab7e63d7f::t_5703e32f36561f 5658-5659
+  s_8c52bab7e63d7f::t_6b0de8cd2d0ccd 5781
+  s_7ccfe35ecdd951::t_d11c8f2ad820b6 5778,6515-6630
+  s_8c52bab7e63d7f::t_b82e057951507f 6060
+  s_8c52bab7e63d7f::t_4ed37bb2a8a2e4 6097-6098
+  s_7ccfe35ecdd951::t_743c0679feffa9 5964,5969,5976,6021,6047,6079,6144,6151,6159,6167,6182
+crates/bots/src/service.rs
+  s_3bc716d131d5bc::t_ba7610b9d6d15e 481
+  s_8c52bab7e63d7f::t_d7e89c74021a58 164-166,183-184,214,216-217,225-226,463-479,511-512,595-596
+  s_67b287a4692e25::t_7bc387ea4198bc 246-248
+  s_8c52bab7e63d7f::t_5302598fbe35e6 9,230-245,505,588
+  s_8c52bab7e63d7f::t_a739f3d6f358fd 10,32,73,449-451,453-456,458
+  s_67b287a4692e25::t_860e8f38858167 273
+  s_67b287a4692e25::t_81ec5bbe96724d 403-448
+  s_67b287a4692e25::t_e11b2fed00c337 13-15
+  s_67b287a4692e25::t_79a950364034e4 489,493-496
+  s_67b287a4692e25::t_02f7724a692255 697-745
+  s_8c52bab7e63d7f::t_7a0ec8912402b3 452
+crates/daemon/src/server.rs
+  s_8c52bab7e63d7f::t_feed052788c50c 466-472,474-475,477-484
+  s_8c52bab7e63d7f::t_2faa5d83b09a36 424-425,434-435,448-449,460-461
+  s_67b287a4692e25::t_41193eaeeb13e1 953-954
+  s_8c52bab7e63d7f::t_301f9894622519 485-486
+  s_67b287a4692e25::t_5ce0cb87d27602 637-660
+  s_8c52bab7e63d7f::t_9fb3358899b789 473
+  s_8c52bab7e63d7f::t_3d7148dfe31dc8 476
+docs/llm/domains/goko-bots.md
+  s_8c52bab7e63d7f::t_9fd3f1e927131a 156
+  s_8c52bab7e63d7f::t_fa8222a14fd910 9-18,24,32-43,50-56,60,80-86,90,104-115,154-155,157-189,192,196,200-218,220,222-290,294,302-307,318,322,324,332-337,340-351,359,361-363
+crates/bots/src/store.rs
+  s_8c52bab7e63d7f::t_32b7fc209e7a45 1102-1109,1111-1116,1118-1123,1125-1165,1167-1194
+  s_87df5f44e85169::t_dff48a1c82c6a7 93-128
+  s_87df5f44e85169::t_7c939e1aeb84ac 945-967
+  s_87df5f44e85169::t_cf97f807d7a705 888-891
+  s_87df5f44e85169::t_c8ebdfa3923cc9 1098
+  s_87df5f44e85169::t_03ae3eaf7e236d 500-545,547-570,572-678
+  s_8c52bab7e63d7f::t_6c993aee5a20ad 32-33,52-53,73-74,88-89,186-188,197,201-203,285-290,299-300,309,312-314,885-887,892-898,917-918,1037-1038
+  s_87df5f44e85169::t_b70be6679f0499 1056-1057,1099,1101,1329-1497
+  s_87df5f44e85169::t_ee7e826fba8c73 1016-1017,1020-1021,1044-1055
+  s_87df5f44e85169::t_4f7927b0cdcc93 7-9
+  s_87df5f44e85169::t_fde11abf2acb93 546,571,1023,1058,1100,1110,1117,1124,1166
+docs/agent-devkit/changes/archive/2026-11-24-bot-to-bot/decisions.md
+  s_f4a7e3476e39d2::t_6ed9e6daa704b7 1-8
+docs/agent-devkit/changes/archive/2026-11-24-bot-to-bot/delta.md
+  s_f4a7e3476e39d2::t_cef014353f2465 1-345
+docs/agent-devkit/changes/archive/2026-11-24-bot-to-bot/design.md
+  s_f4a7e3476e39d2::t_c15e2eecb37d7d 1-392
+docs/agent-devkit/changes/archive/2026-11-24-bot-to-bot/tasks.md
+  s_f4a7e3476e39d2::t_3bf1cc8453629c 1-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "93d86b041099531da1d60cba61ab742a601b09fe",
+  "prompts": {},
+  "sessions": {
+    "s_1760ec5d3138a5": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "scandalous-jumpsuit",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_3bc716d131d5bc": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "wiggly-concrete",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_67b287a4692e25": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "tree-ship",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_6e01d44ffb96b9": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "shimmering-number",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_71144874e016b2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "zesty-feels",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_7ccfe35ecdd951": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "coherent-mind",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_87df5f44e85169": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "factual-locust",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_8c52bab7e63d7f": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "freezing-physician",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d386f93c067f9c": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "tabby-nitrogen",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_d5da71eb7ffab7": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "nimble-verdict",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_e0ac085e7ff61a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "resisted-fear",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f4a7e3476e39d2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "fantasy-loan",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f8db2d030cb608": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "outrageous-lifeboat",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
