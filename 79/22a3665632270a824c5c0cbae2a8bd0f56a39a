@@ -1,0 +1,41 @@
+apps/rune/install-macos.sh
+  s_5099dd2cca3be3::t_bc25fddaed8a59 104,109-110,113,122,134,201-202,209,211,214-215
+  s_5099dd2cca3be3::t_7a8c898734f114 149,155,158
+  s_5099dd2cca3be3::t_ad5c59bc46ab35 1-103,105-108,111-112,114-121,123-133,135-148,150-154,156-157,159-200,203-208,210,212-213,216-217
+apps/rune/dev-macos.sh
+  s_5099dd2cca3be3::t_2cb73bdee85251 98-102,266-267
+  s_5099dd2cca3be3::t_7d5795e396d211 247,249
+  s_5099dd2cca3be3::t_4cc90d20cb83de 1-97,103-246,248,250-265
+apps/rune/goko-status.sh
+  s_5099dd2cca3be3::t_0a20d58d9b5aca 1-56,58-82
+  s_5099dd2cca3be3::t_9c135de2077db3 57
+docs/agent-devkit/INDEX.md
+  s_f342d7a3979063::t_f65149a9079768 21
+AGENTS.md
+  s_5099dd2cca3be3::t_cfbdfda3a59ba5 22-30,33,36-40
+  s_5099dd2cca3be3::t_836e0e61000901 31-32,34-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7922a3665632270a824c5c0cbae2a8bd0f56a39a",
+  "prompts": {},
+  "sessions": {
+    "s_5099dd2cca3be3": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sphenoid-lillipilli",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
