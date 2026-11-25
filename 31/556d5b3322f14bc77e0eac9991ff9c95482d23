@@ -1,0 +1,19 @@
+apps/rune/src/editor/commit.rs
+  s_5099dd2cca3be3::t_64cc70c57274aa 290
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "31556d5b3322f14bc77e0eac9991ff9c95482d23",
+  "prompts": {},
+  "sessions": {
+    "s_5099dd2cca3be3": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sphenoid-lillipilli",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
