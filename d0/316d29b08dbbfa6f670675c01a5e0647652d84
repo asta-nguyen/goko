@@ -1,0 +1,88 @@
+crates/bots/src/service.rs
+  s_268c592ad4b783::t_2011231e0d9482 543-549
+  s_268c592ad4b783::t_6f183806c5377a 535-542
+crates/daemon/src/server.rs
+  s_268c592ad4b783::t_c3ff64cafef03e 610,614-617
+  s_268c592ad4b783::t_cb45bd6a67eb90 611-613
+  s_268c592ad4b783::t_01314546dea99b 892
+  s_268c592ad4b783::t_a041a2e239708f 1046,1055-1059,1061-1067
+crates/daemon/tests/bot_team_chat_ipc.rs
+  s_268c592ad4b783::t_cb45bd6a67eb90 1151-1154
+  s_268c592ad4b783::t_c1d7d3d5c44309 883-927
+  s_268c592ad4b783::t_07c5a6362d18a2 1061
+  s_268c592ad4b783::t_45f9862b2679eb 801,811-860,875-882,928-950,958-963,965,970-982,984-1028,1046-1060,1062-1098,1106-1150,1155
+  s_268c592ad4b783::t_0aaac23d67b1d6 1029-1045
+  s_268c592ad4b783::t_43ebeeb1e66a20 1099-1105
+  s_268c592ad4b783::t_c4b00b8a15cfd7 14
+  s_268c592ad4b783::t_5a525fd21946e5 181-321
+  s_268c592ad4b783::t_cc8cece30288d5 861-874
+  s_268c592ad4b783::t_ee959499581cc8 951-957,964,966-969
+  s_268c592ad4b783::t_6380f7802e0ccb 983
+crates/bots/src/schema.rs
+  s_268c592ad4b783::t_d3a9d2e493b33d 177-186
+crates/protocol/src/team.rs
+  s_268c592ad4b783::t_452c602c5c0b46 94-107
+  s_268c592ad4b783::t_3b2b810de85874 135-136
+  s_268c592ad4b783::t_20816544014230 77-78
+  s_268c592ad4b783::t_968a533554f00a 362-366,376-379
+crates/bots/src/team_chat.rs
+  s_268c592ad4b783::t_9637cf91a747a4 375,903-930,935-936
+  s_268c592ad4b783::t_2d2777aa144c4e 1318-1347
+  s_268c592ad4b783::t_185d286f60ec6e 704-716,722-723
+  s_268c592ad4b783::t_001de50860a03c 112,124-125,137-138,156-157
+  s_268c592ad4b783::t_399af3e00351f0 204,246-247,268,288,350-374
+  s_268c592ad4b783::t_5db17d0bbc185d 1021
+  s_268c592ad4b783::t_cac222527a728c 1151,1153-1162
+  s_268c592ad4b783::t_9508ce1465772b 6,10-11,17,29-31,37
+  s_268c592ad4b783::t_00cd17108e0f9f 210,212-222
+  s_268c592ad4b783::t_cb45bd6a67eb90 1373-1377,1384-1388
+  s_268c592ad4b783::t_2aa0889bff30e5 931-934
+  s_268c592ad4b783::t_84d43220e6ebda 62-63
+  s_268c592ad4b783::t_567c1eeb18e2f3 211,223-245,248-267,269-287,289-349
+  s_268c592ad4b783::t_d1cd2ad43db9e3 1368
+  s_268c592ad4b783::t_00fbf128a1aadf 817
+  s_268c592ad4b783::t_8acdf2bf53d096 1295-1317,1348-1367,1369-1372,1378-1383,1389-1393
+  s_f342d7a3979063::t_99a3824a502557 376
+crates/bots/src/team_runs.rs
+  s_268c592ad4b783::t_cb5ea89b4fb3b5 389-413
+  s_268c592ad4b783::t_6ef75bc9ee17d7 682
+  s_268c592ad4b783::t_ccf966fc1f3469 871
+  s_268c592ad4b783::t_633671eba76f80 594-597
+  s_268c592ad4b783::t_4b6d1d350f2405 445,458-469
+  s_268c592ad4b783::t_77f603fa6ad68a 287-302
+  s_268c592ad4b783::t_4d86f638654f60 8
+  s_268c592ad4b783::t_788a3d424eae2c 272-286,303-308
+  s_268c592ad4b783::t_95a1bb30a11ba1 713-715
+crates/app-core/tests/fixtures/fake_acp_agent.py
+  s_268c592ad4b783::t_70bcf3be4edac3 372-376
+apps/rune/src/bots/team_runs.rs
+  s_268c592ad4b783::t_b6aa6ab71144b5 240
+crates/protocol/src/message.rs
+  s_268c592ad4b783::t_31125e410a65db 218-223
+docs/agent-devkit/changes/bot-team-chat/tasks.md
+  s_f342d7a3979063::t_d8330ea48e950b 52-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0316d29b08dbbfa6f670675c01a5e0647652d84",
+  "prompts": {},
+  "sessions": {
+    "s_268c592ad4b783": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "abrasive-relative",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
