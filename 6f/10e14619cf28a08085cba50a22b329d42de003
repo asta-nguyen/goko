@@ -1,0 +1,31 @@
+apps/rune/src/bots/team_chat.rs
+  s_54be6c09cac256::t_2816fcce706ebf 1564,1569-1572
+  s_54be6c09cac256::t_bcccb7676aa222 2065
+  s_54be6c09cac256::t_5cce7b188353a9 1641-1662
+  s_54be6c09cac256::t_5472e589a10887 1681-1708
+  s_54be6c09cac256::t_e3a8cbfcd1b59a 1565-1568
+  s_54be6c09cac256::t_6083f43bb2e373 1673
+apps/rune/src/view_tests.rs
+  s_54be6c09cac256::t_3754c69c61a433 6633-6640,6651
+  s_54be6c09cac256::t_478e4bf02f8e65 7019-7027,7033-7081,7083-7205,7404
+  s_54be6c09cac256::t_4624161b6a5c9d 7082
+  s_54be6c09cac256::t_022c0912c0467b 7405-7474
+  s_54be6c09cac256::t_be769ba5b8c175 7028-7032
+  s_54be6c09cac256::t_57207177066983 6632
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6f10e14619cf28a08085cba50a22b329d42de003",
+  "prompts": {},
+  "sessions": {
+    "s_54be6c09cac256": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "fortunate-sodium",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
