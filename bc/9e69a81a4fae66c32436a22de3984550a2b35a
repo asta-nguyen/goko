@@ -1,0 +1,31 @@
+crates/bots/src/team_runs.rs
+  s_3a66c4e7b9b240::t_4270eb19772a0f 1112
+  s_f342d7a3979063::t_8701a289f92af1 66-86,96-97,159-167
+  s_3a66c4e7b9b240::t_03104f94d2e13c 1103
+  s_3a66c4e7b9b240::t_38cc55c3f9dd1f 98-106,108-114,116
+  s_3a66c4e7b9b240::t_575d36772e6556 145-158,168-214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bc9e69a81a4fae66c32436a22de3984550a2b35a",
+  "prompts": {},
+  "sessions": {
+    "s_3a66c4e7b9b240": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "scratched-meadow",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
