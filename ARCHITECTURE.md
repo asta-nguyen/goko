@@ -139,7 +139,7 @@ runner (`worktrees`), the ACP hub and agent configuration (`acp`, `agents`, `acc
 ## The Rune app
 
 `apps/rune` is built on Rune/wgpu/winit (`rune` pinned to git rev
-`a7f276c3630f85a06a0230295da4d2bd172d8d3b`) with the local `crates/rune-kit` component
+`39301f6793266450a057f270da06b048a689be96`) with the local `crates/rune-kit` component
 crate. Build and launch it with `apps/rune/run-macos.sh` (see the [README](README.md)).
 
 - **Terminal:** the daemon's PTY bytes are fed to a `libghostty-vt` terminal (`term.rs`,

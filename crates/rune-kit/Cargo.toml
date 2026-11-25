@@ -6,8 +6,8 @@ license = "Apache-2.0"
 description = "Generic, themable components for Rune. Components read only semantic tokens (`Kit`); a theme crate supplies them."
 
 [dependencies]
-rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b", default-features = false }
-rune-motion = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96", default-features = false }
+rune-motion = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96" }
 unicode-segmentation = "1.13"
 pulldown-cmark = { version = "0.13", default-features = false, optional = true }
 
