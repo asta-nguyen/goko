@@ -1,0 +1,29 @@
+apps/rune/src/bots/list.rs
+  s_f342d7a3979063::t_b0a1cba05e4e16 5,8,32-54
+apps/rune/src/bots/team_presets.rs
+  s_f342d7a3979063::t_7eac4421eeef5c 535,694-701,704-705,732-748
+apps/rune/src/theme.rs
+  s_f342d7a3979063::t_ba884bacc8d52f 228-234,361-372
+apps/rune/src/bots.rs
+  s_f342d7a3979063::t_a3514b9d906d72 51
+apps/rune/src/bots/team_runs.rs
+  s_f342d7a3979063::t_e3d8e2ba7f03cf 9,11,597,599-601,603-622,640-648
+  s_f342d7a3979063::t_1e55f419236203 10
+  s_f342d7a3979063::t_eed9df2b493f0a 602
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "18c605f8d3210f70b9c1c64c2dd5d474f99fa721",
+  "prompts": {},
+  "sessions": {
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
