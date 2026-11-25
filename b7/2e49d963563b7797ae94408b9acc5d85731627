@@ -1,0 +1,23 @@
+AGENTS.md
+  s_f342d7a3979063::t_afab8224bb6f94 20
+docs/llm/domains/goko-bots.md
+  s_f342d7a3979063::t_afab8224bb6f94 28-39,367-396,563-567
+docs/agent-devkit/changes/bot-team-chat/delta.md
+  s_f342d7a3979063::t_afab8224bb6f94 3-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b72e49d963563b7797ae94408b9acc5d85731627",
+  "prompts": {},
+  "sessions": {
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
