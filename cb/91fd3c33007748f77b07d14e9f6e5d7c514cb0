@@ -1,0 +1,52 @@
+crates/bots/src/team_presets.rs
+  s_afb810d2377efd::t_7a2f67d6ff2ca8 182,185,193-195
+  s_afb810d2377efd::t_7defb7c7cb0baa 274-276
+  s_afb810d2377efd::t_d2d84c8ac3948a 468-472,477-479
+  s_afb810d2377efd::t_9da029ea5a426a 45-81
+  s_afb810d2377efd::t_9929b931c5281f 166
+  s_afb810d2377efd::t_d478dbf7c0abb4 189-192,196-199
+  s_afb810d2377efd::t_02fd34bd8079fc 249-250,253
+  s_afb810d2377efd::t_4ad61f57cb1ce7 212-213,229,233-248,252,254-261,269-273,277-281,286-288
+  s_afb810d2377efd::t_52b96847eaa4dc 320-332,362-367
+docs/agent-devkit/changes/bot-team-chat/design.md
+  s_f342d7a3979063::t_f9c1782ca3d51f 56-60
+crates/bots/src/service.rs
+  s_f342d7a3979063::t_b6df7e2988c461 410-414
+crates/protocol/src/team.rs
+  s_afb810d2377efd::t_ea8f9aaa10ce08 206-214,221-224
+  s_afb810d2377efd::t_7b7ba24e3ea157 258-261
+crates/daemon/tests/bot_team_presets_ipc.rs
+  s_afb810d2377efd::t_188e6cb214ef80 166-194,196-351,359-468
+  s_f342d7a3979063::t_b6df7e2988c461 356
+  s_afb810d2377efd::t_5ad1066388da60 195
+  s_afb810d2377efd::t_d0c20a4bbb8d82 22-57
+  s_afb810d2377efd::t_3d8543d33fb55b 352-355,357-358
+apps/rune/src/bots/team_presets.rs
+  s_afb810d2377efd::t_e0556c47412fe7 233-234
+docs/agent-devkit/changes/bot-team-chat/tasks.md
+  s_f342d7a3979063::t_97f32a52c6dd9f 34-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cb91fd3c33007748f77b07d14e9f6e5d7c514cb0",
+  "prompts": {},
+  "sessions": {
+    "s_afb810d2377efd": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "steel-raja",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
