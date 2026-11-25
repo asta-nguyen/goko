@@ -1,0 +1,23 @@
+apps/rune/src/view_tests.rs
+  s_f342d7a3979063::t_17342135e3e18e 7147-7150
+apps/rune/src/bots/team_chat.rs
+  s_f342d7a3979063::t_17342135e3e18e 1695-1701
+docs/agent-devkit/changes/bot-team-chat/tasks.md
+  s_f342d7a3979063::t_1e3b0294d21cad 70-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3d581f22f7bf63f0f05acd3aa3ddfd8218fd71ee",
+  "prompts": {},
+  "sessions": {
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
