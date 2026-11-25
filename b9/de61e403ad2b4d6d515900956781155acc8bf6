@@ -1,0 +1,23 @@
+docs/agent-devkit/changes/bot-team-coordinator/tasks.md
+  s_f342d7a3979063::t_54fd4ccf371c84 13-14,42-44,51-52,60-62,70-71,96
+docs/agent-devkit/changes/bot-team-coordinator/design.md
+  s_f342d7a3979063::t_54fd4ccf371c84 26-28,34-40,90-104,117-123,154-155,157-158,180-182,189,193-195,204-208,214-216
+docs/agent-devkit/changes/bot-team-coordinator/delta.md
+  s_f342d7a3979063::t_b93bdb0efe2e8e 126,179,193-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9de61e403ad2b4d6d515900956781155acc8bf6",
+  "prompts": {},
+  "sessions": {
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
