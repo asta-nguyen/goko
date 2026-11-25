@@ -1,0 +1,40 @@
+AGENTS.md
+  s_f342d7a3979063::t_1b2d1112e8d312 20
+docs/agent-devkit/changes/bot-team-runs/delta.md
+  s_f342d7a3979063::t_b3b0dd36637b35 3-4
+docs/llm/INDEX.md
+  s_f342d7a3979063::t_a040ed95dc0e12 10
+docs/agent-devkit/INDEX.md
+  s_f342d7a3979063::t_9e7f1d1ec30cc0 23-24
+docs/llm/domains/goko-bots.md
+  s_f342d7a3979063::t_3ec02a50e71e39 28-33,360-425,489-491,513-514,521-522
+docs/agent-devkit/changes/bot-team-runs/tasks.md
+  s_f342d7a3979063::t_2a1bfd5f1d6ea4 17-23,34,43,52,60-61,70
+  s_f342d7a3979063::t_c81fba3359ae0a 90
+docs/agent-devkit/changes/bot-team-runs/design.md
+  s_5099dd2cca3be3::t_53f647de94c39c 52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "664538b27d8ff435ae62cb8804b60e6445b02c8c",
+  "prompts": {},
+  "sessions": {
+    "s_5099dd2cca3be3": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "sphenoid-lillipilli",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
