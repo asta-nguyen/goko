@@ -1,0 +1,40 @@
+apps/rune/src/bots/team_chat.rs
+  s_cc605598a3e8a2::t_d10e36f8a31dff 255-256
+  s_cc605598a3e8a2::t_5c5b423c9df36e 553-557,793-796,803-804,807-808
+  s_cc605598a3e8a2::t_88fd186a416c31 145-160
+  s_cc605598a3e8a2::t_a49bbdf4f872f2 943-1042
+  s_cc605598a3e8a2::t_926c884db0c5c0 576,769-787,789-792,797-802,805-806,809-815
+  s_cc605598a3e8a2::t_92e96d40bafd3d 441-455,474-476
+  s_cc605598a3e8a2::t_2a21178bb85fac 663
+  s_cc605598a3e8a2::t_6c360e1890074b 552,558,574-575
+  s_cc605598a3e8a2::t_828f2bbc7067a8 1697-1712
+  s_cc605598a3e8a2::t_045845c0a46311 1183-1185
+  s_cc605598a3e8a2::t_d4c3769602ea17 1754-1762
+  s_cc605598a3e8a2::t_1e413ada99d8a5 105-106,108
+  s_cc605598a3e8a2::t_7a5ececed8dd45 135,137
+  s_cc605598a3e8a2::t_ec7d4ae2b61356 7
+  s_cc605598a3e8a2::t_b4ebf8d76f095f 1753
+  s_cc605598a3e8a2::t_9430ee8841268a 1653-1657,1672-1681
+  s_cc605598a3e8a2::t_63f5d78928e642 272-273
+  s_cc605598a3e8a2::t_42305c2d80257f 53-56
+apps/rune/src/view_tests.rs
+  s_cc605598a3e8a2::t_f4c831321f6c70 7149-7289,7298-7300
+  s_cc605598a3e8a2::t_c9202d8292f4ec 6517-6559,6561-6627
+  s_cc605598a3e8a2::t_5c5b423c9df36e 6560,7290-7297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7d0373fb21bbde3ea61eea42639f034e66708138",
+  "prompts": {},
+  "sessions": {
+    "s_cc605598a3e8a2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "leaf-cross",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
