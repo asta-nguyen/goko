@@ -1,0 +1,89 @@
+crates/bots/src/team_runs.rs
+  s_58b8b68548cb5a::t_f5c6bbaab6f718 958
+crates/daemon/Cargo.toml
+  s_58b8b68548cb5a::t_349f54131073b0 3
+crates/app-core/tests/fixtures/fake_acp_agent.py
+  s_58b8b68548cb5a::t_bd8d17455ca3ed 357-374
+  s_58b8b68548cb5a::t_6630bda35f0c33 48
+crates/bots/src/team_chat.rs
+  s_58b8b68548cb5a::t_e23cde37856e3c 577,583,585,592-595
+  s_58b8b68548cb5a::t_43e2165fb06c84 1025,1028-1029,1031-1033
+  s_58b8b68548cb5a::t_c5e1168dce303b 241-245,693-695,738,806-808,944-947,1008-1011
+  s_58b8b68548cb5a::t_c3fae5de194c71 588,590-591,597-605
+  s_58b8b68548cb5a::t_c7bf4c8f1c4f18 17,208,252,257-258,456,468-469
+  s_58b8b68548cb5a::t_3b4beff83eadc6 155-162,165-168
+  s_58b8b68548cb5a::t_507194e3bb7ff3 27-28
+  s_58b8b68548cb5a::t_f2264d36e0d634 641-650
+  s_f342d7a3979063::t_4c83dbf4c8b36c 487-489,589
+  s_58b8b68548cb5a::t_baa2d5d23f9b82 805
+  s_58b8b68548cb5a::t_5d72e9fe474ba0 62-66
+  s_58b8b68548cb5a::t_88eada64838209 1-16,18-26,29-59,61,67,69-154,163-164,169-207,209-240,246-251,253-256,259-455,457-467,470-486,490-576,578-582,584,586-587,596,606,611-640,651-692,696-710,715-737,739-804,809-832,843-888,890-943,948-1007,1012-1024,1026-1027,1030,1034-1054
+  s_58b8b68548cb5a::t_f1ad3ecbf4ceee 711-714
+  s_58b8b68548cb5a::t_60390f962c49d2 833-842
+  s_58b8b68548cb5a::t_f2d55bcab38a61 607-610
+  s_58b8b68548cb5a::t_f9ac8a564395e4 60,68
+  s_58b8b68548cb5a::t_b7e0a0fac90343 889
+crates/protocol/src/team.rs
+  s_58b8b68548cb5a::t_74f59c4d05ba21 250-354
+crates/bots/src/chat.rs
+  s_58b8b68548cb5a::t_7483ddd664b21a 57
+  s_58b8b68548cb5a::t_e7b9057b59e6b4 1535-1538
+  s_58b8b68548cb5a::t_8599447fb2882e 399
+crates/bots/src/team_presets.rs
+  s_58b8b68548cb5a::t_2ced0f2ade56d7 150,160-164,170
+docs/agent-devkit/changes/bot-team-chat/design.md
+  s_f342d7a3979063::t_4c83dbf4c8b36c 49,109
+crates/daemon/src/server.rs
+  s_58b8b68548cb5a::t_1ded9f60aa1eab 581-582,586-609
+  s_58b8b68548cb5a::t_c5e1168dce303b 583-585
+crates/bots/src/service.rs
+  s_58b8b68548cb5a::t_926e03db98962e 13
+  s_58b8b68548cb5a::t_ebc2c3fcc8ce41 43
+  s_58b8b68548cb5a::t_b8c1df777fec32 505-534
+  s_58b8b68548cb5a::t_7f158fbcbf1b51 89,95
+crates/bots/src/lib.rs
+  s_58b8b68548cb5a::t_56ccc7f34ae69c 18
+crates/daemon/tests/bot_team_chat_ipc.rs
+  s_58b8b68548cb5a::t_175cad19c9ee2b 641
+  s_58b8b68548cb5a::t_3f1b12b7803e36 14
+  s_58b8b68548cb5a::t_4581474899cf0e 318-320
+  s_58b8b68548cb5a::t_0b834828cdf8b4 20
+  s_58b8b68548cb5a::t_c5e1168dce303b 124,230-233,257-264,418
+  s_58b8b68548cb5a::t_c7270e07f4a5a1 480-486
+  s_58b8b68548cb5a::t_91b5575acbb9ec 1-13,15-19,21-123,125-217,219-229,234-256,265-317,321-417,419-479,487-549,598-640,642-667
+  s_58b8b68548cb5a::t_969c5f90dbc0ca 218
+  s_58b8b68548cb5a::t_ba33f8fadbba55 550-580,589-597
+  s_58b8b68548cb5a::t_6638ee69881adc 581-588
+crates/bots/src/schema.rs
+  s_58b8b68548cb5a::t_560425d0b58ee4 194-229
+  s_58b8b68548cb5a::t_eaef7566817918 154-176
+crates/protocol/src/message.rs
+  s_58b8b68548cb5a::t_c26c5264619094 196-217
+  s_58b8b68548cb5a::t_d55fef3781c2f2 415-420
+docs/agent-devkit/changes/bot-team-chat/tasks.md
+  s_f342d7a3979063::t_3ca0cd5fe9a3ff 43-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e8aeac6cf6eb9c540094947732ccbe53a18d52b4",
+  "prompts": {},
+  "sessions": {
+    "s_58b8b68548cb5a": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "leeward-cardigan",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_f342d7a3979063": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "muddled-stetson",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
