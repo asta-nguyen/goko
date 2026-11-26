@@ -408,14 +408,15 @@ fn tree_pane(s: &State, ink: &Ink, k: &Kit) -> El {
 }
 
 /// The tree row an element path belongs to: `…/rows/<row id>/<part>`. A row id
-/// holds slashes of its own, so it is the longest prefix that names a node.
+/// holds slashes of its own, so Rune writes it as one `#!` segment with `%2F`
+/// for `/` and `%25` for `%`; decode it back to the model's id.
 fn row_id(model: &TreeModel<FileNode<FileMark>>, path: &str) -> Option<String> {
-    let rest = path.split_once("/rows/")?.1;
-    std::iter::once(rest.len())
-        .chain(rest.match_indices('/').map(|(i, _)| i).rev())
-        .map(|end| &rest[..end])
-        .find(|id| model.contains(id))
-        .map(str::to_string)
+    let segment = path.split_once("/rows/")?.1.split('/').next()?;
+    let id = match segment.strip_prefix("#!") {
+        Some(escaped) => escaped.replace("%2F", "/").replace("%25", "%"),
+        None => segment.to_string(),
+    };
+    model.contains(&id).then_some(id)
 }
 
 /// The row context menu: copy the path, show it in Finder, rename it.
@@ -3745,17 +3746,17 @@ mod tests {
     }
 
     #[test]
-    fn a_row_id_is_the_longest_node_prefix_of_the_element_path() {
+    fn a_row_id_decodes_the_escaped_row_segment_of_the_element_path() {
         let s = scene();
         let model = tree_get(&s);
         let id = |path: &str| row_id(model, path);
         assert_eq!(
-            id("#0/files/viewport/rows/src/a.rs/label"),
+            id("#0/files/viewport/rows/#!src%2Fa.rs/label"),
             Some("src/a.rs".into())
         );
         assert_eq!(id("#0/files/viewport/rows/src/icon"), Some("src".into()));
         assert_eq!(id("#0/files/viewport/rows/top.txt"), Some("top.txt".into()));
-        assert_eq!(id("#0/files/viewport/rows/nope/label"), None);
+        assert_eq!(id("#0/files/viewport/rows/#!nope%2Fx/label"), None);
         assert_eq!(id("#0/files/toolbar"), None);
     }
 
