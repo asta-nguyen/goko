@@ -1,0 +1,32 @@
+apps/rune/src/editor/code.rs
+  s_3ea62da7647363::t_56487209fc5385 2739,2741,2748,2753,2755,2757
+apps/rune/src/drag_scroll_tests.rs
+  s_3ea62da7647363::t_0f5d9597d2ba85 17-20,25-38,81-84,93-96
+  s_3ea62da7647363::t_08ca029f2e5c3d 1-16,21-24,39-58,66-70,72-74,76-77,80,85-86,90-92,97-102
+  s_3ea62da7647363::t_aebc883b9c093a 59,78
+  s_3ea62da7647363::t_11ae470de2aebd 60-65,71,75,79,87-89
+apps/rune/src/main.rs
+  s_3ea62da7647363::t_39373960a8e3e9 2027
+  s_3ea62da7647363::t_a98fcd1b5b3f15 2026
+apps/rune/src/editor/keyboard.rs
+  s_3ea62da7647363::t_0f5d9597d2ba85 789-793
+apps/rune/src/view_tests.rs
+  s_3ea62da7647363::t_0f5d9597d2ba85 5048-5052
+  s_3ea62da7647363::t_56487209fc5385 5583
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bda5a332b9ff3f663f23edaca3dabd97df419e4d",
+  "prompts": {},
+  "sessions": {
+    "s_3ea62da7647363": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "economic-iodine",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
