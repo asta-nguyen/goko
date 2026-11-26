@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_5ba02193c729ad::t_69a8750f7cd614 56-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a72e23f9207bdae5bf47ef46832fb8c4185fd359",
+  "prompts": {},
+  "sessions": {
+    "s_5ba02193c729ad": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "copy-street",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
