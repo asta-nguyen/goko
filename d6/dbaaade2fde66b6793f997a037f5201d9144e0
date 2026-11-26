@@ -1,0 +1,41 @@
+crates/rune-kit/Cargo.toml
+  s_5ba02193c729ad::t_2764c353eb0085 9-10
+apps/rune/src/editor/code.rs
+  s_5ba02193c729ad::t_fade11ea779581 2739,2741,2748,2753,2755,2757
+ARCHITECTURE.md
+  s_5ba02193c729ad::t_2764c353eb0085 144
+apps/rune/src/view_tests.rs
+  s_5ba02193c729ad::t_fade11ea779581 5583
+  s_5ba02193c729ad::t_ad0a0cb1e73f56 5048-5052
+apps/rune/Cargo.toml
+  s_5ba02193c729ad::t_2764c353eb0085 14
+apps/rune/src/editor/keyboard.rs
+  s_5ba02193c729ad::t_ad0a0cb1e73f56 789-793
+  s_5ba02193c729ad::t_ac62a2fb572358 179
+crates/rune-kit/src/combobox.rs
+  s_5ba02193c729ad::t_4bb38712182e25 67
+  s_5ba02193c729ad::t_325be38e630fbb 387
+apps/rune/src/main.rs
+  s_5ba02193c729ad::t_af2c063b197ead 1978
+  s_5ba02193c729ad::t_e91d1304984b98 1970
+Cargo.lock
+  s_5ba02193c729ad::t_cf960d4a9a8f13 41,66,72,173-181,386,401,660-665,1213-1222,1522-1524,1533-1542,2031,2356-2364,2484,2757-2766,2990,2997-2999,3004,3011,3022-3026,3028,3031,3047-3048,3052-3085,3089-3115,3125-3141,3152-3182,3186-3205,3210,3213,3219,3221,3225-3262,3361,3598-3607,3633-3645,4459,4763,5003
+Cargo.toml
+  s_5ba02193c729ad::t_109e07c0f055e3 20-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d6dbaaade2fde66b6793f997a037f5201d9144e0",
+  "prompts": {},
+  "sessions": {
+    "s_5ba02193c729ad": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "copy-street",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
