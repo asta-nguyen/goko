@@ -1,0 +1,21 @@
+apps/rune/src/editor/files.rs
+  s_3ea62da7647363::t_ed9b945e163406 3787-3791,3798-3800
+  s_3ea62da7647363::t_34e513863b6706 10
+  s_3ea62da7647363::t_67e45615384705 417,419-452
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "11c18f878b4fadf607dbad6a732166c464d8ae63",
+  "prompts": {},
+  "sessions": {
+    "s_3ea62da7647363": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "economic-iodine",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
