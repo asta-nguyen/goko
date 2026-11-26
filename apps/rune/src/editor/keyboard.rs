@@ -176,7 +176,7 @@ fn mounted_editables_mut(s: &mut State) -> Vec<&mut TextEdit> {
 fn typing(s: &State) -> bool {
     mounted_editables(s)
         .iter()
-        .any(|e| e.focused || e.preedit.is_some())
+        .any(|e| e.focused || e.preedit().is_some())
 }
 
 /// Clear `focused` on every mounted editable so a model-driven focus request
@@ -786,7 +786,11 @@ mod tests {
     #[test]
     fn ime_preedit_blocks_plain_keys() {
         let mut rt = runtime();
-        rt.state.editor.files.filter.preedit = Some(("か".into(), None));
+        rt.state
+            .editor
+            .files
+            .filter
+            .ime(&rune::Ime::Preedit("か".into(), None, Vec::new()));
         rt.key(text("2"));
         rt.key(text("j"));
         rt.frame(0.0);

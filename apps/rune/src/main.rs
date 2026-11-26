@@ -1967,7 +1967,7 @@ fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
         return false;
     }
     match ev {
-        rune::Ime::Preedit(text, _) => s.preedit.clone_from(text),
+        rune::Ime::Preedit(text, ..) => s.preedit.clone_from(text),
         rune::Ime::Commit(text) => {
             s.preedit.clear();
             let Some(session) = s.focused_terminal_session() else {
@@ -1975,7 +1975,7 @@ fn on_ime(s: &mut State, ev: &rune::Ime, _tx: &mut Tx) -> bool {
             };
             return s.type_into_terminal(session, term::committed_text(text).as_bytes());
         }
-        rune::Ime::Enabled | rune::Ime::Disabled => return false,
+        rune::Ime::Enabled | rune::Ime::Disabled | rune::Ime::Select(_) => return false,
     }
     true
 }

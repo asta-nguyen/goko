@@ -17,3 +17,11 @@ serde_json = "1"
 tokio = "1"
 uuid = { version = "1.29.0", features = ["v4"] }
 windows-sys = "0.61"
+
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f" }

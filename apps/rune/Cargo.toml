@@ -11,7 +11,7 @@ chrono = "0.4"
 getrandom = { workspace = true }
 lsp-types = { workspace = true }
 protocol = { path = "../../crates/protocol" }
-rune = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96", features = ["native-file-dialog"] }
+rune = { git = "https://github.com/anomalyco/rune", rev = "1e2d281a3cf0032e9627d536b234f52f47208d6f", features = ["native-file-dialog"] }
 rune-highlights = { git = "https://github.com/anomalyco/rune", rev = "711d9574074baf69c63f4bbf36d6a843581595ce" }
 rune-kit = { path = "../../crates/rune-kit", features = ["markdown"] }
 serde = { workspace = true, features = ["derive"] }

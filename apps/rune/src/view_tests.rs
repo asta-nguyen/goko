@@ -5045,7 +5045,11 @@ fn an_input_method_composes_at_the_cursor_and_commits_into_the_session() {
     );
 
     rt.update(|s, tx| {
-        assert!(on_ime(s, &rune::Ime::Preedit("vie".into(), None), tx));
+        assert!(on_ime(
+            s,
+            &rune::Ime::Preedit("vie".into(), None, Vec::new()),
+            tx
+        ));
     });
     rt.frame(1.0 / 60.0);
     assert!(
@@ -5576,7 +5580,7 @@ fn project_map_paste_stays_in_search_and_sidebar_reveals_distant_target() {
 fn project_map_ime_composes_in_search_and_fallback_cannot_type_into_terminal() {
     let mut rt = key_runtime(two_workspace_scene());
     press_cmd(&mut rt, 'k');
-    rt.ime(rune::Ime::Preedit("vie".into(), None));
+    rt.ime(rune::Ime::Preedit("vie".into(), None, Vec::new()));
     rt.frame(0.1);
     assert!(rt.state.preedit.is_empty());
     rt.ime(rune::Ime::Commit("việt".into()));

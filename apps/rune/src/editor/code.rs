@@ -2736,25 +2736,25 @@ mod tests {
         rt.frame(0.0);
         let rev = rt.state.code.revision;
         // Preedit is marked text only: the document is untouched.
-        rt.ime(Ime::Preedit("pending".into(), None));
+        rt.ime(Ime::Preedit("pending".into(), None, Vec::new()));
         rt.frame(0.0);
-        assert!(rt.state.code.edit.preedit.is_some());
+        assert!(rt.state.code.edit.preedit().is_some());
         assert_eq!(rt.state.code.edit.text, "one\ntwo");
         assert_eq!(rt.state.code.revision, rev, "preedit is not an edit");
         // Commit inserts through the normal change path.
         rt.ime(Ime::Commit("仮名".into()));
         rt.frame(0.0);
         assert!(rt.state.code.edit.text.contains("仮名"));
-        assert!(rt.state.code.edit.preedit.is_none());
+        assert!(rt.state.code.edit.preedit().is_none());
         assert!(rt.state.code.revision > rev, "commit advanced revision");
         assert!(rt.state.changed >= 1, "commit fired on_changed");
         // Cancelling a preedit discards it without touching the text.
         let text = rt.state.code.edit.text.clone();
-        rt.ime(Ime::Preedit("discarded".into(), None));
+        rt.ime(Ime::Preedit("discarded".into(), None, Vec::new()));
         rt.frame(0.0);
-        rt.cancel_composition();
+        rt.ime(Ime::Preedit(String::new(), None, Vec::new()));
         rt.frame(0.0);
-        assert!(rt.state.code.edit.preedit.is_none());
+        assert!(rt.state.code.edit.preedit().is_none());
         assert_eq!(rt.state.code.edit.text, text, "cancel kept committed text");
     }
 
