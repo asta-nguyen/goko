@@ -1,0 +1,23 @@
+crates/rune-kit/src/text_input_tests.rs
+  s_5ba02193c729ad::t_82173430294715 14
+  s_5ba02193c729ad::t_73468d54b84970 1-13,15-22,24-48,50-54
+  s_5ba02193c729ad::t_ad0a0cb1e73f56 23,49
+crates/rune-kit/src/text_input.rs
+  s_5ba02193c729ad::t_e4904c55d8d83d 8-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d02ee0ed57fb87a68f2f8b9d323b552cec4ca643",
+  "prompts": {},
+  "sessions": {
+    "s_5ba02193c729ad": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "copy-street",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
