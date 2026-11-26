@@ -5,6 +5,10 @@ use rune::{Color, El, Icon, RichStyle, Span, TextEdit, TextStyle, Tx, col, el, i
 
 use crate::{Acts, Kit, State, over, shadows};
 
+#[cfg(test)]
+#[path = "text_input_tests.rs"]
+mod tests;
+
 fn kit_rich_style(k: &Kit) -> RichStyle {
     RichStyle {
         link: k.c.text_accent,
