@@ -1,0 +1,43 @@
+apps/rune/src/editor/history.rs
+  s_de5ba5274ed2ed::t_dab5ba2df1be2c 3340-3377,3380-3386,3391-3396,3401-3412
+  s_de5ba5274ed2ed::t_048dabc504e313 3397-3400
+  s_de5ba5274ed2ed::t_29ab94a2178e9e 517-533
+  s_71cdda43d11fe2::t_72aaf003380fce 3387-3390
+  s_482ab003b26044::t_5b8fd2bb1f5af9 3378-3379
+apps/rune/src/editor/navigation.rs
+  s_de5ba5274ed2ed::t_c52c6de6956120 1800-1842
+  s_de5ba5274ed2ed::t_ddfc76405fdc78 555,655
+  s_de5ba5274ed2ed::t_2057eecc131167 618-636
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "67b1bdaf9dec31876f3e814e4be5471a3f7b9a2e",
+  "prompts": {},
+  "sessions": {
+    "s_482ab003b26044": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b469493d-3a8f-433c-8bc2-a5a3f44e3e76",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_71cdda43d11fe2": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "moored-error",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    },
+    "s_de5ba5274ed2ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ca5bd57-c79d-461d-8702-df0f660b7abb",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
