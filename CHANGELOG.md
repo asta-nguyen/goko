@@ -53,6 +53,15 @@ same entry. Keep each link on one line: What's new shows it as its text. The
 - Terminal tab layout saves retry when the settings worker refuses or fails,
   so a saved layout is not lost. By
   [@asta-nguyen](https://github.com/asta-nguyen) in `4121630`.
+- A hidden window no longer spins the event loop on Wayland: a due timer
+  waited for a frame the compositor never requests for a hidden surface, so
+  the loop ran without sleeping. Contributed by
+  [@JoeJoeflyn](https://github.com/JoeJoeflyn) in #37 (`af71565`).
+- Dragging a selection past the top or bottom edge of a scrolling text field
+  (the editor, the handoff review) now scrolls it and keeps selecting past the
+  lines on screen. By [@asta-nguyen](https://github.com/asta-nguyen) in
+  `d6dbaaa`, from Rune's
+  [fix in #1562](https://github.com/anomalyco/rune/pull/1562) (`1e2d281`).
 
 ## [0.4.0] - 2026-11-20
 
