@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use rune::{
     Color, El, Key, KeyEvent, LineCap, Link, LinkPaint, Live, PointerPress, ScrollPos, Shape, Span,
-    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, el, row, text, text_input,
+    TextEdit, TextHighlight, TextStyle, Tx, canvas, col, row, text, text_input,
 };
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Kit, ScrollBar};
@@ -55,6 +55,8 @@ pub const TEXT_KEY: &str = "goko-code-text";
 pub const FIND_MATCH_KEY: &str = "goko-code-find-match";
 /// Key of the Vim block caret's overlay canvas.
 pub const VIM_CARET_KEY: &str = "goko-vim-caret";
+/// Key of the inline blame annotation.
+pub const BLAME_NOTE_KEY: &str = "goko-blame-note";
 /// Key of the Vim `:` command bar's input.
 pub const VIM_CMD_KEY: &str = "goko-vim-cmd";
 
@@ -99,8 +101,6 @@ const QUERY_STYLE: TextStyle = TextStyle::new(12.0, 400.0).mono();
 /// Rendered match highlights are capped so huge files stay cheap; matches
 /// past the cap still navigate through `find_next`/`find_prev`.
 const MAX_MATCH_HIGHLIGHTS: usize = 512;
-/// Width of the inline-blame column beside the code.
-const BLAME_WIDTH: f32 = 168.0;
 
 /// A go-to-definition request: the token under the pointer or caret and its
 /// document byte range. The parent resolves it (imports via
@@ -136,14 +136,13 @@ pub struct CodeState {
     pub blame: Option<crate::editor::blame::Blame>,
     /// The minute the caret line's relative age was last drawn for.
     pub blame_bucket: u64,
-    /// Whether the annotations are drawn for this document. The toggle is
-    /// global; they additionally blank while the draft is dirty, but the
-    /// column stays mounted so the code does not reflow.
+    /// Whether the annotation is drawn for this document. The toggle is
+    /// global; it additionally hides while the draft is dirty.
     pub blame_visible: bool,
-    /// Whether the inline blame column is switched on at all (mirrored from
-    /// the editor's persisted setting).
+    /// Whether inline blame is switched on at all (mirrored from the
+    /// editor's persisted setting).
     pub blame_enabled: bool,
-    /// Why the last blame read failed — shown as the column's error line.
+    /// Why the last blame read failed — shown as the error bar.
     pub blame_error: Option<String>,
     /// Lines the working tree changed against `HEAD`; empty until the first
     /// read lands.
@@ -760,18 +759,12 @@ impl<S: 'static> Code<S> {
         if let Some(failure) = self.blame_error_bar(code, ink) {
             root = root.child(failure);
         }
-        let mut surface = row()
+        let surface = row()
             .grow(1.0)
             .min_w(0.0)
             .min_h(0.0)
             .child(gutter_el(code, ink))
             .child(self.surface(s, ink, k));
-        // The blame column is a sibling of the scroll surface: it scrolls
-        // with the code. It stays mounted while the draft is dirty (blank),
-        // or the code area would jump by the column's width on the first key.
-        if code.blame_enabled {
-            surface = surface.child(blame_el(code, ink, self.on_blame_open.clone()));
-        }
         root.child(surface).child(self.footer(s, ink))
     }
 
@@ -964,7 +957,8 @@ impl<S: 'static> Code<S> {
         )
     }
 
-    /// Scroll viewport + editor field(s) + optional go-to overlay.
+    /// Scroll viewport + editor field(s) + inline blame + optional go-to
+    /// overlay.
     fn surface(&self, s: &S, ink: &Ink, k: &Kit) -> El {
         let code = (self.get)(s);
         let gutter_shift = code.gutter_shift.clone();
@@ -990,6 +984,9 @@ impl<S: 'static> Code<S> {
             wrap = wrap.child(guides);
         }
         wrap = wrap.child(self.field(s, ink));
+        if let Some(note) = blame_el(code, ink, self.on_blame_open.clone()) {
+            wrap = wrap.child(note);
+        }
         if let Some(caret) = vim_caret_el(code, ink) {
             wrap = wrap.child(caret);
         }
@@ -1135,8 +1132,8 @@ impl<S: 'static> Code<S> {
     }
 
     /// The inline-blame toggle chip. The chip stays visible even when the
-    /// column is hidden (a dirty draft hides the annotations, not the
-    /// setting), so it carries the on/off state in its own colour.
+    /// annotation is hidden (a dirty draft hides it, not the setting), so it
+    /// carries the on/off state in its own colour.
     fn blame_chip(&self, s: &S, ink: &Ink) -> El {
         let code = (self.get)(s);
         let enabled = code.blame_enabled;
@@ -1883,54 +1880,46 @@ fn gutter_el(code: &CodeState, ink: &Ink) -> El {
     gutter
 }
 
-/// Inline-blame column: the caret line's annotation, shifted by the same live
-/// scroll offset the gutter uses so it lines up with its line. It is placed by
-/// line height, not by padding the text with blank rows, so building it costs
-/// the same on a 10-line and a 10 000-line file.
-fn blame_el<S: 'static>(code: &CodeState, ink: &Ink, on_open: Option<BlameOpenCallback<S>>) -> El {
-    let shift = code.gutter_shift.clone();
-    let bytes = code.edit.text.as_bytes();
-    let active = bytes[..code.edit.focus.min(bytes.len())]
-        .iter()
-        .filter(|b| **b == b'\n')
-        .count();
-    let number = active as u64 + 1;
-    let shown = code.blame.as_ref().filter(|_| code.blame_visible);
-    let label = match shown {
-        Some(blame) => blame::line_label(blame, number, blame::now_ms()),
-        None => String::new(),
-    };
-    let mut line = row().w_full().h(CODE_STYLE.line_px()).child(
-        text(label)
-            .font(CODE_STYLE)
-            .color(ink.muted)
-            .pl(10.0)
-            .pr(10.0),
-    );
-    if let (Some(commit), Some(open)) = (shown.and_then(|b| blame::commit_of(b, number)), on_open) {
+/// Inline-blame annotation: the caret line's author and age drawn after the
+/// line's last character, in document coordinates inside the scroll content
+/// so it follows the text on both axes. It is placed by line height and text
+/// advance, not by padding the text with blank rows, so building it costs the
+/// same on a 10-line and a 10 000-line file.
+fn blame_el<S: 'static>(
+    code: &CodeState,
+    ink: &Ink,
+    on_open: Option<BlameOpenCallback<S>>,
+) -> Option<El> {
+    let blame = code.blame.as_ref().filter(|_| code.blame_visible)?;
+    let caret = code.edit.focus.min(code.edit.text.len());
+    let line = code.edit.line_of_byte(caret);
+    let number = line as u64 + 1;
+    let label = blame::line_label(blame, number, blame::now_ms())?;
+    let range = code.edit.line_range(line);
+    let x = rune::text::advance(&code.edit.text[range], CODE_STYLE);
+    let y = line as f32 * CODE_STYLE.line_px();
+    let mut note = row()
+        .absolute(x, y)
+        .h(CODE_STYLE.line_px())
+        .items_center()
+        .child(
+            text(label)
+                .key(BLAME_NOTE_KEY)
+                .font(CODE_STYLE)
+                .color(ink.muted)
+                .pl(14.0)
+                .pr(10.0),
+        );
+    if let (Some(commit), Some(open)) = (blame::commit_of(blame, number), on_open) {
         let commit = commit.to_string();
-        line = line
+        note = note
             .hover(ink.text.alpha(0.08))
             .press(ink.text.alpha(0.12))
             .role("button")
             .label("Open commit in History")
             .on_press_tx(move |st: &mut S, tx| open(st, &commit, tx));
     }
-    col()
-        .w(BLAME_WIDTH)
-        .h_full()
-        .fill(ink.bg)
-        .border_sides([1.0, 0.0, 0.0, 0.0], ink.border)
-        .clip_rounded(0.0)
-        .label("Blame annotations")
-        .child(
-            // A spacer carries the line's offset so the press area is just the
-            // line, not the column above it.
-            col()
-                .child(el().h(active as f32 * CODE_STYLE.line_px()))
-                .child(line)
-                .live_offset(&shift),
-        )
+    Some(note)
 }
 
 /// Token hues on the editor surface: VS Code Dark+'s on a dark palette,

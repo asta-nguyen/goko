@@ -1592,7 +1592,7 @@ fn poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
         tx,
     );
     editor::highlight::poll(&mut s.editor, tx);
-    // The inline-blame column's relative ages roll over once a minute.
+    // The inline-blame annotation's relative age rolls over once a minute.
     changed |= editor::blame::poll(&mut s.editor);
     // LSP: drain runtime messages, reconcile document sync, drive hover.
     changed |= editor::lsp::poll(&mut s.editor, tx);

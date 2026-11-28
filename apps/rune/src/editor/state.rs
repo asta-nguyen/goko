@@ -551,9 +551,9 @@ pub struct EditorState {
     /// Persisted indent-unit override (`auto` resolves per document); every
     /// mounted [`CodeState`] mirrors it via [`Self::set_indent_choice`].
     pub indent_choice: UnitChoice,
-    /// Whether the inline-blame column is shown. Persisted under
-    /// `goko.editor.blame`; the column itself additionally hides while the
-    /// draft is dirty — the annotations describe the file on disk.
+    /// Whether inline blame is shown. Persisted under `goko.editor.blame`;
+    /// the annotation itself additionally hides while the draft is dirty —
+    /// it describes the file on disk.
     pub blame_enabled: bool,
     /// Whether the code field routes keys through the Vim engine. Persisted
     /// under `goko.editor.vim`; every mounted [`CodeState`] mirrors it.

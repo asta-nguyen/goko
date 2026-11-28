@@ -1742,7 +1742,7 @@ fn search_results(s: &State, ink: &Ink, k: &Kit) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::code::VIM_CARET_KEY;
+    use crate::editor::code::{BLAME_NOTE_KEY, CODE_STYLE, FIELD_KEY, VIM_CARET_KEY};
     use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
     use std::path::PathBuf;
 
@@ -2768,10 +2768,9 @@ mod tests {
         s
     }
 
-    /// A dirty draft blanks the annotation but keeps the column mounted, so
-    /// the code area does not jump by the column's width on the first key.
+    /// A dirty draft hides the annotation; nothing is drawn in its place.
     #[test]
-    fn a_dirty_draft_blanks_the_blame_column_without_removing_it() {
+    fn a_dirty_draft_hides_the_blame_annotation() {
         let mut s = blamed_scene();
         s.editor.doc.as_mut().unwrap().code.blame_visible = false;
         let mut rt = Runtime::new(s, files_only, (1200.0, 700.0), Env::new(true, 2.0));
@@ -2779,9 +2778,8 @@ mod tests {
 
         let els = rt.elements();
         assert!(
-            els.iter()
-                .any(|e| e.label.as_deref() == Some("Blame annotations")),
-            "the blame column was unmounted"
+            !els.iter().any(|e| e.key.as_deref() == Some(BLAME_NOTE_KEY)),
+            "a hidden annotation was mounted"
         );
         assert!(
             !els.iter()
@@ -2791,31 +2789,87 @@ mod tests {
         );
     }
 
-    /// The inline-blame column and its toggle chip are part of the code
-    /// surface: the caret's line is annotated beside the code.
+    /// The inline-blame annotation and its toggle chip are part of the code
+    /// surface: the caret's line is annotated after its last character.
     #[test]
-    fn the_blame_column_renders_beside_the_code() {
+    fn the_blame_annotation_renders_at_the_end_of_the_caret_line() {
         let s = blamed_scene();
         let mut rt = Runtime::new(s, files_only, (1200.0, 700.0), Env::new(true, 2.0));
         rt.frame(0.0);
 
         let els = rt.elements();
         let ls: Vec<&str> = els.iter().filter_map(|e| e.label.as_deref()).collect();
-        for e in &els {
-            if let Some(l) = &e.label
-                && (l == "Blame" || l.contains("Spaces"))
-            {
-                println!(
-                    "PROBE {:?} role={} rect={:?} text={:?}",
-                    l, e.role, e.rect, e.text
-                );
-            }
-        }
         assert!(ls.contains(&"Blame"), "the blame chip is missing: {ls:?}");
-        let texts: Vec<&str> = els.iter().filter_map(|e| e.text.as_deref()).collect();
+        let field = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some(FIELD_KEY))
+            .expect("the code field is missing");
+        let note = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some(BLAME_NOTE_KEY))
+            .expect("the blame annotation is missing");
+        let expected_x = field.rect[0] + rune::text::advance("fn main() {}", CODE_STYLE);
         assert!(
-            texts.iter().any(|t| t.contains("Alice")),
-            "the blame column is missing: {texts:?}"
+            (note.rect[0] - expected_x).abs() < 1.0,
+            "annotation starts after the line: {:?} vs {expected_x}",
+            note.rect
+        );
+        assert!(
+            (note.rect[1] - field.rect[1]).abs() < 1.0,
+            "annotation sits on the caret's line: {:?} vs {:?}",
+            note.rect,
+            field.rect
+        );
+        assert!(
+            note.text.as_deref().is_some_and(|t| t.contains("Alice")),
+            "the annotation names the author: {:?}",
+            note.text
+        );
+    }
+
+    /// Moving the caret moves the annotation to that line's end.
+    #[test]
+    fn the_blame_annotation_follows_the_caret_line() {
+        let mut s = blamed_scene();
+        let line_two = s
+            .editor
+            .doc
+            .as_ref()
+            .unwrap()
+            .code
+            .edit
+            .text
+            .find("fn two")
+            .unwrap();
+        s.editor.doc.as_mut().unwrap().code.edit.set_caret(line_two);
+        let mut rt = Runtime::new(s, files_only, (1200.0, 700.0), Env::new(true, 2.0));
+        rt.frame(0.0);
+
+        let els = rt.elements();
+        let field = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some(FIELD_KEY))
+            .expect("the code field is missing");
+        let note = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some(BLAME_NOTE_KEY))
+            .expect("the blame annotation is missing");
+        let expected_x = field.rect[0] + rune::text::advance("fn two() {}", CODE_STYLE);
+        assert!(
+            (note.rect[0] - expected_x).abs() < 1.0,
+            "annotation starts after the second line: {:?} vs {expected_x}",
+            note.rect
+        );
+        assert!(
+            (note.rect[1] - (field.rect[1] + CODE_STYLE.line_px())).abs() < 1.0,
+            "annotation moved to the second line: {:?} vs {:?}",
+            note.rect,
+            field.rect
+        );
+        assert!(
+            note.text.as_deref().is_some_and(|t| t.contains("Bob")),
+            "the annotation names the second line's author: {:?}",
+            note.text
         );
     }
 

@@ -17,6 +17,8 @@
 
 ## Archived changes
 
+- [Inline blame at the end of the caret's line](changes/archive/inline-blame-line-end/delta.md)
+
 - [Terminal agent handoff](changes/archive/claude-account-handoff/design.md) ([tasks](changes/archive/claude-account-handoff/tasks.md), [delta](changes/archive/claude-account-handoff/delta.md))
 
 - [Named Devin CLI accounts](changes/archive/devin-multi-account/design.md) ([tasks](changes/archive/devin-multi-account/tasks.md), [delta](changes/archive/devin-multi-account/delta.md))
