@@ -1,0 +1,36 @@
+apps/rune/src/editor/navigation.rs
+  s_1c84c747a8bfd0::t_3db0ffe2559764 401-404
+  s_1c84c747a8bfd0::t_7569944123bd1b 2106-2108
+  s_1c84c747a8bfd0::t_a063502307c101 2217,2223-2224,2230-2232,2234
+  s_1c84c747a8bfd0::t_c1b3d768c95797 2089,2091-2096,2101,2104,2110-2111,2119-2122,2131,2134,2137,2141-2146
+  s_1c84c747a8bfd0::t_930f15af39b576 2105
+docs/llm/domains/rune-editor.md
+  s_1c84c747a8bfd0::t_553c7b0e5c5926 1415-1417
+  s_1c84c747a8bfd0::t_2c8b8c7b26ab3f 942,944,946-952,954,956,958,960,962,964-966,968
+  s_1c84c747a8bfd0::t_1863b84d510052 1201-1204
+apps/rune/src/view_tests.rs
+  s_1c84c747a8bfd0::t_d92b628652877a 992-994
+  s_1c84c747a8bfd0::t_3722867525c6ce 1011-1014
+  s_1c84c747a8bfd0::t_09a3a1ee203c31 972-991,995-1010,1015-1021
+  s_1c84c747a8bfd0::t_897e6c1e15af70 971
+docs/llm/domains/rune-chrome.md
+  s_1c84c747a8bfd0::t_517377d3df8fca 838,843
+docs/agent-devkit/INDEX.md
+  s_1c84c747a8bfd0::t_e1c0ff7d118969 20-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b212561430e5899af87e5337fb568f7ff05b6aca",
+  "prompts": {},
+  "sessions": {
+    "s_1c84c747a8bfd0": {
+      "agent_id": {
+        "tool": "windsurf",
+        "id": "spiritual-letter",
+        "model": "unknown"
+      },
+      "human_author": "asta-nguyen <asta.dev.520@gmail.com>"
+    }
+  }
+}
