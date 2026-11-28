@@ -939,27 +939,33 @@ The system SHALL present the editor as five sections — Files, Changes, History
 Evidence: `apps/rune/src/editor/state.rs`, `apps/rune/src/editor/workspace.rs`, `apps/rune/src/editor/navigation.rs`, `apps/rune/src/editor/backend.rs`, `apps/rune/src/editor/files.rs`, `apps/rune/src/editor/changes.rs`, `apps/rune/src/editor/history.rs`, `apps/rune/src/editor/stashes.rs`, `apps/rune/src/editor/lsp.rs`
 ### RNE-sidebar-sync
 
-The system SHALL keep the chrome sidebar's committed workspace and the editor's checkout selection in sync — activating the committed checkout when the Editor view opens, decoding `active_workspace` into project and checkout, ignoring `__unassigned__`, unregistered or vanished project ids, and an already-matching selection, through the same draft-guarded `SelectCheckout` path, and clearing the committed workspace when a project switch drops the checkout so no stale row stays highlighted.
+The system SHALL keep the chrome sidebar's project and worktree row presses and the editor's checkout selection in sync — every press commits that exact registered project root or listed worktree as the editor's project+checkout through the draft-guarded `SelectCheckout` path and records it as `active_workspace` only after the guard passes, so a cancelled or failed navigation restores the previous project, checkout, highlight, and draft — while entering the Editor view never derives the editor's checkout from `active_workspace`: a terminal session, tab or pane press may move the sidebar highlight, but the editor keeps its own checkout, open tabs and drafts, and a project switch that drops the checkout clears the committed workspace so no stale row stays highlighted.
 
-#### Scenario: Editor opens on the committed checkout
+#### Scenario: Sidebar row commits the editor checkout
 
-- GIVEN `active_workspace` names a registered project's checkout and the editor's selection is empty or different
+- GIVEN the editor is committed to one project and checkout
+- WHEN a project root or worktree row is pressed, in any view
+- THEN `SelectCheckout` commits that exact registered project+checkout through the draft guard and the sidebar highlight matches it
+
+#### Scenario: A terminal does not move the editor
+
+- GIVEN the editor is on checkout A with a file open and `active_workspace` names checkout B after a terminal tab, session or pane press
 - WHEN the user switches to the Editor view
-- THEN `activate_sidebar_checkout` navigates `SelectCheckout` for that project+checkout and the sidebar highlight already matches it
+- THEN the editor still shows checkout A with its open tab and find state, and the sidebar highlight stays on B
 
-#### Scenario: Unregistered workspace ignored
+#### Scenario: No checkout derived on entry
 
-- GIVEN `active_workspace` is `__unassigned__`, names an unregistered or vanished project id, or no workspace is committed
+- GIVEN the editor has no selected checkout and `active_workspace` names a registered checkout
 - WHEN the Editor view opens
-- THEN the view still switches but no project or checkout is selected
+- THEN the view switches but no project or checkout is selected
 
-#### Scenario: Guarded view switch applies the sync after Discard
+#### Scenario: Guarded row press
 
-- GIVEN a dirty draft and `active_workspace` names another registered checkout
-- WHEN the user switches to the Editor view and chooses Discard
-- THEN the view becomes Editor with that project+checkout activated
+- GIVEN the editor has a dirty draft
+- WHEN a project or worktree row is pressed and the user chooses Cancel
+- THEN project, checkout, highlight and draft are all unchanged; Discard or a landed Save commits the pending selection instead
 
-Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/main.rs`
+Evidence: `apps/rune/src/editor/navigation.rs`, `apps/rune/src/sidebar.rs`, `apps/rune/src/chrome.rs`, `apps/rune/src/data.rs`, `apps/rune/src/main.rs`
 
 ### RNE-stashes
 
@@ -1192,10 +1198,10 @@ commits post-guard only: it records the checkout as the chrome's
 worktrees through the shared `request_worktrees` lane when the project
 changed, resets every per-checkout cache, and refreshes the active section;
 `clear_checkout` clears `active_workspace` so nothing stale stays
-highlighted. `SetView(Editor)` apply then calls `activate_sidebar_checkout`,
-which decodes `active_workspace` back into project+checkout and navigates
-`SelectCheckout` when it names a still-registered project and differs from
-the live `checkout_key` — the sidebar→editor sync.
+highlighted. Entering the Editor changes no checkout: sidebar project and
+worktree rows commit their selection through `SelectCheckout` themselves,
+while terminal session, tab and pane selection moves only `active_workspace`,
+so the editor keeps its own checkout, open tabs and drafts.
 
 ACP generation lives on its own Tokio runtime thread (`acp.rs`): UI commands
 (connect, generate with a draft snapshot, cancel, refresh, shutdown) cross an
@@ -1406,9 +1412,9 @@ outlives 120 seconds reports `Push timed out`.
   the LSP layer's UTF-16 position conversion, incremental document sync,
   hover/definition debounce and timeout handling, settings merge/validation,
   and server-row state, project/sidebar worktree reply routing (per-project
-  keys, the Projects ensure pass, vanished-project cleanup), committed-
-  workspace activation and bogus-workspace rejection, and sidebar-driven
-  selection guards; `src/main.rs` `view_tests` scenes cover editor
+  keys, the Projects ensure pass, vanished-project cleanup), the editor
+  keeping its checkout when a terminal moves the sidebar highlight, and
+  sidebar-driven selection guards; `src/main.rs` `view_tests` scenes cover editor
   workspace composition, the draft-guard modal, picker layout,
   session-controls absence in the Editor view, and the sidebar→editor
   scenes — real-project listing with sessions under Unassigned, root

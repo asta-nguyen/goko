@@ -835,12 +835,12 @@ highlight, and draft.
 - THEN `SelectCheckout` commits that exact registered path and
   `active_workspace` highlights the matching row
 
-#### Scenario: root row commits, Editor activates on open
+#### Scenario: root row commits, Editor shows it on open
 
 - GIVEN `view` is `Terminal`
 - WHEN a project root row is pressed
 - THEN the selection alone stays in Terminal with the root checkout committed;
-  opening the Editor view then activates that same project+checkout
+  opening the Editor view then shows that same project+checkout
 
 #### Scenario: dirty draft guards sidebar selection
 

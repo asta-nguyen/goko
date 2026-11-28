@@ -969,6 +969,57 @@ fn a_tab_pill_opens_its_terminal_from_the_editor() {
 }
 
 #[test]
+fn returning_to_the_editor_after_a_terminal_tab_keeps_the_open_file() {
+    let mut s = sidebar_scene();
+    s.view = View::Editor;
+    s.editor.project_id = Some("p1".into());
+    s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+    s.editor.checkout_key = Some(crate::editor::state::checkout_key(
+        "p1",
+        &PathBuf::from("/work/a/web"),
+    ));
+    s.active_workspace = Some(crate::data::checkout_key("p1", "/work/a/web"));
+    let file = GitViewFile {
+        path: "src/a.rs".into(),
+        kind: "text",
+        text: Some("fn main() {}\n".into()),
+        truncated: false,
+        size: 12,
+    };
+    let mut doc = OpenDoc::new("src/a.rs", &file);
+    doc.code.find.open_panel();
+    doc.code.find.set_query("main");
+    doc.code.find.refresh(&doc.code.edit.text);
+    assert!(doc.code.find.open);
+    assert!(!doc.code.find.matches.is_empty());
+    s.editor.doc = Some(doc);
+    // A terminal in another worktree of the same project: clicking it must
+    // not move the editor's checkout when the user comes back.
+    let key = seed_session_in(&mut s, "/work/a/feat-a", Some("p1"));
+    s.focus_session_tab(&key);
+    let mut rt = Runtime::new(s, view, (1100.0, 700.0), Env::new(true, 2.0));
+    rt.frame(0.0);
+    let tab = rt.state.open_tabs[0].id.clone();
+    click_key(&mut rt, &format!("tab:{tab}"));
+    assert_eq!(rt.state.view, View::Terminal);
+    click_key(&mut rt, "view:Editor");
+    assert_eq!(rt.state.view, View::Editor);
+    assert!(
+        rt.state.editor.doc.is_some(),
+        "returning to the Editor dropped the open file"
+    );
+    let doc = rt.state.editor.doc.as_ref().unwrap();
+    assert!(doc.code.find.open, "the find bar survived the view switch");
+    assert_eq!(doc.code.find.query.text, "main");
+    assert!(!doc.code.find.matches.is_empty());
+    assert_eq!(
+        rt.state.editor.checkout,
+        Some(PathBuf::from("/work/a/web")),
+        "a terminal tab must not move the editor's checkout"
+    );
+}
+
+#[test]
 fn a_session_row_click_in_the_editor_respects_the_draft_guard() {
     let mut s = sidebar_scene();
     let key = seed_session(&mut s, "agent-one", "/work/a/web");

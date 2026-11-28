@@ -397,9 +397,11 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
                 // An in-flight ACP generate belongs to the editor's commit
                 // panel — leaving the view abandons it.
                 crate::editor::acp::cancel(s);
-            } else {
-                activate_sidebar_checkout(s, tx);
             }
+            // Entering the Editor never moves its checkout: sidebar project
+            // and worktree rows already commit their selection, while
+            // `active_workspace` may follow a terminal session or tab — and a
+            // terminal must not drop the editor's tabs (RNE-checkout-selection).
         }
         PendingNav::CloseWindow => {
             // Post-guard: the close actually proceeds, so the editor's ACP
@@ -411,38 +413,6 @@ pub fn apply(s: &mut State, pending: PendingNav, tx: &mut Tx) {
             tx.quit();
         }
     }
-}
-
-/// Entering the Editor activates the checkout the sidebar last committed:
-/// `active_workspace` decodes to (project, checkout); only a still-registered
-/// project may drive the editor — mock session ids, `__unassigned__` and
-/// vanished projects are ignored, and an already-matching selection is a
-/// no-op. Routed through `navigate` so the draft guard treats it like every
-/// other identity change (post-`SetView`-guard the doc is clean, so this
-/// applies immediately).
-fn activate_sidebar_checkout(s: &mut State, tx: &mut Tx) {
-    let Some(workspace) = s.active_workspace.clone() else {
-        return;
-    };
-    let Some((project_id, checkout_path)) = crate::data::checkout_context(&workspace) else {
-        return;
-    };
-    if !s.editor.projects.iter().any(|p| p.project.id == project_id) {
-        return;
-    }
-    let checkout = PathBuf::from(checkout_path);
-    let key = checkout_key(project_id, &checkout);
-    if s.editor.checkout_key.as_deref() == Some(key.as_str()) {
-        return;
-    }
-    navigate(
-        s,
-        PendingNav::SelectCheckout {
-            project_id: project_id.to_string(),
-            checkout,
-        },
-        tx,
-    );
 }
 
 /// Switch the visible section, marking it visited so its state persists.
@@ -2116,18 +2086,29 @@ mod tests {
     }
 
     #[test]
-    fn set_view_editor_activates_committed_sidebar_checkout() {
+    fn set_view_editor_keeps_the_editor_checkout_and_open_tabs() {
         let mut s = registered_state();
+        s.editor.project_id = Some("p1".into());
+        s.editor.checkout = Some(PathBuf::from("/work/a/web"));
+        s.editor.checkout_key = Some(checkout_key("p1", &PathBuf::from("/work/a/web")));
+        s.editor.doc = Some(OpenDoc::new("a.txt", &file("orig")));
+        s.editor.tabs.order.push("a.txt".into());
+        // A terminal tab in another checkout moved the sidebar highlight.
         s.active_workspace = Some(crate::data::checkout_key("p2", "/work/b/api"));
         let mut tx = Tx::default();
         navigate(&mut s, PendingNav::SetView(View::Editor), &mut tx);
         assert_eq!(s.view, View::Editor);
-        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
+        assert_eq!(s.editor.project_id.as_deref(), Some("p1"));
         assert_eq!(
             s.editor.checkout.as_deref(),
-            Some(std::path::Path::new("/work/b/api"))
+            Some(std::path::Path::new("/work/a/web"))
         );
-        // The activated checkout re-committed the same workspace key.
+        assert!(
+            s.editor.doc.is_some(),
+            "the open file survives the view switch"
+        );
+        assert_eq!(s.editor.tabs.order, vec!["a.txt".to_string()]);
+        // The sidebar highlight still names the terminal's workspace.
         assert_eq!(
             s.active_workspace.as_deref(),
             Some(crate::data::checkout_key("p2", "/work/b/api").as_str())
@@ -2135,8 +2116,10 @@ mod tests {
     }
 
     #[test]
-    fn set_view_editor_ignores_unregistered_and_mock_workspaces() {
-        for bogus in [
+    fn set_view_editor_never_derives_its_checkout_from_active_workspace() {
+        for workspace in [
+            // A registered checkout a terminal tab may highlight.
+            crate::data::checkout_key("p2", "/work/b/api"),
             // Unknown/vanished project id.
             crate::data::checkout_key("ghost", "/nowhere"),
             // A mock session project id must never fabricate identity.
@@ -2145,17 +2128,22 @@ mod tests {
             crate::data::UNASSIGNED_WORKSPACE.to_string(),
         ] {
             let mut s = registered_state();
-            s.active_workspace = Some(bogus.clone());
+            s.active_workspace = Some(workspace.clone());
             let mut tx = Tx::default();
             navigate(&mut s, PendingNav::SetView(View::Editor), &mut tx);
-            assert_eq!(s.view, View::Editor, "{bogus}: view still switches");
+            assert_eq!(s.view, View::Editor, "{workspace}: view still switches");
             assert!(
                 s.editor.project_id.is_none(),
-                "{bogus}: must not select a project"
+                "{workspace}: must not select a project"
             );
             assert!(
                 s.editor.checkout.is_none(),
-                "{bogus}: must not select a checkout"
+                "{workspace}: must not select a checkout"
+            );
+            assert_eq!(
+                s.active_workspace.as_deref(),
+                Some(workspace.as_str()),
+                "{workspace}: the sidebar highlight stays put"
             );
         }
     }
@@ -2226,24 +2214,24 @@ mod tests {
     }
 
     #[test]
-    fn set_view_editor_guard_discard_applies_sidebar_sync() {
+    fn set_view_editor_guard_discard_keeps_the_editor_identity() {
         let mut s = registered_state();
         s.active_workspace = Some(crate::data::checkout_key("p2", "/work/b/api"));
         dirty_doc(&mut s);
         let mut tx = Tx::default();
         navigate(&mut s, PendingNav::SetView(View::Editor), &mut tx);
-        // The view did NOT flip under the guard, and the sidebar checkout
-        // did not activate early either.
+        // The view did NOT flip under the guard, and the sidebar highlight
+        // did not activate a checkout early either.
         assert!(s.editor.guard.is_some());
         assert_eq!(s.view, View::Terminal);
         assert!(s.editor.project_id.is_none());
         resolve_guard(&mut s, GuardAction::Discard, &mut tx);
         assert_eq!(s.view, View::Editor);
-        assert_eq!(s.editor.project_id.as_deref(), Some("p2"));
-        assert_eq!(
-            s.editor.checkout.as_deref(),
-            Some(std::path::Path::new("/work/b/api"))
+        assert!(
+            s.editor.project_id.is_none(),
+            "entering the Editor must not derive a checkout from a terminal"
         );
+        assert!(s.editor.checkout.is_none());
     }
 
     #[test]

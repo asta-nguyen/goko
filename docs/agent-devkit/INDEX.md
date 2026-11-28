@@ -17,6 +17,8 @@
 
 ## Archived changes
 
+- [Editor keeps its checkout when a terminal moves the sidebar highlight](changes/archive/editor-keeps-checkout/delta.md)
+
 - [Inline blame at the end of the caret's line](changes/archive/inline-blame-line-end/delta.md)
 
 - [Terminal agent handoff](changes/archive/claude-account-handoff/design.md) ([tasks](changes/archive/claude-account-handoff/tasks.md), [delta](changes/archive/claude-account-handoff/delta.md))
